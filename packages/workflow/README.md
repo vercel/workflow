@@ -42,7 +42,7 @@ The initial core contributing engineers are
 - Peter Wielander ([@VaguelySerious](https://github.com/VaguelySerious))
 - Pranay Prakash ([@pranaygp](https://github.com/pranaygp))
 
-The Workflow DevKit Logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
+The Workflow DevKit logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
 
 ---
 
