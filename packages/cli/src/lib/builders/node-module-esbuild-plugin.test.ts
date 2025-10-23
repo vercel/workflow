@@ -200,4 +200,90 @@ describe('workflow-node-module-error plugin', () => {
     expect(result).toBeDefined();
     expect(result?.errors?.[0]?.text).toContain('Cannot use Node.js module');
   });
+
+  it('should not misclassify similarly named sibling workspaces as project source', async () => {
+    let resolveHandler:
+      | Parameters<esbuild.PluginBuild['onResolve']>[1]
+      | undefined;
+
+    const mockPlugin = createNodeModuleErrorPlugin({
+      workflowFiles: ['/project/apps/web/workflows/flow.ts'],
+    });
+
+    const mockBuild: esbuild.PluginBuild = {
+      initialOptions: {
+        absWorkingDir: '/project/apps/web',
+      },
+      esbuild: esbuild as unknown as typeof import('esbuild'),
+      onResolve: (_opts, handler) => {
+        resolveHandler = handler;
+      },
+      onLoad: () => {},
+      onStart: () => {},
+      onEnd: () => {},
+      onDispose: () => {},
+      resolve: async () => ({
+        errors: [],
+        warnings: [],
+        path: '',
+        external: false,
+        sideEffects: true,
+        namespace: 'file',
+        suffix: '',
+        pluginData: undefined,
+      }),
+    };
+
+    mockPlugin.setup(mockBuild);
+    expect(resolveHandler).toBeDefined();
+    if (!resolveHandler) throw new Error('resolveHandler was not set');
+    const handler = resolveHandler;
+
+    const mkArgs = (p: string, importer: string): esbuild.OnResolveArgs => ({
+      path: p,
+      importer,
+      namespace: 'file',
+      resolveDir: '/',
+      kind: 'import-statement',
+      pluginData: undefined,
+      with: {},
+    });
+
+    // Sibling directory with similar name prefix should NOT be treated as inside workingDir
+    const result1 = await handler(
+      mkArgs('fs', '/project/apps/web-admin/dist/index.js')
+    );
+    expect(result1).toBeNull();
+
+    // Another sibling with similar prefix
+    const result2 = await handler(
+      mkArgs('crypto', '/project/apps/web-components/lib/utils.js')
+    );
+    expect(result2).toBeNull();
+
+    // Project source NOT in workflow graph should be allowed (enforced only for workflow entries/graph)
+    const result3 = await handler(
+      mkArgs('fs', '/project/apps/web/src/utils.js')
+    );
+    expect(result3).toBeNull();
+
+    // The actual workflow file should error
+    const result4 = (await handler(
+      mkArgs('crypto', '/project/apps/web/workflows/flow.ts')
+    )) as any;
+    expect(result4).toBeDefined();
+    expect(result4?.errors?.[0]?.text).toContain('Cannot use Node.js module');
+
+    // node_modules exemption still applies
+    const result5 = await handler(
+      mkArgs('fs', '/project/apps/web/node_modules/some-package/index.js')
+    );
+    expect(result5).toBeNull();
+
+    // Files without trailing slash edge case (webapp != web)
+    const result6 = await handler(
+      mkArgs('fs', '/project/apps/webapp/index.js')
+    );
+    expect(result6).toBeNull();
+  });
 });

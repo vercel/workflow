@@ -19,7 +19,10 @@ export function createNodeModuleErrorPlugin(
         const workingDir = build.initialOptions.absWorkingDir || process.cwd();
 
         // Only flag imports that are clearly from the user's source code within the current project
-        const isFromProjectSource = args.importer.startsWith(workingDir);
+        const isFromProjectSource =
+          args.importer.startsWith(`${workingDir}/`) ||
+          args.importer === workingDir;
+
         if (!isFromProjectSource) return null;
 
         // If entries are provided, only enforce for files that are in the workflow graph
