@@ -1,10 +1,13 @@
 import { ERROR_SLUGS } from '@workflow/errors';
 import builtinModules from 'builtin-modules';
 import type * as esbuild from 'esbuild';
+import { parentHasChild } from './discover-entries-esbuild-plugin.js';
 
 const nodeModulesRegex = new RegExp(`^(${builtinModules.join('|')})`);
 
-export function createNodeModuleErrorPlugin(): esbuild.Plugin {
+export function createNodeModuleErrorPlugin(
+  options: { workflowFiles?: string[] } = {}
+): esbuild.Plugin {
   return {
     name: 'workflow-node-module-error',
     setup(build) {
@@ -15,15 +18,29 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
         // Get the working directory to check if import is from external workspace packages
         const workingDir = build.initialOptions.absWorkingDir || process.cwd();
 
-        // Check if the importer is from an external package (outside the current project)
-        // This handles workspace packages in monorepos where packages are symlinked
-        // from their actual locations (e.g., ../../packages/database/dist/...)
         // Only flag imports that are clearly from the user's source code within the current project
         const isFromProjectSource = args.importer.startsWith(workingDir);
-
-        // If the import is from outside the working directory, it's an external dependency
-        // and should be allowed to use Node.js modules
         if (!isFromProjectSource) return null;
+
+        // If entries are provided, only enforce for files that are in the workflow graph
+        const entries = options.workflowFiles || [];
+
+        if (entries.length > 0) {
+          let isInWorkflowGraph = false;
+
+          for (const entry of entries) {
+            if (
+              args.importer === entry ||
+              parentHasChild(args.importer, entry)
+            ) {
+              isInWorkflowGraph = true;
+
+              break;
+            }
+          }
+
+          if (!isInWorkflowGraph) return null;
+        }
 
         return {
           path: args.path,
