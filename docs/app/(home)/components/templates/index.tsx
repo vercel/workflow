@@ -10,7 +10,7 @@ const data = [
     description:
       "Slackbot that generates children's stories from collaborative input.",
     image: Storytime,
-    link: 'https://github.com/vercel-labs/storytime-slackbot',
+    link: 'https://vercel.com/guides/stateful-slack-bots-with-vercel-workflow',
   },
   {
     title: 'Flight Booking App',
