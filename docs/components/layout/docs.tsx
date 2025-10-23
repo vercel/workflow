@@ -8,11 +8,39 @@ import {
 } from 'fumadocs-ui/components/ui/collapsible';
 import { useSidebar } from 'fumadocs-ui/contexts/sidebar';
 import { TreeContextProvider, useTreeContext } from 'fumadocs-ui/contexts/tree';
-import { ChevronDown, ChevronRight, FlaskConical } from 'lucide-react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { type ComponentProps, type ReactNode, useMemo, useState } from 'react';
+import {
+  type ComponentProps,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { cn } from '../../lib/cn';
+import { isActive } from '../../lib/is-active';
+
+/**
+ * Recursively checks if the current pathname matches any page within a folder
+ */
+function isPathInFolder(folder: PageTree.Folder, pathname: string): boolean {
+  // Check if folder has an index page that matches
+  if (folder.index && isActive(folder.index.url, pathname, true)) {
+    return true;
+  }
+
+  // Check all children
+  return folder.children.some((child) => {
+    if (child.type === 'page') {
+      return isActive(child.url, pathname, true);
+    }
+    if (child.type === 'folder') {
+      return isPathInFolder(child, pathname);
+    }
+    return false;
+  });
+}
 
 export interface DocsLayoutProps {
   tree: PageTree.Root;
@@ -123,9 +151,24 @@ function SidebarItem({
 }) {
   const pathname = usePathname();
   const { setOpen: setSidebarOpen } = useSidebar();
-  const [isOpen, setIsOpen] = useState(
-    item.type === 'folder' && 'defaultOpen' in item && item.defaultOpen === true
-  );
+  const [isOpen, setIsOpen] = useState(() => {
+    if (item.type !== 'folder') return false;
+
+    // Open if explicitly set to defaultOpen
+    if ('defaultOpen' in item && item.defaultOpen === true) {
+      return true;
+    }
+
+    // Open if current path is within this folder
+    return isPathInFolder(item, pathname);
+  });
+
+  // Expand folder when navigating to any page within it
+  useEffect(() => {
+    if (item.type === 'folder' && isPathInFolder(item, pathname)) {
+      setIsOpen(true);
+    }
+  }, [pathname, item]);
 
   // Close sidebar on mobile when link is clicked
   const handleLinkClick = () => {
@@ -200,7 +243,7 @@ function SidebarItem({
               <ChevronDown
                 className={cn(
                   'size-3.5 transition-transform',
-                  !isOpen && '-rotate-90'
+                  !isOpen && 'rotate-90'
                 )}
               />
             </CollapsibleTrigger>
