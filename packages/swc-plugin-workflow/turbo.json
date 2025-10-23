@@ -1,0 +1,10 @@
+{
+  "$schema": "https://turborepo.org/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "outputs": ["swc_plugin_workflow.wasm"],
+      "env": ["RUSTUP_HOME", "CARGO_HOME"]
+    }
+  }
+}

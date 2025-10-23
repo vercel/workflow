@@ -1,0 +1,13 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src", "workflows"],
+      "outputs": [".well-known", "dist"]
+    },
+    "test": {
+      "dependsOn": ["build"]
+    }
+  }
+}

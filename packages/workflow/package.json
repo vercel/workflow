@@ -1,0 +1,69 @@
+{
+  "name": "workflow",
+  "version": "4.0.1-beta.2",
+  "description": "Workflow DevKit - Build durable, resilient, and observable workflows",
+  "main": "dist/index.cjs",
+  "type": "module",
+  "bin": {
+    "workflow": "./bin/run.js",
+    "wf": "./bin/run.js"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/workflow"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "workflow": "./dist/workflow.js",
+      "default": "./dist/index.js"
+    },
+    "./api": "./dist/api.js",
+    "./internal/errors": "./dist/internal/errors.js",
+    "./internal/serialization": "./dist/internal/serialization.js",
+    "./internal/builtins": "./dist/internal/builtins.js",
+    "./internal/private": "./dist/internal/private.js",
+    "./next": "./dist/next.js",
+    "./nitro": "./dist/nitro.js",
+    "./rollup-plugin": "./dist/rollup-plugin.js",
+    "./runtime": "./dist/runtime.js"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x bin/run.js",
+    "clean": "tsc --build --clean && rm -r dist ||:",
+    "dev": "tsc --watch",
+    "test": "vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@workflow/cli": "workspace:*",
+    "@workflow/core": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "@workflow/typescript-plugin": "workspace:*",
+    "ms": "2.1.3",
+    "@workflow/next": "workspace:*",
+    "@workflow/nitro": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/ms": "^2.1.0",
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "1"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  }
+}

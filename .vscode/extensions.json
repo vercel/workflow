@@ -1,0 +1,7 @@
+{
+  "recommendations": [
+    "biomejs.biome",
+    "rust-lang.rust-analyzer",
+    "vitest.explorer"
+  ]
+}

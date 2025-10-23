@@ -1,0 +1,56 @@
+{
+  "name": "@workflow/web",
+  "description": "Workflow Observability UI",
+  "version": "4.0.1-beta.2",
+  "private": false,
+  "files": [
+    ".next",
+    "!.next/cache",
+    "!.next/diagnostics"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/web"
+  },
+  "scripts": {
+    "dev": "next dev --turbopack --port 3456",
+    "build": "next build",
+    "clean": "rm -r .next ||:",
+    "start": "next start",
+    "lint": "biome check",
+    "format": "biome format --write"
+  },
+  "dependencies": {
+    "next": "15.5.4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@radix-ui/react-label": "^2.1.7",
+    "@radix-ui/react-select": "^2.2.6",
+    "@radix-ui/react-slot": "^1.1.1",
+    "@radix-ui/react-switch": "^1.1.2",
+    "@radix-ui/react-tooltip": "^1.2.8",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "catalog:",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@workflow/core": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "json-colorizer": "^3.0.1",
+    "lucide-react": "^0.469.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "swr": "^2.3.6",
+    "tailwind-merge": "^2.5.5",
+    "tailwindcss": "^4",
+    "typescript": "catalog:"
+  }
+}

@@ -1,0 +1,78 @@
+---
+title: getRun
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `getRun()`
+
+Retrieves the workflow run metadata and status information for a given run ID. This function provides immediate access to workflow run details without waiting for completion, making it ideal for status checking and monitoring.
+
+Use this function when you need to check workflow status, get timing information, or access workflow metadata without blocking on workflow completion.
+
+```typescript lineNumbers
+import { getRun } from 'workflow/api';
+
+const run = getRun('my-run-id');
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { getRun } from 'workflow/api';
+export default getRun;`
+})}
+showSections={['parameters']}
+/>
+
+### Returns
+
+Returns a `Run` object:
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { Run } from 'workflow/api';
+export default Run;`
+})}
+showSections={['returns']}
+/>
+
+## Examples
+
+### Basic Status Check
+
+Check the current status of a workflow run:
+
+```typescript lineNumbers
+import { getRun } from 'workflow/api';
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get('runId');
+
+  if (!runId) {
+    return Response.json({ error: 'No runId provided' }, { status: 400 });
+  }
+
+  try {
+    const run = getRun(runId); // [!code highlight]
+    const status = await run.status;
+
+    return Response.json({ status });
+  } catch (error) {
+    return Response.json(
+      { error: 'Workflow run not found' },
+      { status: 404 }
+    );
+  }
+}
+```
+
+## Related Functions
+
+- [`start()`](/docs/api-reference/workflow-api/start) - Start a new workflow and get its run ID.

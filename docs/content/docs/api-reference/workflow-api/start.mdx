@@ -1,0 +1,81 @@
+---
+title: start
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `start()`
+
+Start/enqueue a new workflow run.
+
+```typescript lineNumbers
+import { start } from 'workflow/api';
+import { myWorkflow } from './workflows/my-workflow';
+
+const run = await start(myWorkflow); // [!code highlight]
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { start } from "workflow/api";
+export default start;`
+})}
+showSections={['parameters']}
+/>
+
+#### StartOptions
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import type { StartOptions } from "workflow/api";
+export default StartOptions;`
+})}
+/>
+
+### Returns
+
+Returns a `Run` object:
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { Run } from 'workflow/api';
+export default Run;`
+})}
+showSections={['returns']}
+/>
+
+## Good to Know
+
+* The `start()` function is used in runtime/non-workflow contexts to programmatically trigger workflow executions.
+* This is different from calling workflow functions directly, which is the typical pattern in Next.js applications.
+* The function returns immediately after enqueuing the workflow - it doesn't wait for the workflow to complete.
+* All arguments must be [serializable](/docs/foundations/serialization).
+
+## Examples
+
+### With Arguments
+
+```typescript
+import { start } from 'workflow/api';
+import { userSignupWorkflow } from './workflows/user-signup';
+
+const run = await start(userSignupWorkflow, ['user@example.com']); // [!code highlight]
+```
+
+### With `StartOptions`
+
+```typescript
+import { start } from 'workflow/api';
+import { myWorkflow } from './workflows/my-workflow';
+
+const run = await start(myWorkflow, ['arg1', 'arg2'], { // [!code highlight]
+  deploymentId: 'custom-deployment-id' // [!code highlight]
+}); // [!code highlight]
+```

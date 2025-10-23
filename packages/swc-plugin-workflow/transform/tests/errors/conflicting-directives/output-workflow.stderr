@@ -1,0 +1,6 @@
+  x The "use workflow" directive must be at the top of the file
+   ,-[input.js:3:1]
+ 2 | 'use step';
+ 3 | 'use workflow';
+   : ^^^^^^^^^^^^^^^
+   `----

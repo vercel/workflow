@@ -1,0 +1,36 @@
+name: 'Wait for Vercel Project Deployment'
+description: 'Wait for a specific Vercel project deployment to be ready using Vercel API'
+author: 'v0'
+
+inputs:
+  project-id:
+    description: 'Vercel project ID for identification'
+    required: true
+  team-id:
+    description: 'Vercel team ID for identification'
+    required: true
+  vercel-token:
+    description: 'Vercel API token for authentication'
+    required: true
+  timeout:
+    description: 'Maximum time to wait in seconds'
+    required: false
+    default: '600'
+  check-interval:
+    description: 'How often to check deployment status in seconds'
+    required: false
+    default: '10'
+  environment:
+    description: 'Environment to filter deployments (Production/Preview)'
+    required: false
+    default: 'Preview'
+
+outputs:
+  deployment-url:
+    description: 'The URL of the ready deployment'
+  deployment-id:
+    description: 'The ID of the deployment'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

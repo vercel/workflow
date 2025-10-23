@@ -1,0 +1,36 @@
+{
+  "name": "nextjs-turbopack",
+  "version": "0.0.2-alpha.5",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build --turbopack",
+    "clean": "rm -rf .next .swc app/.well-known/workflow",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "2.0.76",
+    "@node-rs/xxhash": "1.7.6",
+    "@opentelemetry/api": "^1.9.0",
+    "@vercel/otel": "^1.13.0",
+    "workflow": "workspace:*",
+    "@workflow/ai": "workspace:*",
+    "ai": "catalog:",
+    "lodash.chunk": "^4.2.0",
+    "next": "15.5.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/lodash.chunk": "^4.2.9",
+    "@types/node": "catalog:",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "typescript": "catalog:"
+  }
+}

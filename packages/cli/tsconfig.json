@@ -1,0 +1,13 @@
+{
+  "extends": "@workflow/tsconfig/base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "target": "es2022",
+    "module": "node16",
+    "moduleResolution": "node16",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true
+  },
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}

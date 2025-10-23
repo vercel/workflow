@@ -1,0 +1,52 @@
+---
+title: getWorkflowMetadata
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `getWorkflowMetadata`
+
+Returns additional metadata available in the current workflow function.
+
+You may want to use this function when you need to:
+
+* Log workflow run IDs
+* Access timing information of a workflow
+
+<Callout>
+If you need to access step context, take a look at [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
+</Callout>
+
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+async function testWorkflow() {
+    "use workflow"
+
+    const ctx = getWorkflowMetadata() // [!code highlight]
+    console.log(ctx.workflowRunId)
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { getWorkflowMetadata } from "workflow";
+export default getWorkflowMetadata;`
+})}
+showSections={['parameters']}
+/>
+
+### Returns
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import type { WorkflowMetadata } from "workflow";
+export default WorkflowMetadata;`
+})}
+/>

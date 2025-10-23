@@ -1,0 +1,28 @@
+---
+title: "workflow/api"
+---
+
+# `workflow/api`
+
+API reference for runtime functions from the `workflow/api` package.
+
+---
+
+## Functions
+
+Workflow DevKit provides runtime functions that are used outside of workflow and step functions. These are accessed from the runtime entrypoint (e.g. where `start(workflowFn)` is called):
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-api/start" title="start()">
+        Start/enqueue a new workflow run.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/resume-hook" title="resumeHook()">
+        Resume a workflow by sending a payload to a hook.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/resume-webhook" title="resumeWebhook()">
+        Resume a workflow by sending a `Request` to a webhook.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/get-run" title="getRun()">
+        Get workflow run status and metadata without waiting for completion.
+    </Card>
+</Cards>

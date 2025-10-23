@@ -1,0 +1,7 @@
+{
+  "editor.codeActionsOnSave": {
+    "source.organizeImports.biome": "explicit",
+    "source.fixAll.biome": "explicit"
+  },
+  "rust-analyzer.linkedProjects": ["packages/swc-plugin-workflow/Cargo.toml"]
+}

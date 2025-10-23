@@ -1,0 +1,55 @@
+{
+  "name": "@workflow/world-local",
+  "version": "4.0.1-beta.1",
+  "description": "Local development World implementation for Workflow DevKit",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-local"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean",
+    "test": "vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vercel/queue": "0.0.0-alpha.23",
+    "@workflow/world": "workspace:*",
+    "ulid": "^3.0.1",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@types/ms": "^0.7.34",
+    "@types/node": "catalog:",
+    "@workflow/errors": "workspace:*",
+    "@workflow/tsconfig": "workspace:*",
+    "ms": "2.1.3",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "1"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  }
+}

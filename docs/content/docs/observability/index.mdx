@@ -1,0 +1,57 @@
+---
+title: Observability
+---
+
+# Observability
+
+Workflow DevKit provides powerful tools to inspect, monitor, and debug your workflows through the CLI and Web UI. These tools allow you to inspect workflow runs, steps, webhooks, events, and stream output.
+
+## Quick Start
+
+```bash
+npx workflow
+```
+
+The CLI comes pre-installed with the Workflow DevKit and registers the `workflow` command. If the `workflow` package is not already installed, `npx workflow` will install it globally, or use the local installed version if available.
+
+Get started inspecting your local workflows:
+
+```bash
+# See all available commands
+npx workflow inspect --help
+
+# List recent workflow runs
+npx workflow inspect runs
+```
+
+## Web UI
+
+Workflow DevKit ships with a local web UI for inspecting your workflows. The CLI
+will locally serve the Web UI when using the `--web` flag.
+
+```bash
+# Launch Web UI for visual exploration
+npx workflow inspect runs --web
+```
+
+<img src="/o11y-ui.png" alt="Workflow DevKit Web UI" />
+
+## Backends
+
+The Workflow DevKit CLI can inspect data from any [World](/docs/deploying#what-are-worlds). By default, it inspects data in your local development environment. For example, if you are using NextJS to develop workflows locally, the
+CLI will find the data in your `.next/workflow-data/` directory.
+
+If you're deploying workflows to a production environment, but want to inspect the data by using the CLI, you can specify the world you are using by setting the `--backend` flag to your world's name or package name, e.g. `vercel`.
+
+<Callout>
+Backends might require additional configuration. If you're missing environment variables, the World package should provide instructions on how to configure it.
+</Callout>
+
+### Vercel Backend
+
+To inspect workflows running on Vercel, ensure you're logged in to the Vercel CLI and have linked your project. See [Vercel CLI authentication and project linking docs](https://vercel.com/docs/cli/project-linking) for more information. Then, simply specify the backend as `vercel`.
+
+```bash
+# Inspect workflows running on Vercel
+npx workflow inspect runs --backend @workflow/world-vercel
+```

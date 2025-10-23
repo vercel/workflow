@@ -1,0 +1,43 @@
+{
+  "name": "@workflow/world-vercel",
+  "version": "4.0.1-beta.1",
+  "description": "Vercel platform World implementation for Workflow DevKit",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-vercel"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean",
+    "test": "echo 'No tests yet'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vercel/oidc": "catalog:",
+    "@vercel/queue": "0.0.0-alpha.24",
+    "@workflow/world": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*"
+  }
+}

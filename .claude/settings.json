@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm changeset:*)",
+      "Bash(/dev/null)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm typecheck:*)"
+    ],
+    "deny": ["Bash(curl:*)", "Read(./.env)", "Read(./.env.*)"],
+    "additionalDirectories": ["../workflow-server"]
+  }
+}

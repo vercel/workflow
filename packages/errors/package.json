@@ -1,0 +1,39 @@
+{
+  "name": "@workflow/errors",
+  "description": "A package for standardizing errors in Workflow DevKit",
+  "version": "4.0.1-beta.1",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/errors"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/ms": "^2.1.0",
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*"
+  },
+  "dependencies": {
+    "ms": "2.1.3"
+  }
+}

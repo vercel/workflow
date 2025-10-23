@@ -1,0 +1,19 @@
+{
+  "name": "@workflow/example-hono",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "nitro dev",
+    "build": "nitro build"
+  },
+  "devDependencies": {
+    "workflow": "workspace:*",
+    "ai": "catalog:",
+    "hono": "^4.9.10",
+    "lodash.chunk": "^4.2.0",
+    "nitro": "npm:nitro-nightly@3.0.1-20251019-172914-d1eea57b",
+    "openai": "^6.6.0",
+    "zod": "catalog:"
+  }
+}

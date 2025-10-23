@@ -1,0 +1,9 @@
+{
+  "$schema": "https://turborepo.org/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "outputs": [".well-known/workflow/**", ".vercel/output/**", "manifest.js"]
+    }
+  }
+}

@@ -1,0 +1,25 @@
+  x Functions marked with "use step" must be async functions
+   ,-[input.js:2:1]
+ 1 |     // Error: sync function with use step
+ 2 | ,-> export function syncStep() {
+ 3 | |     'use step';
+ 4 | |     return 42;
+ 5 | `-> }
+   `----
+  x Functions marked with "use workflow" must be async functions
+    ,-[input.js:8:1]
+  7 |     // Error: sync arrow function with use workflow
+  8 | ,-> export const syncWorkflow = () => {
+  9 | |     'use workflow';
+ 10 | |     return 'test';
+ 11 | `-> };
+    `----
+  x Functions marked with "use step" must be async functions
+    ,-[input.js:15:1]
+ 14 |     const obj = {
+ 15 | ,->   syncMethod() {
+ 16 | |       'use step';
+ 17 | |       return true;
+ 18 | `->   },
+ 19 |     };
+    `----

@@ -1,0 +1,44 @@
+---
+title: Getting Started
+---
+
+import { Next, Nitro, Svelte, Nuxt, Hono, Bun } from '@/app/(home)/components/frameworks';
+
+# Getting Started
+
+<Callout>
+Currently, Workflow DevKit works best with Next.js. We're actively working on improving support for other frameworks, including a standlone/framework-less mode.
+</Callout>
+
+Start by choosing your framework. Each guide will walk you through the steps to install the dependencies and start running your first workflow.
+
+<Cards>
+    <Card href="/docs/getting-started/next" className="flex flex-col items-center justify-center text-center gap-2">
+        <Next className="size-16" />
+        <span className="font-medium">Next.js</span>
+    </Card>
+    <Card href="/docs/getting-started/nitro" className="flex flex-col items-center justify-center text-center gap-2">
+        <Nitro className="size-16" />
+        <span className="font-medium">Nitro</span>
+    </Card>
+    <Card href="/docs/getting-started/svelte" disabled className="flex flex-col items-center justify-center text-center gap-2">
+        <Svelte className="size-16" />
+        <span className="font-medium">Svelte</span>
+        <Badge variant="secondary">Coming soon</Badge>
+    </Card>
+    <Card href="/docs/getting-started/nuxt" disabled className="flex flex-col items-center justify-center text-center gap-2">
+        <Nuxt className="size-16" />
+        <span className="font-medium">Nuxt</span>
+        <Badge variant="secondary">Coming soon</Badge>
+    </Card>
+    <Card href="/docs/getting-started/hono" disabled className="flex flex-col items-center justify-center text-center gap-2">
+        <Hono className="size-16" />
+        <span className="font-medium">Hono</span>
+        <Badge variant="secondary">Coming soon</Badge>
+    </Card>
+    <Card href="/docs/getting-started/bun" disabled className="flex flex-col items-center justify-center text-center gap-2">
+        <Bun className="size-16" />
+        <span className="font-medium">Bun</span>
+        <Badge variant="secondary">Coming soon</Badge>
+    </Card>
+</Cards>

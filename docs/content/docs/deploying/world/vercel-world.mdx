@@ -1,0 +1,231 @@
+---
+title: Vercel World
+---
+
+# Vercel World
+
+The **Vercel World** (`@workflow/world-vercel`) is a production-ready workflow backend integrated with Vercel's infrastructure. It provides scalable storage, robust queuing, and secure authentication for workflow deployments on the Vercel platform.
+
+The Vercel world is designed for production deployments and provides:
+
+- **Scalable storage** - Cloud-based workflow data persistence
+- **Distributed queuing** - Reliable asynchronous step execution
+- **Secure authentication** - API token-based access control
+- **Multi-environment support** - Separate production, preview, and development environments
+- **Team support** - Integration with Vercel teams and projects
+
+## How It Works
+
+### Storage
+
+The Vercel world stores workflow data using Vercel's Workflow Storage API:
+
+- Runs, steps, hooks, and streams are stored in Vercel's cloud infrastructure
+- Data is automatically replicated and backed up
+- Storage scales automatically with your application
+- Data is encrypted at rest and in transit
+
+### Queuing
+
+The Vercel world uses Vercel's distributed queue system:
+
+1. When a step is enqueued, it's added to Vercel's queue service
+2. The queue distributes steps across available serverless functions
+3. Steps are executed with automatic retries and error handling
+4. Failed steps are retried according to retry policies
+
+### Authentication
+
+The Vercel world uses token-based authentication:
+
+- API requests include authentication headers
+- Tokens are scoped to specific projects and teams
+- Tokens can be environment-specific (production, preview, development)
+- Authentication is handled automatically in Vercel deployments
+
+## Deploying to Vercel
+
+### Automatic Configuration
+
+When you deploy to Vercel, the world is configured automatically:
+
+```bash
+npx vercel deploy
+```
+
+No additional configuration is needed, Vercel automatically:
+
+- Selects the Vercel World backend
+- Sets up authentication
+- Configures project and team IDs
+- Provides storage and queuing infrastructure
+
+### Deployment Workflow
+
+Deploy your application to Vercel using the Vercel CLI:
+
+```bash
+npx vercel deploy --prod
+```
+
+Workflows run automatically:
+
+- Use Vercel World in production
+- Data stored in Vercel's infrastructure
+- Steps queued and executed on Vercel's serverless functions
+
+## Multi-Environment Support
+
+The Vercel world supports multiple environments:
+
+- **Production** - Your live production deployment
+- **Preview** - Preview deployments for pull requests
+- **Development** - Development environment testing
+
+Each environment has isolated workflow data, ensuring that development and testing don't interfere with production workflows.
+
+## Remote Access Configuration
+
+To inspect production workflows from your local machine using [observability tools](/docs/observability), you need to configure remote access.
+
+### Getting Authentication Tokens
+
+1. Go to [Vercel Dashboard → Settings → Tokens](https://vercel.com/account/tokens)
+2. Create a new token with appropriate scopes
+3. Save the token securely
+
+### Environment Variables
+
+Configure remote access via environment variables:
+
+```bash
+# Set the target world
+export WORKFLOW_TARGET_WORLD=vercel
+
+# Authentication token
+export WORKFLOW_VERCEL_AUTH_TOKEN=<your-token>
+
+# Environment (production, preview, development)
+export WORKFLOW_VERCEL_ENV=production
+
+# Project ID
+export WORKFLOW_VERCEL_PROJECT=<project-id>
+
+# Team ID (if using Vercel teams)
+export WORKFLOW_VERCEL_TEAM=<team-id>
+```
+
+### CLI Flags
+
+You can also pass configuration via CLI flags when using observability tools:
+
+```bash
+npx workflow inspect runs \
+  --backend=vercel \
+  --env=production \
+  --project=my-project \
+  --team=my-team \
+  --auth-token=<your-token>
+```
+
+Learn more about remote inspection in the [Observability](/docs/observability) section.
+
+## Team Support
+
+If your project belongs to a Vercel team, the Vercel world automatically integrates with team permissions:
+
+- Respects team access controls
+- Requires team-scoped authentication tokens
+- Isolates workflow data per team
+
+## Scalability
+
+The Vercel world is designed for production scale:
+
+- **Automatic scaling** - Handles any number of concurrent workflows
+- **Distributed execution** - Steps run across multiple serverless functions
+- **Global distribution** - Works with Vercel's global edge network
+- **High availability** - Built-in redundancy and failover
+
+## Security
+
+The Vercel world implements security best practices:
+
+- **Token-based authentication** - Secure API access
+- **Environment isolation** - Production, preview, and development data are separate
+- **Encryption** - Data encrypted at rest and in transit
+- **Team permissions** - Respects Vercel team access controls
+
+## API Reference
+
+### createVercelWorld
+
+Creates a Vercel world instance:
+
+```typescript
+function createVercelWorld(
+  config?: APIConfig
+): World
+```
+
+**Parameters:**
+
+- `config.token` - Authentication token
+- `config.headers` - Custom headers including:
+  - `x-vercel-environment` - Environment name
+  - `x-vercel-project-id` - Project ID
+  - `x-vercel-team-id` - Team ID
+- `config.baseUrl` - API base URL (default: `https://api.vercel.com/v1/workflow`)
+
+**Returns:**
+
+- `World` - A world instance implementing the World interface
+
+**Example:**
+
+```typescript
+import { createVercelWorld } from '@workflow/world-vercel';
+
+const world = createVercelWorld({
+  token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+  headers: {
+    'x-vercel-environment': 'production',
+    'x-vercel-project-id': 'my-project',
+    'x-vercel-team-id': 'my-team',
+  },
+});
+```
+
+## Troubleshooting
+
+### Authentication Errors
+
+If you see authentication errors:
+
+1. Verify your token is valid: `vercel whoami --token <your-token>`
+2. Check token has necessary scopes
+3. Ensure project and team IDs are correct
+
+### Environment Not Found
+
+If the environment is not found:
+
+1. Verify the environment name (`production`, `preview`, `development`)
+2. Check the project has been deployed to that environment
+3. Ensure your token has access to the project
+
+### Deployment Issues
+
+If workflows don't work after deployment:
+
+1. Verify `withWorkflow()` is wrapping your Next.js config
+2. Check build logs for errors
+3. Ensure workflow files are in the correct directory
+4. Test locally first with [Embedded World](/docs/deploying/world/embedded-world)
+
+## Learn More
+
+- [World Interface](/docs/deploying/world) - Understanding the World interface
+- [Embedded World](/docs/deploying/world/embedded-world) - For local development
+- [Observability](/docs/observability) - Monitoring and debugging tools
+- [Vercel Deployment Documentation](https://vercel.com/docs/deployments/overview)

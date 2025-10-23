@@ -1,0 +1,153 @@
+---
+title: Serialization
+---
+
+# Serialization
+
+All function arguments and return values passed between workflow and step functions must be serializable. Workflow DevKit uses a custom serialization system built on top of [devalue](https://github.com/sveltejs/devalue). This system supports standard JSON types, as well as a few additional popular Web API types.
+
+<Callout type="info">
+The serialization system ensures that all data persists correctly across workflow suspensions and resumptions, enabling durable execution.
+</Callout>
+
+## Supported Serializable Types
+
+The following types can be serialized and passed through workflow functions:
+
+**Standard JSON Types:**
+
+- `string`
+- `number`
+- `boolean`
+- `null`
+- Arrays of serializable values
+- Objects with string keys and serializable values
+
+**Extended Types (with special handling):**
+
+- `undefined`
+- `ArrayBuffer`
+- `BigInt64Array`, `BigUint64Array`
+- `Date`
+- `Float32Array`, `Float64Array`
+- `Headers`
+- `Int8Array`, `Int16Array`, `Int32Array`
+- `Map<Serializable, Serializable>`
+- `RegExp`
+- `Response`
+- `Set<Serializable>`
+- `URL`
+- `URLSearchParams`
+- `Uint8Array`, `Uint8ClampedArray`, `Uint16Array`, `Uint32Array`
+- `ReadableStream<Serializable>`
+- `WritableStream<Serializable>`
+
+## Streaming
+
+As noted in the list above, `ReadableStream` and `WritableStream` are supported in
+Workflow DevKit's serialization system. These streams are automatically managed by
+the Workflow runtime and can be passed between workflow and step functions, while
+maintaining their streaming capabilities.
+
+However, there is an important consideration to keep in mind which is that **streams
+cannot be interacted with within the workflow function context**. They should be
+considered opaque handles that may be passed around between steps.
+
+### Why this limitation?
+
+Workflow functions must be deterministic and replay-safe.
+Streams represent asynchronous, non-deterministic data flow. When you pass a stream
+through a workflow, only the stream reference is serialized—not the actual streaming
+data. The stream data flows directly between steps without being persisted, which
+maintains efficiency while preserving the workflow's ability to resume.
+
+This pattern is particularly useful for handling large datasets, streaming LLM responses,
+or processing file uploads/downloads where you want to pass data efficiently between
+steps without loading everything into memory.
+
+For example, one step function may produce a `ReadableStream` while a different
+step consumes the stream. The workflow function does not interact directly with
+the stream but is able to pass it on to the next step:
+
+```typescript lineNumbers
+async function generateStream() {
+  "use step";
+
+  return new ReadableStream({
+    async start(controller) {
+      controller.enqueue(1);
+      controller.enqueue(2);
+      controller.enqueue(3);
+      controller.close();
+    }
+  });
+}
+
+async function consumeStream(readable: ReadableStream<number>) {
+  "use step";
+
+  const values: number[] = [];
+  for await (const value of readable) {
+    values.push(value);
+  }
+
+  console.log(values);
+  // Logs: [1, 2, 3]
+}
+
+export async function passingStreamWorkflow() {
+  "use workflow";
+
+  // ✅ Stream is received as a return value and passed // [!code highlight]
+  // into a step, but NOT directly used in the workflow // [!code highlight]
+  const readable = await generateStream();  // [!code highlight]
+  await consumeStream(readable);  // [!code highlight]
+}
+```
+
+**What NOT to do:** Do not attempt to read from or write to a stream directly within
+the workflow function context, as this will not work as expected and an error will be thrown at runtime:
+
+```typescript
+export async function incorrectStreamUsage() {
+  "use workflow";
+
+  const readable = await generateStream();
+
+  // ❌ This will fail - cannot read stream in workflow context // [!code highlight]
+  const reader = readable.getReader(); // [!code highlight]
+}
+```
+
+Always delegate stream operations to step functions.
+
+
+## Request & Response
+
+The Web API `Request` and `Response` APIs are supported by the serialization system,
+and can be passed around between workflow and step functions similarly to other data types.
+
+As a convenience, these two APIs are treated slightly differently when used
+within a workflow function: calling the `text()` / `json()` / `arrayBuffer()` instance
+methods is automatically treated as a step function invocation. This allows you to consume
+the body directly in the workflow context while maintaining proper serialization and caching.
+
+For example, consider how receiving a webhook request provides the entire `Request`
+instance into the workflow context. You may consume the body of that request directly
+in the workflow, which will be cached as a step result for future resumptions of the workflow:
+
+```typescript lineNumbers
+import { createWebhook } from '@vercel/workflow';
+
+export async function handleWebhookWorkflow() {
+  "use workflow";
+
+  const webhook = createWebhook();
+  const request = await webhook;
+
+  // The body of the request will only be consumed once // [!code highlight]
+  const body = await request.json(); // [!code highlight]
+
+  // …
+}
+```

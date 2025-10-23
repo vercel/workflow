@@ -1,0 +1,175 @@
+---
+title: Workflows and Steps
+---
+
+import { File, Folder, Files } from 'fumadocs-ui/components/files';
+
+# Workflows and Steps
+
+Workflows (a.k.a. *durable functions*) are a programming model for building long-running, stateful application logic that can maintain their execution state across restarts, failures, or user events. Unlike traditional serverless functions that lose all state when they terminate, workflows persist their progress and can resume exactly where they left off.
+
+Moreover, workflows let you easily model complex multi-step processes in simple, elegant code. To do this, we introduce two fundamental entities:
+
+1. **Workflow Functions**: Functions that orchestrate/organize steps
+2. **Step Functions**: Functions that carry out the actual work
+
+---
+
+## Workflow Functions
+
+*Directive: `"use workflow"`*
+
+Workflow functions define the entrypoint of a workflow and organize how step functions are called. This type of function does not have access to the Node.js runtime, and usable `npm` packages are limited.
+
+Although this may seem limiting initially, this feature is important in order to suspend and accurately resume execution of workflows.
+
+It helps to think of the workflow function less like a full JavaScript runtime, and more like "stitching together" various steps using conditionals, loops, try/catch handlers, `Promise.all`, and other language primitives.
+
+```typescript lineNumbers
+export async function processOrderWorkflow(orderId: string) {
+  "use workflow"; // [!code highlight]
+
+  // Orchestrate multiple steps
+  const order = await fetchOrder(orderId);
+  const payment = await chargePayment(order);
+
+  return { orderId, status: 'completed' };
+}
+```
+
+**Key Characteristics:**
+
+- Runs in a sandboxed environment without full Node.js access
+- All step results are persisted to the event log
+- Must be **deterministic** to allow resuming after failures
+
+Determinism in the workflow is required in order to resume to workflow from a suspension. Essentially, the workflow code get re-run multiple times during its lifecycle,
+each time, using an event log to resume the workflow to the correct spot.
+
+The sandboxed environment that worklfows are run in already ensure determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't cahange across replays.
+
+## Step Functions
+
+*Directive: `"use step"`*
+
+Step functions perform the actual work in a workflow and have full runtime access.
+
+```typescript lineNumbers
+async function chargePayment(order: Order) {
+  "use step"; // [!code highlight]
+
+  // Full Node.js access - use any npm package
+  const stripe = new Stripe(process.env.STRIPE_KEY);
+
+  const charge = await stripe.charges.create({
+    amount: order.total,
+    currency: 'usd',
+    source: order.paymentToken
+  });
+
+  return { chargeId: charge.id };
+}
+```
+
+**Key Characteristics:**
+
+- Full Node.js runtime and npm package access
+- Automatic retry on errors
+- Results persisted for replay
+
+By default, steps have a maximum of 3 retry attempts before it fails and propagates the error over to the workflow. Learn more about errors any retrying in the [Errors & Retrying](/docs/foundations/errors-and-retries) page.
+
+<Callout type="info">
+Step functions are primarily meant to be used inside a workflow.
+</Callout>
+ Calling a step from outside a workflow, or from another step will essentially run the step in the same process like a normal function (In other words, the `use step` directive is a no-op).
+
+---
+
+### Suspension and Resumption
+
+Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the event log and no compute resources are used until the workflow resumes execution.
+
+But there is more than one way for a worklfow to suspend:
+
+- Waiting on a step function: the workflow yields while the step runs in the step runtime.
+- Using `sleep()` to pause for some fixed duration.
+- Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
+
+```typescript lineNumbers
+import { sleep, getWebhook } from 'workflow';
+
+export async function documentReviewProcess(userId: string) {
+  "use workflow";
+
+  await sleep("1 month"); // Sleep will suspend witout consuming any resources [!code highlight]
+
+  // Create a webhook for external workflow resumption
+  const webhook = createWebhook();
+
+  // Send the webhook url to some external service or in an email, etc.
+  await sendHumanApprovalEmail("Click this link to accept the review", webhook.url)
+
+  const data = await webhook; // The workflow suspends till the URL is resumed [!code highlight]
+
+  console.log("Document reviewed!")
+}
+```
+
+---
+
+## Writing Workflows
+
+### Basic Structure
+
+The simplest form of workflow consists of a workflow function and one or more step functions.
+
+```typescript lineNumbers
+// Workflow function (orchestrates the steps)
+export async function greetingWorkflow(name: string) {
+  "use workflow";
+
+  const message = await greet(name);
+  return { message };
+}
+
+// Step function (does the actual work)
+async function greet(name: string) {
+  "use step";
+
+  // Access Node.js APIs
+  const message = `Hello ${name} at ${new Date().toISOString()}`;
+  console.log(message);
+  return message;
+}
+```
+
+### Project structure
+
+While you can organize worklfow and step functions however you like, we find that larger projects benefit from some structure:
+<Files>
+  <Folder name="workflows" defaultOpen disabled>
+    <Folder name="userOnboarding" defaultOpen disabled>
+      <File name="index.ts" />
+      <File name="steps.ts" />
+    </Folder>
+    <Folder name="aiVideoGeneration" defaultOpen disabled>
+      <File name="index.ts" />
+      <Folder name="steps" defaultOpen disabled>
+        <File name="transcribeUpload.ts" />
+        <File name="generateVideo.ts" />
+        <File name="notifyUser.ts" />
+      </Folder>
+    </Folder>
+    <Folder name="shared" defaultOpen disabled>
+      <File name="validateInput.ts" />
+      <File name="logActivity.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+You can choose to organize your steps into a single `steps.ts` file or separate files within a `steps` folder. The `shared` folder is a good place to put common steps that are used by multiple workflows.
+
+<Callout type="info">
+Splitting up steps and workflows will also help avoid most bundler related bugs with the Workflow DevKit.
+</Callout>

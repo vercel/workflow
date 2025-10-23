@@ -1,0 +1,74 @@
+{
+  "name": "@workflow/cli",
+  "version": "4.0.1-beta.2",
+  "description": "Command-line interface for Workflow DevKit",
+  "type": "module",
+  "bin": {
+    "workflow": "./bin/run.js",
+    "wf": "./bin/run.js"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/cli"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x bin/run.js",
+    "clean": "tsc --build --clean && rm -r dist ||:",
+    "dev": "tsc --watch",
+    "test": "vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "oclif": {
+    "bin": "workflow",
+    "dirname": "workflow",
+    "commands": "./dist/commands",
+    "plugins": [
+      "@oclif/plugin-help"
+    ],
+    "topicSeparator": " "
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*"
+  },
+  "dependencies": {
+    "@oclif/core": "^4.0.0",
+    "@oclif/plugin-help": "^6.0.0",
+    "@swc/core": "1.11.24",
+    "@types/watchpack": "2.4.4",
+    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "@workflow/core": "workspace:*",
+    "@workflow/web": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "@workflow/world-local": "workspace:*",
+    "@workflow/world-vercel": "workspace:*",
+    "boxen": "^8.0.1",
+    "builtin-modules": "^5.0.0",
+    "chalk": "^5.6.2",
+    "chokidar": "^4.0.3",
+    "comment-json": "4.2.5",
+    "date-fns": "^4.1.0",
+    "easy-table": "^1.2.0",
+    "enhanced-resolve": "5.18.2",
+    "esbuild": "catalog:",
+    "find-up": "7.0.0",
+    "mixpart": "^0.0.4",
+    "open": "^10.2.0",
+    "ora": "^8.2.0",
+    "terminal-link": "^5.0.0",
+    "tinyglobby": "^0.2.14",
+    "watchpack": "2.4.4",
+    "xdg-app-paths": "^5.1.0",
+    "zod": "catalog:"
+  }
+}

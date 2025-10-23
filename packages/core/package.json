@@ -1,0 +1,80 @@
+{
+  "name": "@workflow/core",
+  "version": "4.0.1-beta.2",
+  "description": "Core runtime and engine for Workflow DevKit",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/core"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "workflow": "./dist/workflow/index.js",
+      "default": "./dist/index.js"
+    },
+    "./runtime": "./dist/runtime.js",
+    "./private": "./dist/private.js",
+    "./builtins": "./dist/builtins.js",
+    "./serialization": "./dist/serialization.js",
+    "./observability": {
+      "types": "./dist/observability.d.ts",
+      "node": "./dist/observability.js",
+      "default": "./dist/observability.js"
+    },
+    "./parse-name": {
+      "types": "./dist/parse-name.d.ts",
+      "default": "./dist/parse-name.js"
+    },
+    "./_workflow": "./dist/workflow/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -r dist ||:",
+    "test": "WORKFLOW_TARGET_WORLD=embedded vitest run src",
+    "test:e2e": "vitest run e2e",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/credential-provider-web-identity": "3.609.0",
+    "@types/ms": "^2.1.0",
+    "@vercel/functions": "catalog:",
+    "@workflow/errors": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "@workflow/world-local": "workspace:*",
+    "@workflow/world-vercel": "workspace:*",
+    "debug": "^4.4.3",
+    "devalue": "^5.4.1",
+    "ms": "2.1.3",
+    "nanoid": "^5.1.6",
+    "pid-port": "^2.0.0",
+    "seedrandom": "^3.0.5",
+    "ulid": "^3.0.1",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@types/debug": "^4.1.12",
+    "@types/node": "catalog:",
+    "@types/seedrandom": "^3.0.8",
+    "@workflow/tsconfig": "workspace:*"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "1"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  }
+}

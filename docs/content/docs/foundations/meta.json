@@ -1,0 +1,11 @@
+{
+  "title": "Foundations",
+  "pages": [
+    "workflows-and-steps",
+    "control-flow-patterns",
+    "errors-and-retries",
+    "hooks",
+    "serialization"
+  ],
+  "defaultOpen": true
+}

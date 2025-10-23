@@ -1,0 +1,163 @@
+---
+title: resumeHook
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `resumeHook()`
+
+Resumes a workflow run by sending a payload to a hook identified by its token.
+
+It creates a `hook_received` event and re-triggers the workflow to continue execution.
+
+<Callout type="warn">
+`resumeHook` is a runtime function that must be called from outside a workflow function.
+</Callout>
+
+```typescript lineNumbers
+import { resumeHook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { token, data } = await request.json();
+  const result = await resumeHook(token, data); // [!code highlight]
+
+  if (!result) {
+    return new Response('Hook not found', { status: 404 });
+  }
+
+  return Response.json({
+    runId: result.runId
+  });
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { resumeHook } from "workflow/api";
+export default resumeHook;`
+})}
+showSections={['parameters']}
+/>
+
+### Returns
+
+Returns a `Promise<Hook | null>` that resolves to:
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import type { Hook } from '@workflow/world';
+export default Hook;`
+})}
+showSections={['returns']}
+/>
+
+## Examples
+
+### Basic API Route
+
+Using `resumeHook` in a basic API route to resume a hook:
+
+```typescript lineNumbers
+import { resumeHook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { token, data } = await request.json();
+
+  const result = await resumeHook(token, data); // [!code highlight]
+
+  if (!result) {
+    return new Response('Hook not found', { status: 404 });
+  }
+
+  return Response.json({
+    success: true,
+    runId: result.runId
+  });
+}
+```
+
+### With Type Safety
+
+Defining a payload type and using `resumeHook` to resume a hook with type safety:
+
+```typescript lineNumbers
+import { resumeHook } from "workflow/api";
+
+type ApprovalPayload = {
+  approved: boolean;
+  comment: string;
+};
+
+export async function POST(request: Request) {
+  const { token, approved, comment } = await request.json();
+
+  const result = await resumeHook<ApprovalPayload>(token, { // [!code highlight]
+    approved, // [!code highlight]
+    comment, // [!code highlight]
+  }); // [!code highlight]
+
+  if (!result) {
+    return Response.json({ error: 'Invalid token' }, { status: 404 });
+  }
+
+  return Response.json({ runId: result.runId });
+}
+```
+
+### Server Action (Next.js)
+
+Using `resumeHook` in Next.js server actions to resume a hook:
+
+```typescript lineNumbers
+'use server';
+
+import { resumeHook } from "workflow/api";
+
+export async function approveRequest(token: string, approved: boolean) {
+  const result = await resumeHook(token, { approved });
+
+  if (!result) {
+    throw new Error('Invalid approval token');
+  }
+
+  return result.runId;
+}
+```
+
+### Webhook Handler
+
+Using `resumeHook` in a generic webhook handler to resume a hook:
+
+```typescript lineNumbers
+import { resumeHook } from "workflow/api";
+
+// Generic webhook handler that forwards data to a hook
+export async function POST(request: Request) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get('token');
+
+  if (!token) {
+    return Response.json({ error: 'Missing token' }, { status: 400 });
+  }
+
+  const body = await request.json();
+  const result = await resumeHook(token, body);
+
+  if (!result) {
+    return Response.json({ error: 'Hook not found' }, { status: 404 });
+  }
+
+  return Response.json({ success: true, runId: result.runId });
+}
+```
+
+## Related Functions
+
+- [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper.

@@ -1,0 +1,245 @@
+---
+title: resumeWebhook
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `resumeWebhook()`
+
+Resumes a workflow run by sending an HTTP `Request` to a webhook identified by its token.
+
+This function creates a `hook_received` event and re-triggers the workflow to continue execution. It's designed to be called from API routes or server actions that receive external HTTP requests.
+
+<Callout type="warn">
+`resumeWebhook` is a runtime function that must be called from outside a workflow function.
+</Callout>
+
+```typescript lineNumbers
+import { resumeWebhook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get('token');
+
+  if (!token) {
+    return new Response('Missing token', { status: 400 });
+  }
+
+  const response = await resumeWebhook(token, request); // [!code highlight]
+
+  if (!response) {
+    return new Response('Webhook not found', { status: 404 });
+  }
+
+  return response;
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { resumeWebhook } from "workflow/api";
+export default resumeWebhook;`
+})}
+showSections={['parameters']}
+/>
+
+### Returns
+
+Returns a `Promise<Response | null>` that resolves to:
+
+- `Response`: The HTTP response from the workflow's `respondWith()` call
+- `null`: If the webhook token is not found or invalid
+
+## Examples
+
+### Basic API Route
+
+Forward incoming HTTP requests to a webhook by token:
+
+```typescript lineNumbers
+import { resumeWebhook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get('token');
+
+  if (!token) {
+    return new Response('Token required', { status: 400 });
+  }
+
+  const response = await resumeWebhook(token, request); // [!code highlight]
+
+  if (!response) {
+    return new Response('Webhook not found', { status: 404 });
+  }
+
+  return response; // Returns the workflow's custom response
+}
+```
+
+### GitHub Webhook Handler
+
+Handle GitHub webhook events and forward them to workflows:
+
+```typescript lineNumbers
+import { resumeWebhook } from "workflow/api";
+import { verifyGitHubSignature } from "@/lib/github";
+
+export async function POST(request: Request) {
+  // Extract repository name from URL
+  const url = new URL(request.url);
+  const repo = url.pathname.split('/').pop();
+
+  // Verify GitHub signature
+  const signature = request.headers.get('x-hub-signature-256');
+  const isValid = await verifyGitHubSignature(request, signature);
+
+  if (!isValid) {
+    return new Response('Invalid signature', { status: 401 });
+  }
+
+  // Construct deterministic token
+  const token = `github_webhook:${repo}`;
+
+  const response = await resumeWebhook(token, request); // [!code highlight]
+
+  if (!response) {
+    return new Response('Workflow not found', { status: 404 });
+  }
+
+  return response;
+}
+```
+
+### Slack Slash Command Handler
+
+Process Slack slash commands and route them to workflow webhooks:
+
+```typescript lineNumbers
+import { resumeWebhook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const formData = await request.formData();
+  const channelId = formData.get('channel_id') as string;
+  const command = formData.get('command') as string;
+
+  // Verify Slack request signature
+  const slackSignature = request.headers.get('x-slack-signature');
+  if (!slackSignature) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+
+  // Construct token from channel ID
+  const token = `slack_command:${channelId}`;
+
+  const response = await resumeWebhook(token, request); // [!code highlight]
+
+  if (!response) {
+    // If no workflow is listening, return a default response
+    return new Response(
+      JSON.stringify({
+        response_type: 'ephemeral',
+        text: 'No active workflow for this channel'
+      }),
+      {
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
+  }
+
+  return response;
+}
+```
+
+### Multi-Tenant Webhook Router
+
+Route webhooks to different workflows based on tenant/organization:
+
+```typescript lineNumbers
+import { resumeWebhook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const url = new URL(request.url);
+
+  // Extract tenant and webhook ID from path
+  // e.g., /api/webhooks/tenant-123/webhook-abc
+  const [, , , tenantId, webhookId] = url.pathname.split('/');
+
+  if (!tenantId || !webhookId) {
+    return new Response('Invalid webhook URL', { status: 400 });
+  }
+
+  // Verify API key for tenant
+  const apiKey = request.headers.get('authorization');
+  const isAuthorized = await verifyTenantApiKey(tenantId, apiKey);
+
+  if (!isAuthorized) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+
+  // Construct namespaced token
+  const token = `tenant:${tenantId}:webhook:${webhookId}`;
+
+  const response = await resumeWebhook(token, request); // [!code highlight]
+
+  if (!response) {
+    return new Response('Webhook not found or expired', { status: 404 });
+  }
+
+  return response;
+}
+
+async function verifyTenantApiKey(tenantId: string, apiKey: string | null) {
+  // Verify API key logic
+  return apiKey === process.env[`TENANT_${tenantId}_API_KEY`];
+}
+```
+
+### Server Action (Next.js)
+
+Use `resumeWebhook` in a Next.js server action:
+
+```typescript lineNumbers
+'use server';
+
+import { resumeWebhook } from "workflow/api";
+
+export async function triggerWebhook(
+  token: string,
+  payload: Record<string, any>
+) {
+  // Create a Request object from the payload
+  const request = new Request('http://localhost/webhook', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const response = await resumeWebhook(token, request);
+
+  if (!response) {
+    throw new Error('Webhook not found');
+  }
+
+  // Parse and return the response
+  const contentType = response.headers.get('content-type');
+  if (contentType?.includes('application/json')) {
+    return await response.json();
+  }
+
+  return await response.text();
+}
+```
+
+## Related Functions
+
+- [`createWebhook()`](/docs/api-reference/workflow/create-webhook) - Create a webhook in a workflow
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with arbitrary payload
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper

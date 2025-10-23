@@ -1,0 +1,53 @@
+---
+description: Workflow testing and deployment process guide
+alwaysApply: false
+---
+
+# Workflow Testing and Deployment Process
+
+When testing and deploying changes in workflow, follow these steps to see them work with a real example app:
+
+## Deployment Steps
+
+1. **Make your changes** to the codebase
+
+2. **Build the project**
+
+   ```bash
+   cd workbench/example
+   pnpx turbo build
+   ```
+
+3. **Deploy to Vercel**
+
+   ```bash
+   cd workbench/example
+   vc deploy --prebuilt
+   ```
+
+4. **Test the deployment**
+   Make a POST request to the "Preview" URL logged from the deployment command:
+
+   ```bash
+   curl -X POST "https://w-abcdefg1234-uncurated-tests.vercel.app/api/trigger\?workflow=simple&args\=42"
+   ```
+
+   *(Replace the URL with the actual preview URL from your deployment)*
+   *(If a different workflow/argument needs to be tested, adjust the URL accordingly. The URL takes a workflow and and args query param. The workflows can be found inside workbench/example/workflows - the exported workflow function name is the name of the workflow, and the args are a comma separated list of inputs to that function)*
+
+   Here's an example of testing the AI workflow
+
+   ```bash
+   curl -X POST "https://w-abcdefg1234-uncurated-tests.vercel.app/api/trigger\?workflow=ai&args\=what+is+love?"
+   ```
+
+5. **Inspect the results**
+   Open the "Inspect" URL in a browser (logged from the previous CLI command)
+   Attempt to open the URL using the `open` CLI tool. If it's not installed, just provide the link to the user to allow them to open it.
+
+## Important Notes
+
+- All build and deploy commands should be run from the `workbench/example` directory
+- The preview URL will be different for each deployment
+- The inspect URL allows you to monitor the workflow execution
+- Make sure to use the actual URLs provided by the deployment output, not the example URLs shown above

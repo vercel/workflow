@@ -1,0 +1,140 @@
+---
+title: defineHook
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `defineHook()`
+
+Creates a type-safe hook helper that ensures the payload type is consistent between hook creation and resumption.
+
+This is a lightweight wrapper around [`createHook()`](/docs/api-reference/workflow/create-hook) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid type mismatches.
+
+<Callout>
+We recommend using `defineHook()` over `createHook()` in production codebases for better type safety.
+</Callout>
+
+```ts lineNumbers
+import { defineHook } from "workflow";
+
+const nameHook = defineHook<{
+  name: string;
+}>();
+
+export async function nameWorkflow() {
+  "use workflow";
+
+  const hook = nameHook.create();  // [!code highlight]
+  const result = await hook; // Fully typed as { name: string }
+  console.log('Name:', result.name);
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { defineHook } from "workflow";
+export default defineHook;`
+})}
+showSections={['parameters']}
+/>
+
+### Returns
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+interface DefineHook {
+  /**
+
+* Creates a new hook with the defined payload type.
+  */
+  create: (options?: HookOptions) => Hook<T>;
+
+  /**
+
+* Resumes a hook by sending a payload with the defined type.
+   */
+  resume: (token: string, payload: T) => Promise<HookEntity | null>;
+}
+export default DefineHook;`
+})}
+/>
+
+## Examples
+
+### Type-Safe Hook Definition
+
+By defining the hook once with a specific payload type, you can reuse it in multiple workflows and API routes with automatic type safety.
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+
+// Define once with a specific payload type
+const approvalHook = defineHook<{ // [!code highlight]
+  approved: boolean; // [!code highlight]
+  comment: string; // [!code highlight]
+}>(); // [!code highlight]
+
+// In your workflow
+export async function workflowWithApproval() {
+  "use workflow";
+
+  const hook = approvalHook.create();
+  const result = await hook; // Fully typed as { approved: boolean; comment: string }
+
+  console.log('Approved:', result.approved);
+  console.log('Comment:', result.comment);
+}
+```
+
+### Resuming with Type Safety
+
+Hooks can be resumed using the same defined hook and a token. By using the same hook, you can ensure that the payload matches the defined type when resuming a hook.
+
+```typescript lineNumbers
+// Use the same defined hook to resume
+export async function POST(request: Request) {
+  const { token, approved, comment } = await request.json();
+
+  // Type-safe resumption - TypeScript ensures the payload matches
+  const result = await approvalHook.resume(token, { // [!code highlight]
+    approved, // [!code highlight]
+    comment, // [!code highlight]
+  }); // [!code highlight]
+
+  if (!result) {
+    return Response.json({ error: 'Hook not found' }, { status: 404 });
+  }
+
+  return Response.json({ success: true, runId: result.runId });
+}
+```
+
+### Customizing Tokens
+
+Tokens are used to identify a specific hook and for resuming a hook. You can customize the token to be more specific to a use case.
+
+```typescript lineNumbers
+const slackHook = defineHook<{ text: string; userId: string }>();
+
+export async function slackBotWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = slackHook.create({
+    token: `slack:${channelId}`, // [!code highlight]
+  });
+
+  const message = await hook;
+  console.log(`Message from ${message.userId}: ${message.text}`);
+}
+```
+
+## Related Functions
+
+* [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
+* [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with a payload.

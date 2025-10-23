@@ -1,0 +1,43 @@
+---
+title: FatalError
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `FatalError`
+
+When a `FatalError` is thrown in a step, it indicates that the workflow should not retry a step, marking it as failure.
+
+You should use this when you don't want a specific step to retry.
+
+```typescript lineNumbers
+import { FatalError } from "workflow"
+
+async function fallibleWorkflow() {
+    "use workflow"
+    await fallibleStep();
+}
+
+async function fallibleStep() {
+    "use step"
+    throw new FatalError("Fallible!") // [!code highlight]
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+interface Error {
+  /**
+
+* The error message.
+   */
+  message: string;
+}
+export default Error;`
+})}
+/>

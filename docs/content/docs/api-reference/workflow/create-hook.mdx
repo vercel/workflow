@@ -1,0 +1,143 @@
+---
+title: createHook
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `createHook()`
+
+Creates a low-level hook primitive that can be used to resume a workflow run with arbitrary payloads.
+
+Hooks allow external systems to send data to a paused workflow without the HTTP-specific constraints of webhooks. They're identified by a token and can receive any serializable payload.
+
+```ts lineNumbers
+import { createHook } from "workflow"
+
+export async function hookWorkflow() {
+  "use workflow";
+  const hook = createHook();  // [!code highlight]
+  const result = await hook; // Suspends the workflow until the hook is resumed
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { createHook } from "workflow";
+export default createHook;`
+})}
+showSections={['parameters']}
+/>
+
+#### HookOptions
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import type { HookOptions } from "workflow";
+export default HookOptions;`
+})}
+/>
+
+### Returns
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { createHook } from "workflow";
+export default createHook;`
+})}
+showSections={['returns']}
+/>
+
+#### Hook
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import type { Hook } from "workflow";
+export default Hook;`
+})}
+/>
+
+The returned `Hook` object also implements `AsyncIterable<T>`, which allows you to iterate over incoming payloads using `for await...of` syntax.
+
+## Examples
+
+### Basic Usage
+
+When creating a hook, you can specify a payload type to be used for automatic type safety.
+
+```typescript lineNumbers
+import { createHook } from "workflow"
+
+export async function approvalWorkflow() {
+  "use workflow";
+
+  const hook = createHook<{ approved: boolean; comment: string }>(); // [!code highlight]
+  console.log('Send approval to token:', hook.token);
+
+  const result = await hook;
+
+  if (result.approved) {
+    console.log('Approved with comment:', result.comment);
+  }
+}
+```
+
+### Customizing Tokens
+
+Tokens are used to identify a specific hook. You can customize the token to be more specific to a use case.
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+export async function slackBotWorkflow(channelId: string) {
+  "use workflow";
+
+  // Token constructed from channel ID
+  const hook = createHook<SlackMessage>({ // [!code highlight]
+    token: `slack_webhook:${channelId}`, // [!code highlight]
+  }); // [!code highlight]
+
+  for await (const message of hook) {
+    if (message.text === '/stop') {
+      break;
+    }
+    await processMessage(message);
+  }
+}
+```
+
+### Waiting for Multiple Payloads
+
+You can also wait for multiple payloads by using the `for await...of` syntax.
+
+```typescript lineNumbers
+import { createHook } from "workflow"
+
+export async function collectHookWorkflow() {
+  'use workflow';
+
+  const hook = createHook<{ message: string; done?: boolean }>();
+
+  const payloads = [];
+  for await (const payload of hook) { // [!code highlight]
+    payloads.push(payload);
+
+    if (payload.done) break;
+  }
+
+  return payloads;
+}
+```
+
+## Related Functions
+
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with a payload
+- [`createWebhook()`](/docs/api-reference/workflow/create-webhook) - Higher-level HTTP webhook abstraction

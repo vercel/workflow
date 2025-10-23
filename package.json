@@ -1,0 +1,43 @@
+{
+  "name": "workflow-workspace",
+  "private": true,
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@changesets/cli": "^2.29.5",
+    "@vitest/coverage-v8": "catalog:",
+    "esbuild": "catalog:",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.0",
+    "turbo": "^2.5.4",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": "^18.0.0 || ^20.0.0 || ^22.0.0 || ^24.0.0"
+  },
+  "packageManager": "pnpm@10.15.1+sha512.34e538c329b5553014ca8e8f4535997f96180a1d0f614339357449935350d924e22f8614682191264ec33d1462ac21561aff97f6bb18065351c162c7e8f6de67",
+  "pnpm": {
+    "overrides": {
+      "rfc6902": "5.1.2"
+    },
+    "onlyBuiltDependencies": [
+      "bun"
+    ]
+  },
+  "scripts": {
+    "prepare": "husky",
+    "build": "turbo build --filter='apps/*' --filter='packages/*' --filter='docs' --filter='workbench/*'",
+    "test": "turbo test",
+    "clean": "turbo clean",
+    "typecheck": "turbo typecheck",
+    "test:e2e": "vitest run packages/core/e2e/e2e.test.ts",
+    "lint": "biome check",
+    "format": "biome format --write",
+    "changeset": "changeset",
+    "ci:version": "changeset version",
+    "ci:publish": "pnpm build && pnpm publish -r"
+  },
+  "lint-staged": {
+    "**/*": "biome format --write --no-errors-on-unmatched"
+  }
+}

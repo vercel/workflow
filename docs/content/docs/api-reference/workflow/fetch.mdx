@@ -1,0 +1,140 @@
+---
+title: fetch
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `fetch()`
+
+Makes HTTP requests from within a workflow. This is a special step function that wraps the standard `fetch` API, automatically handling serialization and providing retry semantics.
+
+This is useful when you need to call external APIs or services from within your workflow.
+
+<Callout>
+`fetch` is a *special* type of step function provided and should be called directly inside workflow functions.
+</Callout>
+
+```typescript lineNumbers
+import { fetch } from "workflow"
+
+async function apiWorkflow() {
+    "use workflow"
+
+    // Fetch data from an API
+    const response = await fetch("https://api.example.com/data") // [!code highlight]
+    return await response.json()
+}
+```
+
+## API Signature
+
+### Parameters
+
+Accepts the same arguments as web [`fetch`](https://developer.mozilla.org/en-US/docs/Web/API/Window/fetch)
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { fetch } from "workflow";
+export default fetch;`
+})}
+showSections={['parameters']}
+/>
+
+### Returns
+
+Returns the same response as web [`fetch`](https://developer.mozilla.org/en-US/docs/Web/API/Window/fetch)
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { fetch } from "workflow";
+export default fetch;`
+})}
+showSections={['returns']}
+/>
+
+## Examples
+
+### Basic Usage
+
+Here's a simple example of how you can use `fetch` inside your workflow.
+
+```typescript lineNumbers
+import { fetch } from "workflow"
+
+async function apiWorkflow() {
+    "use workflow"
+
+    // Fetch data from an API
+    const response = await fetch("https://api.example.com/data") // [!code highlight]
+    const data = await response.json()
+
+    // Make a POST request
+    const postResponse = await fetch("https://api.example.com/create", { // [!code highlight]
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ name: "test" })
+    })
+
+    return data
+}
+```
+
+We call `fetch()` with a URL and optional request options, just like the standard fetch API. The workflow runtime automatically handles the response serialization.
+
+This API is provided as a convenience to easily use `fetch` in workflow, but often, you might want to extend and implement your own fetch for more powerful error handing and retry logic.
+
+### Customizing Fetch Behavior
+
+Here's an example of a custom fetch wrapper that provides more sophisticated error handling with custom retry logic:
+
+```typescript lineNumbers
+import { FatalError, RetryableError } from "workflow"
+
+export async function customFetch(
+    url: string,
+    init?: RequestInit
+) {
+    "use step"
+
+    const response = await fetch(url, init)
+
+    // Handle client errors (4xx) - don't retry
+    if (response.status >= 400 && response.status < 500) {
+        if (response.status === 429) {
+            // Rate limited - retry with backoff from Retry-After header
+            const retryAfter = response.headers.get("Retry-After")
+
+            // Use `RetryableError` to customize the retry
+            throw new RetryableError( // [!code highlight]
+                `Rate limited by ${url}`, // [!code highlight]
+                { retryAfter: `${retryAfter} seconds` } // [!code highlight]
+            ) // [!code highlight]
+        }
+
+        // Other client errors are fatal (400, 401, 403, 404, etc.)
+        throw new FatalError( // [!code highlight]
+            `Client error ${response.status}: ${response.statusText}` // [!code highlight]
+        ) // [!code highlight]
+    }
+
+    // Handle server errors (5xx) - will retry automatically
+    if (!response.ok) {
+        throw new Error(
+            `Server error ${response.status}: ${response.statusText}`
+        )
+    }
+
+    return response
+}
+```
+
+This example demonstrates:
+
+- Setting custom `maxRetries` to 5 attempts.
+- Throwing [`FatalError`](/docs/api-reference/workflow/fatal-error) for client errors (400-499) to prevent retries.
+- Handling 429 rate limiting by reading the `Retry-After` header and using [`RetryableError`](/docs/api-reference/workflow/retryable-error).
+- Allowing automatic retries for server errors (5xx).

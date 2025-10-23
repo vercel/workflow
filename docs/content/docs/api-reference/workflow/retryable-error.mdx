@@ -1,0 +1,78 @@
+---
+title: RetryableError
+---
+
+import { generateDefinition } from "@/lib/tsdoc"
+
+# `RetryableError`
+
+When a `RetryableError` is thrown in a step, it indicates that the workflow should retry a step. Additionally, it contains a parameter `retryAfter` indicating when the step should be retried after.
+
+You should use this when you want to retry a step or retry after a certain duration.
+
+```typescript lineNumbers
+import { RetryableError } from "workflow"
+
+async function retryableWorkflow() {
+    "use workflow"
+    await retryStep();
+}
+
+async function retryStep() {
+    "use step"
+    throw new RetryableError("Retryable!") // [!code highlight]
+}
+```
+
+<Callout>
+The difference between `Error` and `RetryableError` may not be entirely obvious, since when both are thrown, they both retry. The difference is that `RetryableError` has an additional configurable `retryAfter` parameter.
+</Callout>
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { type RetryableErrorOptions } from "workflow";
+interface RetryableError {
+    options?: RetryableErrorOptions;
+    message: string;
+}
+
+export default RetryableError;`
+})}
+/>
+
+#### RetryableErrorOptions
+
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { type RetryableErrorOptions } from "workflow";
+export default RetryableErrorOptions;`
+})}
+/>
+
+## Examples
+
+### Retrying after a duration
+
+`RetryableError` can be configured with a `retryAfter` parameter to specify when the step should be retried after.
+
+```typescript lineNumbers
+import { RetryableError } from "workflow"
+
+async function retryableWorkflow() {
+    "use workflow"
+    await retryStep();
+}
+
+async function retryStep() {
+    "use step"
+    throw new RetryableError("Retryable!", {
+        retryAfter: "5m" // [!code highlight]
+    })
+}
+```

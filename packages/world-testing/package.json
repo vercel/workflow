@@ -1,0 +1,42 @@
+{
+  "name": "@workflow/world-testing",
+  "version": "4.0.1-beta.2",
+  "description": "Testing utilities and World implementation for Workflow DevKit",
+  "main": "dist/src/index.mjs",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-testing"
+  },
+  "scripts": {
+    "build": "wf build && tsc",
+    "start": "node --watch src/server.mts",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.5",
+    "@workflow/cli": "workspace:*",
+    "workflow": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "chalk": "^5.6.2",
+    "hono": "^4.9.10",
+    "jsonlines": "^0.1.1",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/jsonlines": "^0.1.5",
+    "@workflow/tsconfig": "workspace:*",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "vitest": "catalog:"
+  },
+  "keywords": [],
+  "author": "",
+  "packageManager": "pnpm@10.15.1"
+}

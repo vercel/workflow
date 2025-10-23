@@ -1,0 +1,35 @@
+{
+  "name": "@workflow/swc-plugin",
+  "version": "4.0.1-beta.1",
+  "description": "SWC plugin for transforming Workflow DevKit code",
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "main": "swc_plugin_workflow.wasm",
+  "files": [
+    "swc_plugin_workflow.wasm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/swc-plugin-workflow"
+  },
+  "exports": {
+    ".": "./swc_plugin_workflow.wasm"
+  },
+  "peerDependencies": {
+    "@swc/core": "1.11.24"
+  },
+  "keywords": [
+    "swc-plugin"
+  ],
+  "scripts": {
+    "build": "./build.sh",
+    "test": "cargo test -p swc_workflow",
+    "prepublishOnly": "pnpm build"
+  },
+  "preferUnplugged": true
+}

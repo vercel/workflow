@@ -1,0 +1,241 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "!*"
+  pull_request:
+
+concurrency:
+  # Unique group for this workflow and branch
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Unit Tests
+        run: pnpm test
+
+  e2e-vercel-prod:
+    name: E2E Vercel Prod Tests (${{ matrix.app.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - name: "example"
+            project-id: "prj_xWq20Dd860HHAfzMjK2Mb6TPVxMa"
+          - name: "nextjs-turbopack"
+            project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+          - name: "nextjs-webpack"
+            project-id: "prj_avRPBF3eWjh6iDNQgmhH4VOg27h0"
+          - name: "nitro"
+            project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
+      - name: Waiting for the Vercel deployment
+        id: waitForDeployment
+        uses: ./.github/actions/wait-for-vercel-project
+        with:
+          team-id: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          project-id: ${{ matrix.app.project-id }}
+          vercel-token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          timeout: 1000
+          check-interval: 15
+          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+
+      - name: Run E2E Tests
+        run: pnpm run test:e2e
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+
+  getTestMatrix:
+    name: Get Test Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - id: set-matrix
+        run: echo "matrix=$(node ./scripts/create-test-matrix.mjs)" >> $GITHUB_OUTPUT
+
+  e2e-local-dev:
+    name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
+    runs-on: ubuntu-latest
+    needs: getTestMatrix
+    strategy:
+      fail-fast: false
+      matrix: ${{fromJson(needs.getTestMatrix.outputs.matrix)}}
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Setup canary
+        if: ${{ matrix.app.canary }}
+        run: |
+          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="canary"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
+          pnpm install --no-frozen-lockfile
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Initial Build
+        run: pnpm turbo run build --filter='!./workbench/*'
+
+      - name: Link to Vercel and Pull env
+        run: pnpm i -g vercel@latest && vc link --token=${{ secrets.VERCEL_LABS_TOKEN }} --project=${{ matrix.app.project }} --scope=vercel-labs -y && vc env pull --token=${{ secrets.VERCEL_LABS_TOKEN }} workbench/${{ matrix.app.name }}/.env.local
+
+      - name: Resolve symlinks for next dev to work
+        if: matrix.app.name == 'nextjs-webpack'
+        run: cd workbench/${{ matrix.app.name }} && ./resolve-symlinks.sh
+
+      - name: Run E2E Tests (Next.js)
+        if: matrix.app.name != 'nitro'
+        run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/next-dev.test.ts && pnpm run test:e2e
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+
+      - name: Run E2E Tests (Nitro)
+        if: matrix.app.name == 'nitro'
+        run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/e2e.test.ts
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+
+  e2e-local-prod:
+    name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
+    runs-on: ubuntu-latest
+    needs: getTestMatrix
+    strategy:
+      fail-fast: false
+      matrix: ${{fromJson(needs.getTestMatrix.outputs.matrix)}}
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Setup canary
+        if: ${{ matrix.app.canary }}
+        run: |
+          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="canary"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
+          pnpm install --no-frozen-lockfile
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Initial Build
+        run: pnpm turbo run build --filter='!./workbench/*'
+
+      - name: Link to Vercel and Pull env
+        run: pnpm i -g vercel@latest && vc link --token=${{ secrets.VERCEL_LABS_TOKEN }} --project=${{ matrix.app.project }} --scope=vercel-labs -y && vc env pull --token=${{ secrets.VERCEL_LABS_TOKEN }} workbench/${{ matrix.app.name }}/.env.local
+
+      - name: Run Build Tests
+        run: pnpm vitest run packages/core/e2e/local-build.test.ts
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+
+      - name: Run E2E Tests
+        run: cd workbench/${{ matrix.app.name }} && pnpm start & echo "starting tests in 10 seconds" && sleep 10 && pnpm run test:e2e
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          DEPLOYMENT_URL: "http://localhost:3000"

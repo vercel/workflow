@@ -1,0 +1,16 @@
+<html>
+  <body>
+    <h1>Workflows SDK Example</h1>
+    <button id="start-workflow">Start "Simple" Workflow</button>
+  </body>
+  <script>
+    const startWorkflowButton = document.getElementById('start-workflow');
+    startWorkflowButton.addEventListener('click', async () => {
+      const response = await fetch('/api/trigger?workflow=simple', {
+        method: 'POST',
+      });
+      const data = await response.json();
+      console.log(data);
+    });
+  </script>
+</html>

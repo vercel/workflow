@@ -1,0 +1,10 @@
+---
+globs: packages/swc-plugin-workflow/**/*
+alwaysApply: false
+---
+
+# SWC plugin development notes
+
+The specification for how to plugin is meant to work can be found in spec.md.
+
+To test the plugin, run `pnpm test` inside `swc-plugin-workflow`. If changes have been made, use `UPDATE=1 pnpm test` to have the fixtures be updated to pass the tests.

@@ -1,0 +1,27 @@
+[package]
+authors      = { workspace = true }
+description  = "SWC plugin for https://www.npmjs.com/package/babel-plugin-transform-imports"
+edition      = { workspace = true }
+# homepage     = { workspace = true }
+license      = { workspace = true }
+name         = "swc_plugin_workflow"
+publish      = false
+# repository   = { workspace = true }
+rust-version = { workspace = true }
+version      = "4.0.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+lto = true
+
+[dependencies]
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+swc_core     = { workspace = true, features = ["ecma_plugin_transform"] }
+swc_workflow = { path = "./transform" }
+
+# .cargo/config.toml defines few alias to build plugin.
+# cargo build-wasip1 generates wasm32-wasip1 binary
+# cargo build-wasm32 generates wasm32-unknown-unknown binary.

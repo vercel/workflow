@@ -1,0 +1,6 @@
+  x Did you mean "use workflow"? "use workflows" is not a supported directive
+   ,-[input.js:2:1]
+ 1 | // This should error - misspelled directive
+ 2 | 'use workflows';
+   : ^^^^^^^^^^^^^^^^
+   `----
