@@ -1,151 +1,29 @@
 ---
-title: World
+title: Worlds
 ---
 
-# World Interface
+import { Callout } from '@/components/ui/callout'
 
-The World interface combines four key capabilities that provide the complete infrastructure for running workflows:
+# The World Interface
 
-1. **Storage** - Persisting workflow runs, steps, hooks, and metadata
-2. **Queue** - Enqueuing and processing workflow steps asynchronously
-3. **AuthProvider** - Handling authentication for API access
-4. **Streamer** - Managing readable and writable streams for workflows
+<Callout type="wip">
 
-```typescript
-interface World extends Queue, Storage, AuthProvider, Streamer {}
-```
+This page is a work in progress.
 
-## World Capabilities
+</Callout>
 
-### Storage
+The workflow `World` is an interface that abstracts how workflows and steps communicate with the outside world, letting you build custom adapters and reuse them across different environments, infrastructure, and hosting providers.
 
-Workflows need to persist data between step executions. The storage interface handles:
+## Choosing a World implementation
 
-- **Runs** - Workflow execution metadata and state
-- **Steps** - Individual step execution results
-- **Hooks** - Webhook and callback state
-- **Metadata** - Additional workflow information
+* By default, Workflow uses the [Local world](/docs/deploying/world/embedded-world) for easy local development.
+* When deployed on Vercel, Workflow switches to the [Vercel world](/docs/deploying/world/vercel-world).
 
-### Queue
-
-Workflows execute steps asynchronously. The queue interface handles:
-
-- **Enqueuing steps** - Adding steps to the execution queue
-- **Processing steps** - Executing steps on separate requests
-- **Retrying failed steps** - Automatic retry logic
-
-### Authentication
-
-Workflows may need to access APIs securely. The auth interface handles:
-
-- **API tokens** - Managing authentication credentials
-- **Headers** - Generating auth headers for requests
-- **Token refresh** - Keeping credentials up to date
-
-### Streaming
-
-Workflows can use streams for real-time data. The streamer interface handles:
-
-- **Readable streams** - Consuming data from workflows
-- **Writable streams** - Sending data to workflows
-- **Stream chunks** - Managing chunked data transfer
-
-## Building a Custom World
-
-To create a custom world implementation, you need to implement all four interfaces:
-
-```typescript
-import type { World, Storage, Queue, AuthProvider, Streamer } from '@workflow/core';
-
-class MyCustomWorld implements World {
-  // Implement Storage methods
-  async getRun(runId: string) { /* ... */ }
-  async saveRun(run: Run) { /* ... */ }
-  async getStep(runId: string, stepId: string) { /* ... */ }
-  async saveStep(step: Step) { /* ... */ }
-  
-  // Implement Queue methods
-  async enqueue(step: Step) { /* ... */ }
-  async dequeue() { /* ... */ }
-  
-  // Implement AuthProvider methods
-  async getAuthHeaders() { /* ... */ }
-  
-  // Implement Streamer methods
-  async createReadableStream(runId: string, streamId: string) { /* ... */ }
-  async createWritableStream(runId: string, streamId: string) { /* ... */ }
-}
-```
-
-## Using a Custom World
-
-Once you've implemented a custom world, you can use it in your workflow configuration:
-
-```typescript
-import { withWorkflow } from 'workflow/next';
-import { MyCustomWorld } from './my-custom-world';
-
-export default withWorkflow({
-  world: new MyCustomWorld(),
-});
-```
-
-Or configure it via environment variables if your world implementation supports it:
+If you want to use a different World implementation, set the `WORKFLOW_TARGET_WORLD` environment variable to your desired World package's NPM name:
 
 ```bash
-export WORKFLOW_TARGET_WORLD=custom
-export MY_WORLD_CONFIG=...
-```
-
-## Examples
-
-### Database-backed World
-
-Create a world that stores workflow data in PostgreSQL, MySQL, or any other database:
-
-```typescript
-class DatabaseWorld implements World {
-  constructor(private db: DatabaseConnection) {}
-  
-  async saveRun(run: Run) {
-    await this.db.query(
-      'INSERT INTO workflow_runs VALUES ($1, $2, $3)',
-      [run.id, run.workflowName, run.status]
-    );
-  }
-  
-  // ... implement other methods
-}
-```
-
-### Cloud Provider World
-
-Create a world for AWS, GCP, Azure, or other cloud providers:
-
-```typescript
-class AWSWorld implements World {
-  constructor(
-    private s3: S3Client,
-    private sqs: SQSClient
-  ) {}
-  
-  async saveRun(run: Run) {
-    await this.s3.putObject({
-      Bucket: 'workflow-runs',
-      Key: run.id,
-      Body: JSON.stringify(run)
-    });
-  }
-  
-  async enqueue(step: Step) {
-    await this.sqs.sendMessage({
-      QueueUrl: this.queueUrl,
-      MessageBody: JSON.stringify(step)
-    });
-  }
-  
-  // ... implement other methods
-}
+export WORKFLOW_TARGET_WORLD=@my-namespace/my-npm-package
+export MY_WORLD_CONFIG=... # implementation-specific configuration
 ```
 
 ## Built-in Worlds
@@ -155,8 +33,7 @@ Workflow DevKit provides two built-in world implementations:
 - [Embedded World](/docs/deploying/world/embedded-world) - Filesystem-based for local development
 - [Vercel World](/docs/deploying/world/vercel-world) - Production-ready for Vercel deployments
 
-## Learn More
+## Community Worlds
 
-- [Deploying](/docs/deploying) - Overview of worlds and backend configuration
-- [Embedded World](/docs/deploying/world/embedded-world) - Local development backend
-- [Vercel World](/docs/deploying/world/vercel-world) - Production backend
+- [Postgres World](/docs/deploying/world/postgres-world) - Reference implementation for a multi-host PostgreSQL backend world.
+- [Jazz World](https://github.com/garden-co/workflow-world-jazz) - A full World implementation built on top of [Jazz](https://jazz.tools)
