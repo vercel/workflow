@@ -13,7 +13,7 @@ By default, errors thrown inside steps are retried. Additionally, Workflow DevKi
 By default, steps retry up to 3 times on arbitrary errors. You can customize the number of retries by adding a maxRetries property to the step function
 
 ```typescript lineNumbers
-async function callAPI(endpoint: string) {
+async function callApi(endpoint: string) {
   "use step";
 
   const response = await fetch(endpoint);
@@ -38,7 +38,7 @@ When your step needs to intentionally throw an error and skip retrying, simply t
 ```typescript lineNumbers
 import { FatalError } from 'workflow';
 
-async function callAPI(endpoint: string) {
+async function callApi(endpoint: string) {
   "use step";
 
   const response = await fetch(endpoint);
@@ -63,7 +63,7 @@ When you need to customize the delay on the retry, use [`RetryableError`](/docs/
 ```typescript lineNumbers
 import { FatalError, RetryableError } from 'workflow';
 
-async function callAPI(endpoint: string) {
+async function callApi(endpoint: string) {
   "use step";
 
   const response = await fetch(endpoint);
@@ -95,7 +95,7 @@ This final example combines everything we've learnt, along with [`getStepMetadat
 ```typescript lineNumbers
 import { FatalError, RetryableError, getStepMetadata } from 'workflow';
 
-async function callAPI(endpoint: string) {
+async function callApi(endpoint: string) {
   "use step";
 
   const metadata = getStepMetadata();
@@ -121,5 +121,5 @@ async function callAPI(endpoint: string) {
 
   return response.json();
 }
-callAPI.maxRetries = 5;
+callApi.maxRetries = 5;
 ```

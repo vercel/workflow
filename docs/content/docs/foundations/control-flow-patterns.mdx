@@ -102,7 +102,7 @@ async function birthdayWorkflow(
     webhooks.map(
         webhook => webhook
             .then(req => req.json())
-            .then({ rsvp } => rsvps.push(rsvp))
+            .then(( { rsvp } ) => rsvps.push(rsvp))
     )
 
     // Wait until the birthday

@@ -137,7 +137,7 @@ instance into the workflow context. You may consume the body of that request dir
 in the workflow, which will be cached as a step result for future resumptions of the workflow:
 
 ```typescript lineNumbers
-import { createWebhook } from '@vercel/workflow';
+import { createWebhook } from 'workflow';
 
 export async function handleWebhookWorkflow() {
   "use workflow";

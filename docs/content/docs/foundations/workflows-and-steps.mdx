@@ -46,7 +46,7 @@ export async function processOrderWorkflow(orderId: string) {
 Determinism in the workflow is required in order to resume to workflow from a suspension. Essentially, the workflow code get re-run multiple times during its lifecycle,
 each time, using an event log to resume the workflow to the correct spot.
 
-The sandboxed environment that worklfows are run in already ensure determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't cahange across replays.
+The sandboxed environment that workflows are run in already ensure determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't change across replays.
 
 ## Step Functions
 
@@ -90,7 +90,7 @@ Step functions are primarily meant to be used inside a workflow.
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the event log and no compute resources are used until the workflow resumes execution.
 
-But there is more than one way for a worklfow to suspend:
+But there is more than one way for a workflow to suspend:
 
 - Waiting on a step function: the workflow yields while the step runs in the step runtime.
 - Using `sleep()` to pause for some fixed duration.
@@ -102,7 +102,7 @@ import { sleep, getWebhook } from 'workflow';
 export async function documentReviewProcess(userId: string) {
   "use workflow";
 
-  await sleep("1 month"); // Sleep will suspend witout consuming any resources [!code highlight]
+  await sleep("1 month"); // Sleep will suspend without consuming any resources [!code highlight]
 
   // Create a webhook for external workflow resumption
   const webhook = createWebhook();
@@ -146,7 +146,7 @@ async function greet(name: string) {
 
 ### Project structure
 
-While you can organize worklfow and step functions however you like, we find that larger projects benefit from some structure:
+While you can organize workflow and step functions however you like, we find that larger projects benefit from some structure:
 <Files>
   <Folder name="workflows" defaultOpen disabled>
     <Folder name="userOnboarding" defaultOpen disabled>
