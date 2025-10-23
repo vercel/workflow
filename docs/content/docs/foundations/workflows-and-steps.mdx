@@ -83,7 +83,25 @@ By default, steps have a maximum of 3 retry attempts before they fail and propag
 Step functions are primarily meant to be used inside a workflow.
 </Callout>
 
-Calling a step from outside a workflow, or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op).
+Calling a step from outside a workflow, or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op). This means you can reuse step functions in other parts of your codebase without needing to duplicate business logic.
+
+
+```typescript lineNumbers
+async function updateUser(userId: string) {
+  "use step";
+  await db.insert(...);
+}
+
+// 🚫 No need to duplicate business logic here
+export async function POST() {
+  await db.insert(...);
+}
+
+// ✅ Reuse the step function instead
+export async function POST() {
+  await updateUser("123");
+}
+```
 
 ---
 
