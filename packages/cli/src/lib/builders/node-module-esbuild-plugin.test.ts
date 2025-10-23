@@ -201,6 +201,69 @@ describe('workflow-node-module-error plugin', () => {
     expect(result?.errors?.[0]?.text).toContain('Cannot use Node.js module');
   });
 
+  it('should error on Node.js imports from helper files imported by workflows', async () => {
+    // This tests the bug fix for: workflow -> helper -> fs
+    // The helper file is in the workflow graph and should be flagged
+    let resolveHandler:
+      | Parameters<esbuild.PluginBuild['onResolve']>[1]
+      | undefined;
+    const mockPlugin = createNodeModuleErrorPlugin({
+      workflowFiles: ['/Users/test/project/apps/web/workflows/my-workflow.ts'],
+    });
+    const mockBuild: esbuild.PluginBuild = {
+      initialOptions: {
+        absWorkingDir: '/Users/test/project/apps/web',
+      },
+      esbuild: esbuild as unknown as typeof import('esbuild'),
+      onResolve: (_opts, handler) => {
+        resolveHandler = handler;
+      },
+      onLoad: () => {},
+      onStart: () => {},
+      onEnd: () => {},
+      onDispose: () => {},
+      resolve: async () => ({
+        errors: [],
+        warnings: [],
+        path: '',
+        external: false,
+        sideEffects: true,
+        namespace: 'file',
+        suffix: '',
+        pluginData: undefined,
+      }),
+    };
+
+    mockPlugin.setup(mockBuild);
+    if (!resolveHandler) throw new Error('resolveHandler not set');
+    const handler = resolveHandler;
+
+    // Populate the import graph: workflow -> helper
+    const { importParents } = await import(
+      './discover-entries-esbuild-plugin.js'
+    );
+    importParents.set(
+      '/Users/test/project/apps/web/workflows/my-workflow.ts',
+      '/Users/test/project/apps/web/utils/helper.ts'
+    );
+
+    // Node.js import from helper should be flagged
+    const result = await handler({
+      path: 'fs',
+      importer: '/Users/test/project/apps/web/utils/helper.ts',
+      namespace: 'file',
+      resolveDir: '/',
+      kind: 'import-statement',
+      pluginData: undefined,
+      with: {},
+    });
+
+    expect(result).toBeDefined();
+    expect((result as any)?.errors?.[0]?.text).toContain(
+      'Cannot use Node.js module'
+    );
+  });
+
   it('should not misclassify similarly named sibling workspaces as project source', async () => {
     let resolveHandler:
       | Parameters<esbuild.PluginBuild['onResolve']>[1]

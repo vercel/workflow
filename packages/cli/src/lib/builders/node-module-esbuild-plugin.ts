@@ -34,7 +34,7 @@ export function createNodeModuleErrorPlugin(
           for (const entry of entries) {
             if (
               args.importer === entry ||
-              parentHasChild(args.importer, entry)
+              parentHasChild(entry, args.importer)
             ) {
               isInWorkflowGraph = true;
 
