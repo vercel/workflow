@@ -91,7 +91,7 @@ Calling a step from outside a workflow, or from another step will essentially ru
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the event log and no compute resources are used until the workflow resumes execution.
 
-There is more than one way for a workflow to suspend:
+There are multiple ways a workflow can suspend:
 
 - Waiting on a step function: the workflow yields while the step runs in the step runtime.
 - Using `sleep()` to pause for some fixed duration.
