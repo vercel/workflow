@@ -97,7 +97,7 @@ But there is more than one way for a workflow to suspend:
 - Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
 
 ```typescript lineNumbers
-import { sleep, getWebhook } from 'workflow';
+import { sleep, createWebhook } from 'workflow';
 
 export async function documentReviewProcess(userId: string) {
   "use workflow";
