@@ -143,4 +143,61 @@ describe('workflow-node-module-error plugin', () => {
       })
     ).resolves.toBeDefined();
   });
+
+  it('should allow Node.js imports from workspace packages outside working directory', async () => {
+    // This test simulates a monorepo workspace package importing Node.js modules
+    // The plugin should NOT error because the import is from an external package
+
+    // Mock an onResolve call that would happen for a workspace package
+    let resolveHandler: any;
+    const mockPlugin = createNodeModuleErrorPlugin();
+    const mockBuild = {
+      initialOptions: {
+        absWorkingDir: '/Users/test/project/apps/web',
+      },
+      onResolve: (_opts: any, handler: any) => {
+        resolveHandler = handler;
+      },
+    };
+
+    // Setup the plugin
+    mockPlugin.setup(mockBuild as any);
+
+    // Test that imports from workspace packages (outside working dir) are allowed
+    // This simulates an import of 'crypto' from a workspace package
+    const result = resolveHandler({
+      path: 'crypto',
+      importer: '/Users/test/project/packages/database/dist/index.js', // Outside working dir
+    });
+
+    // Should return null (no error) because it's from a workspace package
+    expect(result).toBeNull();
+  });
+
+  it('should still error on Node.js imports from project source', async () => {
+    // Mock an onResolve call for an import from within the project
+    let resolveHandler: any;
+    const mockPlugin = createNodeModuleErrorPlugin();
+    const mockBuild = {
+      initialOptions: {
+        absWorkingDir: '/Users/test/project/apps/web',
+      },
+      onResolve: (_opts: any, handler: any) => {
+        resolveHandler = handler;
+      },
+    };
+
+    // Setup the plugin
+    mockPlugin.setup(mockBuild as any);
+
+    // Test that imports from within the project are still blocked
+    const result = resolveHandler({
+      path: 'fs',
+      importer: '/Users/test/project/apps/web/workflows/my-workflow.ts', // Within working dir
+    });
+
+    // Should return an error because it's from project source code
+    expect(result).toBeDefined();
+    expect(result?.errors?.[0]?.text).toContain('Cannot use Node.js module');
+  });
 });
