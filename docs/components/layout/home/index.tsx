@@ -85,7 +85,7 @@ export function HomeLayout(
           <Link href="https://vercel.com">
             <svg
               fill="none"
-              height="24"
+              height="20"
               viewBox="0 0 2048 407"
               xmlns="http://www.w3.org/2000/svg"
             >
@@ -208,7 +208,7 @@ export function Header({
             <NavbarLinkItem item={item} key={i} />
           ))}
         </div>
-        <Button asChild size="icon" variant="ghost" className="h-9">
+        <Button asChild size="sm" variant="default">
           <Link href="https://github.com/vercel/workflow">
             <svg
               width="15"
@@ -224,6 +224,7 @@ export function Header({
                 clipRule="evenodd"
               ></path>
             </svg>
+            GitHub
           </Link>
         </Button>
       </div>

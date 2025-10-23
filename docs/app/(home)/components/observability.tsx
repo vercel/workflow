@@ -56,7 +56,7 @@ export const Observability = () => (
       logs, and metrics automatically.
     </h2>
     <div className="">
-      <div className="space-y-3 w-full">
+      <div className="space-y-2.5 w-full">
         {rows.map((row, index) => (
           <div
             key={row.label}
@@ -66,7 +66,7 @@ export const Observability = () => (
               width: `${row.duration}%`,
             }}
           >
-            <div className="relative h-6 w-full">
+            <div className="relative h-6.5 w-full">
               <motion.div
                 initial={{ width: 0, opacity: 0 }}
                 whileInView={{ width: 'auto', opacity: 1 }}
@@ -81,8 +81,8 @@ export const Observability = () => (
                   row.className
                 )}
               >
-                <div className="flex justify-between items-center px-2 py-[4px]">
-                  <span className="text-[11px] font-mono font-medium">
+                <div className="flex justify-between items-center px-2 pt-1 pb-[6px]">
+                  <span className="text-[11px] font-mono font-medium text-foreground">
                     {row.label}
                   </span>
                   {index === 0 && (
