@@ -11,7 +11,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { DocsLink } from '@/components/ui/docs-link';
@@ -48,6 +48,15 @@ interface RunsTableProps {
   onRunClick: (runId: string) => void;
 }
 
+const statusMap: Record<WorkflowRunStatus, { label: string; color: string }> = {
+  pending: { label: 'Pending', color: 'bg-neutral-600 dark:bg-neutral-400' },
+  running: { label: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
+  completed: { label: 'Completed', color: 'bg-green-600 dark:bg-green-400' },
+  failed: { label: 'Failed', color: 'bg-red-600 dark:bg-red-400' },
+  paused: { label: 'Paused', color: 'bg-yellow-600 dark:bg-yellow-400' },
+  cancelled: { label: 'Cancelled', color: 'bg-gray-600 dark:bg-gray-400' },
+};
+
 /**
  * RunsTable - Displays workflow runs with server-side pagination.
  * Uses the PaginatingTable pattern: fetches data for each page as needed from the server.
@@ -60,12 +69,25 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const status = searchParams.get('status') as WorkflowRunStatus | undefined;
+  const status = searchParams.get('status') as
+    | WorkflowRunStatus
+    | 'all'
+    | undefined;
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [workflowNameFilter, setWorkflowNameFilter] = useState<string>('any');
+
+  // TODO: This is a workaround. We should be getting a list of valid workflow names
+  // from the manifest, which we need to put on the World interface.
+  const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
+    new Set()
+  );
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
+
+  const statusFilterRequiresWorkflowNameFilter =
+    config.backend?.includes('vercel');
 
   const {
     data,
@@ -76,7 +98,25 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     hasPreviousPage,
     reload,
     pageInfo,
-  } = useWorkflowRuns(env, { sortOrder, status });
+  } = useWorkflowRuns(env, {
+    sortOrder,
+    workflowName: workflowNameFilter === 'any' ? undefined : workflowNameFilter,
+    status: status === 'all' ? undefined : status,
+  });
+
+  // Track seen workflow names from loaded data
+  useEffect(() => {
+    if (data.data && data.data.length > 0) {
+      const newNames = new Set(data.data.map((run) => run.workflowName));
+      setSeenWorkflowNames((prev) => {
+        const updated = new Set(prev);
+        for (const name of newNames) {
+          updated.add(name);
+        }
+        return updated;
+      });
+    }
+  }, [data.data]);
 
   const loading = data.isLoading;
 
@@ -107,64 +147,93 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   return (
     <div>
       <div className="flex items-center justify-between my-4">
-        <h2 className="text-2xl my-2 font-semibold leading-none tracking-tight">
-          Runs
+        <h2 className="text-2xl my-2 font-semibold leading-none tracking-tight flex gap-4 items-end">
+          <span className="flex items-center gap-2">Runs</span>
+          {lastRefreshTime && (
+            <RelativeTime
+              date={lastRefreshTime}
+              className="text-sm text-muted-foreground"
+              type="distance"
+            />
+          )}
         </h2>
         <div className="flex items-center gap-4">
           {
             <>
-              {lastRefreshTime && (
-                <RelativeTime
-                  date={lastRefreshTime}
-                  className="text-sm text-muted-foreground"
-                  type="distance"
-                />
-              )}
               <Select
-                value={status ?? 'all'}
+                value={workflowNameFilter}
                 onValueChange={(value) => {
-                  if (value === 'all') {
-                    const params = new URLSearchParams(searchParams.toString());
-                    params.delete('status');
-                    router.push(`${pathname}?${params.toString()}`);
-                  } else {
-                    router.push(
-                      `${pathname}?${createQueryString('status', value)}`
-                    );
-                  }
+                  setWorkflowNameFilter(value);
+                  // Reset status filter when workflow changes
+                  const params = new URLSearchParams(searchParams.toString());
+                  params.delete('status');
+                  router.push(`${pathname}?${params.toString()}`);
                 }}
                 disabled={loading}
               >
-                <SelectTrigger className="w-[140px] h-9">
-                  <SelectValue placeholder="Filter by status" />
+                <SelectTrigger className="w-[180px] h-9">
+                  <SelectValue placeholder="Filter by workflow" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {statusOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      <div className="flex items-center">
-                        <span
-                          className={`${option.color} size-1.5 rounded-full mr-2`}
-                        />
-                        {option.label}
-                      </div>
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="any">Any Workflow</SelectItem>
+                  {Array.from(seenWorkflowNames)
+                    .sort()
+                    .map((name) => (
+                      <SelectItem key={name} value={name}>
+                        {parseWorkflowName(name)?.shortName || name}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={onReload}
-                    disabled={loading}
-                  >
-                    <RefreshCw className={loading ? 'animate-spin' : ''} />
-                    Refresh
-                  </Button>
+                  <div>
+                    <Select
+                      value={status ?? 'all'}
+                      onValueChange={(value) => {
+                        if (value === 'all') {
+                          const params = new URLSearchParams(
+                            searchParams.toString()
+                          );
+                          params.delete('status');
+                          router.push(`${pathname}?${params.toString()}`);
+                        } else {
+                          router.push(
+                            `${pathname}?${createQueryString('status', value)}`
+                          );
+                        }
+                      }}
+                      disabled={
+                        loading ||
+                        (statusFilterRequiresWorkflowNameFilter &&
+                          workflowNameFilter === 'any')
+                      }
+                    >
+                      <SelectTrigger className="w-[140px] h-9">
+                        <SelectValue placeholder="Filter by status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
+                        {Object.values(statusMap).map(({ label, color }) => (
+                          <SelectItem key={label} value={label}>
+                            <div className="flex items-center">
+                              <span
+                                className={`${color} size-1.5 rounded-full mr-2`}
+                              />
+                              {label}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </TooltipTrigger>
-                <TooltipContent>Note that this resets pages</TooltipContent>
+                <TooltipContent>
+                  {statusFilterRequiresWorkflowNameFilter &&
+                  workflowNameFilter === 'any'
+                    ? 'Select a workflow first to filter by status'
+                    : 'Filter runs by status'}
+                </TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -187,6 +256,20 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                     ? 'Showing newest first'
                     : 'Showing oldest first'}
                 </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onReload}
+                    disabled={loading}
+                  >
+                    <RefreshCw className={loading ? 'animate-spin' : ''} />
+                    Refresh
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Note that this resets pages</TooltipContent>
               </Tooltip>
             </>
           }
@@ -280,28 +363,3 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     </div>
   );
 }
-
-const statusOptions = [
-  {
-    label: 'Pending',
-    value: 'pending',
-    color: 'bg-neutral-600 dark:bg-neutral-400',
-  },
-  { label: 'Running', value: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
-  {
-    label: 'Completed',
-    value: 'completed',
-    color: 'bg-green-600 dark:bg-green-400',
-  },
-  { label: 'Failed', value: 'failed', color: 'bg-red-600 dark:bg-red-400' },
-  {
-    label: 'Paused',
-    value: 'paused',
-    color: 'bg-yellow-600 dark:bg-yellow-400',
-  },
-  {
-    label: 'Cancelled',
-    value: 'cancelled',
-    color: 'bg-gray-600 dark:bg-gray-400',
-  },
-];
