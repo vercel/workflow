@@ -86,8 +86,7 @@ async function callApi(endpoint: string) {
   if (response.status === 429) {
     const retryAfter = response.headers.get("Retry-After");
     // Delay the retry until after a timeout
-    throw new RetryableError("Too many requests. Retrying...", {
-      // [!code highlight]
+    throw new RetryableError("Too many requests. Retrying...", { // [!code highlight]
       retryAfter: parseInt(retryAfter), // [!code highlight]
     }); // [!code highlight]
   }
