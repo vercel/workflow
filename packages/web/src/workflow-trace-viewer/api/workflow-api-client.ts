@@ -699,10 +699,9 @@ export function useWorkflowTraceViewerData(
 
     let foundNewItems = false;
 
-    pollRun();
-
     try {
-      const [stepsUpdated, hooksUpdated, eventsUpdated] = await Promise.all([
+      const [_, stepsUpdated, hooksUpdated, eventsUpdated] = await Promise.all([
+        pollRun(),
         pollSteps(),
         pollHooks(),
         pollEvents(),
