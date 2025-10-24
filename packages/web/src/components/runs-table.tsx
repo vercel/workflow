@@ -175,7 +175,11 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                       onValueChange={(value) =>
                         setStatusFilter(value as WorkflowRunStatus | 'any')
                       }
-                      disabled={loading || workflowNameFilter === 'any'}
+                      disabled={
+                        loading ||
+                        (statusFilterRequiresWorkflowNameFilter &&
+                          workflowNameFilter === 'any')
+                      }
                     >
                       <SelectTrigger className="w-[140px] h-9">
                         <SelectValue placeholder="Filter by status" />
