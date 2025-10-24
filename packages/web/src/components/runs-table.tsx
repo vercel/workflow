@@ -73,8 +73,8 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     | WorkflowRunStatus
     | 'all'
     | undefined;
+  const workflowNameFilter = searchParams.get('workflow') as string | 'all';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [workflowNameFilter, setWorkflowNameFilter] = useState<string>('any');
 
   // TODO: This is a workaround. We should be getting a list of valid workflow names
   // from the manifest, which we need to put on the World interface.
@@ -100,7 +100,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     pageInfo,
   } = useWorkflowRuns(env, {
     sortOrder,
-    workflowName: workflowNameFilter === 'any' ? undefined : workflowNameFilter,
+    workflowName: workflowNameFilter === 'all' ? undefined : workflowNameFilter,
     status: status === 'all' ? undefined : status,
   });
 
@@ -161,13 +161,18 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
           {
             <>
               <Select
-                value={workflowNameFilter}
+                value={workflowNameFilter ?? 'all'}
                 onValueChange={(value) => {
-                  setWorkflowNameFilter(value);
-                  // Reset status filter when workflow changes
-                  const params = new URLSearchParams(searchParams.toString());
-                  params.delete('status');
-                  router.push(`${pathname}?${params.toString()}`);
+                  if (value === 'all') {
+                    const params = new URLSearchParams(searchParams.toString());
+                    params.delete('workflow');
+                    router.push(`${pathname}?${params.toString()}`);
+                  } else {
+                    router.push(
+                      `${pathname}?${createQueryString('workflow', value)}`
+                    );
+                  }
+                  console.log({ workflowNameFilter });
                 }}
                 disabled={loading}
               >
@@ -175,7 +180,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                   <SelectValue placeholder="Filter by workflow" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="any">Any Workflow</SelectItem>
+                  <SelectItem value="all">All Workflows</SelectItem>
                   {Array.from(seenWorkflowNames)
                     .sort()
                     .map((name) => (
@@ -206,7 +211,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                       disabled={
                         loading ||
                         (statusFilterRequiresWorkflowNameFilter &&
-                          workflowNameFilter === 'any')
+                          !workflowNameFilter)
                       }
                     >
                       <SelectTrigger className="w-[140px] h-9">
@@ -232,7 +237,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                 </TooltipTrigger>
                 <TooltipContent>
                   {statusFilterRequiresWorkflowNameFilter &&
-                  workflowNameFilter === 'any'
+                  workflowNameFilter === 'all'
                     ? 'Select a workflow first to filter by status'
                     : 'Filter runs by status'}
                 </TooltipContent>
