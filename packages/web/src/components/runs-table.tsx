@@ -10,7 +10,7 @@ import {
   ChevronRight,
   RefreshCw,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { DocsLink } from '@/components/ui/docs-link';
@@ -47,6 +47,15 @@ interface RunsTableProps {
   onRunClick: (runId: string) => void;
 }
 
+const statusMap: Record<WorkflowRunStatus, string> = {
+  pending: 'Pending',
+  running: 'Running',
+  completed: 'Completed',
+  failed: 'Failed',
+  paused: 'Paused',
+  cancelled: 'Cancelled',
+};
+
 /**
  * RunsTable - Displays workflow runs with server-side pagination.
  * Uses the PaginatingTable pattern: fetches data for each page as needed from the server.
@@ -57,8 +66,14 @@ interface RunsTableProps {
  */
 export function RunsTable({ config, onRunClick }: RunsTableProps) {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [workflowNameFilter, setWorkflowNameFilter] = useState<string>('any');
   const [statusFilter, setStatusFilter] = useState<WorkflowRunStatus | 'any'>(
     'any'
+  );
+  // TODO: This is a workaround. We should be getting a list of valid workflow names
+  // from the manifest, which we need to put on the World interface.
+  const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
+    new Set()
   );
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
@@ -76,8 +91,23 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     pageInfo,
   } = useWorkflowRuns(env, {
     sortOrder,
+    workflowName: workflowNameFilter === 'any' ? undefined : workflowNameFilter,
     status: statusFilter === 'any' ? undefined : statusFilter,
   });
+
+  // Track seen workflow names from loaded data
+  useEffect(() => {
+    if (data.data && data.data.length > 0) {
+      const newNames = new Set(data.data.map((run) => run.workflowName));
+      setSeenWorkflowNames((prev) => {
+        const updated = new Set(prev);
+        for (const name of newNames) {
+          updated.add(name);
+        }
+        return updated;
+      });
+    }
+  }, [data.data]);
 
   const loading = data.isLoading;
 
@@ -98,57 +128,71 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   return (
     <div>
       <div className="flex items-center justify-between my-4">
-        <h2 className="text-2xl my-2 font-semibold leading-none tracking-tight">
-          Runs
+        <h2 className="text-2xl my-2 font-semibold leading-none tracking-tight flex gap-4 items-end">
+          <span className="flex items-center gap-2">Runs</span>
+          {lastRefreshTime && (
+            <RelativeTime
+              date={lastRefreshTime}
+              className="text-sm text-muted-foreground"
+              type="distance"
+            />
+          )}
         </h2>
         <div className="flex items-center gap-4">
           {
             <>
-              {lastRefreshTime && (
-                <RelativeTime
-                  date={lastRefreshTime}
-                  className="text-sm text-muted-foreground"
-                  type="distance"
-                />
-              )}
               <Select
-                value={statusFilter}
-                onValueChange={(value) =>
-                  setStatusFilter(value as WorkflowRunStatus | 'any')
-                }
+                value={workflowNameFilter}
+                onValueChange={(value) => {
+                  setWorkflowNameFilter(value);
+                  // Reset status filter when workflow changes
+                  setStatusFilter('any');
+                }}
                 disabled={loading}
               >
-                <SelectTrigger className="w-[140px] h-9">
-                  <SelectValue placeholder="Filter by status" />
+                <SelectTrigger className="w-[180px] h-9">
+                  <SelectValue placeholder="Filter by workflow" />
                 </SelectTrigger>
                 <SelectContent>
-                  {[
-                    'pending',
-                    'running',
-                    'completed',
-                    'failed',
-                    'paused',
-                    'cancelled',
-                  ].map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {status}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="any">Any Workflow</SelectItem>
+                  {Array.from(seenWorkflowNames)
+                    .sort()
+                    .map((name) => (
+                      <SelectItem key={name} value={name}>
+                        {parseWorkflowName(name)?.shortName || name}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={onReload}
-                    disabled={loading}
-                  >
-                    <RefreshCw className={loading ? 'animate-spin' : ''} />
-                    Refresh
-                  </Button>
+                  <div>
+                    <Select
+                      value={statusFilter}
+                      onValueChange={(value) =>
+                        setStatusFilter(value as WorkflowRunStatus | 'any')
+                      }
+                      disabled={loading || workflowNameFilter === 'any'}
+                    >
+                      <SelectTrigger className="w-[140px] h-9">
+                        <SelectValue placeholder="Filter by status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="any">Any Status</SelectItem>
+                        {Object.keys(statusMap).map((status) => (
+                          <SelectItem key={status} value={status}>
+                            {statusMap[status as WorkflowRunStatus]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </TooltipTrigger>
-                <TooltipContent>Note that this resets pages</TooltipContent>
+                <TooltipContent>
+                  {workflowNameFilter === 'any'
+                    ? 'Select a workflow first to filter by status'
+                    : 'Filter runs by status'}
+                </TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -171,6 +215,20 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                     ? 'Showing newest first'
                     : 'Showing oldest first'}
                 </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onReload}
+                    disabled={loading}
+                  >
+                    <RefreshCw className={loading ? 'animate-spin' : ''} />
+                    Refresh
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Note that this resets pages</TooltipContent>
               </Tooltip>
             </>
           }
