@@ -62,10 +62,11 @@ export default withWorkflow(nextConfig); // [!code highlight]
 
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
-    <AccordionTrigger className="[&_p]:my-0 text-lg [&_p]:text-foreground">
-      Setup Typescript Intellisense (Optional)
+    <AccordionTrigger className="text-sm">
+      ### Setup Typescript Intellisense (Optional)
     </AccordionTrigger>
     <AccordionContent className="[&_p]:my-2">
+
 To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json`:
 
 ```json title="tsconfig.json" lineNumbers
@@ -81,6 +82,43 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
 }
 ```
 
+    </AccordionContent>
+  </AccordionItem>
+</Accordion>
+
+<Accordion type="single" collapsible>
+  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
+    <AccordionTrigger className="text-sm">
+      ### Configure Proxy Handler (if applicable)
+    </AccordionTrigger>
+    <AccordionContent className="[&_p]:my-2">
+
+If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-reference/file-conventions/proxy)
+(formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
+internal paths to prevent the proxy handler from running on them.
+
+Add `.well-known/workflow/*` to your middleware's exclusion list:
+
+```typescript title="proxy.ts" lineNumbers
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function proxy(request: NextRequest) {
+  // Your middleware logic
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    // ... your existing matchers
+    {
+      source: '/((?!_next/static|_next/image|favicon.ico|.well-known/workflow/.*)', // [!code highlight]
+    },
+  ],
+};
+```
+
+This ensures that internal Workflow paths are not intercepted by your middleware, which could interfere with workflow execution and resumption.
     </AccordionContent>
   </AccordionItem>
 </Accordion>
@@ -199,9 +237,9 @@ Workflows can be triggered from API routes, Server Actions, or any server-side c
 
 </Step>
 
-<Step>
+</Steps>
 
-## Run in Development
+## Run in development
 
 To start your development server, run the following command in your terminal in the Next.js root directory:
 
@@ -223,10 +261,6 @@ Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observabilit
 npx workflow inspect runs
 # or add '--web' for an interactive Web based UI
 ```
-
-</Step>
-
-</Steps>
 
 ---
 

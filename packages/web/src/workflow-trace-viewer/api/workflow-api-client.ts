@@ -628,6 +628,15 @@ export function useWorkflowTraceViewerData(
     []
   );
 
+  const pollRun = useCallback(async (): Promise<boolean> => {
+    if (run?.completedAt) {
+      return false;
+    }
+    const result = await fetchRun(env, runId);
+    setRun(result);
+    return true;
+  }, [env, runId]);
+
   // Poll for new steps
   const pollSteps = useCallback(async (): Promise<boolean> => {
     const result = await fetchSteps(env, runId, {
@@ -691,7 +700,8 @@ export function useWorkflowTraceViewerData(
     let foundNewItems = false;
 
     try {
-      const [stepsUpdated, hooksUpdated, eventsUpdated] = await Promise.all([
+      const [_, stepsUpdated, hooksUpdated, eventsUpdated] = await Promise.all([
+        pollRun(),
         pollSteps(),
         pollHooks(),
         pollEvents(),
@@ -702,7 +712,7 @@ export function useWorkflowTraceViewerData(
     }
 
     return { foundNewItems };
-  }, [pollSteps, pollHooks, pollEvents, initialLoadCompleted]);
+  }, [pollSteps, pollHooks, pollEvents, initialLoadCompleted, pollRun]);
 
   // Initial load
   useEffect(() => {

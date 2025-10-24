@@ -456,7 +456,7 @@ export const Frameworks = () => {
           with the frameworks you already use with more coming soon.
         </h2>
       </div>
-      <div className="grid grid-cols-4 gap-3 items-center">
+      <div className="grid grid-cols-4 gap-2 items-center w-fit">
         <div className="col-span-4 w-full">
           <Badge
             variant="secondary"

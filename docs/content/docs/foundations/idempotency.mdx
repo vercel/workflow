@@ -1,0 +1,63 @@
+---
+title: Idempotency
+---
+
+# Idempotency
+
+Idempotency is a property of an operation that ensures it can be safely retried without producing duplicate side effects.
+
+In distributed systems (calling external APIs), it is not always possible to ensure an operation has only been performed once just by seeing if it succeeds.
+Consider a payment API that charges the user $10, but due to network failures, the confirmation response is lost. When the step retries (because the previous attempt was considered a failure), it will charge the user again.
+
+To prevent this, many external APIs support idempotency keys. An idempotency key is a unique identifier for an operation that can be used to deduplicate requests.
+
+---
+
+## The core pattern: use the step ID as your idempotency key
+
+Every step invocation has a stable `stepId` that stays the same across retries.
+Use it as the idempotency key when calling third-party APIs.
+
+```typescript lineNumbers
+import { getStepMetadata } from "workflow";
+
+async function chargeUser(userId: string, amount: number) {
+  "use step";
+
+  const { stepId } = getStepMetadata();
+
+  // Example: Stripe-style idempotency key
+  // This guarantees only one charge is created even if the step retries
+  await stripe.charges.create(
+    {
+      amount,
+      currency: "usd",
+      customer: userId,
+    },
+    {
+      idempotencyKey: stepId, // [!code highlight]
+    }
+  );
+}
+```
+
+Why this works:
+
+- **Stable across retries**: `stepId` does not change between attempts.
+- **Globally unique per step**: Fulfills the uniqueness requirement for an idempotency key.
+
+---
+
+## Best practices
+
+- **Always provide idempotency keys to external side effects that are not idempotent** inside steps (payments, emails, SMS, queues).
+- **Prefer `stepId` as your key**; it is stable across retries and unique per step.
+- **Keep keys deterministic**; avoid including timestamps or attempt counters.
+- **Handle 409/conflict responses** gracefully; treat them as success if the prior attempt completed.
+
+---
+
+## Related docs
+
+- Learn about retries in [Errors & Retrying](/docs/foundations/errors-and-retries)
+- API reference: [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata)
