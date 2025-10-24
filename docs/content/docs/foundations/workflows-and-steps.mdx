@@ -107,7 +107,7 @@ export async function POST() {
 ```
 
 <Callout type="info">
-Keep in mind that calling a step function outside of a workflow function will not have retry semantics nor will it be observable.
+Keep in mind that calling a step function outside of a workflow function will not have retry semantics nor will it be observable. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
 </Callout>
 
 ---
