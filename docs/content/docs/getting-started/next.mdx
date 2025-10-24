@@ -86,6 +86,43 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
   </AccordionItem>
 </Accordion>
 
+<Accordion type="single" collapsible>
+  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
+    <AccordionTrigger className="text-sm">
+      ### Configure Proxy Handler (if applicable)
+    </AccordionTrigger>
+    <AccordionContent className="[&_p]:my-2">
+
+If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-reference/file-conventions/proxy)
+(formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
+internal paths to prevent the proxy handler from running on them.
+
+Add `.well-known/workflow/*` to your middleware's exclusion list:
+
+```typescript title="proxy.ts" lineNumbers
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function proxy(request: NextRequest) {
+  // Your middleware logic
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    // ... your existing matchers
+    {
+      source: '/((?!_next/static|_next/image|favicon.ico|.well-known/workflow/.*)', // [!code highlight]
+    },
+  ],
+};
+```
+
+This ensures that internal Workflow paths are not intercepted by your middleware, which could interfere with workflow execution and resumption.
+    </AccordionContent>
+  </AccordionItem>
+</Accordion>
+
 </Step>
 
 <Step>
@@ -197,39 +234,6 @@ This Route Handler creates a `POST` request endpoint at `/api/signup` that will 
 <Callout>
 Workflows can be triggered from API routes, Server Actions, or any server-side code.
 </Callout>
-
-</Step>
-
-<Step>
-
-## Configure Proxy Handler (if applicable)
-
-If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-reference/file-conventions/proxy)
-(formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
-internal paths to prevent the proxy handler from running on them.
-
-Add `.well-known/workflow/*` to your middleware's exclusion list:
-
-```typescript title="proxy.ts" lineNumbers
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-
-export function proxy(request: NextRequest) {
-  // Your middleware logic
-  return NextResponse.next();
-}
-
-export const config = {
-  matcher: [
-    // ... your existing matchers
-    {
-      source: '/((?!_next/static|_next/image|favicon.ico|.well-known/workflow/.*)', // [!code highlight]
-    },
-  ],
-};
-```
-
-This ensures that internal Workflow paths are not intercepted by your middleware, which could interfere with workflow execution and resumption.
 
 </Step>
 
