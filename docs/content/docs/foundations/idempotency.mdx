@@ -44,7 +44,7 @@ async function chargeUser(userId: string, amount: number) {
 Why this works:
 
 - **Stable across retries**: `stepId` does not change between attempts.
-- **Globally unique per step**: Furfills the uniqueness requirement for an idempotency key.
+- **Globally unique per step**: Fulfills the uniqueness requirement for an idempotency key.
 
 ---
 
