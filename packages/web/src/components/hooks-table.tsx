@@ -237,8 +237,8 @@ export function HooksTable({
       ) : !loading && (!hooks || hooks.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">
           No active hooks found.{' '}
-          <DocsLink href="api-reference/vercel-workflow/create-hook">
-            Learn about hooks
+          <DocsLink href="https://useworkflow.dev/docs/api-reference/workflow/create-hook">
+            Learn how to create a hook
           </DocsLink>
         </div>
       ) : (
