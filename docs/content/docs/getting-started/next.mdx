@@ -201,7 +201,40 @@ Workflows can be triggered from API routes, Server Actions, or any server-side c
 
 <Step>
 
-## Run in Development
+## Configure Proxy Handler (if applicable)
+
+If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-reference/file-conventions/proxy)
+(formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
+internal paths to prevent the proxy handler from running on them.
+
+Add `.well-known/workflow/*` to your middleware's exclusion list:
+
+```typescript title="proxy.ts" lineNumbers
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function proxy(request: NextRequest) {
+  // Your middleware logic
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    // ... your existing matchers
+    {
+      source: '/((?!_next/static|_next/image|favicon.ico|.well-known/workflow/.*)', // [!code highlight]
+    },
+  ],
+};
+```
+
+This ensures that internal Workflow paths are not intercepted by your middleware, which could interfere with workflow execution and resumption.
+
+</Step>
+
+</Steps>
+
+## Run in development
 
 To start your development server, run the following command in your terminal in the Next.js root directory:
 
@@ -223,10 +256,6 @@ Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observabilit
 npx workflow inspect runs
 # or add '--web' for an interactive Web based UI
 ```
-
-</Step>
-
-</Steps>
 
 ---
 
