@@ -92,14 +92,17 @@ async function updateUser(userId: string) {
   await db.insert(...);
 }
 
-// 🚫 No need to duplicate business logic here
-export async function POST() {
-  await db.insert(...);
+// Used inside a workflow
+export async function userOnboardingWorkflow(userId: string) {
+  "use workflow";
+  await updateUser(userId);
+  // ... more steps
 }
 
-// ✅ Reuse the step function instead
+// Used directly outside a workflow
 export async function POST() {
   await updateUser("123");
+  // ... more logic
 }
 ```
 
