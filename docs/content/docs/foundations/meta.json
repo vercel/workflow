@@ -4,6 +4,7 @@
     "workflows-and-steps",
     "control-flow-patterns",
     "errors-and-retries",
+    "idempotency",
     "hooks",
     "serialization"
   ],

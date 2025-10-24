@@ -2,7 +2,7 @@
 title: getStepMetadata
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
+import { generateDefinition } from "@/lib/tsdoc";
 
 # `getStepMetadata`
 
@@ -10,47 +10,75 @@ Returns metadata available in the current step function.
 
 You may want to use this function when you need to:
 
-* Track retry attempts in error handling
-* Access timing information of a step and execution metadata
+- Track retry attempts in error handling
+- Access timing information of a step and execution metadata
+- Generate idempotency keys for external APIs
 
 <Callout type="warn">
-This function can only be called inside a step function.
+  This function can only be called inside a step function.
 </Callout>
 
 ```typescript lineNumbers
-import { getStepMetadata } from "workflow"
+import { getStepMetadata } from "workflow";
 
 async function testWorkflow() {
-    "use workflow"
-    await logStepId()
+  "use workflow";
+  await logStepId();
 }
 
 async function logStepId() {
-    "use step"
-    const ctx = getStepMetadata() // [!code highlight]
-    console.log(ctx.stepId) // Grab the current step ID
+  "use step";
+  const ctx = getStepMetadata(); // [!code highlight]
+  console.log(ctx.stepId); // Grab the current step ID
 }
 ```
+
+### Example: Use `stepId` as an idempotency key
+
+```typescript lineNumbers
+import { getStepMetadata } from "workflow";
+
+async function chargeUser(userId: string, amount: number) {
+  "use step";
+  const { stepId } = getStepMetadata();
+
+  await stripe.charges.create(
+    {
+      amount,
+      currency: "usd",
+      customer: userId,
+    },
+    {
+      idempotencyKey: `charge:${stepId}`, // [!code highlight]
+    }
+  );
+}
+```
+
+<Callout type="info">
+  Learn more about patterns and caveats in the{" "}
+  <a href="/docs/foundations/idempotency">Idempotency</a> guide.
+</Callout>
 
 ## API Signature
 
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+  definition={generateDefinition({
+    code: `
 import { getStepMetadata } from "workflow";
-export default getStepMetadata;`
-})}
-showSections={['parameters']}
+export default getStepMetadata;`,
+  })}
+  showSections={["parameters"]}
 />
 
 ### Returns
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+  definition={generateDefinition({
+    code: `
 import type { StepMetadata } from "workflow";
-export default StepMetadata;`
-})}
+export default StepMetadata;`,
+  })}
 />
