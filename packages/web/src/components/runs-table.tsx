@@ -173,7 +173,6 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                       `${pathname}?${createQueryString('workflow', value)}`
                     );
                   }
-                  console.log({ workflowNameFilter });
                 }}
                 disabled={loading}
               >
