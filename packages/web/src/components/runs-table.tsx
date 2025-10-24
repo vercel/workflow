@@ -80,6 +80,9 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   );
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
 
+  const statusFilterRequiresWorkflowNameFilter =
+    config.backend?.includes('vercel');
+
   const {
     data,
     error,
@@ -189,7 +192,8 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                   </div>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {workflowNameFilter === 'any'
+                  {statusFilterRequiresWorkflowNameFilter &&
+                  workflowNameFilter === 'any'
                     ? 'Select a workflow first to filter by status'
                     : 'Filter runs by status'}
                 </TooltipContent>
