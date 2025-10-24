@@ -1,5 +1,19 @@
 # @workflow/world-postgres
 
+## 4.0.1
+
+### Patch Changes
+
+- 4ca9a3e: Initial publish
+- 4ca9a3e: Add "license" and "repository" fields to `package.json` file
+- Updated dependencies [4ca9a3e]
+- Updated dependencies [4ca9a3e]
+- Updated dependencies [4ca9a3e]
+- Updated dependencies [4ca9a3e]
+  - @workflow/world-local@4.0.1
+  - @workflow/errors@4.0.1
+  - @workflow/world@4.0.1
+
 ## 4.0.1-beta.1
 
 ### Patch Changes

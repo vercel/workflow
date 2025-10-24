@@ -143,4 +143,210 @@ describe('workflow-node-module-error plugin', () => {
       })
     ).resolves.toBeDefined();
   });
+
+  it('should allow Node.js imports from workspace packages outside working directory', async () => {
+    // This test simulates a monorepo workspace package importing Node.js modules
+    // The plugin should NOT error because the import is from an external package
+
+    // Mock an onResolve call that would happen for a workspace package
+    let resolveHandler: any;
+    const mockPlugin = createNodeModuleErrorPlugin();
+    const mockBuild = {
+      initialOptions: {
+        absWorkingDir: '/Users/test/project/apps/web',
+      },
+      onResolve: (_opts: any, handler: any) => {
+        resolveHandler = handler;
+      },
+    };
+
+    // Setup the plugin
+    mockPlugin.setup(mockBuild as any);
+
+    // Test that imports from workspace packages (outside working dir) are allowed
+    // This simulates an import of 'crypto' from a workspace package
+    const result = resolveHandler({
+      path: 'crypto',
+      importer: '/Users/test/project/packages/database/dist/index.js', // Outside working dir
+    });
+
+    // Should return null (no error) because it's from a workspace package
+    expect(result).toBeNull();
+  });
+
+  it('should still error on Node.js imports from project source', async () => {
+    // Mock an onResolve call for an import from within the project
+    let resolveHandler: any;
+    const mockPlugin = createNodeModuleErrorPlugin();
+    const mockBuild = {
+      initialOptions: {
+        absWorkingDir: '/Users/test/project/apps/web',
+      },
+      onResolve: (_opts: any, handler: any) => {
+        resolveHandler = handler;
+      },
+    };
+
+    // Setup the plugin
+    mockPlugin.setup(mockBuild as any);
+
+    // Test that imports from within the project are still blocked
+    const result = resolveHandler({
+      path: 'fs',
+      importer: '/Users/test/project/apps/web/workflows/my-workflow.ts', // Within working dir
+    });
+
+    // Should return an error because it's from project source code
+    expect(result).toBeDefined();
+    expect(result?.errors?.[0]?.text).toContain('Cannot use Node.js module');
+  });
+
+  it('should error on Node.js imports from helper files imported by workflows', async () => {
+    // This tests the bug fix for: workflow -> helper -> fs
+    // The helper file is in the workflow graph and should be flagged
+    let resolveHandler:
+      | Parameters<esbuild.PluginBuild['onResolve']>[1]
+      | undefined;
+    const mockPlugin = createNodeModuleErrorPlugin({
+      workflowFiles: ['/Users/test/project/apps/web/workflows/my-workflow.ts'],
+    });
+    const mockBuild: esbuild.PluginBuild = {
+      initialOptions: {
+        absWorkingDir: '/Users/test/project/apps/web',
+      },
+      esbuild: esbuild as unknown as typeof import('esbuild'),
+      onResolve: (_opts, handler) => {
+        resolveHandler = handler;
+      },
+      onLoad: () => {},
+      onStart: () => {},
+      onEnd: () => {},
+      onDispose: () => {},
+      resolve: async () => ({
+        errors: [],
+        warnings: [],
+        path: '',
+        external: false,
+        sideEffects: true,
+        namespace: 'file',
+        suffix: '',
+        pluginData: undefined,
+      }),
+    };
+
+    mockPlugin.setup(mockBuild);
+    if (!resolveHandler) throw new Error('resolveHandler not set');
+    const handler = resolveHandler;
+
+    // Populate the import graph: workflow -> helper
+    const { importParents } = await import(
+      './discover-entries-esbuild-plugin.js'
+    );
+    importParents.set(
+      '/Users/test/project/apps/web/workflows/my-workflow.ts',
+      '/Users/test/project/apps/web/utils/helper.ts'
+    );
+
+    // Node.js import from helper should be flagged
+    const result = await handler({
+      path: 'fs',
+      importer: '/Users/test/project/apps/web/utils/helper.ts',
+      namespace: 'file',
+      resolveDir: '/',
+      kind: 'import-statement',
+      pluginData: undefined,
+      with: {},
+    });
+
+    expect(result).toBeDefined();
+    expect((result as any)?.errors?.[0]?.text).toContain(
+      'Cannot use Node.js module'
+    );
+  });
+
+  it('should not misclassify similarly named sibling workspaces as project source', async () => {
+    let resolveHandler:
+      | Parameters<esbuild.PluginBuild['onResolve']>[1]
+      | undefined;
+
+    const mockPlugin = createNodeModuleErrorPlugin({
+      workflowFiles: ['/project/apps/web/workflows/flow.ts'],
+    });
+
+    const mockBuild: esbuild.PluginBuild = {
+      initialOptions: {
+        absWorkingDir: '/project/apps/web',
+      },
+      esbuild: esbuild as unknown as typeof import('esbuild'),
+      onResolve: (_opts, handler) => {
+        resolveHandler = handler;
+      },
+      onLoad: () => {},
+      onStart: () => {},
+      onEnd: () => {},
+      onDispose: () => {},
+      resolve: async () => ({
+        errors: [],
+        warnings: [],
+        path: '',
+        external: false,
+        sideEffects: true,
+        namespace: 'file',
+        suffix: '',
+        pluginData: undefined,
+      }),
+    };
+
+    mockPlugin.setup(mockBuild);
+    expect(resolveHandler).toBeDefined();
+    if (!resolveHandler) throw new Error('resolveHandler was not set');
+    const handler = resolveHandler;
+
+    const mkArgs = (p: string, importer: string): esbuild.OnResolveArgs => ({
+      path: p,
+      importer,
+      namespace: 'file',
+      resolveDir: '/',
+      kind: 'import-statement',
+      pluginData: undefined,
+      with: {},
+    });
+
+    // Sibling directory with similar name prefix should NOT be treated as inside workingDir
+    const result1 = await handler(
+      mkArgs('fs', '/project/apps/web-admin/dist/index.js')
+    );
+    expect(result1).toBeNull();
+
+    // Another sibling with similar prefix
+    const result2 = await handler(
+      mkArgs('crypto', '/project/apps/web-components/lib/utils.js')
+    );
+    expect(result2).toBeNull();
+
+    // Project source NOT in workflow graph should be allowed (enforced only for workflow entries/graph)
+    const result3 = await handler(
+      mkArgs('fs', '/project/apps/web/src/utils.js')
+    );
+    expect(result3).toBeNull();
+
+    // The actual workflow file should error
+    const result4 = (await handler(
+      mkArgs('crypto', '/project/apps/web/workflows/flow.ts')
+    )) as any;
+    expect(result4).toBeDefined();
+    expect(result4?.errors?.[0]?.text).toContain('Cannot use Node.js module');
+
+    // node_modules exemption still applies
+    const result5 = await handler(
+      mkArgs('fs', '/project/apps/web/node_modules/some-package/index.js')
+    );
+    expect(result5).toBeNull();
+
+    // Files without trailing slash edge case (webapp != web)
+    const result6 = await handler(
+      mkArgs('fs', '/project/apps/webapp/index.js')
+    );
+    expect(result6).toBeNull();
+  });
 });

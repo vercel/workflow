@@ -397,13 +397,14 @@ export abstract class BaseBuilder {
       plugins: [
         createSwcPlugin({
           mode: 'workflow',
+          entriesToBundle: workflowFiles,
           tsBaseUrl,
           tsPaths,
           workflowManifest,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
-        createNodeModuleErrorPlugin(),
+        createNodeModuleErrorPlugin({ workflowFiles }),
       ],
     });
     const interimBundle = await interimBundleCtx.rebuild();
