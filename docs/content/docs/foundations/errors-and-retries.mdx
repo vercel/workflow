@@ -113,8 +113,8 @@ async function callApi(endpoint: string) {
   if (response.status >= 500) {
     // Exponential backoffs
     throw new RetryableError("Backing off...", {
-      retryAfter: metadata.attempt ** 2,
-    }); // [!code highlight]
+      retryAfter: metadata.attempt ** 2,  // [!code highlight]
+    });
   }
 
   if (response.status === 404) {
