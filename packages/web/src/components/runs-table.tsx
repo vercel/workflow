@@ -189,7 +189,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                 <TooltipTrigger asChild>
                   <div>
                     <Select
-                      value={status ?? 'all'}
+                      value={status || 'all'}
                       onValueChange={(value) => {
                         if (value === 'all') {
                           const params = new URLSearchParams(
@@ -214,16 +214,18 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All</SelectItem>
-                        {Object.values(statusMap).map(({ label, color }) => (
-                          <SelectItem key={label} value={label}>
-                            <div className="flex items-center">
-                              <span
-                                className={`${color} size-1.5 rounded-full mr-2`}
-                              />
-                              {label}
-                            </div>
-                          </SelectItem>
-                        ))}
+                        {Object.entries(statusMap).map(
+                          ([status, { label, color }]) => (
+                            <SelectItem key={status} value={status}>
+                              <div className="flex items-center">
+                                <span
+                                  className={`${color} size-1.5 rounded-full mr-2`}
+                                />
+                                {label}
+                              </div>
+                            </SelectItem>
+                          )
+                        )}
                       </SelectContent>
                     </Select>
                   </div>
