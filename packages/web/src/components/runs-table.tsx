@@ -75,10 +75,6 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     | undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [workflowNameFilter, setWorkflowNameFilter] = useState<string>('any');
-  const [statusFilter, setStatusFilter] = useState<WorkflowRunStatus | 'any'>(
-    'any'
-  );
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
@@ -170,6 +166,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                   if (value === 'all') {
                     const params = new URLSearchParams(searchParams.toString());
                     params.delete('workflow');
+                    params.delete('status');
                     router.push(`${pathname}?${params.toString()}`);
                   } else {
                     router.push(
