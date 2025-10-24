@@ -69,10 +69,14 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const status = searchParams.get('status') as
-    | WorkflowRunStatus
-    | 'all'
-    | undefined;
+  // Validate status parameter - only allow known valid statuses or 'all'
+  const rawStatus = searchParams.get('status');
+  const validStatuses = Object.keys(statusMap) as WorkflowRunStatus[];
+  const status: WorkflowRunStatus | 'all' | undefined =
+    rawStatus === 'all' ||
+    (rawStatus && validStatuses.includes(rawStatus as WorkflowRunStatus))
+      ? (rawStatus as WorkflowRunStatus | 'all')
+      : undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
