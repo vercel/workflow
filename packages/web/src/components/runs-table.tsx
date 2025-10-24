@@ -75,19 +75,23 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     | undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-
-  // TODO: This is a workaround. We should be getting a list of valid workflow names
-  // from the manifest, which we need to put on the World interface.
-  const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
-    new Set()
+  const [workflowNameFilter, setWorkflowNameFilter] = useState<string>('any');
+  const [statusFilter, setStatusFilter] = useState<WorkflowRunStatus | 'any'>(
+    'any'
   );
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
 
+  // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
     config.backend?.includes('vercel');
+  // TODO: This is a workaround. We should be getting a list of valid workflow names
+  // from the manifest, which we need to put on the World interface.
+  const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
+    new Set()
+  );
 
   const {
     data,
