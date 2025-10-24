@@ -169,9 +169,18 @@ export function createStorage(basedir: string): Storage {
         const result = await paginatedFileSystemQuery({
           directory: path.join(basedir, 'runs'),
           schema: WorkflowRunSchema,
-          filter: params?.workflowName
-            ? (run) => run.workflowName === params.workflowName
-            : undefined,
+          filter: (run) => {
+            if (
+              params?.workflowName &&
+              run.workflowName !== params.workflowName
+            ) {
+              return false;
+            }
+            if (params?.status && run.status !== params.status) {
+              return false;
+            }
+            return true;
+          },
           sortOrder: params?.pagination?.sortOrder ?? 'desc',
           limit: params?.pagination?.limit,
           cursor: params?.pagination?.cursor,
