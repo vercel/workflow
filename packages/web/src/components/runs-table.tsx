@@ -1,6 +1,7 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
+import type { WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
   ArrowDownAZ,
@@ -13,6 +14,13 @@ import { useMemo, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { DocsLink } from '@/components/ui/docs-link';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -49,6 +57,9 @@ interface RunsTableProps {
  */
 export function RunsTable({ config, onRunClick }: RunsTableProps) {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [statusFilter, setStatusFilter] = useState<WorkflowRunStatus | 'any'>(
+    'any'
+  );
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
@@ -65,6 +76,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     pageInfo,
   } = useWorkflowRuns(env, {
     sortOrder,
+    status: statusFilter === 'any' ? undefined : statusFilter,
   });
 
   const loading = data.isLoading;
@@ -99,6 +111,31 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                   type="distance"
                 />
               )}
+              <Select
+                value={statusFilter}
+                onValueChange={(value) =>
+                  setStatusFilter(value as WorkflowRunStatus | 'any')
+                }
+                disabled={loading}
+              >
+                <SelectTrigger className="w-[140px] h-9">
+                  <SelectValue placeholder="Filter by status" />
+                </SelectTrigger>
+                <SelectContent>
+                  {[
+                    'pending',
+                    'running',
+                    'completed',
+                    'failed',
+                    'paused',
+                    'cancelled',
+                  ].map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {status}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
