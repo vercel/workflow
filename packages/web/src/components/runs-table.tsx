@@ -148,7 +148,9 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ) : !loading && (!data.data || data.data.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">
           No workflow runs found.{' '}
-          <DocsLink href="foundations/concepts">Learn about workflows</DocsLink>
+          <DocsLink href="https://useworkflow.dev/docs/foundations/workflows-and-steps">
+            Learn how to create a workflow
+          </DocsLink>
         </div>
       ) : (
         <>

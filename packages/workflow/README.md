@@ -8,8 +8,8 @@
   <h1>Workflow Development Kit</h1>
 
 <a href="https://vercel.com"><img alt="Vercel logo" src="https://img.shields.io/badge/MADE%20BY%20Vercel-000000.svg?style=for-the-badge&logo=Vercel&labelColor=000"></a>
-<a href="https://www.npmjs.com/package/next"><img alt="NPM version" src="https://img.shields.io/npm/v/workflow?style=for-the-badge&labelColor=000000"></a>
-<a href="https://github.com/vercel/workflow/blob/canary/license.md"><img alt="License" src="https://img.shields.io/npm/l/workflow.svg?style=for-the-badge&labelColor=000000"></a>
+<a href="https://www.npmjs.com/package/workflow"><img alt="NPM version" src="https://img.shields.io/npm/v/workflow?style=for-the-badge&labelColor=000000"></a>
+<a href="https://github.com/vercel/workflow/blob/main/LICENSE.md"><img alt="License" src="https://img.shields.io/npm/l/workflow.svg?style=for-the-badge&labelColor=000000"></a>
 <a href="https://github.com/vercel/workflow/discussions"><img alt="Join the community on GitHub" src="https://img.shields.io/badge/Join%20the%20community-blueviolet.svg?style=for-the-badge&logo=Github&labelColor=000000&logoWidth=20"></a>
 
 </div>
@@ -42,7 +42,7 @@ The initial core contributing engineers are
 - Peter Wielander ([@VaguelySerious](https://github.com/VaguelySerious))
 - Pranay Prakash ([@pranaygp](https://github.com/pranaygp))
 
-The Workflow DevKit Logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
+The Workflow DevKit logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
 
 ---
 

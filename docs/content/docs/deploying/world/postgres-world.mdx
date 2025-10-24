@@ -2,7 +2,47 @@
 title: Postgres World
 ---
 
+import { Callout } from '@/components/ui/callout';
+
 # Postgres World
 
-Coming soon...
+<Callout type="wip">
+
+This page is a work in progress.
+
+</Callout>
+
+<p />
+
+<Callout type="info">
+
+**This world is a reference implementation, not a production-ready product.** We do not recommend using it in production. However, you can definitely use it as inspiration for a real-world database-backed solution that might run workflow and step workers separately from the triggering applications.
+
+</Callout>
+
+The PostgreSQL world is a reference implementation of a [world](/docs/deploying/world) that's fully backed by PostgreSQL, including job processing (using [pg-boss](https://github.com/timgit/pg-boss)) and streaming (using PostgreSQL's NOTIFY and LISTEN).
+
+This world is designed for long-running processes, so it can receive and dispatch events from a PostgreSQL database, and isn't meant to be deployed on serverless platforms like Vercel due to that nature.
+
+
+## Usage
+
+Install the package and set the world target using the following commands:
+
+```bash
+# Install the package
+$ npm install @workflow/world-postgres
+# Set the world target environment variable
+$ export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+```
+
+## Configuration
+
+Configure the world using the following environments variables:
+
+| Variable                               | Description                                                  | Default                                         |
+| -------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------- |
+| `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `postgres://world:world@localhost:5432/world` |
+| `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | `workflow_`                                               |
+| `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `10`                                            |
 

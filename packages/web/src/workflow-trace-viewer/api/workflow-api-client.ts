@@ -814,6 +814,7 @@ export function useWorkflowResourceData(
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setData(null);
     setError(null);
 
     try {

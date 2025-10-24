@@ -243,7 +243,7 @@ function SidebarItem({
               <ChevronDown
                 className={cn(
                   'size-3.5 transition-transform',
-                  !isOpen && 'rotate-90'
+                  !isOpen && '-rotate-90'
                 )}
               />
             </CollapsibleTrigger>
