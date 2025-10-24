@@ -10,7 +10,8 @@ import {
   ChevronRight,
   RefreshCw,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useCallback, useMemo, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { DocsLink } from '@/components/ui/docs-link';
@@ -56,10 +57,11 @@ interface RunsTableProps {
  * which fetches all data upfront and paginates client-side.
  */
 export function RunsTable({ config, onRunClick }: RunsTableProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const status = searchParams.get('status') as WorkflowRunStatus | undefined;
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [statusFilter, setStatusFilter] = useState<WorkflowRunStatus | 'any'>(
-    'any'
-  );
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
@@ -74,10 +76,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     hasPreviousPage,
     reload,
     pageInfo,
-  } = useWorkflowRuns(env, {
-    sortOrder,
-    status: statusFilter === 'any' ? undefined : statusFilter,
-  });
+  } = useWorkflowRuns(env, { sortOrder, status });
 
   const loading = data.isLoading;
 
@@ -89,6 +88,16 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   const toggleSortOrder = () => {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
   };
+
+  const createQueryString = useCallback(
+    (name: string, value: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set(name, value);
+
+      return params.toString();
+    },
+    [searchParams]
+  );
 
   // Show skeleton for initial load
   if (loading && !data?.data) {
@@ -112,26 +121,33 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                 />
               )}
               <Select
-                value={statusFilter}
-                onValueChange={(value) =>
-                  setStatusFilter(value as WorkflowRunStatus | 'any')
-                }
+                value={status ?? 'all'}
+                onValueChange={(value) => {
+                  if (value === 'all') {
+                    const params = new URLSearchParams(searchParams.toString());
+                    params.delete('status');
+                    router.push(`${pathname}?${params.toString()}`);
+                  } else {
+                    router.push(
+                      `${pathname}?${createQueryString('status', value)}`
+                    );
+                  }
+                }}
                 disabled={loading}
               >
                 <SelectTrigger className="w-[140px] h-9">
                   <SelectValue placeholder="Filter by status" />
                 </SelectTrigger>
                 <SelectContent>
-                  {[
-                    'pending',
-                    'running',
-                    'completed',
-                    'failed',
-                    'paused',
-                    'cancelled',
-                  ].map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {status}
+                  <SelectItem value="all">All</SelectItem>
+                  {statusOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      <div className="flex items-center">
+                        <span
+                          className={`${option.color} size-1.5 rounded-full mr-2`}
+                        />
+                        {option.label}
+                      </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -264,3 +280,28 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     </div>
   );
 }
+
+const statusOptions = [
+  {
+    label: 'Pending',
+    value: 'pending',
+    color: 'bg-neutral-600 dark:bg-neutral-400',
+  },
+  { label: 'Running', value: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
+  {
+    label: 'Completed',
+    value: 'completed',
+    color: 'bg-green-600 dark:bg-green-400',
+  },
+  { label: 'Failed', value: 'failed', color: 'bg-red-600 dark:bg-red-400' },
+  {
+    label: 'Paused',
+    value: 'paused',
+    color: 'bg-yellow-600 dark:bg-yellow-400',
+  },
+  {
+    label: 'Cancelled',
+    value: 'cancelled',
+    color: 'bg-gray-600 dark:bg-gray-400',
+  },
+];
