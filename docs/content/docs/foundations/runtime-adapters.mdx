@@ -20,7 +20,7 @@ The Workflow DevKit architecture is as follows:
 
 1. **Build-time transformation**: Workflow code is transformed by a framework agnostic compiler plugin
 2. **Generated handlers**: The build process generates HTTP handlers in `.well-known/workflow/v1/` bundled with your step, workflow, and webhook code
-3. **Runtime integration**: Your application server exposes these handlers as HTTP endpoints
+3. **Runtime integration**: Your application server exposes these handlers as HTTP endpoints ([learn about how security is handled](#security))
 4. **Execution orchestration**: The Workflow DevKit communicates with these endpoints to orchestrate durable execution
 
 ```mermaid
@@ -112,6 +112,43 @@ Executes individual steps within workflows.
 **Response**: Binary payload with step results
 
 The exact protocol is handled by the generated `flow.js` and `step.js` files. Your adapter just needs to route HTTP requests to these handlers.
+
+---
+
+## Security
+
+A natural question when exposing these HTTP endpoints is: how are they secured?
+
+The answer depends on the **world abstraction** you're using. Different world implementations provide different security mechanisms:
+
+### World-Specific Security
+
+**Vercel (via `@workflow/world-vercel`):**
+
+- Uses Vercel Queue as the backend orchestration layer
+- Vercel Queue will soon support **private invoke**, making these routes not publicly accessible from the internet
+- The handler receives only a **message ID** from the queue, which must be retrieved from the Vercel Queue backend
+- This architecture makes it impossible to craft custom payloads and directly invoke the endpoints with arbitrary data
+- Even if someone discovers the endpoint URL, they cannot execute workflows without valid message IDs from the queue system
+
+**Custom Implementations:**
+
+- Different world implementations can implement their own security measures
+- Framework middleware can add authentication and authorization layers
+- You can implement API key verification, JWT validation, or other authentication schemes
+- You can use network-level security (VPCs, private networks, firewall rules)
+- You can implement rate limiting and request validation
+
+### Best Practices
+
+When building your own world or adapter, consider:
+
+- **Authentication**: Verify that requests come from trusted sources (your orchestration backend, not external clients)
+- **Payload validation**: Ensure request payloads are cryptographically signed or come from a trusted internal system
+- **Network isolation**: Run workflow endpoints on private networks when possible
+- **Rate limiting**: Protect against abuse even from internal systems
+
+The generated handlers themselves don't include authentication because the security model is delegated to the world abstraction layer, allowing each runtime environment to implement the most appropriate security mechanism for its deployment context.
 
 ---
 
