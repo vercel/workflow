@@ -4,9 +4,9 @@
     "workflows-and-steps",
     "control-flow-patterns",
     "errors-and-retries",
-    "idempotency",
     "hooks",
-    "serialization"
+    "serialization",
+    "idempotency"
   ],
   "defaultOpen": true
 }
