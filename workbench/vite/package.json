@@ -9,7 +9,6 @@
   },
   "devDependencies": {
     "ai": "catalog:",
-    "hono": "^4.10.2",
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",
     "openai": "^6.6.0",

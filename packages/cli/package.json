@@ -42,13 +42,13 @@
     "@workflow/tsconfig": "workspace:*"
   },
   "dependencies": {
-    "@oclif/core": "^4.7.2",
-    "@oclif/plugin-help": "^6.2.33",
+    "@oclif/core": "^4.0.0",
+    "@oclif/plugin-help": "^6.0.0",
     "@swc/core": "1.11.24",
     "@types/watchpack": "2.4.4",
-    "@workflow/core": "workspace:*",
-    "@workflow/errors": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "@workflow/core": "workspace:*",
     "@workflow/web": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",
@@ -67,9 +67,9 @@
     "open": "^10.2.0",
     "ora": "^8.2.0",
     "terminal-link": "^5.0.0",
-    "tinyglobby": "^0.2.15",
+    "tinyglobby": "^0.2.14",
     "watchpack": "2.4.4",
-    "xdg-app-paths": "^5.5.1",
+    "xdg-app-paths": "^5.1.0",
     "zod": "catalog:"
   }
 }
