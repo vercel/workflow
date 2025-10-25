@@ -1,5 +1,4 @@
 import type { World } from '@workflow/world';
-import { auth } from './auth.js';
 import { config } from './config.js';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
@@ -24,6 +23,5 @@ export function createEmbeddedWorld({
     ...createQueue(queuePort),
     ...createStorage(dir),
     ...createStreamer(dir),
-    ...auth,
   };
 }
