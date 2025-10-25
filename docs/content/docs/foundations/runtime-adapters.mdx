@@ -82,6 +82,14 @@ When you run `workflow build`, it:
 }
 ```
 
+<Callout type="info">
+  **No Vendor Lock-In**: `workflow build` is completely agnostic from the world
+  abstraction and runtime environment. It outputs standard JavaScript HTTP
+  handler code that works anywhere. This separation means you can deploy your
+  workflows to any JavaScript runtime without being locked into a specific
+  platform or provider.
+</Callout>
+
 ### 3. Generated Artifacts
 
 The build process creates two critical files:
