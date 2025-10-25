@@ -90,11 +90,14 @@ export const WorkflowTraceViewer = ({
 
     const runSpan = runToSpan(run, runLevelEvents, now);
     const spans = [runSpan, ...stepSpans, ...hookSpans];
-    const sortedSpans = spans.slice().sort((a, b) => {
-      const aTime = new Date(a.startTime[0]).getTime();
-      const bTime = new Date(b.startTime[0]).getTime();
-      return aTime - bTime;
-    });
+    const sortedSpans = [
+      runSpan,
+      ...spans.slice().sort((a, b) => {
+        const aTime = new Date(a.startTime[0]).getTime();
+        const bTime = new Date(b.startTime[0]).getTime();
+        return aTime - bTime;
+      }),
+    ];
 
     const sortedCascadingSpans = sortedSpans.map((span, index) => {
       const parentSpanId =
@@ -104,8 +107,6 @@ export const WorkflowTraceViewer = ({
         parentSpanId,
       };
     });
-
-    console.log(sortedCascadingSpans);
 
     return {
       traceId: run.runId,
