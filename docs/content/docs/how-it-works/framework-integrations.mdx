@@ -229,9 +229,16 @@ The generated handlers themselves don't include authentication because the secur
 
 ## Reference Implementation: Bun
 
-Here's how the two components are implemented for Bun:
+Bun is a special case because it serves as both a **runtime** and a **framework**:
 
-### 1. Bun Transformation
+- **Runtime**: Bun needs transformations applied to compile workflow code
+- **Framework**: `Bun.serve()` handles HTTP routing and request handling
+
+Here's how both components are implemented:
+
+### 1. Runtime Transformation
+
+This transformation applies to the **Bun runtime** to resolve workflow code during the build process:
 
 ```typescript
 import { plugin } from "bun";
@@ -269,14 +276,16 @@ plugin({
 
 **Key aspects:**
 
-- Uses Bun's native `plugin()` API
+- Uses Bun's native `plugin()` API to hook into the build process
 - Checks for workflow directives in all TypeScript and JavaScript files
 - Only transforms files that contain `"use step"` or `"use workflow"`
 - Uses `Bun.file()` for file reading
 - Applies SWC transformation with workflow plugin
 - Returns transformed code with TypeScript loader
 
-### 2. HTTP Server (Runtime Integration)
+### 2. HTTP Routing
+
+This integration uses **`Bun.serve()`** as the framework to route HTTP requests to the workflow handlers:
 
 ```typescript
 import { start } from "workflow/api";
@@ -316,8 +325,9 @@ console.log(`Server listening on http://localhost:${server.port}`);
 **Key aspects:**
 
 - Imports generated `flow.js` and `step.js` handlers
-- Uses Bun's routing API to map endpoints
+- Uses `Bun.serve()`'s routing API to map HTTP endpoints to handlers
 - Delegates POST requests directly to generated handlers
+- The framework handles request routing; the runtime handles code execution
 - Example endpoint shows how to start a workflow using `start()`
 
 ### Example Workflow Definition
