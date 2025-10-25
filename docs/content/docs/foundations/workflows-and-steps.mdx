@@ -83,7 +83,32 @@ By default, steps have a maximum of 3 retry attempts before they fail and propag
 Step functions are primarily meant to be used inside a workflow.
 </Callout>
 
-Calling a step from outside a workflow, or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op).
+Calling a step from outside a workflow, or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op). This means you can reuse step functions in other parts of your codebase without needing to duplicate business logic.
+
+
+```typescript lineNumbers
+async function updateUser(userId: string) {
+  "use step";
+  await db.insert(...);
+}
+
+// Used inside a workflow
+export async function userOnboardingWorkflow(userId: string) {
+  "use workflow";
+  await updateUser(userId);
+  // ... more steps
+}
+
+// Used directly outside a workflow
+export async function POST() {
+  await updateUser("123");
+  // ... more logic
+}
+```
+
+<Callout type="info">
+Keep in mind that calling a step function outside of a workflow function will not have retry semantics nor will it be observable. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
+</Callout>
 
 ---
 

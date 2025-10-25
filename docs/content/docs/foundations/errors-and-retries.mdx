@@ -132,3 +132,61 @@ async function callApi(endpoint: string) {
 }
 callApi.maxRetries = 5;
 ```
+
+## Rolling back failed steps
+
+When a workflow fails partway through, it can leave the system in an inconsistent state.
+A common pattern to address this is "rollbacks": for each successful step, record a corresponding rollback action that can undo it.
+If a later step fails, run the rollbacks in reverse order to roll back.
+
+Key guidelines:
+
+- Make rollbacks steps as well, so they are durable and benefit from retries.
+- Ensure rollbacks are [idempotent](/docs/foundations/idempotency); they may run more than once.
+- Only enqueue a compensation after its forward step succeeds.
+
+```typescript lineNumbers
+// Forward steps
+async function reserveInventory(orderId: string) {
+  "use step";
+  // ... call inventory service to reserve ...
+}
+
+async function chargePayment(orderId: string) {
+  "use step";
+  // ... charge the customer ...
+}
+
+// Rollback steps
+async function releaseInventory(orderId: string) {
+  "use step";
+  // ... undo inventory reservation ...
+}
+
+async function refundPayment(orderId: string) {
+  "use step";
+  // ... refund the charge ...
+}
+
+export async function placeOrderSaga(orderId: string) {
+  "use workflow";
+
+  const rollbacks: Array<() => Promise<void>> = [];
+
+  try {
+    await reserveInventory(orderId);
+    rollbacks.push(() => releaseInventory(orderId));
+
+    await chargePayment(orderId);
+    rollbacks.push(() => refundPayment(orderId));
+
+    // ... more steps & rollbacks ...
+  } catch (e) {
+    for (const rollback of rollbacks.reverse()) {
+      await rollback();
+    }
+    // Rethrow so the workflow records the failure after rollbacks
+    throw e;
+  }
+}
+```

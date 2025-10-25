@@ -1,4 +1,4 @@
-import type { AuthProvider, Storage, World } from '@workflow/world';
+import type { Storage, World } from '@workflow/world';
 import PgBoss from 'pg-boss';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
@@ -21,45 +21,6 @@ function createStorage(drizzle: Drizzle): Storage {
   };
 }
 
-function createAuthProvider(
-  _config: PostgresWorldConfig,
-  boss: PgBoss
-): AuthProvider {
-  return {
-    async getAuthInfo() {
-      return {
-        environment: 'postgres',
-        ownerId: 'postgres',
-        projectId: 'postgres',
-      };
-    },
-    async checkHealth() {
-      try {
-        if (!(await boss.isInstalled())) {
-          throw new Error('Postgres Boss is not installed properly');
-        }
-      } catch (err) {
-        return {
-          success: false,
-          data: { healthy: false },
-          message:
-            err &&
-            typeof err === 'object' &&
-            'message' in err &&
-            typeof err.message === 'string'
-              ? err.message
-              : String(err),
-        };
-      }
-      return {
-        success: true,
-        message: 'Postgres connection is healthy',
-        data: { healthy: true },
-      };
-    },
-  };
-}
-
 export function createWorld(
   config: PostgresWorldConfig = {
     connectionString:
@@ -79,12 +40,10 @@ export function createWorld(
   const queue = createQueue(boss, config);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(postgres, drizzle);
-  const auth = createAuthProvider(config, boss);
 
   return {
     ...storage,
     ...streamer,
-    ...auth,
     ...queue,
     async start() {
       await queue.start();

@@ -5,7 +5,6 @@ packages:
 
 catalog:
   '@biomejs/biome': ^2.2.5
-  '@types/json-schema': ^7.0.15
   '@types/node': 24.6.2
   '@vercel/functions': ^3.1.4
   '@vercel/oidc': ^3.0.3

@@ -9,9 +9,6 @@ catalogs:
     '@biomejs/biome':
       specifier: ^2.2.5
       version: 2.2.5
-    '@types/json-schema':
-      specifier: ^7.0.15
-      version: 7.0.15
     '@types/node':
       specifier: 24.6.2
       version: 24.6.2
@@ -280,9 +277,6 @@ importers:
       '@swc/core':
         specifier: 1.11.24
         version: 1.11.24
-      '@types/watchpack':
-        specifier: 2.4.4
-        version: 2.4.4
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
@@ -362,6 +356,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.6.2
+      '@types/watchpack':
+        specifier: 2.4.4
+        version: 2.4.4
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -647,9 +644,6 @@ importers:
 
   packages/world:
     devDependencies:
-      '@types/json-schema':
-        specifier: 'catalog:'
-        version: 7.0.15
       '@types/node':
         specifier: 'catalog:'
         version: 24.6.2
@@ -4455,9 +4449,6 @@ packages:
 
   '@types/hast@3.0.4':
     resolution: {integrity: sha512-WPs+bbQw5aCj+x6laNGWLH3wviHtoCv/P3+otBhbOhJgG8qtpdAMlTCxLtsTWA7LH1Oh/bFCHsBn0TPS5m30EQ==}
-
-  '@types/json-schema@7.0.15':
-    resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
 
   '@types/jsonlines@0.1.5':
     resolution: {integrity: sha512-/zOl7I350g4/G6fEW9dktpTrkcKqZDMRkr2SuDla0utgwkUXrm7OFXq2WZT0W9Jl7BYoisGbn1EZsV/Z2F9LGg==}
@@ -12974,8 +12965,6 @@ snapshots:
   '@types/hast@3.0.4':
     dependencies:
       '@types/unist': 3.0.3
-
-  '@types/json-schema@7.0.15': {}
 
   '@types/jsonlines@0.1.5':
     dependencies:
