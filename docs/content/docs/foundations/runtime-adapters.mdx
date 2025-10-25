@@ -1,0 +1,352 @@
+---
+title: Building your own adapters
+---
+
+# Advanced Concepts: Building your own adapters
+
+This guide explains the underlying architecture of how the Workflow SDK integrates with different JavaScript runtimes, using Bun as a reference implementation. While this example uses Bun, the same principles apply to writing adapters for any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+
+The goal is for you to never need this document. We will be providing official adapters for everywhere you need to run workflows.
+
+The purpose of this document is to explain conceptually how the Workflow SDK works with different runtimes.
+
+---
+
+## Overview
+
+The Workflow SDK architecture is as follows:
+
+1. **Build-time transformation**: Workflow code is transformed by a compiler plugin
+2. **Generated handlers**: The build process generates HTTP handlers in `.well-known/workflow/v1/`
+3. **Runtime integration**: Your application server exposes these handlers as HTTP endpoints
+4. **Execution orchestration**: The Workflow SDK communicates with these endpoints to orchestrate durable execution
+
+```
+┌─────────────────┐
+│  Source Code    │
+│  "use workflow" │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ SWC Transform   │
+│ (Build Plugin)  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Generated Files │
+│ flow.js/step.js │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  HTTP Server    │
+│  (Your Runtime) │
+└─────────────────┘
+```
+
+---
+
+## The Transformation Pipeline
+
+### 1. Source Code Directives
+
+Workflows use special directives to mark code for transformation:
+
+```typescript
+export async function handleUserSignup(email: string) {
+  "use workflow";
+
+  const user = await createUser(email);
+  await sendWelcomeEmail(user);
+
+  return { userId: user.id };
+}
+
+async function createUser(email: string) {
+  "use step";
+
+  return { id: crypto.randomUUID(), email };
+}
+```
+
+**Key directives:**
+
+- `"use workflow"`: Marks a function as a durable workflow entry point
+- `"use step"`: Marks a function as an atomic, retryable step
+
+### 2. Build-Time Transformation
+
+The `@workflow/swc-plugin` transforms these functions into instrumented code that:
+
+- Captures function calls and their arguments
+- Generates serialization/deserialization logic
+- Creates step boundaries for durability
+- Produces execution graphs
+
+When you run `workflow build`, it:
+
+1. Scans directories specified in `workflow.config.json`
+2. Transforms files containing workflow directives
+3. Generates handler files in `.well-known/workflow/v1/`
+
+```json
+{
+  "buildTarget": "vercel-build-output-api",
+  "dirs": ["workflows"]
+}
+```
+
+### 3. Generated Artifacts
+
+The build process creates two critical files:
+
+- **`.well-known/workflow/v1/flow.js`**: Handles workflow execution requests
+- **`.well-known/workflow/v1/step.js`**: Handles individual step execution requests
+
+These files export handlers for POST requests that take in the web standard `Request` object.
+
+---
+
+## Required HTTP Endpoints
+
+Your runtime adapter must expose these two endpoints:
+
+### `POST /.well-known/workflow/v1/flow`
+
+Executes workflow-level operations (starting workflows, resuming after steps).
+
+**Request**: Binary payload from Workflow SDK
+**Response**: Binary payload with execution results
+
+### `POST /.well-known/workflow/v1/step`
+
+Executes individual steps within workflows.
+
+**Request**: Binary payload from Workflow SDK
+**Response**: Binary payload with step results
+
+The exact protocol is handled by the generated `flow.js` and `step.js` files. Your adapter just needs to route HTTP requests to these handlers.
+
+---
+
+## Writing a Runtime Adapter
+
+To integrate Workflow SDK with a runtime, you need three components:
+
+### Component 1: Build-Time Transformation Hook
+
+Transform workflow files during the build/load process using the SWC plugin.
+
+**What you need to implement:**
+
+- A plugin/loader hook in your runtime's build system
+- File filtering (typically `workflows/**/*.{ts,tsx,js,jsx}`)
+- SWC transformation with `@workflow/swc-plugin`
+- Module loading/resolution
+
+**Example pattern:**
+
+```typescript
+buildSystem.plugin({
+  name: "workflow-transform",
+  setup(build) {
+    build.onLoad(
+      { filter: /workflows\/.*\.(ts|tsx|js|jsx)$/ },
+      async (args) => {
+        const source = await readFile(args.path);
+
+        const result = await transform(source, {
+          filename: args.path,
+          jsc: {
+            experimental: {
+              plugins: [
+                [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
+              ],
+            },
+          },
+        });
+
+        return {
+          contents: result.code,
+          loader: "ts",
+        };
+      }
+    );
+  },
+});
+```
+
+### Component 2: HTTP Server Integration
+
+Expose the generated workflow handlers as HTTP endpoints.
+
+**What you need to implement:**
+
+- HTTP server listening on a port
+- Route handling for `/.well-known/workflow/v1/flow`
+- Route handling for `/.well-known/workflow/v1/step`
+- Importing and delegating to generated handlers
+
+**Example pattern:**
+
+```typescript
+import flow from "./.well-known/workflow/v1/flow.js";
+import step from "./.well-known/workflow/v1/step.js";
+
+server.route("POST", "/.well-known/workflow/v1/flow", (req) => flow.POST(req));
+server.route("POST", "/.well-known/workflow/v1/step", (req) => step.POST(req));
+```
+
+### Component 3: Workflow Client Integration
+
+Import and use the Workflow SDK client API to start workflows.
+
+```typescript
+import { start } from "workflow/api";
+import { myWorkflow } from "./workflows/my-workflow.js";
+
+const run = await start(myWorkflow, [arg1, arg2]);
+console.log(run.runId);
+```
+
+---
+
+## Reference Implementation: Bun
+
+Here's how the three components are implemented for Bun:
+
+### 1. Bun Plugin (Build-Time Transformation)
+
+```typescript
+import { plugin } from "bun";
+import { transform } from "@swc/core";
+
+console.log("Workflow plugin loaded");
+
+plugin({
+  name: "workflow-transform",
+  setup(build) {
+    build.onLoad(
+      { filter: /workflows\/.*\.(ts|tsx|js|jsx)$/ },
+      async (args) => {
+        const source = await Bun.file(args.path).text();
+
+        const result = await transform(source, {
+          filename: args.path,
+          jsc: {
+            experimental: {
+              plugins: [
+                [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
+              ],
+            },
+          },
+        });
+
+        return {
+          contents: result.code,
+          loader: "ts",
+        };
+      }
+    );
+  },
+});
+```
+
+**Key aspects:**
+
+- Uses Bun's native `plugin()` API
+- Filters workflow files using regex
+- Uses `Bun.file()` for file reading
+- Applies SWC transformation with workflow plugin
+- Returns transformed code with TypeScript loader
+
+### 2. HTTP Server (Runtime Integration)
+
+```typescript
+import { start } from "workflow/api";
+import flow from "./.well-known/workflow/v1/flow.js";
+import step from "./.well-known/workflow/v1/step.js";
+import { handleUserSignup } from "./workflows/user-signup.js";
+
+const server = Bun.serve({
+  port: process.env.PORT,
+  routes: {
+    "/.well-known/workflow/v1/flow": {
+      POST: (req) => flow.POST(req),
+    },
+
+    "/.well-known/workflow/v1/step": {
+      POST: (req) => step.POST(req),
+    },
+
+    "/": {
+      GET: async (req) => {
+        const email = `test-${crypto.randomUUID()}@test.com`;
+
+        const run = await start(handleUserSignup, [email]);
+
+        return Response.json({
+          message: "User signup workflow started",
+          runId: run.runId,
+        });
+      },
+    },
+  },
+});
+
+console.log(`Server listening on http://localhost:${server.port}`);
+```
+
+**Key aspects:**
+
+- Imports generated `flow.js` and `step.js` handlers
+- Uses Bun's routing API to map endpoints
+- Delegates POST requests directly to generated handlers
+- Example endpoint shows how to start a workflow using `start()`
+
+### 3. Workflow Definition
+
+```typescript
+import { sleep, FatalError } from "workflow";
+
+export async function handleUserSignup(email: string) {
+  "use workflow";
+
+  const user = await createUser(email);
+  await sendWelcomeEmail(user);
+
+  await sendOnboardingEmail(user);
+
+  return { userId: user.id, status: "onboarded" };
+}
+
+async function createUser(email: string) {
+  "use step";
+
+  console.log(`Creating a new user with email: ${email}`);
+
+  return { id: crypto.randomUUID(), email };
+}
+
+async function sendWelcomeEmail(user: { id: string; email: string }) {
+  "use step";
+
+  console.log(`Sending welcome email to user: ${user.id}`);
+}
+
+async function sendOnboardingEmail(user: { id: string; email: string }) {
+  "use step";
+
+  console.log(`Sending onboarding email to user: ${user.id}`);
+}
+```
+
+**Key aspects:**
+
+- `"use workflow"` marks the main workflow function
+- `"use step"` marks individual atomic operations
+- Steps can be retried independently
+- Return values flow between steps
+- Type-safe arguments and returns
