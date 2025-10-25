@@ -133,7 +133,7 @@ async function callApi(endpoint: string) {
 callApi.maxRetries = 5;
 ```
 
-## Compensating Actions
+## Rolling back failed steps
 
 When a workflow fails partway through, it can leave the system in an inconsistent state.
 A common pattern to address this is "rollbacks": for each successful step, record a corresponding rollback action that can undo it.
