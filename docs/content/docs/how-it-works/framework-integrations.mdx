@@ -69,11 +69,11 @@ The `@workflow/swc-plugin` transforms these functions into instrumented code tha
 - Creates step boundaries for durability
 - Produces execution graphs
 
-When you run `workflow build`, it:
+When you run `workflow build`, the framework adapter:
 
-1. Scans directories specified in `workflow.config.json`
+1. Scans directories where the framework's source code typically lives (for example, `app/` or `pages/` in Next.js)
 2. Transforms files containing workflow directives
-3. Generates handler files in `.well-known/workflow/v1/`
+3. Generates handler files for the framework to expose at `.well-known/workflow/v1/*`
 
 ```json
 {
