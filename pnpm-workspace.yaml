@@ -4,13 +4,15 @@ packages:
   - docs
 
 catalog:
-  '@biomejs/biome': ^2.2.5
   '@types/node': 22.19.0
+  '@biomejs/biome': ^2.2.7
+  '@types/json-schema': ^7.0.15
   '@vercel/functions': ^3.1.4
   '@vercel/oidc': ^3.0.3
   '@vitest/coverage-v8': ^3.2.4
+  "nitro": "npm:nitro-nightly@3.1.0-20251024-201544-aec6dd26"
   ai: 5.0.76
-  esbuild: ^0.25.6
+  esbuild: ^0.25.11
   typescript: ^5.9.3
   vitest: ^3.2.4
   zod: 4.1.11
