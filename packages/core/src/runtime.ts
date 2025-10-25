@@ -336,6 +336,29 @@ export function workflowEntrypoint(workflowCode: string) {
             // Load all events into memory before running
             const events = await getAllWorkflowRunEvents(workflowRun.runId);
 
+            // Check for any elapsed waits and create wait_completed events
+            const now = Date.now();
+            for (const event of events) {
+              if (event.eventType === 'wait_created') {
+                const resumeAt = event.eventData.resumeAt as Date;
+                const hasCompleted = events.some(
+                  (e) =>
+                    e.eventType === 'wait_completed' &&
+                    e.correlationId === event.correlationId
+                );
+
+                // If wait has elapsed and hasn't been completed yet
+                if (!hasCompleted && now >= resumeAt.getTime()) {
+                  const completedEvent = await world.events.create(runId, {
+                    eventType: 'wait_completed',
+                    correlationId: event.correlationId,
+                  });
+                  // Add the event to the events array so the workflow can see it
+                  events.push(completedEvent);
+                }
+              }
+            }
+
             const result = await runWorkflow(workflowCode, workflowRun, events);
 
             // Update the workflow run with the result
@@ -353,7 +376,8 @@ export function workflowEntrypoint(workflowCode: string) {
               const suspensionMessage = buildWorkflowSuspensionMessage(
                 runId,
                 err.stepCount,
-                err.hookCount
+                err.hookCount,
+                err.waitCount
               );
               if (suspensionMessage) {
                 // Note: suspensionMessage logged only in debug mode to avoid production noise
@@ -441,6 +465,43 @@ export function workflowEntrypoint(workflowCode: string) {
                         );
                         continue;
                       }
+                    }
+                    throw err;
+                  }
+                } else if (queueItem.type === 'wait') {
+                  // Handle wait operations
+                  try {
+                    // Create wait_created event in event log
+                    await world.events.create(runId, {
+                      eventType: 'wait_created',
+                      correlationId: queueItem.correlationId,
+                      eventData: {
+                        resumeAt: queueItem.resumeAt,
+                      },
+                    });
+
+                    // Calculate how long to wait before resuming
+                    const now = Date.now();
+                    const resumeAtMs = queueItem.resumeAt.getTime();
+                    const delayMs = Math.max(0, resumeAtMs - now);
+                    const timeoutSeconds = Math.ceil(delayMs / 1000);
+
+                    // Return timeout to have the queue retry after the delay
+                    span?.setAttributes({
+                      ...Attribute.WorkflowRunStatus('pending_steps'),
+                      ...Attribute.WorkflowStepsCreated(err.steps.length),
+                    });
+                    return { timeoutSeconds };
+                  } catch (err) {
+                    if (
+                      isInstanceOf(err, WorkflowAPIError) &&
+                      err.status === 409
+                    ) {
+                      // Wait already exists, so we can skip it
+                      console.warn(
+                        `Wait with correlation ID "${queueItem.correlationId}" already exists, skipping: ${err.message}`
+                      );
+                      continue;
                     }
                     throw err;
                   }

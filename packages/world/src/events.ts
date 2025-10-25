@@ -10,6 +10,8 @@ export const EventTypeSchema = z.enum([
   'hook_created',
   'hook_received',
   'hook_disposed',
+  'wait_created',
+  'wait_completed',
   'workflow_completed',
   'workflow_failed',
   'workflow_started',
@@ -73,6 +75,19 @@ const HookDisposedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
 });
 
+const WaitCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('wait_created'),
+  correlationId: z.string(),
+  eventData: z.object({
+    resumeAt: z.coerce.date(),
+  }),
+});
+
+const WaitCompletedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('wait_completed'),
+  correlationId: z.string(),
+});
+
 // TODO: not used yet
 const WorkflowCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('workflow_completed'),
@@ -100,6 +115,8 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   HookCreatedEventSchema,
   HookReceivedEventSchema,
   HookDisposedEventSchema,
+  WaitCreatedEventSchema,
+  WaitCompletedEventSchema,
   WorkflowCompletedEventSchema,
   WorkflowFailedEventSchema,
   WorkflowStartedEventSchema,
