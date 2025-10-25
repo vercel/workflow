@@ -55,7 +55,6 @@ export function convertEventsToSpanEvents(
  */
 export function stepToSpan(
   step: Step,
-  parentSpanId: string,
   stepEvents: Event[],
   nowTime?: Date
 ): Span {
@@ -78,7 +77,6 @@ export function stepToSpan(
 
   return {
     spanId: String(step.stepId),
-    parentSpanId,
     name: parsedName?.shortName ?? '',
     kind: 1, // INTERNAL span kind
     resource,
@@ -97,11 +95,7 @@ export function stepToSpan(
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(
-  hook: Hook,
-  parentSpanId: string,
-  hookEvents: Event[]
-): Span {
+export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
   // Simplified attributes: only store resource type and full data
   const attributes = {
     resource: 'hook' as const,
@@ -126,7 +120,6 @@ export function hookToSpan(
 
   return {
     spanId: String(hook.hookId),
-    parentSpanId,
     name: String(hook.hookId),
     kind: 1, // INTERNAL span kind
     resource: 'hook',
@@ -166,7 +159,6 @@ export function runToSpan(
 
   return {
     spanId: String(run.runId),
-    parentSpanId: undefined,
     name: String(parseWorkflowName(run.workflowName)?.shortName ?? '?'),
     kind: 1, // INTERNAL span kind
     resource: 'run',
