@@ -1,5 +1,18 @@
 # @workflow/core
 
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- 57419e5: Improve type-safety to `start` when no args are provided
+- Updated dependencies [d3a4ed3]
+- Updated dependencies [d3a4ed3]
+- Updated dependencies [66225bf]
+- Updated dependencies [7868434]
+  - @workflow/world@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.2
+  - @workflow/world-vercel@4.0.1-beta.2
+
 ## 4.0.1-beta.2
 
 ### Patch Changes
