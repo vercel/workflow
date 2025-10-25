@@ -33,10 +33,7 @@ import type {
 } from './steps.js';
 
 export interface Streamer {
-  writeToStream(
-    name: string,
-    chunk: string | Uint8Array | Buffer
-  ): Promise<void>;
+  writeToStream(name: string, chunk: string | Uint8Array): Promise<void>;
   closeStream(name: string): Promise<void>;
   readFromStream(
     name: string,
