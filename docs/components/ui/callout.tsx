@@ -13,7 +13,7 @@ export function Callout({ children, type = 'info' }: CalloutProps) {
         'bg-fd-error/25 text-fd-error border border-fd-error/20',
         type === 'wip' && 'bg-primary/5 border-primary/25 text-primary',
         type === 'info' &&
-          'bg-primary-blue/10 text-blue-900 border border-primary-blue/25',
+          'bg-primary-blue/10 dark:text-blue-100 text-blue-900 border border-primary-blue/25',
         type === 'warn' &&
           'bg-amber-600/15 text-amber-600 border border-amber-600/30',
         'rounded-md px-4 py-2 [&_p]:m-0 [&_p]:text-current flex items-start gap-2'

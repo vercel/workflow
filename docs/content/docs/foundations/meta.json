@@ -5,7 +5,8 @@
     "control-flow-patterns",
     "errors-and-retries",
     "hooks",
-    "serialization"
+    "serialization",
+    "idempotency"
   ],
   "defaultOpen": true
 }

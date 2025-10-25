@@ -40,8 +40,8 @@ export function start<TArgs extends unknown[], TResult>(
   options?: StartOptions
 ): Promise<Run<TResult>>;
 
-export function start<TArgs extends unknown[], TResult>(
-  workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
+export function start<TResult>(
+  workflow: WorkflowFunction<[], TResult> | WorkflowMetadata,
   options?: StartOptions
 ): Promise<Run<TResult>>;
 

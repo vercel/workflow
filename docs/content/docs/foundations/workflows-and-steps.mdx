@@ -43,10 +43,10 @@ export async function processOrderWorkflow(orderId: string) {
 - All step results are persisted to the event log
 - Must be **deterministic** to allow resuming after failures
 
-Determinism in the workflow is required in order to resume to workflow from a suspension. Essentially, the workflow code get re-run multiple times during its lifecycle,
+Determinism in the workflow is required in order to resume to workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle,
 each time, using an event log to resume the workflow to the correct spot.
 
-The sandboxed environment that workflows are run in already ensure determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't change across replays.
+The sandboxed environment that workflows are run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't change across replays.
 
 ## Step Functions
 
@@ -77,12 +77,38 @@ async function chargePayment(order: Order) {
 - Automatic retry on errors
 - Results persisted for replay
 
-By default, steps have a maximum of 3 retry attempts before it fails and propagates the error over to the workflow. Learn more about errors any retrying in the [Errors & Retrying](/docs/foundations/errors-and-retries) page.
+By default, steps have a maximum of 3 retry attempts before they fail and propagate the error over to the workflow. Learn more about errors and retrying in the [Errors & Retrying](/docs/foundations/errors-and-retries) page.
 
 <Callout type="info">
 Step functions are primarily meant to be used inside a workflow.
 </Callout>
- Calling a step from outside a workflow, or from another step will essentially run the step in the same process like a normal function (In other words, the `use step` directive is a no-op).
+
+Calling a step from outside a workflow, or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op). This means you can reuse step functions in other parts of your codebase without needing to duplicate business logic.
+
+
+```typescript lineNumbers
+async function updateUser(userId: string) {
+  "use step";
+  await db.insert(...);
+}
+
+// Used inside a workflow
+export async function userOnboardingWorkflow(userId: string) {
+  "use workflow";
+  await updateUser(userId);
+  // ... more steps
+}
+
+// Used directly outside a workflow
+export async function POST() {
+  await updateUser("123");
+  // ... more logic
+}
+```
+
+<Callout type="info">
+Keep in mind that calling a step function outside of a workflow function will not have retry semantics nor will it be observable. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
+</Callout>
 
 ---
 
@@ -90,14 +116,14 @@ Step functions are primarily meant to be used inside a workflow.
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the event log and no compute resources are used until the workflow resumes execution.
 
-But there is more than one way for a workflow to suspend:
+There are multiple ways a workflow can suspend:
 
 - Waiting on a step function: the workflow yields while the step runs in the step runtime.
 - Using `sleep()` to pause for some fixed duration.
 - Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
 
 ```typescript lineNumbers
-import { sleep, getWebhook } from 'workflow';
+import { sleep, createWebhook } from 'workflow';
 
 export async function documentReviewProcess(userId: string) {
   "use workflow";
@@ -122,7 +148,7 @@ export async function documentReviewProcess(userId: string) {
 
 ### Basic Structure
 
-The simplest form of workflow consists of a workflow function and one or more step functions.
+The simplest workflow consists of a workflow function and one or more step functions.
 
 ```typescript lineNumbers
 // Workflow function (orchestrates the steps)
