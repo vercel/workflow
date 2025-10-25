@@ -6,8 +6,7 @@
     "errors-and-retries",
     "idempotency",
     "hooks",
-    "serialization",
-    "runtime-adapters"
+    "serialization"
   ],
   "defaultOpen": true
 }
