@@ -672,11 +672,7 @@ export const stepEntrypoint =
                 workflowMetadata: {
                   workflowRunId,
                   workflowStartedAt: new Date(+workflowStartedAt),
-                  // TODO: there should be a getUrl method on the world interface itself. This
-                  // solution only works for vercel + embedded worlds.
-                  url: process.env.VERCEL_URL
-                    ? `https://${process.env.VERCEL_URL}`
-                    : `http://localhost:${port ?? 3000}`,
+                  url: world.getUrl(),
                 },
                 ops,
               },

@@ -170,5 +170,9 @@ export function createQueue(port?: number): Queue {
     return 'dpl_embedded';
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  const getUrl: Queue['getUrl'] = () => {
+    return `http://localhost:${port}`;
+  };
+
+  return { queue, createQueueHandler, getDeploymentId, getUrl };
 }

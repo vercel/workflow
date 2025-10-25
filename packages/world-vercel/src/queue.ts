@@ -80,5 +80,9 @@ export function createQueue(config?: APIConfig): Queue {
     return deploymentId;
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  const getUrl: Queue['getUrl'] = () => {
+    return `https://${process.env.VERCEL_URL}`;
+  };
+
+  return { queue, createQueueHandler, getDeploymentId, getUrl };
 }
