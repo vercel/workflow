@@ -93,24 +93,10 @@
     }
   }
 
-  &.selected {
-    &.xHover {
-      &::before {
-        border-color: var(--span-border);
-        outline: 1px solid var(--span-border);
-      }
-    }
-  }
-
   &.small:not(.xHover) {
     background-color: var(--span-background);
     border-color: var(--span-border);
     border-radius: 4px;
-  }
-
-  &.selected {
-    border-color: var(--span-border);
-    outline: 1px solid var(--span-border);
   }
 }
 

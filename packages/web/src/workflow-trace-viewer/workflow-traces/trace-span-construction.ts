@@ -6,13 +6,12 @@ import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { Span, SpanEvent } from '../trace-viewer/types';
 import { shouldShowVerticalLine } from './event-colors';
-import {
-  getResourceCode,
-  getResourceStatus,
-  getStatusResource,
-  WORKFLOW_LIBRARY,
-} from './trace-construction-types';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
+
+const WORKFLOW_LIBRARY = {
+  name: 'vercel-workflow',
+  version: '0.1',
+};
 
 /**
  * Event types that should be displayed as visual markers in the trace viewer
@@ -51,12 +50,41 @@ export function convertEventsToSpanEvents(
     }));
 }
 
+export function waitToSpan(
+  correlationId: string,
+  events: Event[],
+  nowTime?: Date
+): Span {
+  const startEvent = events.find((event) => event.eventType === 'wait_created');
+  const endEvent = events.find((event) => event.eventType === 'wait_completed');
+  const start = dateToOtelTime(startEvent?.createdAt ?? nowTime);
+  const end = dateToOtelTime(endEvent?.createdAt ?? nowTime);
+  const duration = calculateDuration(start, end);
+  return {
+    spanId: `wait-${correlationId}`,
+    name: 'sleep',
+    kind: 1, // INTERNAL span kind
+    resource: 'sleep',
+    library: WORKFLOW_LIBRARY,
+    status: { code: 0 },
+    traceFlags: 1,
+    attributes: {
+      resource: 'sleep' as const,
+      data: {
+        correlationId,
+      },
+    },
+    events: convertEventsToSpanEvents(events),
+    duration,
+    startTime: start,
+    endTime: end,
+  };
+}
 /**
  * Converts a workflow Step to an OpenTelemetry Span
  */
 export function stepToSpan(
   step: Step,
-  parentSpanId: string,
   stepEvents: Event[],
   nowTime?: Date
 ): Span {
@@ -69,7 +97,7 @@ export function stepToSpan(
     data: step,
   };
 
-  const resource = getStatusResource(step.status);
+  const resource = 'step';
   const endTime = step.completedAt ?? now;
 
   // Convert step-related events to span events (for markers like hook_created, step_retrying, etc.)
@@ -79,12 +107,11 @@ export function stepToSpan(
 
   return {
     spanId: String(step.stepId),
-    parentSpanId,
     name: parsedName?.shortName ?? '',
     kind: 1, // INTERNAL span kind
     resource,
     library: WORKFLOW_LIBRARY,
-    status: getResourceStatus(step.status),
+    status: { code: 0 },
     traceFlags: 1,
     attributes,
     links: [],
@@ -98,11 +125,7 @@ export function stepToSpan(
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(
-  hook: Hook,
-  parentSpanId: string,
-  hookEvents: Event[]
-): Span {
+export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
   // Simplified attributes: only store resource type and full data
   const attributes = {
     resource: 'hook' as const,
@@ -127,10 +150,9 @@ export function hookToSpan(
 
   return {
     spanId: String(hook.hookId),
-    parentSpanId,
     name: String(hook.hookId),
     kind: 1, // INTERNAL span kind
-    resource: getResourceCode(hook),
+    resource: 'hook',
     library: WORKFLOW_LIBRARY,
     status: { code: 1 },
     traceFlags: 1,
@@ -167,12 +189,11 @@ export function runToSpan(
 
   return {
     spanId: String(run.runId),
-    parentSpanId: undefined,
     name: String(parseWorkflowName(run.workflowName)?.shortName ?? '?'),
     kind: 1, // INTERNAL span kind
-    resource: getResourceCode(run),
+    resource: 'run',
     library: WORKFLOW_LIBRARY,
-    status: getResourceStatus(run.status as Step['status']),
+    status: { code: 0 },
     traceFlags: 1,
     attributes,
     links: [],

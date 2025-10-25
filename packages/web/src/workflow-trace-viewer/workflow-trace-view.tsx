@@ -14,6 +14,7 @@ import {
   hookToSpan,
   runToSpan,
   stepToSpan,
+  waitToSpan,
 } from './workflow-traces/trace-span-construction';
 
 const RE_RENDER_INTERVAL_MS = 2000;
@@ -46,28 +47,30 @@ export const WorkflowTraceViewer = ({
   }, [run?.completedAt]);
 
   const trace = useMemo(() => {
-    // Sort steps by createdAt to maintain chronological order
-    const sortedSteps = steps.slice().sort((a, b) => {
-      const aTime = new Date(a.createdAt).getTime();
-      const bTime = new Date(b.createdAt).getTime();
-      return aTime - bTime;
-    });
-
     // Group events by their correlation ID to associate with steps/hooks
     const eventsByStepId = new Map<string, Event[]>();
     const eventsByHookId = new Map<string, Event[]>();
     const runLevelEvents: Event[] = [];
+    const timerEvents = new Map<string, Event[]>();
 
     for (const event of events) {
+      // Sleep/wait events are sorted out first
+      if (
+        event.eventType === 'wait_created' ||
+        event.eventType === 'wait_completed'
+      ) {
+        const existing = timerEvents.get(event.correlationId) || [];
+        existing.push(event);
+        timerEvents.set(event.correlationId, existing);
+        continue;
+      }
+
       // Try to associate event with a step or hook via correlationId
-      // For now, collect all events at run level
-      // TODO: Better event association logic
+      // For now, all other events are collected at run level
       const correlationId = event.correlationId;
       if (correlationId) {
         // Check if correlation ID matches a step or hook
-        const matchingStep = sortedSteps.find(
-          (s) => s.stepId === correlationId
-        );
+        const matchingStep = steps.find((s) => s.stepId === correlationId);
         const matchingHook = hooks.find((h) => h.hookId === correlationId);
 
         if (matchingStep) {
@@ -85,25 +88,47 @@ export const WorkflowTraceViewer = ({
         runLevelEvents.push(event);
       }
     }
+    const waitSpans = Array.from(timerEvents.entries()).map(
+      ([correlationId, events]) => {
+        return waitToSpan(correlationId, events, now);
+      }
+    );
 
     // Chain steps together so each one appears on its own row
     // First step is child of root, each subsequent step is child of previous
-    const stepSpans = sortedSteps.map((step, index) => {
-      const parentSpanId =
-        index === 0 ? run.runId : String(sortedSteps[index - 1].stepId);
+    const stepSpans = steps.map((step) => {
       const stepEvents = eventsByStepId.get(step.stepId) || [];
-      return stepToSpan(step, parentSpanId, stepEvents, now);
+      return stepToSpan(step, stepEvents, now);
     });
 
     const hookSpans = hooks.map((hook) => {
       const hookEvents = eventsByHookId.get(hook.hookId) || [];
-      return hookToSpan(hook, run.runId, hookEvents);
+      return hookToSpan(hook, hookEvents);
     });
+
+    const runSpan = runToSpan(run, runLevelEvents, now);
+    const spans = [runSpan, ...waitSpans, ...stepSpans, ...hookSpans];
+    const sortedSpans = spans.slice().sort((a, b) => {
+      const aTime = new Date(a.startTime[0]).getTime();
+      const bTime = new Date(b.startTime[0]).getTime();
+      return aTime - bTime;
+    });
+
+    const sortedCascadingSpans = sortedSpans.map((span, index) => {
+      const parentSpanId =
+        index === 0 ? undefined : String(sortedSpans[index - 1].spanId);
+      return {
+        ...span,
+        parentSpanId,
+      };
+    });
+
+    console.log(sortedCascadingSpans);
 
     return {
       traceId: run.runId,
       rootSpanId: run.runId,
-      spans: [runToSpan(run, runLevelEvents, now), ...stepSpans, ...hookSpans],
+      spans: sortedCascadingSpans,
       resources: [
         {
           name: 'workflow',
