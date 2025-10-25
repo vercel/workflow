@@ -32,9 +32,11 @@ flowchart TD
 
 ---
 
-## The Transformation Pipeline
+## Writing a Runtime Adapter
 
-### 1. Source Code Directives
+To integrate Workflow DevKit with a runtime, you need two main components: a build-time transformation hook and HTTP server integration. Let's walk through each one.
+
+### Transformation
 
 Workflows use special directives to mark code for transformation:
 
@@ -60,7 +62,7 @@ async function createUser(email: string) {
 - `"use workflow"`: Marks a function as a durable workflow entry point
 - `"use step"`: Marks a function as an atomic, retryable step
 
-### 2. Build-Time Transformation
+**How the transformation works:**
 
 The `@workflow/swc-plugin` transforms these functions into instrumented code that:
 
@@ -82,94 +84,6 @@ When you run `workflow build`, the framework adapter:
   workflows to any JavaScript runtime without being locked into a specific
   platform or provider.
 </Callout>
-
----
-
-## Required HTTP Endpoints
-
-Your runtime adapter must expose two endpoints that correspond to the generated handler files:
-
-### `POST /.well-known/workflow/v1/flow`
-
-Handles [workflow function](/docs/foundations/workflows-and-steps#workflow-functions) execution.
-
-**How it works:**
-
-The workflow function is "rendered" multiple times during the lifecycle of a workflow execution. Each time it runs, it progresses through the workflow logic until it encounters the next step that needs to be executed. Because [workflow functions are deterministic and have no side effects](/docs/foundations/workflows-and-steps#workflow-functions), they can be safely re-run multiple times to calculate what the next step should be.
-
-This endpoint is called when:
-
-- Starting a new workflow
-- Resuming execution after a step completes
-- Resuming after a webhook or hook is triggered
-- Recovering from failures
-
-**Interface:**
-
-- **Request**: Web standard `Request` object with binary payload from Workflow DevKit
-- **Response**: Web standard `Response` object with binary payload containing execution results
-
-### `POST /.well-known/workflow/v1/step`
-
-Handles [step function](/docs/foundations/workflows-and-steps#step-functions) execution.
-
-**How it works:**
-
-This endpoint executes individual atomic operations within workflows. Each step runs exactly once per execution (unless it fails and needs to be retried).
-
-**Interface:**
-
-- **Request**: Web standard `Request` object with binary payload from Workflow DevKit
-- **Response**: Web standard `Response` object with binary payload containing step results
-
-**Implementation Note:** The exact protocol and payload handling is managed by the generated `flow.js` and `step.js` files. Your adapter only needs to route HTTP requests to these handlers.
-
----
-
-## Security
-
-A natural question when exposing these HTTP endpoints is: how are they secured?
-
-The answer depends on the **world abstraction** you're using. Different world implementations provide different security mechanisms:
-
-### World-Specific Security
-
-**Vercel (via `@workflow/world-vercel`):**
-
-- Uses Vercel Queue as the backend orchestration layer
-- Vercel Queue will soon support **private invoke**, making these routes not publicly accessible from the internet
-- The handler receives only a **message ID** from the queue, which must be retrieved from the Vercel Queue backend
-- This architecture makes it impossible to craft custom payloads and directly invoke the endpoints with arbitrary data
-- Even if someone discovers the endpoint URL, they cannot execute workflows without valid message IDs from the queue system
-
-**Custom Implementations:**
-
-- Different world implementations can implement their own security measures
-- Framework middleware can add authentication and authorization layers
-- You can implement API key verification, JWT validation, or other authentication schemes
-- You can use network-level security (VPCs, private networks, firewall rules)
-- You can implement rate limiting and request validation
-
-### Best Practices
-
-When building your own world or adapter, consider:
-
-- **Authentication**: Verify that requests come from trusted sources (your orchestration backend, not external clients)
-- **Payload validation**: Ensure request payloads are cryptographically signed or come from a trusted internal system
-- **Network isolation**: Run workflow endpoints on private networks when possible
-- **Rate limiting**: Protect against abuse even from internal systems
-
-The generated handlers themselves don't include authentication because the security model is delegated to the world abstraction layer, allowing each runtime environment to implement the most appropriate security mechanism for its deployment context.
-
----
-
-## Writing a Runtime Adapter
-
-To integrate Workflow DevKit with a runtime, you need three components:
-
-### Component 1: Build-Time Transformation Hook
-
-Transform workflow files during the build/load process using the SWC plugin.
 
 **What you need to implement:**
 
@@ -211,40 +125,117 @@ buildSystem.plugin({
 });
 ```
 
-### Component 2: HTTP Server Integration
+### HTTP Server Integration
 
-Expose the generated workflow handlers as HTTP endpoints.
+Your runtime adapter must expose two HTTP endpoints that correspond to the generated handler files.
 
-**What you need to implement:**
+<Callout type="info">
+  The exact protocol and payload handling is managed by the generated `flow.js`
+  and `step.js` files. Your adapter only needs to route HTTP requests to these
+  handlers.
+</Callout>
 
-- HTTP server listening on a port
-- Route handling for `/.well-known/workflow/v1/flow`
-- Route handling for `/.well-known/workflow/v1/step`
-- Importing and delegating to generated handlers
+#### Workflow Handler
 
-**Example pattern:**
+**Endpoint:** `POST /.well-known/workflow/v1/flow`
+
+Handles [workflow function](/docs/foundations/workflows-and-steps#workflow-functions) execution.
+
+**How it works:**
+
+The workflow function is "rendered" multiple times during the lifecycle of a workflow execution. Each time it runs, it progresses through the workflow logic until it encounters the next step that needs to be executed. Because [workflow functions are deterministic and have no side effects](/docs/foundations/workflows-and-steps#workflow-functions), they can be safely re-run multiple times to calculate what the next step should be.
+
+**Called when:**
+
+- Starting a new workflow
+- Resuming execution after a step completes
+- Resuming after a webhook or hook is triggered
+- Recovering from failures
+
+**Interface:**
+
+- **Request**: Web standard `Request` object with binary payload from Workflow DevKit
+- **Response**: Web standard `Response` object with binary payload containing execution results
+
+**Example implementation:**
 
 ```typescript
 import flow from "./.well-known/workflow/v1/flow.js";
-import step from "./.well-known/workflow/v1/step.js";
 
 server.route("POST", "/.well-known/workflow/v1/flow", (req) => flow.POST(req));
+```
+
+#### Step Handler
+
+**Endpoint:** `POST /.well-known/workflow/v1/step`
+
+Handles [step function](/docs/foundations/workflows-and-steps#step-functions) execution.
+
+**How it works:**
+
+This endpoint executes individual atomic operations within workflows. Each step runs exactly once per execution (unless it fails and needs to be retried).
+
+**Interface:**
+
+- **Request**: Web standard `Request` object with binary payload from Workflow DevKit
+- **Response**: Web standard `Response` object with binary payload containing step results
+
+**Example implementation:**
+
+```typescript
+import step from "./.well-known/workflow/v1/step.js";
+
 server.route("POST", "/.well-known/workflow/v1/step", (req) => step.POST(req));
 ```
 
 ---
 
+## Security
+
+A natural question when exposing these HTTP endpoints is: how are they secured?
+
+The answer depends on the **world abstraction** you're using. Different world implementations provide different security mechanisms:
+
+### World-Specific Security
+
+**Vercel (via `@workflow/world-vercel`):**
+
+- Uses Vercel Queue as the backend orchestration layer
+- Vercel Queue will soon support **private invoke**, making these routes not publicly accessible from the internet
+- The handler receives only a **message ID** from the queue, which must be retrieved from the Vercel Queue backend
+- This architecture makes it impossible to craft custom payloads and directly invoke the endpoints with arbitrary data
+- Even if someone discovers the endpoint URL, they cannot execute workflows without valid message IDs from the queue system
+
+**Custom Implementations:**
+
+- Different world implementations can implement their own security measures
+- Framework middleware can add authentication and authorization layers
+- You can implement API key verification, JWT validation, or other authentication schemes
+- You can use network-level security (VPCs, private networks, firewall rules)
+- You can implement rate limiting and request validation
+
+### Best Practices
+
+When building your own world or adapter, consider:
+
+- **Authentication**: Verify that requests come from trusted sources (your orchestration backend, not external clients)
+- **Payload validation**: Ensure request payloads are cryptographically signed or come from a trusted internal system
+- **Network isolation**: Run workflow endpoints on private networks when possible
+- **Rate limiting**: Protect against abuse even from internal systems
+
+The generated handlers themselves don't include authentication because the security model is delegated to the world abstraction layer, allowing each runtime environment to implement the most appropriate security mechanism for its deployment context.
+
+---
+
 ## Reference Implementation: Bun
 
-Here's how the three components are implemented for Bun:
+Here's how the two components are implemented for Bun:
 
-### 1. Bun Plugin (Build-Time Transformation)
+### 1. Bun Transformation
 
 ```typescript
 import { plugin } from "bun";
 import { transform } from "@swc/core";
-
-console.log("Workflow plugin loaded");
 
 plugin({
   name: "workflow-transform",
@@ -329,7 +320,7 @@ console.log(`Server listening on http://localhost:${server.port}`);
 - Delegates POST requests directly to generated handlers
 - Example endpoint shows how to start a workflow using `start()`
 
-### 3. Workflow Definition
+### Example Workflow Definition
 
 ```typescript
 import { sleep, FatalError } from "workflow";
