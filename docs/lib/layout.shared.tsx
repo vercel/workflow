@@ -28,7 +28,6 @@ export function baseOptions(): BaseLayoutProps {
         >
           <span className="text-foreground font-semibold tracking-tight flex items-center gap-1.5">
             <svg
-              className="hidden sm:block"
               fill="none"
               height={18}
               viewBox="0 0 305 234"
