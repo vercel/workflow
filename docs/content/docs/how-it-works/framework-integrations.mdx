@@ -10,7 +10,9 @@ title: Framework Integrations
   guide to pick your framework and get started.
 </Callout>
 
-If you're interested in learning how Workflow integrates with frameworks and how you can build your own adapter, read on. We'll walk through building the Bun adapter together and explain the underlying architecture of how the Workflow DevKit integrates with different JavaScript runtimes. While this example uses Bun, the same principles apply to writing adapters for any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+If you're interested in learning how Workflow integrates with frameworks and how you can build your own framework integration, read on. We'll walk through building the Bun framework integration together and explain the underlying architecture of how the Workflow DevKit integrates with different JavaScript runtimes. While this example uses Bun, the same principles apply to writing framework integrations for any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+
+A working example of the bun integration walkthrough below can be [found here](https://github.com/vercel/workflow-examples/tree/main/custom-adapter). Note that this is just an example, and we recommend the official bun integration that is currently in development.
 
 ---
 
@@ -19,7 +21,7 @@ If you're interested in learning how Workflow integrates with frameworks and how
 The Workflow DevKit architecture is as follows:
 
 1. **Build-time transformation**: Workflow code is transformed by a framework agnostic compiler plugin
-2. **Generated handlers**: The build process generates HTTP handlers in `.well-known/workflow/v1/` bundled with your step, workflow, and webhook code
+2. **Generated handlers**: The build process generates HTTP handlers in `.well-known/workflow/v1/` bundled with your step, workflow, and webhook code (flow.js, step.js, and webhook.js)
 3. **Runtime integration**: Your application server exposes these handlers as HTTP endpoints ([learn about how security is handled](#security))
 4. **Execution orchestration**: The Workflow DevKit communicates with these endpoints to orchestrate durable execution
 
@@ -38,11 +40,11 @@ To integrate Workflow DevKit with a runtime, you need two main components: a bui
 
 ### Transformation
 
-Workflows use special directives to mark code for transformation:
+Workflows use directives to mark code for transformation:
 
 ```typescript
 export async function handleUserSignup(email: string) {
-  "use workflow";
+  "use workflow"; // [!code highlight]
 
   const user = await createUser(email);
   await sendWelcomeEmail(user);
@@ -51,7 +53,7 @@ export async function handleUserSignup(email: string) {
 }
 
 async function createUser(email: string) {
-  "use step";
+  "use step"; // [!code highlight]
 
   return { id: crypto.randomUUID(), email };
 }
@@ -64,74 +66,132 @@ async function createUser(email: string) {
 
 **How the transformation works:**
 
-The `@workflow/swc-plugin` transforms these functions into instrumented code that:
+The `@workflow/swc-plugin` operates in three modes, transforming code differently for each bundle:
 
-- Captures function calls and their arguments
-- Generates serialization/deserialization logic
-- Creates step boundaries for durability
-- Produces execution graphs
+<Tabs items={["Step Mode", "Workflow Mode", "Client Mode"]}>
+<Tab value="Step Mode">
 
-When you run `workflow build`, the framework adapter:
+**Step Mode** creates the step execution bundle served at `/.well-known/workflow/v1/step`.
 
-1. Scans directories where the framework's source code typically lives (for example, `app/`, `pages/`, `src/app/`, or `src/pages/` in Next.js)
-2. Transforms files containing workflow directives (`"use workflow"` or `"use step"`)
-3. Generates handler files for the framework to expose at `.well-known/workflow/v1/*`
+**Input:**
+
+```typescript
+export async function createUser(email: string) {
+  "use step";
+  return { id: crypto.randomUUID(), email };
+}
+```
+
+**Output:**
+
+```typescript
+import { registerStepFunction } from "workflow/internal/private"; // [!code highlight]
+
+export async function createUser(email: string) {
+  return { id: crypto.randomUUID(), email };
+}
+
+registerStepFunction("step//workflows/user.js//createUser", createUser); // [!code highlight]
+```
+
+The directive is removed from step functions, and they're registered with the runtime using `registerStepFunction()`.
+
+Step bodies are kept intact since they just run in the main runtime (Node, Deno, Bun, etc.). There's no transformation here.
+
+**ID Format:** Step IDs follow the pattern `step//{filepath}//{functionName}`, where the filepath is relative to your project root.
+
+</Tab>
+<Tab value="Workflow Mode">
+
+**Workflow Mode** creates the workflow execution bundle served at `/.well-known/workflow/v1/flow`.
+
+**Input:**
+
+```typescript
+export async function createUser(email: string) {
+  "use step";
+  return { id: crypto.randomUUID(), email };
+}
+
+export async function handleUserSignup(email: string) {
+  "use workflow";
+  const user = await createUser(email);
+  return { userId: user.id };
+}
+```
+
+**Output:**
+
+```typescript
+export async function createUser(email: string) {
+  return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//workflows/user.js//createUser")(email); // [!code highlight]
+}
+
+export async function handleUserSignup(email: string) {
+  const user = await createUser(email);
+  return { userId: user.id };
+}
+handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; // [!code highlight]
+```
+
+Step function bodies are replaced with calls to `globalThis[Symbol.for("WORKFLOW_USE_STEP")]`, which handles replaying the step result from the event log, or trigger a suspension that enqueues the step in the background.
+
+Workflow function bodies remain intact—they're executed deterministically during replay. The directive simply gets dropped, and a workflow ID is added to the function to allow [`start`](/docs/api-reference/workflow-api/start) to work at runtime.
+
+**ID Format:** Workflow IDs follow the pattern `workflow//{filepath}//{functionName}`. The `workflowId` property is attached to the function for runtime identification.
+
+</Tab>
+<Tab value="Client Mode">
+
+**Client Mode** transforms workflow functions in your application code to prevent direct execution.
+
+**Input:**
+
+```typescript
+export async function handleUserSignup(email: string) {
+  "use workflow";
+  const user = await createUser(email);
+  return { userId: user.id };
+}
+```
+
+**Output:**
+
+```typescript
+export async function handleUserSignup(email: string) {
+  throw new Error("You attempted to execute ..."); // [!code highlight]
+}
+handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; // [!code highlight]
+```
+
+Workflow functions throw errors to prevent direct execution—you must use [`start()`](/docs/api-reference/workflow-api/start) instead.
+
+The IDs are generated exactly like in workflow mode to ensure they can be directly referenced at runtime.
+
+</Tab>
+</Tabs>
+
+When running your framework's `build` command, the corresponding workflow integration simply needs to:
+
+1. Scan directories where the framework's source code typically lives (for example, `app/` and `pages/` in Next.js)
+2. Transform files containing workflow directives (`"use workflow"` or `"use step"`)
+3. Generate handler files for the framework to expose at `.well-known/workflow/v1/*`
 
 <Callout type="info">
-  **No Vendor Lock-In**: `workflow build` is completely agnostic from the world
+  **No Vendor Lock-In**: Everything here is completely agnostic from the world
   abstraction and runtime environment. It outputs standard JavaScript HTTP
   handler code that works anywhere. This separation means you can deploy your
   workflows to any JavaScript runtime without being locked into a specific
   platform or provider.
 </Callout>
 
-**What you need to implement:**
-
-- A plugin/loader hook in your runtime's build system
-- Detection of workflow directives (`"use workflow"` or `"use step"`) in source files
-- SWC transformation with `@workflow/swc-plugin`
-- Module loading/resolution
-
-**Example pattern:**
-
-```typescript
-buildSystem.plugin({
-  name: "workflow-transform",
-  setup(build) {
-    build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async (args) => {
-      const source = await readFile(args.path);
-
-      if (!source.match(/(use step|use workflow)/)) {
-        return { contents: source };
-      }
-
-      const result = await transform(source, {
-        filename: args.path,
-        jsc: {
-          experimental: {
-            plugins: [
-              [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
-            ],
-          },
-        },
-      });
-
-      return {
-        contents: result.code,
-        loader: "ts",
-      };
-    });
-  },
-});
-```
-
 ### HTTP Server Integration
 
-Your framework integration must expose two HTTP endpoints that correspond to the generated handler files.
+Your framework integration must expose three HTTP endpoints that correspond to the generated handler files.
 
 <Callout type="info">
-  The exact protocol and payload handling is managed by the generated `flow.js`
-  and `step.js` files. Your adapter only needs to route HTTP requests to these
+  The exact protocol and payload handling is managed by the generated `flow.js`,
+  `step.js`, and `webhook.js` files. Your framework integration only needs to route HTTP requests to these
   handlers.
 </Callout>
 
@@ -188,6 +248,39 @@ import step from "./.well-known/workflow/v1/step.js";
 server.route("POST", "/.well-known/workflow/v1/step", (req) => step.POST(req));
 ```
 
+#### Webhook Handler
+
+**Endpoint:** `POST /.well-known/workflow/v1/webhook/:token`
+
+Handles webhook delivery to running workflows via [`createWebhook()`](/docs/api-reference/workflow/create-webhook).
+
+**How it works:**
+
+This endpoint allows external systems to send data to running workflows. When a workflow calls `createWebhook()`, it generates a unique token that external services can use to deliver data. The webhook handler validates the token, delivers the payload to the correct workflow run, and resumes execution.
+
+**Interface:**
+
+- **Request**: Web standard `Request` object with the webhook payload and token parameter
+- **Response**: Web standard `Response` object confirming webhook delivery
+
+**Example implementation (framework-dependent):**
+
+```typescript
+// Next.js example
+import webhook from "./.well-known/workflow/v1/webhook/[token]/route.js";
+
+// The route is automatically handled by Next.js App Router
+
+// Nitro example
+import webhook from "./.well-known/workflow/v1/webhook.mjs";
+
+server.route("POST", "/.well-known/workflow/v1/webhook/:token", (req) => webhook.POST(req));
+```
+
+<Callout type="info">
+  The generated webhook route structure varies by framework. Next.js generates a file at `webhook/[token]/route.js` to leverage App Router's dynamic routing, while other frameworks may generate a single `webhook.js` or `webhook.mjs` handler that your framework must route to with a `:token` parameter.
+</Callout>
+
 ---
 
 ## Security
@@ -216,7 +309,7 @@ The answer depends on the **world abstraction** you're using. Different world im
 
 ### Best Practices
 
-When building your own world or adapter, consider:
+When building your own world or framework integration, consider:
 
 - **Authentication**: Verify that requests come from trusted sources (your orchestration backend, not external clients)
 - **Payload validation**: Ensure request payloads are cryptographically signed or come from a trusted internal system
@@ -234,13 +327,31 @@ Bun is a special case because it serves as both a **runtime** and a **framework*
 - **Runtime**: Bun needs transformations applied to compile workflow code
 - **Framework**: `Bun.serve()` handles HTTP routing and request handling
 
-Here's how both components are implemented:
+Here's how the bun example handles building the routes, implementing the client transform at runtime, and serves the routes from the right HTTP endpoints.
 
-### 1. Runtime Transformation
+### 1. Building the routes
+
+In this example, running the Step and Workflow mode transform actually happens using the `workflow` CLI. `workflow build` will, by default, look for a `workflows/` directory and will create the "step" and "workflow" bundles.
+So in this example, the `package.json` simply invokes workflow build before running the bun server.
+
+```json title="package.json"
+{
+  // ...
+  "scripts": {
+    "dev": "bun x workflow build && PORT=3152 bun run server.ts"
+  }
+}
+```
+
+<Callout>
+  This implementation notably lacks file system watching for a local dev experience. Production framework implementations, like the [Next Plugin](https://github.com/vercel/workflow/tree/main/packages/next) are better optimized for this.
+</Callout>
+
+### 2. Runtime Client Transformation
 
 This transformation applies to the **Bun runtime** to resolve workflow code during the build process:
 
-```typescript title="workflow-plugin.ts"
+```typescript title="workflow-plugin.ts" lineNumbers
 import { plugin } from "bun";
 import { transform } from "@swc/core";
 
@@ -250,6 +361,8 @@ plugin({
     build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async (args) => {
       const source = await Bun.file(args.path).text();
 
+      // Optimization: we can speed up the plugin by only transforming files
+      // that make use of the directive. False positives are safe.
       if (!source.match(/(use step|use workflow)/)) {
         return { contents: source };
       }
@@ -259,7 +372,7 @@ plugin({
         jsc: {
           experimental: {
             plugins: [
-              [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
+              [require.resolve("@workflow/swc-plugin"), { mode: "client" }], // [!code highlight]
             ],
           },
         },
@@ -277,8 +390,6 @@ plugin({
 To run this plugin in bun, add it to your `bunfig.toml` file:
 
 ```toml title="bunfig.toml"
-# scripts to run before `bun run`-ing a file or script
-# register plugins by adding them to this list
 preload = ["./workflow-plugin.ts"]
 ```
 
@@ -287,18 +398,18 @@ preload = ["./workflow-plugin.ts"]
 - Uses Bun's native `plugin()` API to hook into the build process
 - Checks for workflow directives in all TypeScript and JavaScript files
 - Only transforms files that contain `"use step"` or `"use workflow"`
-- Uses `Bun.file()` for file reading
 - Applies SWC transformation with workflow plugin
 - Returns transformed code with TypeScript loader
 
-### 2. HTTP Routing
+### 3. HTTP Routing
 
 This integration uses **`Bun.serve()`** as the framework to route HTTP requests to the workflow handlers:
 
-```typescript
+```typescript title="server.ts" lineNumbers
 import { start } from "workflow/api";
 import flow from "./.well-known/workflow/v1/flow.js";
 import step from "./.well-known/workflow/v1/step.js";
+import webhook from "./.well-known/workflow/v1/webhook.js";
 import { handleUserSignup } from "./workflows/user-signup.js";
 
 const server = Bun.serve({
@@ -310,6 +421,10 @@ const server = Bun.serve({
 
     "/.well-known/workflow/v1/step": {
       POST: (req) => step.POST(req),
+    },
+
+    "/.well-known/workflow/v1/webhook/:token": {
+      POST: (req) => webhook.POST(req),
     },
 
     "/": {
@@ -332,53 +447,11 @@ console.log(`Server listening on http://localhost:${server.port}`);
 
 **Key aspects:**
 
-- Imports generated `flow.js` and `step.js` handlers
+- Imports generated `flow.js`, `step.js`, and `webhook.js` handlers
 - Uses `Bun.serve()`'s routing API to map HTTP endpoints to handlers
 - Delegates POST requests directly to generated handlers
+- The webhook route uses a `:token` parameter to identify which workflow run should receive the webhook
 - The framework handles request routing; the runtime handles code execution
 - Example endpoint shows how to start a workflow using `start()`
 
-### Example Workflow Definition
-
-```typescript
-import { sleep, FatalError } from "workflow";
-
-export async function handleUserSignup(email: string) {
-  "use workflow";
-
-  const user = await createUser(email);
-  await sendWelcomeEmail(user);
-
-  await sendOnboardingEmail(user);
-
-  return { userId: user.id, status: "onboarded" };
-}
-
-async function createUser(email: string) {
-  "use step";
-
-  console.log(`Creating a new user with email: ${email}`);
-
-  return { id: crypto.randomUUID(), email };
-}
-
-async function sendWelcomeEmail(user: { id: string; email: string }) {
-  "use step";
-
-  console.log(`Sending welcome email to user: ${user.id}`);
-}
-
-async function sendOnboardingEmail(user: { id: string; email: string }) {
-  "use step";
-
-  console.log(`Sending onboarding email to user: ${user.id}`);
-}
-```
-
-**Key aspects:**
-
-- `"use workflow"` marks the main workflow function
-- `"use step"` marks individual atomic operations
-- Steps can be retried independently
-- Return values flow between steps
-- Type-safe arguments and returns
+You can find the complete bun example implementation [here](https://github.com/vercel/workflow-examples/tree/main/custom-adapter).
