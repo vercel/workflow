@@ -5,7 +5,7 @@ import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
 /**
- * Creates an embedded world instance that combines queue, storage, streamer, and authentication functionalities.
+ * Creates an embedded world instance that combines queue, storage, and streamer functionalities.
  *
  * @param dataDir - The directory to use for storage. If not provided, the default data dir will be used.
  * @param port - The port to use for the queue. If not provided, the default port will be used.
