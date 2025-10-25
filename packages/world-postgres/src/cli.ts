@@ -19,7 +19,7 @@ async function setupDatabase() {
 
   console.log('🔧 Setting up database schema...');
   console.log(
-    `📍 Connection: ${connectionString.replace(/:[^:@]*@/, ':****@')}`
+    `📍 Connection: ${connectionString.replace(/^(\w+:\/\/)([^@]+)@/, '$1[redacted]@')}`
   );
 
   try {
