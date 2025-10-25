@@ -21,29 +21,11 @@ The Workflow SDK architecture is as follows:
 3. **Runtime integration**: Your application server exposes these handlers as HTTP endpoints
 4. **Execution orchestration**: The Workflow SDK communicates with these endpoints to orchestrate durable execution
 
-```
-┌─────────────────┐
-│  Source Code    │
-│  "use workflow" │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ SWC Transform   │
-│ (Build Plugin)  │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Generated Files │
-│ flow.js/step.js │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  HTTP Server    │
-│  (Your Runtime) │
-└─────────────────┘
+```mermaid
+flowchart TD
+    A["Source Code<br/>'use workflow'"] --> B["SWC Transform<br/>(Build Plugin)"]
+    B --> C["Generated Files<br/>flow.js/step.js"]
+    C --> D["HTTP Server<br/>(Your Runtime)"]
 ```
 
 ---
