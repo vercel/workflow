@@ -119,10 +119,10 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     }
     const world = getWorld();
     super({
-      write: async (chunk: string | Uint8Array | Buffer) => {
+      async write(chunk) {
         await world.writeToStream(name, chunk);
       },
-      close: async () => {
+      async close() {
         await world.closeStream(name);
       },
     });

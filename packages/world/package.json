@@ -22,13 +22,10 @@
     "dev": "tsc --watch"
   },
   "peerDependencies": {
-    "@types/node": "catalog:",
-    "@types/json-schema": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@types/json-schema": "catalog:",
     "zod": "catalog:",
     "@workflow/tsconfig": "workspace:*"
   },
