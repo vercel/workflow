@@ -3,6 +3,7 @@ title: WorkflowChatTransport
 ---
 
 import { ExperimentalPackageCallout } from "@/components/experimental-package-callout"
+import { generateDefinition } from "@/lib/tsdoc"
 
 # `WorkflowChatTransport`
 
@@ -35,61 +36,25 @@ export default function Chat() {
 
 ## API Signature
 
-### Constructor
+### Class
 
-Creates a new `WorkflowChatTransport` instance with optional configuration.
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { WorkflowChatTransport } from "@workflow/ai";
+export default WorkflowChatTransport;`
+})}
+/>
 
-```typescript
-constructor(options?: WorkflowChatTransportOptions)
-```
+### WorkflowChatTransportOptions
 
-#### WorkflowChatTransportOptions
-
-```typescript
-interface WorkflowChatTransportOptions<UI_MESSAGE extends UIMessage> {
-  /**
-   * Custom fetch implementation to use for HTTP requests.
-   * Defaults to the global fetch function if not provided.
-   */
-  fetch?: typeof fetch;
-
-  /**
-   * Callback invoked after successfully sending messages to the chat endpoint.
-   * Useful for tracking chat history and inspecting response headers.
-   *
-   * @param response - The HTTP response object from the chat endpoint
-   * @param options - The original options passed to sendMessages
-   */
-  onChatSendMessage?: (response: Response, options: SendMessagesOptions) => void | Promise<void>;
-
-  /**
-   * Callback invoked when a chat stream ends (receives a "finish" chunk).
-   * Useful for cleanup operations or state updates.
-   *
-   * @param chatId - The ID of the chat that ended
-   * @param chunkIndex - The total number of chunks received
-   */
-  onChatEnd?: (data: { chatId: string; chunkIndex: number }) => void | Promise<void>;
-
-  /**
-   * Maximum number of consecutive errors allowed during reconnection attempts.
-   * Defaults to 3 if not provided.
-   */
-  maxConsecutiveErrors?: number;
-
-  /**
-   * Function to prepare the request for sending messages.
-   * Allows customizing the API endpoint, headers, credentials, and body.
-   */
-  prepareSendMessagesRequest?: (config: SendRequestConfig) => Promise<SendRequestConfig> | SendRequestConfig;
-
-  /**
-   * Function to prepare the request for reconnecting to a stream.
-   * Allows customizing the API endpoint, headers, and credentials.
-   */
-  prepareReconnectToStreamRequest?: (config: ReconnectRequestConfig) => Promise<ReconnectRequestConfig> | ReconnectRequestConfig;
-}
-```
+<TSDoc
+definition={generateDefinition({
+  code: `
+import type { WorkflowChatTransportOptions } from "@workflow/ai";
+export default WorkflowChatTransportOptions;`
+})}
+/>
 
 ## Key Features
 

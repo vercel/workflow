@@ -3,6 +3,7 @@ title: DurableAgent
 ---
 
 import { ExperimentalPackageCallout } from "@/components/experimental-package-callout"
+import { generateDefinition } from "@/lib/tsdoc"
 
 # `DurableAgent`
 
@@ -40,70 +41,35 @@ await agent.stream({
 
 ## API Signature
 
-### Constructor
+### Class
 
-Creates a new `DurableAgent` instance with the specified configuration.
+<TSDoc
+definition={generateDefinition({
+  code: `
+import { DurableAgent } from "@workflow/ai/agent";
+export default DurableAgent;`
+})}
+/>
 
-```typescript
-constructor(options: DurableAgentOptions)
-```
+### DurableAgentOptions
 
-#### DurableAgentOptions
+<TSDoc
+definition={generateDefinition({
+  code: `
+import type { DurableAgentOptions } from "@workflow/ai/agent";
+export default DurableAgentOptions;`
+})}
+/>
 
-```typescript
-interface DurableAgentOptions {
-  /**
-   * The model identifier to use for the agent.
-   * This should be a string compatible with the AI SDK (e.g., 'anthropic/claude-4-opus').
-   */
-  model: string;
+### DurableAgentStreamOptions
 
-  /**
-   * A set of tools available to the agent.
-   * Tools can include workflow steps for durable execution.
-   */
-  tools: ToolSet;
-
-  /**
-   * Optional system prompt to guide the agent's behavior.
-   */
-  system?: string;
-}
-```
-
-### Methods
-
-#### `stream()`
-
-Streams the agent's execution, processing tool calls and managing the AI conversation flow.
-
-```typescript
-async stream(options: DurableAgentStreamOptions): Promise<void>
-```
-
-##### DurableAgentStreamOptions
-
-```typescript
-interface DurableAgentStreamOptions {
-  /**
-   * The conversation messages to process.
-   * Should follow the AI SDK's ModelMessage format.
-   */
-  messages: ModelMessage[];
-
-  /**
-   * Optional system prompt override.
-   * If provided, overrides the system prompt from the constructor.
-   */
-  system?: string;
-
-  /**
-   * Optional custom writable stream for handling message chunks.
-   * If not provided, a default writable stream will be created using getWritable().
-   */
-  writable?: WritableStream<UIMessageChunk>;
-}
-```
+<TSDoc
+definition={generateDefinition({
+  code: `
+import type { DurableAgentStreamOptions } from "@workflow/ai/agent";
+export default DurableAgentStreamOptions;`
+})}
+/>
 
 ## Key Features
 
@@ -289,4 +255,4 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
 
 - [WorkflowChatTransport](/docs/api-reference/workflow-ai/workflow-chat-transport) - Transport layer for AI SDK streams
 - [Workflows and Steps](/docs/foundations/workflows-and-steps) - Understanding workflow fundamentals
-- [AI SDK Documentation](https://sdk.vercel.ai) - External AI SDK reference
+- [AI SDK Documentation](https://ai-sdk.dev/docs) - AI SDK documentation reference
