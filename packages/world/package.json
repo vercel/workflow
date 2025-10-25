@@ -19,7 +19,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist"
   },
   "peerDependencies": {
     "zod": "catalog:"
