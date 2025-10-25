@@ -240,7 +240,7 @@ Here's how both components are implemented:
 
 This transformation applies to the **Bun runtime** to resolve workflow code during the build process:
 
-```typescript
+```typescript title="workflow-plugin.ts"
 import { plugin } from "bun";
 import { transform } from "@swc/core";
 
@@ -272,6 +272,14 @@ plugin({
     });
   },
 });
+```
+
+To run this plugin in bun, add it to your `bunfig.toml` file:
+
+```toml title="bunfig.toml"
+# scripts to run before `bun run`-ing a file or script
+# register plugins by adding them to this list
+preload = ["./workflow-plugin.ts"]
 ```
 
 **Key aspects:**
