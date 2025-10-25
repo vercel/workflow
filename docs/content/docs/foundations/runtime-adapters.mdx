@@ -4,22 +4,22 @@ title: Building your own adapters
 
 # Advanced Concepts: Building your own adapters
 
-This guide explains the underlying architecture of how the Workflow SDK integrates with different JavaScript runtimes, using Bun as a reference implementation. While this example uses Bun, the same principles apply to writing adapters for any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+This guide explains the underlying architecture of how the Workflow DevKit integrates with different JavaScript runtimes, using Bun as a reference implementation. While this example uses Bun, the same principles apply to writing adapters for any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
 
 The goal is for you to never need this document. We will be providing official adapters for everywhere you need to run workflows.
 
-The purpose of this document is to explain conceptually how the Workflow SDK works with different runtimes.
+The purpose of this document is to explain conceptually how the Workflow DevKit works with different runtimes.
 
 ---
 
 ## Overview
 
-The Workflow SDK architecture is as follows:
+The Workflow DevKit architecture is as follows:
 
 1. **Build-time transformation**: Workflow code is transformed by a compiler plugin
 2. **Generated handlers**: The build process generates HTTP handlers in `.well-known/workflow/v1/`
 3. **Runtime integration**: Your application server exposes these handlers as HTTP endpoints
-4. **Execution orchestration**: The Workflow SDK communicates with these endpoints to orchestrate durable execution
+4. **Execution orchestration**: The Workflow DevKit communicates with these endpoints to orchestrate durable execution
 
 ```mermaid
 flowchart TD
@@ -99,14 +99,14 @@ Your runtime adapter must expose these two endpoints:
 
 Executes workflow-level operations (starting workflows, resuming after steps).
 
-**Request**: Binary payload from Workflow SDK
+**Request**: Binary payload from Workflow DevKit
 **Response**: Binary payload with execution results
 
 ### `POST /.well-known/workflow/v1/step`
 
 Executes individual steps within workflows.
 
-**Request**: Binary payload from Workflow SDK
+**Request**: Binary payload from Workflow DevKit
 **Response**: Binary payload with step results
 
 The exact protocol is handled by the generated `flow.js` and `step.js` files. Your adapter just needs to route HTTP requests to these handlers.
@@ -115,7 +115,7 @@ The exact protocol is handled by the generated `flow.js` and `step.js` files. Yo
 
 ## Writing a Runtime Adapter
 
-To integrate Workflow SDK with a runtime, you need three components:
+To integrate Workflow DevKit with a runtime, you need three components:
 
 ### Component 1: Build-Time Transformation Hook
 
@@ -183,7 +183,7 @@ server.route("POST", "/.well-known/workflow/v1/step", (req) => step.POST(req));
 
 ### Component 3: Workflow Client Integration
 
-Import and use the Workflow SDK client API to start workflows.
+Import and use the Workflow DevKit client API to start workflows.
 
 ```typescript
 import { start } from "workflow/api";
