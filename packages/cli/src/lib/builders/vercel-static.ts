@@ -14,6 +14,7 @@ export class VercelStaticBuilder extends BaseBuilder {
     };
     await this.buildStepsBundle(options);
     await this.buildWorkflowsBundle(options);
+    await this.buildWebhookFunction();
 
     await this.buildClientLibrary();
   }
@@ -75,6 +76,25 @@ export class VercelStaticBuilder extends BaseBuilder {
       inputFiles,
       tsBaseUrl,
       tsPaths,
+    });
+  }
+
+  private async buildWebhookFunction(): Promise<void> {
+    console.log(
+      'Creating vercel API webhook bundle at',
+      this.config.webhookBundlePath
+    );
+
+    const webhookBundlePath = resolve(
+      this.config.workingDir,
+      this.config.webhookBundlePath
+    );
+
+    // Ensure directory exists
+    await mkdir(dirname(webhookBundlePath), { recursive: true });
+
+    await this.createWebhookBundle({
+      outfile: webhookBundlePath,
     });
   }
 }

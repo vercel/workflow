@@ -26,6 +26,7 @@ export interface WorkflowConfig {
   buildTarget: BuildTarget;
   stepsBundlePath: string;
   workflowsBundlePath: string;
+  webhookBundlePath: string;
 
   // Optionally generate a client library for workflow execution. The preferred
   // method of using workflow is to use a loader within a framework (like
