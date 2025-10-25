@@ -25,7 +25,7 @@ const agent = new DurableAgent({
       description: 'Get weather for a city',
       inputSchema: z.object({ city: z.string() }),
       execute: async ({ city }) => {
-        'use step';
+        "use step";
         return `Weather in ${city} is sunny`;
       },
     },
@@ -114,7 +114,7 @@ interface DurableAgentStreamOptions {
 
 ## Good to Know
 
-- Tools can be implemented as workflow steps (using `'use step'` for automatic retries), or as regular workflow-level logic
+- Tools can be implemented as workflow steps (using `"use step"` for automatic retries), or as regular workflow-level logic
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
 - The agent processes tool calls iteratively until completion
 - Messages must be serializable for workflow persistence
@@ -130,7 +130,7 @@ import { DurableAgent } from '@workflow/ai/agent';
 import { z } from 'zod';
 
 async function getWeather({ location }: { location: string }) {
-  'use step';
+  "use step";
   // Fetch weather data
   const response = await fetch(`https://api.weather.com?location=${location}`);
   return response.json();
@@ -169,12 +169,12 @@ import { DurableAgent } from '@workflow/ai/agent';
 import { z } from 'zod';
 
 async function getWeather({ location }: { location: string }) {
-  'use step';
+  "use step";
   return `Weather in ${location}: Sunny, 72°F`;
 }
 
 async function searchEvents({ location, category }: { location: string; category: string }) {
-  'use step';
+  "use step";
   return `Found 5 ${category} events in ${location}`;
 }
 
@@ -244,14 +244,14 @@ const approvalHook = defineHook({
 });
 
 async function scheduleTask({ taskName, delaySeconds }: { taskName: string; delaySeconds: number }) {
-  'use step';
+  "use step";
   // Use core library features like sleep() in tools
   await sleep(`${delaySeconds}s`);
   return `Task "${taskName}" has been executed`;
 }
 
 async function requestApproval({ message }: { message: string }) {
-  'use step';
+  "use step";
   // Use Hooks within tool execution
   const approval = await approvalHook.trigger({ message });
   return `Approval received: ${approval.message}`;
