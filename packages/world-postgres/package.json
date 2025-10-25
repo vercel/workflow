@@ -25,7 +25,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean",
+    "clean": "tsc --build --clean && rm -rf dist",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "db:push": "pnpm exec drizzle-kit --version && drizzle-kit push"
