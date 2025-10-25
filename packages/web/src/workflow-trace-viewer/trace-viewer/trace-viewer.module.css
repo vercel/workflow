@@ -1145,8 +1145,6 @@
   position: absolute;
   margin-top: -1px;
   right: 0;
-  // Unsure why the 9px are required over the regular trace-viewer implementation,
-  // but it looks like this aligns the sidebar nicely.
   top: calc(var(--search-height) + 2 * var(--search-gap) + var(--map-height) + 9px);
   width: var(--panel-width);
   height: var(--panel-height);
