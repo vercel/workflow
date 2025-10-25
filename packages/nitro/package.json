@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean"
+    "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {
     "@swc/core": "1.11.24",
