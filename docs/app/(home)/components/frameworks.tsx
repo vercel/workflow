@@ -95,7 +95,7 @@ export const Nitro = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const Svelte = (props: ComponentProps<'svg'>) => (
+export const SvelteKit = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     xmlnsXlink="http://www.w3.org/1999/xlink"
@@ -106,7 +106,7 @@ export const Svelte = (props: ComponentProps<'svg'>) => (
     xmlSpace="preserve"
     {...props}
   >
-    <title>Svelte</title>
+    <title>SvelteKit</title>
     <path
       fill="#FF3E00"
       d="M91.8,15.6C80.9-0.1,59.2-4.7,43.6,5.2L16.1,22.8C8.6,27.5,3.4,35.2,1.9,43.9c-1.3,7.3-0.2,14.8,3.3,21.3  c-2.4,3.6-4,7.6-4.7,11.8c-1.6,8.9,0.5,18.1,5.7,25.4c11,15.7,32.6,20.3,48.2,10.4l27.5-17.5c7.5-4.7,12.7-12.4,14.2-21.1  c1.3-7.3,0.2-14.8-3.3-21.3c2.4-3.6,4-7.6,4.7-11.8C99.2,32.1,97.1,22.9,91.8,15.6"
@@ -118,7 +118,7 @@ export const Svelte = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const SvelteGray = (props: ComponentProps<'svg'>) => (
+export const SvelteKitGray = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     xmlnsXlink="http://www.w3.org/1999/xlink"
@@ -129,7 +129,7 @@ export const SvelteGray = (props: ComponentProps<'svg'>) => (
     xmlSpace="preserve"
     {...props}
   >
-    <title>Svelte</title>
+    <title>SvelteKit</title>
     <path
       fill="var(--color-muted-foreground)"
       d="M91.8,15.6C80.9-0.1,59.2-4.7,43.6,5.2L16.1,22.8C8.6,27.5,3.4,35.2,1.9,43.9c-1.3,7.3-0.2,14.8,3.3,21.3  c-2.4,3.6-4,7.6-4.7,11.8c-1.6,8.9,0.5,18.1,5.7,25.4c11,15.7,32.6,20.3,48.2,10.4l27.5-17.5c7.5-4.7,12.7-12.4,14.2-21.1  c1.3-7.3,0.2-14.8-3.3-21.3c2.4-3.6,4-7.6,4.7-11.8C99.2,32.1,97.1,22.9,91.8,15.6"
@@ -489,9 +489,9 @@ export const Frameworks = () => {
             </span>
           </div>
         </div>
-        <div className="group" onClick={() => handleRequest('Svelte')}>
-          <SvelteGray className="size-[48px] cursor-pointer group-hover:hidden opacity-70" />
-          <Svelte className="size-[48px] cursor-pointer hidden group-hover:block" />
+        <div className="group" onClick={() => handleRequest('SvelteKit')}>
+          <SvelteKitGray className="size-[48px] cursor-pointer group-hover:hidden opacity-70" />
+          <SvelteKit className="size-[48px] cursor-pointer hidden group-hover:block" />
         </div>
         <div className="group" onClick={() => handleRequest('Nuxt')}>
           <NuxtGray className="size-[60px] cursor-pointer group-hover:hidden opacity-70" />
