@@ -257,31 +257,34 @@ describe('runWorkflow', () => {
         {
           eventId: 'event-0',
           runId: workflowRunId,
-          eventType: 'step_started',
-          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+          },
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
         {
           eventId: 'event-1',
           runId: workflowRunId,
-          eventType: 'step_started',
-          correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
+          eventData: {
+            resumeAt: new Date('2024-01-01T00:00:02.000Z'),
+          },
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
         {
           eventId: 'event-2',
           runId: workflowRunId,
-          eventType: 'step_completed',
-          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
-          eventData: {
-            result: dehydrateStepReturnValue(undefined, ops),
-          },
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
           createdAt: new Date('2024-01-01T00:00:03.000Z'),
         },
       ];
 
       const workflowCode = `
-      const sleep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("sleep");
+      const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
       async function workflow() {
         await Promise.race([sleep(1), sleep(2)]);
         return Date.now();
@@ -296,11 +299,8 @@ describe('runWorkflow', () => {
         {
           eventId: 'event-3',
           runId: workflowRunId,
-          eventType: 'step_completed',
-          correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
-          eventData: {
-            result: dehydrateStepReturnValue(undefined, ops),
-          },
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
           createdAt: new Date('2024-01-01T00:00:04.000Z'),
         },
       ]);

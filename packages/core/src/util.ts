@@ -41,18 +41,20 @@ export function once<T>(fn: () => T) {
 }
 
 /**
- * Builds a workflow suspension log message based on the counts of steps and hooks.
+ * Builds a workflow suspension log message based on the counts of steps, hooks, and waits.
  * @param runId - The workflow run ID
  * @param stepCount - Number of steps to be enqueued
  * @param hookCount - Number of hooks to be enqueued
- * @returns The formatted log message or null if both counts are 0
+ * @param waitCount - Number of waits to be enqueued
+ * @returns The formatted log message or null if all counts are 0
  */
 export function buildWorkflowSuspensionMessage(
   runId: string,
   stepCount: number,
-  hookCount: number
+  hookCount: number,
+  waitCount: number = 0
 ): string | null {
-  if (stepCount === 0 && hookCount === 0) {
+  if (stepCount === 0 && hookCount === 0 && waitCount === 0) {
     return null;
   }
 
@@ -63,11 +65,18 @@ export function buildWorkflowSuspensionMessage(
   if (hookCount > 0) {
     parts.push(`${hookCount} ${hookCount === 1 ? 'hook' : 'hooks'}`);
   }
+  if (waitCount > 0) {
+    parts.push(`${waitCount} ${waitCount === 1 ? 'wait' : 'waits'}`);
+  }
 
-  const resumeMsg =
-    hookCount > 0
-      ? 'steps are created and hooks are triggered'
-      : 'steps are created';
+  let resumeMsg = 'steps are created';
+  if (hookCount > 0 && waitCount > 0) {
+    resumeMsg = 'steps are created, hooks are triggered, and waits fire';
+  } else if (hookCount > 0) {
+    resumeMsg = 'steps are created and hooks are triggered';
+  } else if (waitCount > 0) {
+    resumeMsg = 'steps are created and waits fire';
+  }
 
   return `[Workflows] "${runId}" - ${parts.join(' and ')} to be enqueued\n  Workflow will suspend and resume when ${resumeMsg}`;
 }
