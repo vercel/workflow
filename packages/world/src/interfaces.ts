@@ -98,7 +98,6 @@ export interface Storage {
 
 /**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
- * This means persistence, queuing and serialization.
  */
 export interface World extends Queue, Storage, Streamer {
   /**
