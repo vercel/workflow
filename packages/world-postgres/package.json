@@ -28,7 +28,8 @@
     "clean": "tsc --build --clean",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "db:push": "pnpm exec drizzle-kit --version && drizzle-kit push"
+    "db:push": "pnpm exec drizzle-kit --version && drizzle-kit push",
+    "prepublishOnly": "pnpm build"
   },
   "dependencies": {
     "@vercel/queue": "0.0.0-alpha.23",
