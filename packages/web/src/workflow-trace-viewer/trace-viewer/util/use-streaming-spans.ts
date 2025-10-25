@@ -1,3 +1,4 @@
+import { clsx } from 'clsx';
 import { useEffect, useRef, useState } from 'react';
 import { getSpanClassName } from '../components/node';
 import { useTraceViewer } from '../context';
@@ -47,6 +48,7 @@ export const useStreamingSpans = (
     scrollSnapshotRef,
     selected,
     memoCacheRef,
+    customSpanClassNameFunc,
   } = state;
   const timelineHeight = useStableValue(state.timelineHeight);
   const counterRef = useRef(0);
@@ -355,13 +357,22 @@ export const useStreamingSpans = (
     if (!span || !$span) return;
 
     span.isSelected = true;
-    $span.className = getSpanClassName(span, scale);
+    // Get both the base span className and custom class name
+    const baseClassName = getSpanClassName(span, scale);
+    const customClassName = customSpanClassNameFunc
+      ? customSpanClassNameFunc(span)
+      : '';
+    $span.className = clsx(baseClassName, customClassName);
 
     return () => {
       span.isSelected = false;
-      $span.className = getSpanClassName(span, scale);
+      const baseClassName = getSpanClassName(span, scale);
+      const customClassName = customSpanClassNameFunc
+        ? customSpanClassNameFunc(span)
+        : '';
+      $span.className = clsx(baseClassName, customClassName);
     };
-  }, [visibleSpans, scale, selected]);
+  }, [visibleSpans, scale, selected, customSpanClassNameFunc]);
 
   return {
     rows,
