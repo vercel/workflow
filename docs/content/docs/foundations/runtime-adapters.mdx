@@ -4,11 +4,13 @@ title: Building your own adapters
 
 # Advanced Concepts: Building your own adapters
 
-This guide explains the underlying architecture of how the Workflow DevKit integrates with different JavaScript runtimes, using Bun as a reference implementation. While this example uses Bun, the same principles apply to writing adapters for any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+<Callout>
+  The goal for Workflow DevKit is to have official adapters for everywhere you
+  need to run workflows. Go to the [getting started](/docs/getting-started)
+  guide to pick your framework and get started.
+</Callout>
 
-The goal is for you to never need this document. We will be providing official adapters for everywhere you need to run workflows.
-
-The purpose of this document is to explain conceptually how the Workflow DevKit works with different runtimes.
+If you're interested in learning how Workflow integrates with frameworks and how you can build your own adapter, read on. We'll walk through building the Bun adapter together and explain the underlying architecture of how the Workflow DevKit integrates with different JavaScript runtimes. While this example uses Bun, the same principles apply to writing adapters for any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
 
 ---
 
@@ -16,8 +18,8 @@ The purpose of this document is to explain conceptually how the Workflow DevKit 
 
 The Workflow DevKit architecture is as follows:
 
-1. **Build-time transformation**: Workflow code is transformed by a compiler plugin
-2. **Generated handlers**: The build process generates HTTP handlers in `.well-known/workflow/v1/`
+1. **Build-time transformation**: Workflow code is transformed by a framework agnostic compiler plugin
+2. **Generated handlers**: The build process generates HTTP handlers in `.well-known/workflow/v1/` bundled with your step, workflow, and webhook code
 3. **Runtime integration**: Your application server exposes these handlers as HTTP endpoints
 4. **Execution orchestration**: The Workflow DevKit communicates with these endpoints to orchestrate durable execution
 
