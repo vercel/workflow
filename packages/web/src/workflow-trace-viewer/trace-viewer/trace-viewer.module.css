@@ -63,6 +63,10 @@
     top: -7px;
   }
 
+  &:hover:not(.selected) {
+    filter: brightness(0.95);
+  }
+
   &.xHover {
     z-index: 3;
     min-width: var(--span-width);
@@ -97,6 +101,16 @@
     background-color: var(--span-background);
     border-color: var(--span-border);
     border-radius: 4px;
+  }
+
+  &.selected {
+    border-width: 2px;
+    outline: 2px solid var(--span-border);
+    outline-offset: -1px;
+
+    &:hover {
+      filter: brightness(0.95);
+    }
   }
 }
 
@@ -256,6 +270,14 @@
       }
     }
   }
+
+  & .spanNode:hover:not(.selected) {
+    filter: brightness(1.05);
+  }
+
+  & .spanNode.selected:hover {
+    filter: brightness(1.05);
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -271,6 +293,14 @@
           text-shadow: 0 1px 0 black;
         }
       }
+    }
+
+    & .spanNode:hover:not(.selected) {
+      filter: brightness(1.05);
+    }
+
+    & .spanNode.selected:hover {
+      filter: brightness(1.05);
     }
   }
 }

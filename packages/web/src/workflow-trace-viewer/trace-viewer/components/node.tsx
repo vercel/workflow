@@ -33,6 +33,7 @@ export const getSpanClassName = (node: VisibleSpan, scale: number): string => {
     styles.spanNode,
     isHuge && styles.huge,
     isSpanSmall(node, scale) && styles.small,
+    node.isSelected && styles.selected,
     isHovered && styles.xHover,
     node.isHighlighted ? styles.colorHighlight : getSpanColorClassName(node),
     node.isHighlighted === false && styles.unlit
