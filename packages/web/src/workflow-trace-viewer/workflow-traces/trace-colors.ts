@@ -36,13 +36,6 @@ function getStatusClassName(
 }
 
 /**
- * Check if a step name indicates it's a sleep step
- */
-function isSleepStep(stepName: string): boolean {
-  return String(stepName).toLowerCase().includes('sleep');
-}
-
-/**
  * Get custom CSS class name for a span based on its attributes
  * This is called dynamically by the trace viewer to style spans
  */
@@ -50,16 +43,12 @@ export const getCustomSpanClassName = (span: SpanNode): string => {
   const attributes = span.span.attributes;
   const resource = attributes?.resource;
 
+  if (resource === 'sleep') {
+    return styles.spanSleep;
+  }
+
   if (resource === 'step') {
     const stepData = attributes.data as Step;
-    const stepName = stepData?.stepName;
-
-    // Check if it's a sleep step
-    if (stepName && isSleepStep(stepName)) {
-      return styles.spanSleep;
-    }
-
-    // Regular step - use status colors
     const isStripped = stepData?.status === 'pending';
     return getStatusClassName(stepData?.status, isStripped);
   }

@@ -50,12 +50,41 @@ export function convertEventsToSpanEvents(
     }));
 }
 
+export function waitToSpan(
+  correlationId: string,
+  events: Event[],
+  nowTime?: Date
+): Span {
+  const startEvent = events.find((event) => event.eventType === 'wait_created');
+  const endEvent = events.find((event) => event.eventType === 'wait_completed');
+  const start = dateToOtelTime(startEvent?.createdAt ?? nowTime);
+  const end = dateToOtelTime(endEvent?.createdAt ?? nowTime);
+  const duration = calculateDuration(start, end);
+  return {
+    spanId: `wait-${correlationId}`,
+    name: 'sleep',
+    kind: 1, // INTERNAL span kind
+    resource: 'sleep',
+    library: WORKFLOW_LIBRARY,
+    status: { code: 0 },
+    traceFlags: 1,
+    attributes: {
+      resource: 'sleep' as const,
+      data: {
+        correlationId,
+      },
+    },
+    events: convertEventsToSpanEvents(events),
+    duration,
+    startTime: start,
+    endTime: end,
+  };
+}
 /**
  * Converts a workflow Step to an OpenTelemetry Span
  */
 export function stepToSpan(
   step: Step,
-  parentSpanId: string,
   stepEvents: Event[],
   nowTime?: Date
 ): Span {
@@ -78,7 +107,6 @@ export function stepToSpan(
 
   return {
     spanId: String(step.stepId),
-    parentSpanId,
     name: parsedName?.shortName ?? '',
     kind: 1, // INTERNAL span kind
     resource,
@@ -97,11 +125,7 @@ export function stepToSpan(
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(
-  hook: Hook,
-  parentSpanId: string,
-  hookEvents: Event[]
-): Span {
+export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
   // Simplified attributes: only store resource type and full data
   const attributes = {
     resource: 'hook' as const,
@@ -126,7 +150,6 @@ export function hookToSpan(
 
   return {
     spanId: String(hook.hookId),
-    parentSpanId,
     name: String(hook.hookId),
     kind: 1, // INTERNAL span kind
     resource: 'hook',
@@ -166,7 +189,6 @@ export function runToSpan(
 
   return {
     spanId: String(run.runId),
-    parentSpanId: undefined,
     name: String(parseWorkflowName(run.workflowName)?.shortName ?? '?'),
     kind: 1, // INTERNAL span kind
     resource: 'run',
