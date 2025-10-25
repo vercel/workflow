@@ -387,7 +387,9 @@ function linkify(
     const chunks = text.match(/(\w+|\W+)/g) || [];
 
     for (const chunk of chunks) {
-      const href = typeLinkMap[chunk];
+      const href = Object.hasOwn(typeLinkMap, chunk)
+        ? typeLinkMap[chunk]
+        : undefined;
       if (href) {
         result.push(
           <Link
@@ -418,7 +420,9 @@ function linkify(
     const processedChunks: (string | ReactElement)[] = [];
 
     for (const chunk of chunks) {
-      const href = typeLinkMap[chunk];
+      const href = Object.hasOwn(typeLinkMap, chunk)
+        ? typeLinkMap[chunk]
+        : undefined;
       if (href) {
         processedChunks.push(
           <Link
