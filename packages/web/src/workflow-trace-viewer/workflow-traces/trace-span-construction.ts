@@ -6,13 +6,12 @@ import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { Span, SpanEvent } from '../trace-viewer/types';
 import { shouldShowVerticalLine } from './event-colors';
-import {
-  getResourceCode,
-  getResourceStatus,
-  getStatusResource,
-  WORKFLOW_LIBRARY,
-} from './trace-construction-types';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
+
+const WORKFLOW_LIBRARY = {
+  name: 'vercel-workflow',
+  version: '0.1',
+};
 
 /**
  * Event types that should be displayed as visual markers in the trace viewer
@@ -69,7 +68,7 @@ export function stepToSpan(
     data: step,
   };
 
-  const resource = getStatusResource(step.status);
+  const resource = 'step';
   const endTime = step.completedAt ?? now;
 
   // Convert step-related events to span events (for markers like hook_created, step_retrying, etc.)
@@ -84,7 +83,7 @@ export function stepToSpan(
     kind: 1, // INTERNAL span kind
     resource,
     library: WORKFLOW_LIBRARY,
-    status: getResourceStatus(step.status),
+    status: { code: 0 },
     traceFlags: 1,
     attributes,
     links: [],
@@ -130,7 +129,7 @@ export function hookToSpan(
     parentSpanId,
     name: String(hook.hookId),
     kind: 1, // INTERNAL span kind
-    resource: getResourceCode(hook),
+    resource: 'hook',
     library: WORKFLOW_LIBRARY,
     status: { code: 1 },
     traceFlags: 1,
@@ -170,9 +169,9 @@ export function runToSpan(
     parentSpanId: undefined,
     name: String(parseWorkflowName(run.workflowName)?.shortName ?? '?'),
     kind: 1, // INTERNAL span kind
-    resource: getResourceCode(run),
+    resource: 'run',
     library: WORKFLOW_LIBRARY,
-    status: getResourceStatus(run.status as Step['status']),
+    status: { code: 0 },
     traceFlags: 1,
     attributes,
     links: [],
