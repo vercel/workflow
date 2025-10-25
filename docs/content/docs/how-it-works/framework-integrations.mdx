@@ -71,14 +71,14 @@ The `@workflow/swc-plugin` transforms these functions into instrumented code tha
 
 When you run `workflow build`, the framework adapter:
 
-1. Scans directories where the framework's source code typically lives (for example, `app/` or `pages/` in Next.js)
-2. Transforms files containing workflow directives
+1. Scans directories where the framework's source code typically lives (for example, `app/`, `pages/`, `src/app/`, or `src/pages/` in Next.js)
+2. Transforms files containing workflow directives (`"use workflow"` or `"use step"`)
 3. Generates handler files for the framework to expose at `.well-known/workflow/v1/*`
 
-```json
+```typescript
 {
-  "buildTarget": "vercel-build-output-api",
-  "dirs": ["workflows"]
+  buildTarget: "next",
+  dirs: ["pages", "app", "src/pages", "src/app"]
 }
 ```
 
@@ -171,7 +171,7 @@ Transform workflow files during the build/load process using the SWC plugin.
 **What you need to implement:**
 
 - A plugin/loader hook in your runtime's build system
-- File filtering (typically `workflows/**/*.{ts,tsx,js,jsx}`)
+- Detection of workflow directives (`"use workflow"` or `"use step"`) in source files
 - SWC transformation with `@workflow/swc-plugin`
 - Module loading/resolution
 
@@ -181,28 +181,29 @@ Transform workflow files during the build/load process using the SWC plugin.
 buildSystem.plugin({
   name: "workflow-transform",
   setup(build) {
-    build.onLoad(
-      { filter: /workflows\/.*\.(ts|tsx|js|jsx)$/ },
-      async (args) => {
-        const source = await readFile(args.path);
+    build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async (args) => {
+      const source = await readFile(args.path);
 
-        const result = await transform(source, {
-          filename: args.path,
-          jsc: {
-            experimental: {
-              plugins: [
-                [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
-              ],
-            },
-          },
-        });
-
-        return {
-          contents: result.code,
-          loader: "ts",
-        };
+      if (!source.match(/(use step|use workflow)/)) {
+        return { contents: source };
       }
-    );
+
+      const result = await transform(source, {
+        filename: args.path,
+        jsc: {
+          experimental: {
+            plugins: [
+              [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
+            ],
+          },
+        },
+      });
+
+      return {
+        contents: result.code,
+        loader: "ts",
+      };
+    });
   },
 });
 ```
@@ -228,18 +229,6 @@ server.route("POST", "/.well-known/workflow/v1/flow", (req) => flow.POST(req));
 server.route("POST", "/.well-known/workflow/v1/step", (req) => step.POST(req));
 ```
 
-### Component 3: Workflow Client Integration
-
-Import and use the Workflow DevKit client API to start workflows.
-
-```typescript
-import { start } from "workflow/api";
-import { myWorkflow } from "./workflows/my-workflow.js";
-
-const run = await start(myWorkflow, [arg1, arg2]);
-console.log(run.runId);
-```
-
 ---
 
 ## Reference Implementation: Bun
@@ -257,28 +246,29 @@ console.log("Workflow plugin loaded");
 plugin({
   name: "workflow-transform",
   setup(build) {
-    build.onLoad(
-      { filter: /workflows\/.*\.(ts|tsx|js|jsx)$/ },
-      async (args) => {
-        const source = await Bun.file(args.path).text();
+    build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async (args) => {
+      const source = await Bun.file(args.path).text();
 
-        const result = await transform(source, {
-          filename: args.path,
-          jsc: {
-            experimental: {
-              plugins: [
-                [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
-              ],
-            },
-          },
-        });
-
-        return {
-          contents: result.code,
-          loader: "ts",
-        };
+      if (!source.match(/(use step|use workflow)/)) {
+        return { contents: source };
       }
-    );
+
+      const result = await transform(source, {
+        filename: args.path,
+        jsc: {
+          experimental: {
+            plugins: [
+              [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
+            ],
+          },
+        },
+      });
+
+      return {
+        contents: result.code,
+        loader: "ts",
+      };
+    });
   },
 });
 ```
@@ -286,7 +276,8 @@ plugin({
 **Key aspects:**
 
 - Uses Bun's native `plugin()` API
-- Filters workflow files using regex
+- Checks for workflow directives in all TypeScript and JavaScript files
+- Only transforms files that contain `"use step"` or `"use workflow"`
 - Uses `Bun.file()` for file reading
 - Applies SWC transformation with workflow plugin
 - Returns transformed code with TypeScript loader
