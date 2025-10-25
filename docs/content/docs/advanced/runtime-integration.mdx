@@ -1,0 +1,391 @@
+---
+title: Runtime Integration
+---
+
+# Runtime Integration
+
+This guide explains how Workflow DevKit integrates with JavaScript runtimes and frameworks at a fundamental level. Understanding these concepts is useful if you're:
+
+- Building a custom adapter for a framework or runtime
+- Curious about how the framework works under the hood
+- Debugging integration issues
+- Contributing to the project
+
+<Callout type="info">
+**Official adapters handle this automatically.** If you're using Next.js or Nitro, you don't need to implement any of this—the framework plugins take care of everything. We're actively working on adapters for more runtimes and frameworks.
+</Callout>
+
+## Core Integration Concepts
+
+Every Workflow DevKit integration, regardless of the runtime, requires these fundamental components:
+
+1. **Build-time transformation** - Compiling workflow/step files into executable bundles
+2. **Runtime HTTP endpoints** - Routes that handle workflow and step execution
+3. **Queue processing** - Background workers that process workflow/step invocations
+4. **Storage backend** (World) - Persistent state and event log storage
+
+We'll walk through each concept using Bun as a concrete example.
+
+---
+
+<Steps>
+
+<Step>
+## Example: Manual Bun Integration
+
+To illustrate these concepts, we'll build a complete manual integration with Bun. This same pattern applies to any JavaScript runtime.
+
+### Create Your Project
+
+Start by creating a new directory for your project:
+
+```bash
+mkdir bun-workflow-app
+cd bun-workflow-app
+bun init -y
+```
+
+### Install `workflow`
+
+```bash
+bun add workflow
+```
+
+### Install a World backend
+
+Choose a storage backend for workflow state:
+
+<Tabs items={["Local (Development)", "Postgres (Production)"]}>
+  <Tab value="Local (Development)">
+    <CodeBlock>bun add @workflow/world-local</CodeBlock>
+    <p className="text-sm text-muted-foreground mt-2">For local development and testing. Uses the filesystem.</p>
+  </Tab>
+  <Tab value="Postgres (Production)">
+    <CodeBlock>bun add @workflow/world-postgres</CodeBlock>
+    <p className="text-sm text-muted-foreground mt-2">For production deployments with PostgreSQL.</p>
+  </Tab>
+</Tabs>
+
+### Configure the CLI
+
+Create a `workflow.config.json` file:
+
+```json title="workflow.config.json"
+{
+  "buildTarget": "vercel-build-output-api",
+  "dirs": ["workflows"]
+}
+```
+
+</Step>
+
+<Step>
+
+## Write Example Workflows
+
+Create a workflows directory and an example workflow file to demonstrate the integration:
+
+```typescript title="workflows/user-signup.ts" lineNumbers
+import { sleep } from "workflow";
+
+export async function handleUserSignup(email: string) {
+  "use workflow"; // [!code highlight]
+
+  const user = await createUser(email);
+  await sendWelcomeEmail(user);
+
+  await sleep("5s"); // Pause for 5s - doesn't consume any resources
+  await sendOnboardingEmail(user);
+
+  return { userId: user.id, status: "onboarded" };
+}
+```
+
+We'll fill in those functions next, but let's take a look at this code:
+
+- We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
+- The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
+
+### Define Step Functions
+
+Define the step functions for the workflow:
+
+```typescript title="workflows/user-signup.ts" lineNumbers
+import { FatalError } from "workflow";
+
+// Our workflow function defined earlier
+
+async function createUser(email: string) {
+  "use step"; // [!code highlight]
+
+  console.log(`Creating user with email: ${email}`);
+
+  // Full Node.js access - database calls, APIs, etc.
+  return { id: crypto.randomUUID(), email };
+}
+
+async function sendWelcomeEmail(user: { id: string; email: string }) {
+  "use step"; // [!code highlight]
+
+  console.log(`Sending welcome email to user: ${user.id}`);
+
+  if (Math.random() < 0.3) {
+    // By default, steps will be retried for unhandled errors
+    throw new Error("Retryable!");
+  }
+}
+
+async function sendOnboardingEmail(user: { id: string; email: string }) {
+  "use step"; // [!code highlight]
+
+  if (!user.email.includes("@")) {
+    // To skip retrying, throw a FatalError instead
+    throw new FatalError("Invalid Email");
+  }
+
+  console.log(`Sending onboarding email to user: ${user.id}`);
+}
+```
+
+Taking a look at this code:
+
+- Business logic lives inside **steps**. When a step is invoked inside a **workflow**, it gets enqueued to run on a separate request while the workflow is suspended, just like `sleep`.
+- If a step throws an error, like in `sendWelcomeEmail`, the step will automatically be retried until it succeeds (or hits the step's max retry count).
+- Steps can throw a `FatalError` if an error is intentional and should not be retried.
+
+<Callout>
+  We'll dive deeper into workflows, steps, and other ways to suspend or handle
+  events in [Foundations](/docs/foundations).
+</Callout>
+
+</Step>
+
+<Step>
+
+## 1. Build-Time Transformation
+
+The first integration requirement is compiling workflow files into executable bundles. Run the CLI build command:
+
+```bash
+bun x workflow build
+```
+
+This generates the `.well-known/workflow/v1/` directory containing:
+- `flow.js` - Workflow execution handler
+- `step.js` - Step execution handler
+- `manifest.debug.json` - Workflow metadata
+
+</Step>
+
+<Step>
+
+## 2. Runtime HTTP Endpoints
+
+The second requirement is exposing HTTP endpoints that the compiled bundles will call. Create a server that exposes these routes:
+
+```typescript title="server.ts" lineNumbers
+import { start, getRun, getWorld } from 'workflow/api';
+import flow from './.well-known/workflow/v1/flow.js';
+import step from './.well-known/workflow/v1/step.js';
+import manifest from './.well-known/workflow/v1/manifest.debug.json' with { type: 'json' };
+
+// IMPORTANT: Set PORT before calling getWorld() so the world backend knows where to send requests
+const PORT = process.env.PORT || 3000;
+process.env.PORT = String(PORT);
+
+const server = Bun.serve({
+  port: PORT,
+  routes: {
+    // Required: Workflow runtime endpoints
+    '/.well-known/workflow/v1/flow': {
+      POST: (req) => flow.POST(req),
+    },
+    '/.well-known/workflow/v1/step': {
+      POST: (req) => step.POST(req),
+    },
+
+    // Your application endpoints
+    '/api/signup': {
+      POST: async (req) => {
+        const { email } = await req.json();
+
+        // Get workflow metadata from the manifest
+        const workflowMetadata = manifest.workflows['workflows/user-signup.ts'].handleUserSignup;
+
+        // Start the workflow using metadata, not the function itself
+        const run = await start(workflowMetadata, [email]);
+
+        return Response.json({
+          message: 'User signup workflow started',
+          runId: run.runId,
+        });
+      },
+    },
+
+    // Optional: Check workflow status
+    '/api/runs/:runId': {
+      GET: async (req) => {
+        const run = getRun(req.params.runId);
+        const status = await run.status;
+        return Response.json({ status });
+      },
+    },
+  },
+});
+
+// Start the background queue processor
+const world = getWorld();
+if (world.start) {
+  await world.start();
+  console.log('Background queue processor started');
+}
+
+console.log(`Server listening on http://localhost:${server.port}`);
+```
+
+### Key Points
+
+**Setting the PORT environment variable:**
+- The local world backend (`@workflow/world-local`) uses HTTP to trigger workflow/step execution
+- It reads `process.env.PORT` to know where to send requests
+- **You must set `process.env.PORT` before calling `getWorld()` or importing `workflow/api`**
+- The port must match your server's actual listening port
+
+**Using the manifest instead of importing workflows directly:**
+- In a manual integration, you cannot import workflow functions directly (e.g., `import { handleUserSignup } from './workflows/user-signup'`)
+- Workflow functions need build-time transformation to get a `workflowId` property
+- Instead, use the generated `manifest.debug.json` which contains the workflow metadata
+- Pass the metadata object to `start()` instead of the function itself
+
+**Required Endpoints:**
+
+Every runtime integration must expose these endpoints:
+
+1. **`POST /.well-known/workflow/v1/flow`** - Handles workflow execution requests
+   - Called internally when workflows need to execute
+   - Imports and invokes the compiled `flow.js` bundle
+
+2. **`POST /.well-known/workflow/v1/step`** - Handles step execution requests
+   - Called internally when steps need to execute
+   - Imports and invokes the compiled `step.js` bundle
+
+3. **`POST /.well-known/workflow/v1/webhook/:token`** (optional) - Handles webhook/hook resumption
+   - Allows workflows to resume from external HTTP requests
+
+</Step>
+
+<Step>
+
+## 3. Queue Processing
+
+The third requirement is starting background queue processing. The World backend's `start()` method begins processing queued workflow and step invocations.
+
+## 4. Storage Backend Configuration
+
+The fourth requirement is configuring a World backend for persistent storage. Set the storage backend via environment variable:
+
+```bash title=".env"
+# For local development
+WORKFLOW_TARGET_WORLD="@workflow/world-local"
+
+# Or for production with Postgres
+# WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+# DATABASE_URL="postgresql://..."
+```
+
+<Callout>
+  Bun automatically loads `.env` files, so you don't need to use `dotenv`.
+</Callout>
+
+</Step>
+
+<Step>
+
+## Testing the Integration
+
+Start your server to test the complete integration:
+
+```bash
+bun --hot server.ts
+```
+
+Once your server is running, trigger your workflow:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"email":"hello@example.com"}' \
+  http://localhost:3000/api/signup
+```
+
+Check the server logs to see your workflow execute and the steps being processed.
+
+You can also use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs:
+
+```bash
+bunx workflow inspect runs # add '--web' for an interactive Web based UI
+```
+
+</Step>
+
+</Steps>
+
+---
+
+## Understanding the Integration
+
+This manual integration demonstrates the core concepts that any Workflow DevKit adapter must implement:
+
+### 1. Build Process
+The CLI compiles your workflow files into two executable bundles:
+- **`flow.js`** - Workflow orchestration handler (runs in a sandboxed VM)
+- **`step.js`** - Step execution handler (has full Node.js/Bun runtime access)
+
+### 2. Runtime Endpoints
+Three HTTP endpoints form the workflow execution contract:
+- **`POST /.well-known/workflow/v1/flow`** - Receives workflow execution requests
+- **`POST /.well-known/workflow/v1/step`** - Receives step execution requests
+- **`POST /.well-known/workflow/v1/webhook/:token`** (optional) - Handles webhook/hook resumption
+
+### 3. Queue Processing
+The `world.start()` call begins background processing of queued workflows and steps.
+
+### 4. Execution Flow
+1. Call `start()` to create a workflow run and enqueue it
+2. The workflow handler (`flow.js`) executes the workflow code in a VM
+3. When steps are called, they get enqueued for separate execution
+4. The step handler (`step.js`) processes each step with full runtime access
+5. Results are stored in the World backend and replayed on workflow resume
+
+<Callout>
+**Framework adapters** like `@workflow/next` and `@workflow/nitro` handle all of this automatically—exposing the endpoints, running the build process, and configuring the runtime. This manual approach shows what's happening behind the scenes.
+</Callout>
+
+## Adapting to Other Runtimes
+
+The same integration pattern applies to any JavaScript runtime or framework:
+
+1. **Compile workflows** using the CLI (`workflow build`)
+2. **Import the generated bundles** (`flow.js`, `step.js`)
+3. **Expose HTTP endpoints** at `/.well-known/workflow/v1/flow` and `/step`
+4. **Start queue processing** with `world.start()`
+5. **Configure a World backend** via `WORKFLOW_TARGET_WORLD`
+
+Whether you're using Express, Fastify, Hono, Deno, Cloudflare Workers, or any other runtime—these are the core building blocks.
+
+## Deploying to Production
+
+For production deployments:
+
+1. Use `@workflow/world-postgres` or another production-ready World backend
+2. Ensure your environment variables are configured
+3. Consider using a process manager or container orchestration
+4. Set up monitoring and observability
+
+Check the [Deploying](/docs/deploying) section to learn more about deployment options and World backends.
+
+## Next Steps
+
+- Learn more about the [Foundations](/docs/foundations)
+- Explore the [API Reference](/docs/api-reference)
+- See the [World backends](/docs/deploying/world) documentation for storage options
+- Check [Errors](/docs/errors) if you encounter issues
