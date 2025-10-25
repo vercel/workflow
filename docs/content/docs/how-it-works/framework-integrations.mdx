@@ -75,13 +75,6 @@ When you run `workflow build`, the framework adapter:
 2. Transforms files containing workflow directives (`"use workflow"` or `"use step"`)
 3. Generates handler files for the framework to expose at `.well-known/workflow/v1/*`
 
-```typescript
-{
-  buildTarget: "next",
-  dirs: ["pages", "app", "src/pages", "src/app"]
-}
-```
-
 <Callout type="info">
   **No Vendor Lock-In**: `workflow build` is completely agnostic from the world
   abstraction and runtime environment. It outputs standard JavaScript HTTP
@@ -90,36 +83,46 @@ When you run `workflow build`, the framework adapter:
   platform or provider.
 </Callout>
 
-### 3. Generated Artifacts
-
-The build process creates two critical files:
-
-- **`.well-known/workflow/v1/flow.js`**: Handles workflow execution requests
-- **`.well-known/workflow/v1/step.js`**: Handles individual step execution requests
-
-These files export handlers for POST requests that take in the web standard `Request` object.
-
 ---
 
 ## Required HTTP Endpoints
 
-Your runtime adapter must expose these two endpoints:
+Your runtime adapter must expose two endpoints that correspond to the generated handler files:
 
 ### `POST /.well-known/workflow/v1/flow`
 
-Executes workflow-level operations (starting workflows, resuming after steps).
+Handles [workflow function](/docs/foundations/workflows-and-steps#workflow-functions) execution.
 
-**Request**: Binary payload from Workflow DevKit
-**Response**: Binary payload with execution results
+**How it works:**
+
+The workflow function is "rendered" multiple times during the lifecycle of a workflow execution. Each time it runs, it progresses through the workflow logic until it encounters the next step that needs to be executed. Because [workflow functions are deterministic and have no side effects](/docs/foundations/workflows-and-steps#workflow-functions), they can be safely re-run multiple times to calculate what the next step should be.
+
+This endpoint is called when:
+
+- Starting a new workflow
+- Resuming execution after a step completes
+- Resuming after a webhook or hook is triggered
+- Recovering from failures
+
+**Interface:**
+
+- **Request**: Web standard `Request` object with binary payload from Workflow DevKit
+- **Response**: Web standard `Response` object with binary payload containing execution results
 
 ### `POST /.well-known/workflow/v1/step`
 
-Executes individual steps within workflows.
+Handles [step function](/docs/foundations/workflows-and-steps#step-functions) execution.
 
-**Request**: Binary payload from Workflow DevKit
-**Response**: Binary payload with step results
+**How it works:**
 
-The exact protocol is handled by the generated `flow.js` and `step.js` files. Your adapter just needs to route HTTP requests to these handlers.
+This endpoint executes individual atomic operations within workflows. Each step runs exactly once per execution (unless it fails and needs to be retried).
+
+**Interface:**
+
+- **Request**: Web standard `Request` object with binary payload from Workflow DevKit
+- **Response**: Web standard `Response` object with binary payload containing step results
+
+**Implementation Note:** The exact protocol and payload handling is managed by the generated `flow.js` and `step.js` files. Your adapter only needs to route HTTP requests to these handlers.
 
 ---
 
