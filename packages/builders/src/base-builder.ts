@@ -715,6 +715,20 @@ export const OPTIONS = handler;`;
     );
   }
 
+  /**
+   * Resolves a path relative to the working directory.
+   */
+  protected resolvePath(path: string): string {
+    return resolve(this.config.workingDir, path);
+  }
+
+  /**
+   * Ensures the directory for a file path exists, creating it if necessary.
+   */
+  protected async ensureDirectory(filePath: string): Promise<void> {
+    await mkdir(dirname(filePath), { recursive: true });
+  }
+
   private async createSwcGitignore(): Promise<void> {
     try {
       await writeFile(
