@@ -54,30 +54,12 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       tsPaths,
     });
 
-    // Create package.json for CommonJS
-    const packageJson = {
-      type: 'commonjs',
-    };
-    await writeFile(
-      join(stepsFuncDir, 'package.json'),
-      JSON.stringify(packageJson, null, 2)
-    );
-
-    // Create .vc-config.json for steps function
-    const stepsConfig = {
-      runtime: 'nodejs22.x',
-      handler: 'index.js',
-      launcherType: 'Nodejs',
-      architecture: 'arm64',
-      shouldAddHelpers: true,
+    // Create package.json and .vc-config.json for steps function
+    await this.createPackageJson(stepsFuncDir, 'commonjs');
+    await this.createVcConfig(stepsFuncDir, {
       shouldAddSourcemapSupport: true,
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
-    };
-
-    await writeFile(
-      join(stepsFuncDir, '.vc-config.json'),
-      JSON.stringify(stepsConfig, null, 2)
-    );
+    });
   }
 
   private async buildWorkflowsFunction({
@@ -102,29 +84,11 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       tsPaths,
     });
 
-    // Create package.json for ESM support
-    const packageJson = {
-      type: 'commonjs',
-    };
-    await writeFile(
-      join(workflowsFuncDir, 'package.json'),
-      JSON.stringify(packageJson, null, 2)
-    );
-
-    // Create .vc-config.json for workflows function
-    const workflowsConfig = {
-      runtime: 'nodejs22.x',
-      handler: 'index.js',
-      launcherType: 'Nodejs',
-      architecture: 'arm64',
-      shouldAddHelpers: true,
+    // Create package.json and .vc-config.json for workflows function
+    await this.createPackageJson(workflowsFuncDir, 'commonjs');
+    await this.createVcConfig(workflowsFuncDir, {
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
-    };
-
-    await writeFile(
-      join(workflowsFuncDir, '.vc-config.json'),
-      JSON.stringify(workflowsConfig, null, 2)
-    );
+    });
   }
 
   private async buildWebhookFunction({
@@ -146,28 +110,11 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       bundle, // Build Output API needs bundling (except in tests)
     });
 
-    // Create package.json for CommonJS
-    const packageJson = {
-      type: 'commonjs',
-    };
-    await writeFile(
-      join(webhookFuncDir, 'package.json'),
-      JSON.stringify(packageJson, null, 2)
-    );
-
-    // Create .vc-config.json for webhook function
-    const webhookConfig = {
-      runtime: 'nodejs22.x',
-      handler: 'index.js',
-      launcherType: 'Nodejs',
-      architecture: 'arm64',
+    // Create package.json and .vc-config.json for webhook function
+    await this.createPackageJson(webhookFuncDir, 'commonjs');
+    await this.createVcConfig(webhookFuncDir, {
       shouldAddHelpers: false,
-    };
-
-    await writeFile(
-      join(webhookFuncDir, '.vc-config.json'),
-      JSON.stringify(webhookConfig, null, 2)
-    );
+    });
   }
 
   private async createBuildOutputConfig(outputDir: string): Promise<void> {
