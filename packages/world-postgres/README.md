@@ -76,6 +76,39 @@ This package uses PostgreSQL with the following components:
 - **Drizzle ORM**: For database operations and schema management
 - **postgres**: For PostgreSQL client connections
 
+### Quick Setup with CLI
+
+The easiest way to set up your database is using the included CLI tool:
+
+```bash
+pnpm exec workflow-postgres-setup
+# or
+npm exec workflow-postgres-setup
+```
+
+The CLI automatically loads `.env` files and will use the connection string from:
+1. `WORKFLOW_POSTGRES_URL` environment variable
+2. `DATABASE_URL` environment variable
+3. Default: `postgres://world:world@localhost:5432/world`
+
+### Database Schema
+
+The setup creates the following tables:
+
+- `workflow_runs` - Stores workflow execution runs
+- `workflow_events` - Stores workflow events
+- `workflow_steps` - Stores individual workflow steps
+- `workflow_hooks` - Stores webhook hooks
+- `workflow_stream_chunks` - Stores streaming data chunks
+
+You can also access the schema programmatically:
+
+```typescript
+import { runs, events, steps, hooks, streams } from '@workflow/world-postgres';
+// or
+import * as schema from '@workflow/world-postgres/schema';
+```
+
 Make sure your PostgreSQL database is accessible and the user has sufficient permissions to create tables and manage jobs.
 
 ## Features
