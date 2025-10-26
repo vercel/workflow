@@ -179,19 +179,32 @@ export abstract class BaseBuilder {
     }
   }
 
+  /**
+   * Logs and optionally throws on esbuild errors and warnings.
+   * @param throwOnError - If true, throws an error when esbuild errors are present
+   */
   private logEsbuildMessages(
     result: { errors?: any[]; warnings?: any[] },
-    phase: string
+    phase: string,
+    throwOnError = true
   ): void {
     if (result.errors && result.errors.length > 0) {
       console.error(`❌ esbuild errors in ${phase}:`);
+      const errorMessages: string[] = [];
       for (const error of result.errors) {
         console.error(`  ${error.text}`);
+        errorMessages.push(error.text);
         if (error.location) {
-          console.error(
-            `    at ${error.location.file}:${error.location.line}:${error.location.column}`
-          );
+          const location = `    at ${error.location.file}:${error.location.line}:${error.location.column}`;
+          console.error(location);
+          errorMessages.push(location);
         }
+      }
+
+      if (throwOnError) {
+        throw new Error(
+          `Build failed during ${phase}:\n${errorMessages.join('\n')}`
+        );
       }
     }
 
