@@ -89,13 +89,13 @@ export const WorkflowTraceViewer = ({
     });
 
     const runSpan = runToSpan(run, runLevelEvents, now);
-    const spans = [runSpan, ...stepSpans, ...hookSpans];
+    const spans = [...stepSpans, ...hookSpans];
     const sortedSpans = [
       runSpan,
       ...spans.slice().sort((a, b) => {
-        const aTime = new Date(a.startTime[0]).getTime();
-        const bTime = new Date(b.startTime[0]).getTime();
-        return aTime - bTime;
+        const aStart = a.startTime[0] * 1000 + a.startTime[1];
+        const bStart = b.startTime[0] * 1000 + b.startTime[1];
+        return aStart - bStart;
       }),
     ];
 
