@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 
-export class VercelStaticBuilder extends BaseBuilder {
+export class StandaloneBuilder extends BaseBuilder {
   async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     const tsConfig = await this.getTsConfigOptions();

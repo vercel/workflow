@@ -8,7 +8,7 @@ export const getWorkflowConfig = (
     buildTarget?: BuildTarget;
     workflowManifest?: string;
   } = {
-    buildTarget: 'vercel-static',
+    buildTarget: 'standalone',
   }
 ) => {
   const config: WorkflowConfig = {
