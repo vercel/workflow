@@ -1,5 +1,3 @@
-export type * from './auth.js';
-export { AuthInfoSchema, HealthCheckResponseSchema } from './auth.js';
 export type * from './events.js';
 export {
   BaseEventSchema,

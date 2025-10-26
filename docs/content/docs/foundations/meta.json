@@ -2,6 +2,7 @@
   "title": "Foundations",
   "pages": [
     "workflows-and-steps",
+    "starting-workflows",
     "control-flow-patterns",
     "errors-and-retries",
     "hooks",

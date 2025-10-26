@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-local",
-  "version": "4.0.1-beta.1",
+  "version": "4.0.1-beta.2",
   "description": "Local development World implementation for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -25,7 +25,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean",
+    "clean": "tsc --build --clean && rm -rf dist",
     "test": "vitest run src",
     "typecheck": "tsc --noEmit"
   },

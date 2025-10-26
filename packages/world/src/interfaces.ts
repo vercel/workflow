@@ -1,4 +1,3 @@
-import type { AuthInfo, HealthCheckResponse } from './auth.js';
 import type {
   CreateEventParams,
   CreateEventRequest,
@@ -33,20 +32,12 @@ import type {
 } from './steps.js';
 
 export interface Streamer {
-  writeToStream(
-    name: string,
-    chunk: string | Uint8Array | Buffer
-  ): Promise<void>;
+  writeToStream(name: string, chunk: string | Uint8Array): Promise<void>;
   closeStream(name: string): Promise<void>;
   readFromStream(
     name: string,
     startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;
-}
-
-export interface AuthProvider {
-  getAuthInfo(): Promise<AuthInfo>;
-  checkHealth(): Promise<HealthCheckResponse>;
 }
 
 export interface Storage {
@@ -104,9 +95,8 @@ export interface Storage {
 
 /**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
- * This means persistence, queuing and serialization.
  */
-export interface World extends Queue, Storage, AuthProvider, Streamer {
+export interface World extends Queue, Storage, Streamer {
   /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.

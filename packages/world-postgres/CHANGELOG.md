@@ -1,5 +1,17 @@
 # @workflow/world-postgres
 
+## 4.0.1-beta.2
+
+### Patch Changes
+
+- 7868434: Remove `AuthProvider` interface from `World` and associated implementations
+- Updated dependencies [d3a4ed3]
+- Updated dependencies [d3a4ed3]
+- Updated dependencies [66225bf]
+- Updated dependencies [7868434]
+  - @workflow/world@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.2
+
 ## 4.0.1-beta.1
 
 ### Patch Changes

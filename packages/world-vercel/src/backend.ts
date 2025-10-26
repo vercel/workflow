@@ -1,11 +1,9 @@
-import type { AuthProvider, Storage, Streamer } from '@workflow/world';
+import type { Storage, Streamer } from '@workflow/world';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
-export function createVercel(
-  config?: APIConfig
-): Streamer & Storage & AuthProvider {
+export function createVercel(config?: APIConfig): Streamer & Storage {
   const storage = createStorage(config);
   const streamer = createStreamer(config);
 
@@ -14,10 +12,6 @@ export function createVercel(
     writeToStream: streamer.writeToStream,
     closeStream: streamer.closeStream,
     readFromStream: streamer.readFromStream,
-
-    // AuthProvider interface
-    getAuthInfo: storage.getAuthInfo,
-    checkHealth: storage.checkHealth,
 
     // Storage interface with namespaced methods
     runs: storage.runs,
