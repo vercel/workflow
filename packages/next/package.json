@@ -28,13 +28,15 @@
   },
   "dependencies": {
     "@swc/core": "1.11.24",
-    "@workflow/cli": "workspace:*",
+    "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*"
+    "@workflow/swc-plugin": "workspace:*",
+    "watchpack": "2.4.4"
   },
   "devDependencies": {
     "@workflow/tsconfig": "workspace:*",
     "@types/node": "catalog:",
+    "@types/watchpack": "2.4.4",
     "next": "15.5.3"
   },
   "peerDependencies": {

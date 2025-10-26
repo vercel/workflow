@@ -497,19 +497,25 @@ importers:
       '@swc/core':
         specifier: 1.11.24
         version: 1.11.24
-      '@workflow/cli':
+      '@workflow/builders':
         specifier: workspace:*
-        version: link:../cli
+        version: link:../builders
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
+      watchpack:
+        specifier: 2.4.4
+        version: 2.4.4
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 24.6.2
+      '@types/watchpack':
+        specifier: 2.4.4
+        version: 2.4.4
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
