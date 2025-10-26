@@ -2,7 +2,7 @@ import { exec } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { confirm, intro, tasks, text } from '@clack/prompts';
+import { confirm, intro, outro, tasks, text } from '@clack/prompts';
 import { Args, Command, Flags } from '@oclif/core';
 import chalk from 'chalk';
 
@@ -37,7 +37,7 @@ export default class CreateWorkflowApp extends Command {
     const useTsPlugin =
       flags.yes ||
       ((await confirm({
-        message: 'Configure TypeScript intellisense? (recommended)',
+        message: `Configure TypeScript intellisense? ${chalk.dim('(recommended)')}`,
         initialValue: true,
       })) as boolean);
 
@@ -47,17 +47,17 @@ export default class CreateWorkflowApp extends Command {
       {
         title: 'Creating Next.js app',
         task: async (message) => {
-          message(`Creating a new Next.js app in ${chalk.green(projectPath)}`);
+          message('Creating a new Next.js app');
           await execAsync(`npx create-next-app@latest ${projectName} --yes`);
-          return 'Created Next.js app';
+          return `Created Next.js app in ${chalk.cyan(projectPath)}`;
         },
       },
       {
-        title: 'Installing Workflow DevKit Dependencies',
+        title: 'Installing `workflow` package',
         task: async (message) => {
-          message(`Installing Workflow DevKit dependencies`);
+          message(`Installing \`workflow\` package`);
           await execAsync(`cd ${projectPath} && pnpm add workflow`);
-          return 'Installed Workflow DevKit dependencies';
+          return `Installed \`workflow\` package`;
         },
       },
       {
@@ -102,7 +102,8 @@ export default class CreateWorkflowApp extends Command {
         title: 'Creating example workflow',
         task: async (message) => {
           message(`Creating example workflow`);
-          mkdirSync(path.join(projectPath, 'workflows'));
+          const workflowsPath = path.join(projectPath, 'workflows');
+          mkdirSync(workflowsPath);
           const workflowContent = `import { FatalError, sleep } from "workflow";
 
 export async function handleUserSignup(email: string) {
@@ -140,12 +141,44 @@ async function sendOnboardingEmail(user: { id: string; email: string}) {
  console.log(\`Sending onboarding email to user: \${user.id}\`);
 }`;
           writeFileSync(
-            path.join(projectPath, 'workflows', 'user-signup.ts'),
+            path.join(workflowsPath, 'user-signup.ts'),
             workflowContent
           );
-          return `Created example workflow in ${chalk.green(path.join(projectPath, 'workflows', 'user-signup.ts'))}`;
+          return `Created example workflow in ${chalk.cyan(path.join(workflowsPath, 'user-signup.ts'))}`;
+        },
+      },
+      {
+        title: 'Creating API route handler',
+        task: async (message) => {
+          message(`Creating API route handler`);
+          const apiPath = path.join(projectPath, 'app', 'api', 'signup');
+          mkdirSync(apiPath, { recursive: true });
+          writeFileSync(
+            path.join(apiPath, 'route.ts'),
+            `import { start } from 'workflow/api';
+import { handleUserSignup } from "@/workflows/user-signup";
+import { NextResponse } from "next/server";
+
+export async function POST(request: Request) {
+ const { email } = await request.json();
+
+ // Executes asynchronously and doesn't block your app
+ await start(handleUserSignup, [email]);
+
+ return NextResponse.json({
+  message: "User signup workflow started",
+ });
+}`
+          );
+          return `Created API route handler in ${chalk.cyan(path.join(projectPath, 'app', 'api', 'signup', 'route.ts'))}`;
         },
       },
     ]);
+
+    outro(
+      `${chalk.green('Success!')} Next steps:
+     Run ${chalk.dim(`cd ${projectName} && npm run dev`)} to start the development server
+     Trigger the workflow: ${chalk.dim('curl -X POST --json \'{"email":"hello@example.com"}\' http://localhost:3000/api/signup')}`
+    );
   }
 }
