@@ -1,18 +1,16 @@
 # @workflow/world-postgres
 
-## 4.0.1
+## 4.0.1-beta.2
 
 ### Patch Changes
 
-- 4ca9a3e: Initial publish
-- 4ca9a3e: Add "license" and "repository" fields to `package.json` file
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-  - @workflow/world-local@4.0.1
-  - @workflow/errors@4.0.1
-  - @workflow/world@4.0.1
+- 7868434: Remove `AuthProvider` interface from `World` and associated implementations
+- Updated dependencies [d3a4ed3]
+- Updated dependencies [d3a4ed3]
+- Updated dependencies [66225bf]
+- Updated dependencies [7868434]
+  - @workflow/world@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.2
 
 ## 4.0.1-beta.1
 

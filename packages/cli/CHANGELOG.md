@@ -1,45 +1,25 @@
 # @workflow/cli
 
-## 4.0.1
-
-### Patch Changes
-
-- 4ca9a3e: CLI: Allow using package names instead of alias names for --backend flag
-- 4ca9a3e: Add "description" field to `package.json` file
-- 4ca9a3e: Initial publish
-- 4ca9a3e: Allow specifying vercel world package name as an alias for "vercel"
-- 4ca9a3e: Fine tune CLI output table width for smaller displays
-- b472bb1: Fix Node.js usage in monorepo packages
-- 4ca9a3e: Add "license" and "repository" fields to `package.json` file
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [4ca9a3e]
-- Updated dependencies [57419e5]
-- Updated dependencies [22917ab]
-- Updated dependencies [9ba86ce]
-  - @workflow/core@4.0.1
-  - @workflow/swc-plugin@4.0.1
-  - @workflow/world-vercel@4.0.1
-  - @workflow/world-local@4.0.1
-  - @workflow/errors@4.0.1
-  - @workflow/world@4.0.1
-  - @workflow/web@4.0.1
-
 ## 4.0.1-beta.3
 
 ### Patch Changes
 
-- b472bb1: Fix Node.js usage in monorepo packages
+- dfdb280: Generate the webhook route in the static builder mode
+- d3a4ed3: Move `@types/watchpack` to be a devDependency
+- Updated dependencies [d3a4ed3]
+- Updated dependencies [d3a4ed3]
+- Updated dependencies [66225bf]
+- Updated dependencies [7868434]
+- Updated dependencies [731adff]
 - Updated dependencies [57419e5]
 - Updated dependencies [22917ab]
+- Updated dependencies [66225bf]
 - Updated dependencies [9ba86ce]
-  - @workflow/core@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.2
+  - @workflow/world-vercel@4.0.1-beta.2
   - @workflow/web@4.0.1-beta.3
+  - @workflow/core@4.0.1-beta.3
 
 ## 4.0.1-beta.2
 

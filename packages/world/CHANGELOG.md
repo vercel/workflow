@@ -1,12 +1,12 @@
 # @workflow/world
 
-## 4.0.1
+## 4.0.1-beta.2
 
 ### Patch Changes
 
-- 4ca9a3e: Initial publish
-- 4ca9a3e: Update Workflow naming convention
-- 4ca9a3e: Add "license" and "repository" fields to `package.json` file
+- d3a4ed3: Remove `@types/json-schema` dependency (not used)
+- d3a4ed3: Remove `@types/node` from being a peerDependency
+- 7868434: Remove `AuthProvider` interface from `World` and associated implementations
 
 ## 4.0.1-beta.1
 
