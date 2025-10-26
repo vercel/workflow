@@ -13,7 +13,7 @@ export default class Init extends BaseCommand {
   static flags = {
     template: Flags.string({
       description: 'template to use',
-      options: ['basic', 'nextjs', 'express'],
+      options: ['standalone', 'nextjs', 'express'],
     }),
     yes: Flags.boolean({
       char: 'y',

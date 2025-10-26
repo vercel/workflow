@@ -16,8 +16,8 @@ export default class Dev extends BaseCommand {
     target: Flags.string({
       char: 't',
       description: 'build target for development',
-      options: ['vercel-static', 'vercel-build-output-api'],
-      default: 'vercel-static',
+      options: ['standalone', 'vercel-build-output-api'],
+      default: 'standalone',
     }),
   };
 
