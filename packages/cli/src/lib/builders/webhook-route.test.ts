@@ -28,6 +28,7 @@ describe('Webhook route generation', () => {
         workingDir: testDir,
         stepsBundlePath: '',
         workflowsBundlePath: '',
+        webhookBundlePath: '',
         watch: false,
         externalPackages: [],
       };
@@ -72,6 +73,7 @@ describe('Webhook route generation', () => {
         workingDir: testDir,
         stepsBundlePath: '',
         workflowsBundlePath: '',
+        webhookBundlePath: '',
         watch: false,
         externalPackages: [],
       };
@@ -104,6 +106,7 @@ describe('Webhook route generation', () => {
         workingDir: testDir,
         stepsBundlePath: '',
         workflowsBundlePath: '',
+        webhookBundlePath: '',
         watch: false,
         externalPackages: [],
       };
@@ -137,6 +140,7 @@ describe('Webhook route generation', () => {
         workingDir: testDir,
         stepsBundlePath: '',
         workflowsBundlePath: '',
+        webhookBundlePath: '',
         watch: false,
         externalPackages: [],
       };
@@ -176,6 +180,7 @@ describe('Webhook route generation', () => {
         workingDir: testDir,
         stepsBundlePath: '',
         workflowsBundlePath: '',
+        webhookBundlePath: '',
         watch: false,
         externalPackages: [],
       };
@@ -217,6 +222,7 @@ describe('Webhook route generation', () => {
         workingDir: testDir,
         stepsBundlePath: '',
         workflowsBundlePath: '',
+        webhookBundlePath: '',
         watch: false,
         externalPackages: [],
       };
@@ -254,6 +260,7 @@ describe('Webhook route generation', () => {
         workingDir: testDir,
         stepsBundlePath: '',
         workflowsBundlePath: '',
+        webhookBundlePath: '',
         watch: false,
         externalPackages: [],
       };

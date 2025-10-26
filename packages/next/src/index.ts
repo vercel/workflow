@@ -90,8 +90,9 @@ export function withWorkflow({
         dirs: ['pages', 'app', 'src/pages', 'src/app'],
         workingDir: process.cwd(),
         buildTarget: 'next',
-        workflowsBundlePath: '',
-        stepsBundlePath: '',
+        workflowsBundlePath: '', // not used in base
+        stepsBundlePath: '', // not used in base
+        webhookBundlePath: '', // node used in base
         externalPackages: [
           ...require('next/dist/lib/server-external-packages.json'),
           ...(nextConfig.serverExternalPackages || []),

@@ -8,6 +8,7 @@ const CommonBuildOptions = {
   buildTarget: 'next' as const, // unused in base
   stepsBundlePath: '', // unused in base
   workflowsBundlePath: '', // unused in base
+  webhookBundlePath: '', // unused in base
 };
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
