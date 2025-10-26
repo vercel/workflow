@@ -68,13 +68,6 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
       };
 
       build.onResolve({ filter: /.*/ }, async (args) => {
-        // For workflow bundles, do not externalize dependencies so the VM
-        // does not need a CommonJS `require`. This ensures all non-Node
-        // builtin modules are bundled into the workflow code string.
-        if (options.mode === 'workflow') {
-          return null;
-        }
-
         if (!options.entriesToBundle) {
           return null;
         }
