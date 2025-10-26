@@ -8,6 +8,7 @@ import * as CalloutComponents from '@/components/ui/callout';
 import { CodeBlock } from '@/components/ui/code-block';
 import { TypeTable } from '@/components/ui/type-table';
 import { TSDoc } from '@/lib/tsdoc';
+import { Mermaid } from './components/mermaid';
 import { Step, Steps } from './components/steps';
 import { Badge } from './components/ui/badge';
 import { cn } from './lib/cn';
@@ -24,6 +25,7 @@ export function getMDXComponents(components?: MDXComponents): MDXComponents {
     CodeBlock,
     Step,
     Steps,
+    Mermaid,
     ...CalloutComponents,
     h1: (props) => (
       <Heading as="h1" {...props}>
