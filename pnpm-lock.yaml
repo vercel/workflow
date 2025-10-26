@@ -488,6 +488,9 @@ importers:
       exsolve:
         specifier: ^1.0.7
         version: 1.0.7
+      pathe:
+        specifier: ^2.0.3
+        version: 2.0.3
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1052,10 +1055,6 @@ importers:
         version: 4.1.11
 
   workbench/nitro-v3:
-    dependencies:
-      pathe:
-        specifier: ^2.0.3
-        version: 2.0.3
     devDependencies:
       ai:
         specifier: 'catalog:'
