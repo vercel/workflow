@@ -1,21 +1,19 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BaseBuilder, VercelBuildOutputAPIBuilder } from '@workflow/builders';
+import {
+  BaseBuilder,
+  VercelBuildOutputAPIBuilder,
+  createBaseBuilderConfig,
+} from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
-
-const CommonBuildOptions = {
-  dirs: ['workflows'],
-  buildTarget: 'next' as const, // unused in base
-  stepsBundlePath: '', // unused in base
-  workflowsBundlePath: '', // unused in base
-  webhookBundlePath: '', // unused in base
-};
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
-      ...CommonBuildOptions,
-      workingDir: nitro.options.rootDir,
+      ...createBaseBuilderConfig({
+        workingDir: nitro.options.rootDir,
+      }),
+      buildTarget: 'vercel-build-output-api',
     });
   }
   override async build(): Promise<void> {
@@ -36,9 +34,11 @@ export class LocalBuilder extends BaseBuilder {
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');
     super({
-      ...CommonBuildOptions,
-      workingDir: nitro.options.rootDir,
-      watch: nitro.options.dev,
+      ...createBaseBuilderConfig({
+        workingDir: nitro.options.rootDir,
+        watch: nitro.options.dev,
+      }),
+      buildTarget: 'next', // Placeholder, not actually used
     });
     this.#outDir = outDir;
   }

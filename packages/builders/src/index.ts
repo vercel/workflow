@@ -15,3 +15,4 @@ export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.j
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 export { createSwcPlugin } from './swc-esbuild-plugin.js';
 export { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+export { createBaseBuilderConfig } from './config-helpers.js';
