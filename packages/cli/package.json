@@ -38,7 +38,6 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@types/watchpack": "2.4.4",
     "@workflow/tsconfig": "workspace:*"
   },
   "dependencies": {
@@ -68,7 +67,6 @@
     "ora": "^8.2.0",
     "terminal-link": "^5.0.0",
     "tinyglobby": "^0.2.14",
-    "watchpack": "2.4.4",
     "xdg-app-paths": "^5.1.0",
     "zod": "catalog:"
   }
