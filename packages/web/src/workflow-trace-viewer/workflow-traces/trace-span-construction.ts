@@ -8,9 +8,9 @@ import type { Span, SpanEvent } from '../trace-viewer/types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
 
-const WORKFLOW_LIBRARY = {
-  name: 'vercel-workflow',
-  version: '0.1',
+export const WORKFLOW_LIBRARY = {
+  name: 'workflow-development-kit',
+  version: '4.0.0',
 };
 
 /**

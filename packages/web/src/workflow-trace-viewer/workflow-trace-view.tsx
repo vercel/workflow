@@ -14,6 +14,7 @@ import {
   hookToSpan,
   runToSpan,
   stepToSpan,
+  WORKFLOW_LIBRARY,
 } from './workflow-traces/trace-span-construction';
 
 const RE_RENDER_INTERVAL_MS = 2000;
@@ -116,7 +117,7 @@ export const WorkflowTraceViewer = ({
         {
           name: 'workflow',
           attributes: {
-            'service.name': 'vercel-workflow',
+            'service.name': WORKFLOW_LIBRARY.name,
           },
         },
       ],
