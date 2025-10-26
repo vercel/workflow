@@ -126,8 +126,20 @@ export function createStorage(basedir: string): Storage {
           updatedAt: now,
         };
 
-        await writeJSON(runPath, result);
-        return result;
+        try {
+          await writeJSON(runPath, result);
+          return result;
+        } catch (error: any) {
+          // Handle race condition: if write failed due to file already existing,
+          // fetch and return the existing run (for idempotency)
+          if (error.status === 409) {
+            const conflictingRun = await readJSON(runPath, WorkflowRunSchema);
+            if (conflictingRun) {
+              return conflictingRun;
+            }
+          }
+          throw error;
+        }
       },
 
       async get(id, params) {
