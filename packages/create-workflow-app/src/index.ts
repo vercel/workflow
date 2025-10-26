@@ -1,5 +1,5 @@
 import { exec } from 'node:child_process';
-import { readFile, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { confirm, intro, tasks, text } from '@clack/prompts';
@@ -98,25 +98,54 @@ export default class CreateWorkflowApp extends Command {
           return 'Configured Next.js config';
         },
       },
+      {
+        title: 'Creating example workflow',
+        task: async (message) => {
+          message(`Creating example workflow`);
+          mkdirSync(path.join(projectPath, 'workflows'));
+          const workflowContent = `import { FatalError, sleep } from "workflow";
+
+export async function handleUserSignup(email: string) {
+ "use workflow"; 
+
+ const user = await createUser(email);
+ await sendWelcomeEmail(user);
+
+ await sleep("5s"); // Pause for 5s - doesn't consume any resources
+ await sendOnboardingEmail(user);
+
+ return { userId: user.id, status: "onboarded" };
+}
+ 
+async function createUser(email: string) {
+  "use step"; 
+  console.log(\`Creating user with email: \${email}\`);
+  // Full Node.js access - database calls, APIs, etc.
+  return { id: crypto.randomUUID(), email };
+}
+async function sendWelcomeEmail(user: { id: string; email: string; }) {
+  "use step"; 
+  console.log(\`Sending welcome email to user: \${user.id}\`);
+  if (Math.random() < 0.3) {
+  // By default, steps will be retried for unhandled errors
+   throw new Error("Retryable!");
+  }
+}
+async function sendOnboardingEmail(user: { id: string; email: string}) {
+ "use step"; 
+  if (!user.email.includes("@")) {
+    // To skip retrying, throw a FatalError instead
+    throw new FatalError("Invalid Email");
+  }
+ console.log(\`Sending onboarding email to user: \${user.id}\`);
+}`;
+          writeFileSync(
+            path.join(projectPath, 'workflows', 'user-signup.ts'),
+            workflowContent
+          );
+          return `Created example workflow in ${chalk.green(path.join(projectPath, 'workflows', 'user-signup.ts'))}`;
+        },
+      },
     ]);
-
-    // this.logInfo('🚧 Project initialization is coming soon!');
-    // this.logInfo('');
-    // this.logInfo('This command will provide:');
-    // this.logInfo('• Interactive project setup');
-    // this.logInfo('• Multiple project templates');
-    // this.logInfo('• Automatic configuration file generation');
-    // this.logInfo('• Dependency installation');
-    // this.logInfo('• Example workflows and steps');
-    // this.logInfo('Or we might do a create-workflow-app package');
-    // this.logInfo('');
-
-    // if (flags.template) {
-    //   this.logInfo(`Selected template: ${flags.template}`);
-    // }
-
-    // if (flags.yes) {
-    //   this.logInfo('Auto-accept mode enabled');
-    // }
   }
 }
