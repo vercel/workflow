@@ -269,6 +269,49 @@ importers:
         specifier: workspace:*
         version: link:../workflow
 
+  packages/builders:
+    dependencies:
+      '@swc/core':
+        specifier: 1.11.24
+        version: 1.11.24
+      '@workflow/core':
+        specifier: workspace:*
+        version: link:../core
+      '@workflow/errors':
+        specifier: workspace:*
+        version: link:../errors
+      '@workflow/swc-plugin':
+        specifier: workspace:*
+        version: link:../swc-plugin-workflow
+      builtin-modules:
+        specifier: ^5.0.0
+        version: 5.0.0
+      chalk:
+        specifier: ^5.6.2
+        version: 5.6.2
+      comment-json:
+        specifier: 4.2.5
+        version: 4.2.5
+      enhanced-resolve:
+        specifier: 5.18.2
+        version: 5.18.2
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.25.11
+      find-up:
+        specifier: 7.0.0
+        version: 7.0.0
+      tinyglobby:
+        specifier: ^0.2.14
+        version: 0.2.15
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.6.2
+      '@workflow/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+
   packages/cli:
     dependencies:
       '@oclif/core':
@@ -280,6 +323,9 @@ importers:
       '@swc/core':
         specifier: 1.11.24
         version: 1.11.24
+      '@workflow/builders':
+        specifier: workspace:*
+        version: link:../builders
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
@@ -476,9 +522,9 @@ importers:
       '@swc/core':
         specifier: 1.11.24
         version: 1.11.24
-      '@workflow/cli':
+      '@workflow/builders':
         specifier: workspace:*
-        version: link:../cli
+        version: link:../builders
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
@@ -11122,7 +11168,7 @@ snapshots:
       semver: 7.7.2
       string-width: 4.2.3
       supports-color: 8.1.1
-      tinyglobby: 0.2.14
+      tinyglobby: 0.2.15
       widest-line: 3.1.0
       wordwrap: 1.0.0
       wrap-ansi: 7.0.0
@@ -13093,7 +13139,7 @@ snapshots:
     dependencies:
       minimatch: 10.0.3
       path-browserify: 1.0.1
-      tinyglobby: 0.2.14
+      tinyglobby: 0.2.15
 
   '@tybys/wasm-util@0.10.0':
     dependencies:

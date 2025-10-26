@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder';
-import { VercelBuildOutputAPIBuilder } from '@workflow/cli/dist/lib/builders/vercel-build-output-api';
+import { BaseBuilder, VercelBuildOutputAPIBuilder } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
 
 const CommonBuildOptions = {

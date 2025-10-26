@@ -1,7 +1,9 @@
 import { Args, Flags } from '@oclif/core';
+import {
+  StandaloneBuilder,
+  VercelBuildOutputAPIBuilder,
+} from '@workflow/builders';
 import { BaseCommand } from '../base.js';
-import { VercelBuildOutputAPIBuilder } from '../lib/builders/vercel-build-output-api.js';
-import { StandaloneBuilder } from '../lib/builders/standalone.js';
 import { type BuildTarget, isValidBuildTarget } from '../lib/config/types.js';
 import { getWorkflowConfig } from '../lib/config/workflow-config.js';
 
