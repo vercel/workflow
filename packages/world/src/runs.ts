@@ -34,6 +34,7 @@ export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 
 // Request types
 export interface CreateWorkflowRunRequest {
+  runId?: string;
   deploymentId: string;
   workflowName: string;
   input: SerializedData[];

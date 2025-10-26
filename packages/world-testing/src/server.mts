@@ -25,6 +25,7 @@ const Invoke = z
     file: z.literal(Object.keys(manifest.workflows) as Files[]),
     workflow: z.string(),
     args: z.unknown().array().default([]),
+    runId: z.string().optional(),
   })
   .transform((obj) => {
     const file = obj.file as keyof typeof manifest.workflows;
@@ -35,6 +36,7 @@ const Invoke = z
       .parse(obj.workflow);
     return {
       args: obj.args,
+      runId: obj.runId,
       workflow: manifest.workflows[file][workflow],
     };
   });
@@ -49,7 +51,9 @@ const app = new Hono()
   .get('/_manifest', (ctx) => ctx.json(manifest))
   .post('/invoke', async (ctx) => {
     const json = await ctx.req.json().then(Invoke.parse);
-    const handler = await start(json.workflow, json.args);
+    const handler = await start(json.workflow, json.args, {
+      runId: json.runId,
+    });
 
     return ctx.json({ runId: handler.runId });
   })

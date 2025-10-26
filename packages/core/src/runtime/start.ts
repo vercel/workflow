@@ -12,6 +12,13 @@ export interface StartOptions {
    * The deployment ID to use for the workflow run.
    */
   deploymentId?: string;
+  /**
+   * The run ID to use for the workflow run.
+   * If provided, enables idempotent workflow creation - starting a workflow
+   * with the same runId will return the existing run instead of creating a duplicate.
+   * If not provided, a unique runId will be generated automatically.
+   */
+  runId?: string;
 }
 
 /**
@@ -86,6 +93,7 @@ export async function start<TArgs extends unknown[], TResult>(
     const traceCarrier = await serializeTraceCarrier();
 
     const runResponse = await world.runs.create({
+      runId: opts.runId,
       deploymentId: deploymentId,
       workflowName: workflowName,
       input: workflowArguments,

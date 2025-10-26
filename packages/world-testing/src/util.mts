@@ -76,14 +76,15 @@ export function createFetcher(control: Control) {
     async invoke<F extends Files, W extends Workflows<F>>(
       file: F,
       workflow: W,
-      args: unknown[]
+      args: unknown[],
+      runId?: string
     ) {
       const x = await fetch(`http://localhost:${control.info.port}/invoke`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ file, workflow, args }),
+        body: JSON.stringify({ file, workflow, args, runId }),
       });
       const data = await x.json().then(Invoke.parse);
       return data;

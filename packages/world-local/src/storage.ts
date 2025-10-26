@@ -98,8 +98,15 @@ export function createStorage(basedir: string): Storage {
   return {
     runs: {
       async create(data) {
-        const runId = `wrun_${monotonicUlid()}`;
+        const runId = data.runId ?? `wrun_${monotonicUlid()}`;
         const now = new Date();
+
+        // Check if run already exists (for idempotency)
+        const runPath = path.join(basedir, 'runs', `${runId}.json`);
+        const existingRun = await readJSON(runPath, WorkflowRunSchema);
+        if (existingRun) {
+          return existingRun;
+        }
 
         const result: WorkflowRun = {
           runId,
@@ -119,7 +126,6 @@ export function createStorage(basedir: string): Storage {
           updatedAt: now,
         };
 
-        const runPath = path.join(basedir, 'runs', `${runId}.json`);
         await writeJSON(runPath, result);
         return result;
       },

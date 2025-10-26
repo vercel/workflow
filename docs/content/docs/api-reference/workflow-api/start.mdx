@@ -79,3 +79,32 @@ const run = await start(myWorkflow, ['arg1', 'arg2'], { // [!code highlight]
   deploymentId: 'custom-deployment-id' // [!code highlight]
 }); // [!code highlight]
 ```
+
+### Idempotent Workflow Creation
+
+You can provide a custom `runId` to enable idempotent workflow creation. If a workflow with the same `runId` already exists, the existing run will be returned instead of creating a duplicate:
+
+```typescript
+import { start } from 'workflow/api';
+import { processOrderWorkflow } from './workflows/process-order';
+
+// Use a business-specific ID to ensure idempotency
+const orderId = 'order_12345';
+const customRunId = `wrun_order_${orderId}`;
+
+const run = await start(processOrderWorkflow, [orderId], { // [!code highlight]
+  runId: customRunId // [!code highlight]
+}); // [!code highlight]
+
+// Calling start again with the same runId returns the existing run
+const sameRun = await start(processOrderWorkflow, [orderId], {
+  runId: customRunId
+});
+
+console.log(run.runId === sameRun.runId); // true
+```
+
+This is useful for scenarios like:
+- Processing webhook events where duplicate events might be sent
+- Ensuring only one workflow runs per business entity (e.g., one order processing workflow per order)
+- Retry-safe workflow triggers in distributed systems

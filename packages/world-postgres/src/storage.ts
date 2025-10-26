@@ -93,7 +93,20 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       };
     },
     async create(data) {
-      const runId = `wrun_${ulid()}`;
+      const runId = data.runId ?? `wrun_${ulid()}`;
+
+      // If custom runId provided, check if it already exists for idempotency
+      if (data.runId) {
+        const [existingRun] = await drizzle
+          .select()
+          .from(runs)
+          .where(eq(runs.runId, runId))
+          .limit(1);
+        if (existingRun) {
+          return compact(existingRun);
+        }
+      }
+
       const [value] = await drizzle
         .insert(runs)
         .values({
@@ -109,7 +122,17 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
         })
         .onConflictDoNothing()
         .returning();
+
+      // If insert returned nothing due to conflict, fetch and return existing run
       if (!value) {
+        const [existingRun] = await drizzle
+          .select()
+          .from(runs)
+          .where(eq(runs.runId, runId))
+          .limit(1);
+        if (existingRun) {
+          return compact(existingRun);
+        }
         throw new WorkflowAPIError(`Run ${runId} already exists`, {
           status: 409,
         });

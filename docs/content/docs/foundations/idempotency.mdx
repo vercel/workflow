@@ -57,7 +57,36 @@ Why this works:
 
 ---
 
+## Workflow-level idempotency
+
+You can also ensure idempotent workflow creation by providing a custom `runId` when starting a workflow:
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { processOrderWorkflow } from "./workflows/process-order";
+
+async function handleOrderWebhook(orderId: string) {
+  // Use business-specific ID to prevent duplicate workflow runs
+  const customRunId = `wrun_order_${orderId}`;
+
+  const run = await start(processOrderWorkflow, [orderId], {
+    runId: customRunId, // [!code highlight]
+  });
+
+  // If called again with the same runId, returns the existing run
+  // instead of creating a duplicate workflow
+}
+```
+
+This is useful for:
+- **Webhook deduplication**: Prevent duplicate workflows when webhooks are delivered multiple times
+- **Business entity uniqueness**: Ensure only one workflow runs per order/user/entity
+- **Retry-safe triggers**: Make workflow starts safe to retry in distributed systems
+
+---
+
 ## Related docs
 
 - Learn about retries in [Errors & Retrying](/docs/foundations/errors-and-retries)
 - API reference: [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata)
+- API reference: [`start`](/docs/api-reference/workflow-api/start)
