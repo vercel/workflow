@@ -8,3 +8,4 @@ export { applySwcTransform } from './apply-swc-transform.js';
 export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 export { createSwcPlugin } from './swc-esbuild-plugin.js';
+export { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';

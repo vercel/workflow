@@ -1,6 +1,10 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { BaseBuilder } from '@workflow/builders';
+import {
+  BaseBuilder,
+  STEP_QUEUE_TRIGGER,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -67,16 +71,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       architecture: 'arm64',
       shouldAddHelpers: true,
       shouldAddSourcemapSupport: true,
-      experimentalTriggers: [
-        {
-          type: 'queue/v1beta',
-          topic: '__wkf_step_*',
-          consumer: 'default',
-          maxDeliveries: 64, // Optional: Maximum number of delivery attempts (default: 3)
-          retryAfterSeconds: 5, // Optional: Delay between retries (default: 60)
-          initialDelaySeconds: 0, // Optional: Initial delay before first delivery (default: 0)
-        },
-      ],
+      experimentalTriggers: [STEP_QUEUE_TRIGGER],
     };
 
     await writeFile(
@@ -123,16 +118,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       launcherType: 'Nodejs',
       architecture: 'arm64',
       shouldAddHelpers: true,
-      experimentalTriggers: [
-        {
-          type: 'queue/v1beta',
-          topic: '__wkf_workflow_*',
-          consumer: 'default',
-          maxDeliveries: 64, // Optional: Maximum number of delivery attempts (default: 3)
-          retryAfterSeconds: 5, // Optional: Delay between retries (default: 60)
-          initialDelaySeconds: 0, // Optional: Initial delay before first delivery (default: 0)
-        },
-      ],
+      experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
     };
 
     await writeFile(
