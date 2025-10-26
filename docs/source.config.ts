@@ -1,3 +1,4 @@
+import { remarkMdxMermaid } from 'fumadocs-core/mdx-plugins';
 import { defineConfig, defineDocs, metaSchema } from 'fumadocs-mdx/config';
 import { remarkAutoTypeTable } from 'fumadocs-typescript';
 
@@ -16,10 +17,9 @@ export const docs = defineDocs({
 
 export default defineConfig({
   mdxOptions: {
-    // MDX options
     remarkCodeTabOptions: {
       parseMdx: true,
     },
-    remarkPlugins: [[remarkAutoTypeTable]],
+    remarkPlugins: [remarkMdxMermaid, [remarkAutoTypeTable]],
   },
 });
