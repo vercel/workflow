@@ -1,6 +1,7 @@
 export type { WorkflowManifest } from './apply-swc-transform.js';
 export { applySwcTransform } from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';
+export { createBaseBuilderConfig } from './config-helpers.js';
 export { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
