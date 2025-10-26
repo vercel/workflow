@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { access, mkdir, stat, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import Watchpack from 'watchpack';
-import { BaseBuilder } from './base-builder.js';
+import { BaseBuilder } from '@workflow/builders';
 
 export class NextBuilder extends BaseBuilder {
   async build() {
