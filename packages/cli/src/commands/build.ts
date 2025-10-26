@@ -1,7 +1,7 @@
 import { Args, Flags } from '@oclif/core';
 import { BaseCommand } from '../base.js';
 import { VercelBuildOutputAPIBuilder } from '../lib/builders/vercel-build-output-api.js';
-import { VercelStaticBuilder } from '../lib/builders/vercel-static.js';
+import { StandaloneBuilder } from '../lib/builders/standalone.js';
 import { type BuildTarget, isValidBuildTarget } from '../lib/config/types.js';
 import { getWorkflowConfig } from '../lib/config/workflow-config.js';
 
@@ -11,15 +11,15 @@ export default class Build extends BaseCommand {
   static examples = [
     '$ workflow build',
     '$ workflow build --target vercel-build-output-api',
-    '$ workflow build vercel-static',
+    '$ workflow build standalone',
   ];
 
   static flags = {
     target: Flags.string({
       char: 't',
       description: 'build target',
-      options: ['vercel-static', 'vercel-build-output-api'],
-      default: 'vercel-static',
+      options: ['standalone', 'vercel-build-output-api'],
+      default: 'standalone',
     }),
     'workflow-manifest': Flags.string({
       char: 'm',
@@ -59,10 +59,10 @@ export default class Build extends BaseCommand {
     // Validate build target
     if (!isValidBuildTarget(buildTarget)) {
       this.logWarn(
-        `Invalid target "${buildTarget}". Using default "vercel-static".`
+        `Invalid target "${buildTarget}". Using default "standalone".`
       );
-      this.logWarn('Valid targets: vercel-static, vercel-build-output-api');
-      buildTarget = 'vercel-static';
+      this.logWarn('Valid targets: standalone, vercel-build-output-api');
+      buildTarget = 'standalone';
     }
 
     this.logInfo(`Using target: ${buildTarget}`);
@@ -74,9 +74,9 @@ export default class Build extends BaseCommand {
 
     try {
       // Build using appropriate builder
-      if (config.buildTarget === 'vercel-static') {
-        this.logInfo('Building with VercelStaticBuilder');
-        const builder = new VercelStaticBuilder(config);
+      if (config.buildTarget === 'standalone') {
+        this.logInfo('Building with StandaloneBuilder');
+        const builder = new StandaloneBuilder(config);
         await builder.build();
       } else if (config.buildTarget === 'vercel-build-output-api') {
         this.logInfo('Building with VercelBuildOutputAPIBuilder');

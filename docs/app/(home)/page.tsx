@@ -14,7 +14,13 @@ const title = 'Make any TypeScript Function Durable';
 const description =
   '"use workflow" brings durability, reliability, and observability to async JavaScript. Build apps and AI Agents that can suspend, resume, and maintain state with ease.';
 
-export const metadata: Metadata = { title, description };
+export const metadata: Metadata = {
+  title: 'Workflow DevKit - Make any TypeScript Function Durable',
+  description,
+  alternates: {
+    canonical: '/',
+  },
+};
 
 const Home = () => (
   <>

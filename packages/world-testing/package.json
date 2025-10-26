@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-testing",
-  "version": "4.0.1-beta.2",
+  "version": "4.0.1-beta.3",
   "description": "Testing utilities and World implementation for Workflow DevKit",
   "main": "dist/src/index.mjs",
   "publishConfig": {
@@ -14,6 +14,7 @@
   },
   "scripts": {
     "build": "wf build && tsc",
+    "clean": "tsc --build --clean && rm -rf dist .well-known* .workflow-data",
     "start": "node --watch src/server.mts",
     "test": "vitest"
   },

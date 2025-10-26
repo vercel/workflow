@@ -5,6 +5,7 @@ import { Geist, Geist_Mono } from 'next/font/google';
 import { HomeLayout } from '@/components/layout/home';
 import { Toaster } from '@/components/ui/sonner';
 import { baseOptions } from '@/lib/layout.shared';
+import { Metadata } from 'next';
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -15,6 +16,10 @@ const geistMono = Geist_Mono({
   variable: '--font-geist-mono',
   subsets: ['latin'],
 });
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://useworkflow.dev'),
+};
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (

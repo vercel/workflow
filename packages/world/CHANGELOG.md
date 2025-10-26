@@ -1,5 +1,13 @@
 # @workflow/world
 
+## 4.0.1-beta.2
+
+### Patch Changes
+
+- d3a4ed3: Remove `@types/json-schema` dependency (not used)
+- d3a4ed3: Remove `@types/node` from being a peerDependency
+- 7868434: Remove `AuthProvider` interface from `World` and associated implementations
+
 ## 4.0.1-beta.1
 
 ### Patch Changes
