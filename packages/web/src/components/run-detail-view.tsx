@@ -144,9 +144,9 @@ export function RunDetailView({
           <AlertDialogHeader>
             <AlertDialogTitle>Cancel Workflow Run?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will stop the workflow execution immediately. Any steps
-              currently running will be interrupted and the run will be marked
-              as cancelled. This action cannot be undone.
+              This will stop the workflow execution immediately, and no further
+              steps will be executed. Partial workflow execution may occur. Are
+              you sure you want to cancel the run?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -167,9 +167,8 @@ export function RunDetailView({
           <AlertDialogHeader>
             <AlertDialogTitle>Re-run Workflow?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will create a new workflow run with the same input arguments
-              as this run. The new run will be queued and executed
-              independently. You will be navigated to the new run.
+              This can potentially re-run code that is meant to only execute
+              once. Are you sure you want to re-run the workflow?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
