@@ -1,18 +1,20 @@
 ---
-title: Why Directives?
+title: Understanding Directives
 ---
 
 import { File, Folder, Files } from 'fumadocs-ui/components/files';
 
-# Why Directives?
+# Understanding Directives
 
 <Callout>
-This guide explains the design rationale behind the Workflow DevKit's use of JavaScript directives. It's not required reading to use workflows—check out the [getting started](/docs/getting-started) guides for your framework instead.
+This guide explores how JavaScript directives enable the Workflow DevKit's execution model. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
 
-When we introduced the Workflow Development Kit, we chose JavaScript directives (`"use workflow"` and `"use step"`) as the mechanism to mark workflow code. This page explains why we made that choice and the alternatives we considered.
+The Workflow Development Kit uses JavaScript directives (`"use workflow"` and `"use step"`) as the foundation for its durable execution model. Directives provide the compile-time semantic boundary necessary for workflows to suspend, resume, and maintain deterministic behavior across replays.
 
-To understand why we needed directives, let's first understand what workflows and steps are in the Workflow DevKit.
+This page explores how directives enable this execution model and the design principles that led us here.
+
+To understand how directives work, let's first understand what workflows and steps are in the Workflow DevKit.
 
 ---
 
@@ -336,7 +338,7 @@ As the JavaScript ecosystem has moved toward function-forward programming—exem
 While decorators can be handled at compile-time with build tool support, they present workflow functions as if they were regular, composable JavaScript code—when they're actually compile-time declarations that need special handling.
 
 <Callout>
-See the [Macro Wrapper](/docs/how-it-works/why-directives#macro-wrapper-approach) section below for a deeper dive into why this approach breaks down with concrete examples.
+See the [Macro Wrapper](#macro-wrapper-approach) section below for a deeper dive into why this approach breaks down with concrete examples.
 </Callout>
 
 ### Macro Wrapper Approach
