@@ -16,6 +16,7 @@ import {
   stepToSpan,
   WORKFLOW_LIBRARY,
 } from './workflow-traces/trace-span-construction';
+import { otelTimeToMs } from './workflow-traces/trace-time-utils';
 
 const RE_RENDER_INTERVAL_MS = 2000;
 
@@ -94,8 +95,8 @@ export const WorkflowTraceViewer = ({
     const sortedSpans = [
       runSpan,
       ...spans.slice().sort((a, b) => {
-        const aStart = a.startTime[0];
-        const bStart = b.startTime[0];
+        const aStart = otelTimeToMs(a.startTime);
+        const bStart = otelTimeToMs(b.startTime);
         return aStart - bStart;
       }),
     ];
