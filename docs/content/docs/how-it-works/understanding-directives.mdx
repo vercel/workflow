@@ -22,7 +22,7 @@ To understand how directives work, let's first understand what workflows and ste
 
 The Workflow DevKit has two types of functions:
 
-**Step functions** are side-effecting operations with full Node.js runtime access. Think of them like named RPC calls—they run once, their result is persisted, and they can be [retried on failure](/docs/foundations/errors-and-retries):
+**Step functions** are side-effecting operations with full Node.js runtime access. Think of them like named RPC calls - they run once, their result is persisted, and they can be [retried on failure](/docs/foundations/errors-and-retries):
 
 ```typescript lineNumbers
 async function fetchUserData(userId: string) {
@@ -34,7 +34,7 @@ async function fetchUserData(userId: string) {
 }
 ```
 
-**Workflow functions** are deterministic orchestrators that coordinate steps. They must be pure functions—during replay, the same step results always produce the same output. This is necessary because workflows resume by replaying their code from the beginning using cached step results; non-deterministic logic would break resumption. They run in a sandboxed environment without direct Node.js access:
+**Workflow functions** are deterministic orchestrators that coordinate steps. They must be pure functions - during replay, the same step results always produce the same output. This is necessary because workflows resume by replaying their code from the beginning using cached step results; non-deterministic logic would break resumption. They run in a sandboxed environment without direct Node.js access:
 
 ```typescript lineNumbers
 export async function onboardUser(userId: string) {
@@ -56,7 +56,7 @@ export async function onboardUser(userId: string) {
 - **If already executed:** Returns the cached result immediately from the event log
 - **If not yet executed:** Suspends the workflow, enqueues the step for background execution, and resumes later with the result
 
-This replay mechanism requires deterministic code. If `Math.random()` weren't seeded, the first execution might return `0.7` (sending the email) but replay might return `0.3` (skipping it)—breaking resumption. The Workflow DevKit sandbox provides seeded `Math.random()` and `Date` to ensure consistent behavior across replays.
+This replay mechanism requires deterministic code. If `Math.random()` weren't seeded, the first execution might return `0.7` (sending the email) but replay might return `0.3` (skipping it), thus breaking resumption. The Workflow DevKit sandbox provides seeded `Math.random()` and `Date` to ensure consistent behavior across replays.
 
 <Callout>
 For a deeper dive into workflows and steps, see [Workflows and Steps](/docs/foundations/workflows-and-steps).
@@ -66,7 +66,7 @@ For a deeper dive into workflows and steps, see [Workflows and Steps](/docs/foun
 
 ## The Core Challenge
 
-This execution model enables powerful durability features—workflows can suspend for days, survive restarts, and resume from any point. However, it also requires a semantic boundary in the code that tells **the compiler, runtime, and developer** that execution semantics have changed.
+This execution model enables powerful durability features - workflows can suspend for days, survive restarts, and resume from any point. However, it also requires a semantic boundary in the code that tells **the compiler, runtime, and developer** that execution semantics have changed.
 
 The challenge: how do we mark this boundary in a way that:
 
@@ -84,7 +84,7 @@ Let's look at where directives have been used before, and the alternatives we co
 JavaScript directives have precedent for changing execution semantics within a defined scope:
 
 - `"use strict"` (introduced in ECMAScript 5 in 2009, TC39-standardized) changes language rules to make the runtime faster, safer, and more predictable.
-- `"use client"` and `"use server"` (introduced by [React Server Components](https://react.dev/reference/rsc/server-components)) define an explicit boundary of "where" code gets executed—client-side browser JavaScript vs server-side Node.js.
+- `"use client"` and `"use server"` (introduced by [React Server Components](https://react.dev/reference/rsc/server-components)) define an explicit boundary of "where" code gets executed - client-side browser JavaScript vs server-side Node.js.
 - `"use workflow"` (introduced by the Workflow DevKit) defines both "where" code runs (in a deterministic sandbox environment) and "how" it runs (deterministic, resumable, sandboxed execution semantics).
 
 Directives provide a build-time contract.
@@ -275,7 +275,7 @@ We explored using file system conventions to identify workflows and steps, simil
   </Folder>
 </Files>
 
-With this approach, any function in the `workflows/` directory would be transformed as a workflow, and any function in `steps/` would be a step. No directives needed—just file location.
+With this approach, any function in the `workflows/` directory would be transformed as a workflow, and any function in `steps/` would be a step. No directives needed, just file locations.
 
 **Why this could work:**
 
@@ -331,11 +331,11 @@ This approach requires:
 - Storing/mutating class properties was not obvious (similar closure/mutation issues as the runtime-only approach)
 - Class-based syntax that doesn't feel "JavaScript native" to developers used to functional patterns
 
-As the JavaScript ecosystem has moved toward function-forward programming—exemplified by React's shift from class components to functions and hooks—requiring developers to use classes felt like a step backward and also didn't match our own personal taste as authors of the DevKit.
+As the JavaScript ecosystem has moved toward function-forward programming (exemplified by React's shift from class components to functions and hooks), requiring developers to use classes felt like a step backward and also didn't match our own personal taste as authors of the DevKit.
 
 **The core problem: Presents workflows as regular runtime code**
 
-While decorators can be handled at compile-time with build tool support, they present workflow functions as if they were regular, composable JavaScript code—when they're actually compile-time declarations that need special handling.
+While decorators can be handled at compile-time with build tool support, they present workflow functions as if they were regular, composable JavaScript code, when they're actually compile-time declarations that need special handling.
 
 <Callout>
 See the [Macro Wrapper](#macro-wrapper-approach) section below for a deeper dive into why this approach breaks down with concrete examples.
@@ -343,7 +343,7 @@ See the [Macro Wrapper](#macro-wrapper-approach) section below for a deeper dive
 
 ### Macro Wrapper Approach
 
-We also explored compile-time macro approaches—using a compiler to transform wrapper functions or decorators into directive-based code:
+We also explored compile-time macro approaches - using a compiler to transform wrapper functions or decorators into directive-based code:
 
 ```typescript lineNumbers
 // Function wrapper approach
@@ -419,7 +419,7 @@ To detect that `processOrder` is actually a workflow, the compiler would need wh
 2. Therefore `processOrder = withRetry(...)` is a workflow
 3. The function passed to `withRetry` will execute in a sandboxed context
 
-This level of cross-function analysis is impractical for build tools—it would require analyzing every function call chain in your entire codebase and all dependencies. The compiler can only reliably detect direct `useWorkflow` calls, not calls hidden behind abstractions.
+This level of cross-function analysis is impractical for build tools - it would require analyzing every function call chain in your entire codebase and all dependencies. The compiler can only reliably detect direct `useWorkflow` calls, not calls hidden behind abstractions.
 
 ---
 
@@ -598,7 +598,7 @@ Because `"use workflow"` defines a compile-time semantic boundary, we can provid
 
 ## Directives as a JavaScript Pattern
 
-Directives in JavaScript have always been contracts between the developer and the execution environment. `"use strict"` made this pattern familiar—it's a string literal that changes how code is interpreted.
+Directives in JavaScript have always been contracts between the developer and the execution environment. `"use strict"` made this pattern familiar - it's a string literal that changes how code is interpreted.
 
 While JavaScript doesn't yet have first-class support for custom directives (like Rust's `#[attribute]` or C++'s `#pragma`), string literal directives are the most pragmatic tool available today.
 
@@ -608,6 +608,6 @@ As TC39 members, we at Vercel are actively working with the standards body and b
 
 ## Closing Thoughts
 
-Directives aren't about syntax preference—they're about expressing semantic boundaries. `"use workflow"` tells the compiler, developer, and runtime that this code is deterministic, resumable, and sandboxed.
+Directives aren't about syntax preference, they're about expressing semantic boundaries. `"use workflow"` tells the compiler, developer, and runtime that this code is deterministic, resumable, and sandboxed.
 
 This clarity enables the Workflow Development Kit to provide durable execution with familiar JavaScript patterns, while maintaining the compile-time guarantees necessary for reliable workflow orchestration.
