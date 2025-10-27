@@ -21,6 +21,7 @@ import {
   fetchStep,
   fetchSteps,
   readStreamServerAction,
+  startRun as startRunServerAction,
 } from './workflow-server-actions';
 
 const MAX_ITEMS = 1000;
@@ -748,25 +749,27 @@ async function fetchResourceWithCorrelationId(
   env: EnvMap,
   resource: 'run' | 'step' | 'hook',
   resourceId: string,
-  runId?: string
+  options: { runId?: string; resolveData?: 'none' | 'all' } = {}
 ): Promise<{
   data: WorkflowRun | Step | Hook;
   correlationId: string;
 }> {
   let resourceData: WorkflowRun | Step | Hook;
   let correlationId: string;
+  const resolveData = options.resolveData ?? 'all';
 
   if (resource === 'run') {
-    resourceData = await fetchRun(env, resourceId);
+    resourceData = await fetchRun(env, resourceId, resolveData);
     correlationId = (resourceData as WorkflowRun).runId;
   } else if (resource === 'step') {
+    const { runId } = options;
     if (!runId) {
       throw new Error('runId is required for step resource');
     }
-    resourceData = await fetchStep(env, runId, resourceId);
+    resourceData = await fetchStep(env, runId, resourceId, resolveData);
     correlationId = (resourceData as Step).stepId;
   } else if (resource === 'hook') {
-    resourceData = await fetchHook(env, resourceId);
+    resourceData = await fetchHook(env, resourceId, resolveData);
     correlationId = (resourceData as Hook).hookId;
   } else {
     throw new Error(`Unknown resource type: ${resource}`);
@@ -830,7 +833,9 @@ export function useWorkflowResourceData(
     try {
       // Fetch resource with full data
       const { data: resourceData, correlationId } =
-        await fetchResourceWithCorrelationId(env, resource, resourceId, runId);
+        await fetchResourceWithCorrelationId(env, resource, resourceId, {
+          runId,
+        });
 
       setData(resourceData);
       if (resource === 'run') {
@@ -885,6 +890,22 @@ export async function cancelRun(env: EnvMap, runId: string): Promise<void> {
     await cancelRunServerAction(env, runId);
   } catch (err) {
     console.error('Error canceling run:', err);
+    throw err;
+  }
+}
+
+/**
+ * Start a new workflow run
+ */
+export async function startRun(
+  env: EnvMap,
+  workflowName: string,
+  args: any[]
+): Promise<string> {
+  try {
+    return await startRunServerAction(env, workflowName, args);
+  } catch (err) {
+    console.error('Error starting run:', err);
     throw err;
   }
 }

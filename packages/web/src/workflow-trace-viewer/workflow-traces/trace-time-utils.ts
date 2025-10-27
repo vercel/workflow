@@ -15,6 +15,12 @@ export function dateToOtelTime(date: Date | unknown): [number, number] {
   return [seconds, nanoseconds];
 }
 
+export function otelTimeToMs(time: [number, number]): number {
+  const secondsToMs = time[0] * 1_000;
+  const nanosecondsToMs = time[1] / 1_000_000;
+  return secondsToMs + nanosecondsToMs;
+}
+
 /**
  * Calculates duration in [seconds, nanoseconds] format
  */

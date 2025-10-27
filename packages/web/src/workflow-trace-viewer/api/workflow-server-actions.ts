@@ -1,7 +1,7 @@
 'use server';
 
 import { hydrateResourceIO } from '@workflow/core/observability';
-import { createWorld } from '@workflow/core/runtime';
+import { createWorld, start } from '@workflow/core/runtime';
 import type {
   Event,
   Hook,
@@ -72,11 +72,12 @@ export async function fetchRuns(
  */
 export async function fetchRun(
   worldEnv: EnvMap,
-  runId: string
+  runId: string,
+  resolveData: 'none' | 'all' = 'all'
 ): Promise<WorkflowRun> {
   try {
     const world = getWorldFromEnv(worldEnv);
-    const run = await world.runs.get(runId, { resolveData: 'all' });
+    const run = await world.runs.get(runId, { resolveData });
     return hydrateResourceIO(run as WorkflowRun);
   } catch (error) {
     console.error('Failed to fetch run:', error);
@@ -121,11 +122,12 @@ export async function fetchSteps(
 export async function fetchStep(
   worldEnv: EnvMap,
   runId: string,
-  stepId: string
+  stepId: string,
+  resolveData: 'none' | 'all' = 'all'
 ): Promise<Step> {
   try {
     const world = getWorldFromEnv(worldEnv);
-    const step = await world.steps.get(runId, stepId, { resolveData: 'all' });
+    const step = await world.steps.get(runId, stepId, { resolveData });
     return hydrateResourceIO(step as Step);
   } catch (error) {
     console.error('Failed to fetch step:', error);
@@ -232,11 +234,12 @@ export async function fetchHooks(
  */
 export async function fetchHook(
   worldEnv: EnvMap,
-  hookId: string
+  hookId: string,
+  resolveData: 'none' | 'all' = 'all'
 ): Promise<Hook> {
   try {
     const world = getWorldFromEnv(worldEnv);
-    const hook = await world.hooks.get(hookId, { resolveData: 'all' });
+    const hook = await world.hooks.get(hookId, { resolveData });
     return hydrateResourceIO(hook as Hook);
   } catch (error) {
     console.error('Failed to fetch hook:', error);
@@ -253,6 +256,27 @@ export async function cancelRun(worldEnv: EnvMap, runId: string) {
     await world.runs.cancel(runId);
   } catch (error) {
     console.error('Failed to cancel run:', error);
+    throw error;
+  }
+}
+
+/**
+ * Start a new workflow run
+ */
+export async function startRun(
+  worldEnv: EnvMap,
+  workflowName: string,
+  args: any[]
+): Promise<string> {
+  try {
+    const world = getWorldFromEnv(worldEnv);
+    const deploymentId = await world.getDeploymentId();
+    const run = await start({ workflowId: workflowName }, args, {
+      deploymentId,
+    });
+    return run.runId;
+  } catch (error) {
+    console.error('Failed to start run:', error);
     throw error;
   }
 }

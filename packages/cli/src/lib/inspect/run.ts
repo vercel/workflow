@@ -25,7 +25,14 @@ export const startRun = async (
   opts: CLICreateOpts,
   args: string[]
 ) => {
-  const jsonArgs = args.map((arg) => JSON.parse(arg));
+  const jsonArgs = args.map((arg) => {
+    try {
+      return JSON.parse(arg);
+    } catch (error) {
+      logger.warn(`Failed to parse argument "${arg}" as JSON: ${error}`);
+      throw error;
+    }
+  });
   const workflowId = await getWorkflowName(world, workflowNameOrRunId);
   const deploymentId = await world.getDeploymentId();
 
