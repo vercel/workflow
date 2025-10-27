@@ -1,8 +1,17 @@
 import { exec } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { confirm, intro, outro, tasks, text } from '@clack/prompts';
+import {
+  cancel,
+  confirm,
+  intro,
+  isCancel,
+  log,
+  outro,
+  tasks,
+  text,
+} from '@clack/prompts';
 import { Flags } from '@oclif/core';
 import chalk from 'chalk';
 import { BaseCommand } from '../base.js';
@@ -29,18 +38,62 @@ export default class Init extends BaseCommand {
     }),
   };
 
+  /**
+   *
+   * @returns true if the current directory is a Next.js app
+   */
+  private isNextApp(): boolean {
+    const configFiles = [
+      'next.config.js',
+      'next.config.mjs',
+      'next.config.ts',
+      'next.config.cjs',
+    ];
+
+    return configFiles.some((file) =>
+      existsSync(path.join(process.cwd(), file))
+    );
+  }
+
   public async run(): Promise<void> {
     const { args, flags } = await this.parse(Init);
 
-    intro('create-workflow-app');
+    intro('workflow init');
 
-    const projectName =
-      args.projectName ||
-      ((await text({
-        message: 'What is your project name?',
-        placeholder: 'my-workflow-app',
-        defaultValue: 'my-workflow-app',
-      })) as string);
+    const isNextApp = this.isNextApp();
+
+    let createNewProject = true;
+
+    if (isNextApp) {
+      log.info('Detected Next.js app');
+
+      createNewProject = (await confirm({
+        message: 'Create a new project?',
+        initialValue: true,
+      })) as boolean;
+
+      if (isCancel(createNewProject)) {
+        cancel('Cancelled workflow setup');
+        return;
+      }
+    }
+
+    let projectName = 'my-workflow-app';
+
+    if (createNewProject) {
+      projectName =
+        args.projectName ||
+        ((await text({
+          message: 'What is your project name?',
+          placeholder: 'my-workflow-app',
+          defaultValue: 'my-workflow-app',
+        })) as string);
+
+      if (isCancel(projectName)) {
+        cancel('Cancelled workflow setup');
+        return;
+      }
+    }
 
     const useTsPlugin =
       flags.yes ||
@@ -49,11 +102,19 @@ export default class Init extends BaseCommand {
         initialValue: true,
       })) as boolean);
 
-    const projectPath = path.join(process.cwd(), projectName);
+    if (isCancel(useTsPlugin)) {
+      cancel('Cancelled workflow setup');
+      return;
+    }
+
+    const projectPath = createNewProject
+      ? path.join(process.cwd(), projectName)
+      : process.cwd();
 
     await tasks([
       {
         title: 'Creating Next.js app',
+        enabled: createNewProject,
         task: async (message) => {
           message('Creating a new Next.js app');
           await execAsync(`npx create-next-app@latest ${projectName} --yes`);
@@ -185,7 +246,7 @@ export async function POST(request: Request) {
 
     outro(
       `${chalk.green('Success!')} Next steps:
-     Run ${chalk.dim(`cd ${projectName} && npm run dev`)} to start the development server
+     Run ${chalk.dim(`${createNewProject ? `cd ${projectName} && ` : ''}npm run dev`)} to start the development server
      Trigger the workflow: ${chalk.dim('curl -X POST --json \'{"email":"hello@example.com"}\' http://localhost:3000/api/signup')}`
     );
   }
