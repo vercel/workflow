@@ -76,6 +76,42 @@ describe('workflow arguments', () => {
     expect(hydrated.getTime()).toEqual(NaN);
   });
 
+  it('should work with BigInt', () => {
+    const bigInt = BigInt('9007199254740992');
+    const serialized = dehydrateWorkflowArguments(bigInt, []);
+    expect(serialized).toMatchInlineSnapshot(`
+      [
+        [
+          "BigInt",
+          1,
+        ],
+        "9007199254740992",
+      ]
+    `);
+
+    const hydrated = hydrateWorkflowArguments(serialized, vmGlobalThis);
+    expect(hydrated).toBe(BigInt(9007199254740992));
+    expect(typeof hydrated).toBe('bigint');
+  });
+
+  it('should work with BigInt negative', () => {
+    const bigInt = BigInt('-12345678901234567890');
+    const serialized = dehydrateWorkflowArguments(bigInt, []);
+    expect(serialized).toMatchInlineSnapshot(`
+      [
+        [
+          "BigInt",
+          1,
+        ],
+        "-12345678901234567890",
+      ]
+    `);
+
+    const hydrated = hydrateWorkflowArguments(serialized, vmGlobalThis);
+    expect(hydrated).toBe(BigInt('-12345678901234567890'));
+    expect(typeof hydrated).toBe('bigint');
+  });
+
   it('should work with Map', () => {
     const map = new Map([
       [2, 'foo'],
