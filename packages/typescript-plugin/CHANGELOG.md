@@ -1,5 +1,11 @@
 # @workflow/typescript-plugin
 
+## 4.0.1-beta.2
+
+### Patch Changes
+
+- e20b4ff: Add "use step" and "use workflow" typo detection and link to documentation
+
 ## 4.0.1-beta.1
 
 ### Patch Changes
