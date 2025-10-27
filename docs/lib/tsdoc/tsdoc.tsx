@@ -337,11 +337,7 @@ function linkify(
           .filter(Boolean);
 
         parts.push(
-          <Link
-            key={parts.length}
-            href={linkUrl}
-            className="text-primary-foreground"
-          >
+          <Link key={parts.length} href={linkUrl} className="text-primary-blue">
             {linkContent}
           </Link>
         );
@@ -383,11 +379,7 @@ function linkify(
       const href = typeLinkMap[chunk];
       if (href) {
         result.push(
-          <Link
-            key={result.length}
-            href={href}
-            className="text-primary-foreground"
-          >
+          <Link key={result.length} href={href} className="text-primary-blue">
             {chunk}
           </Link>
         );
@@ -417,7 +409,7 @@ function linkify(
           <Link
             key={`${index}-${processedChunks.length}`}
             href={href}
-            className="text-primary-foreground hover:underline"
+            className="text-primary-blue hover:underline"
           >
             <code>{chunk}</code>
           </Link>
