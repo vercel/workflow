@@ -90,7 +90,7 @@ export function RunDetailView({
   };
 
   const handleConfirmRerun = async () => {
-    if (rerunning || !run.input) return;
+    if (rerunning) return;
 
     try {
       setRerunning(true);
@@ -137,12 +137,11 @@ export function RunDetailView({
 
   // Determine if re-run is allowed and why
   const isRunActive = run.status === 'pending' || run.status === 'running';
-  const canRerun = !loading && !!run.input && !isRunActive;
+  const canRerun = !loading && !isRunActive && !rerunning;
   const getRerunDisabledReason = () => {
     if (rerunning) return 'Re-running workflow...';
     if (loading) return 'Loading run data...';
     if (isRunActive) return 'Cannot re-run while workflow is still running';
-    if (!run.input) return 'Run input data is not available';
     return '';
   };
   const rerunDisabledReason = getRerunDisabledReason();
