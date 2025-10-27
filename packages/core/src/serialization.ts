@@ -476,7 +476,7 @@ function getCommonRevivers(global: Record<string, any> = globalThis) {
   }
   return {
     ArrayBuffer: reviveArrayBuffer,
-    BigInt: (value: string) => BigInt(value),
+    BigInt: (value: string) => global.BigInt(value),
     BigInt64Array: (value: string) => {
       const ab = reviveArrayBuffer(value);
       return new global.BigInt64Array(ab);
