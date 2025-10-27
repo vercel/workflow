@@ -1,11 +1,13 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
+import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { buildUrlWithConfig, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
 import {
   cancelRun,
+  startRun,
   useWorkflowTraceViewerData,
   WorkflowTraceViewer,
 } from '@/workflow-trace-viewer';
@@ -14,6 +16,7 @@ import { CancelButton } from './display-utils/cancel-button';
 import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
+import { RerunButton } from './display-utils/rerun-button';
 import { StatusBadge } from './display-utils/status-badge';
 
 interface RunDetailViewProps {
@@ -28,7 +31,9 @@ export function RunDetailView({
   // TODO: This should open the right sidebar within the trace viewer
   selectedId: _selectedId,
 }: RunDetailViewProps) {
+  const router = useRouter();
   const [cancelling, setCancelling] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
 
   // Fetch all run data with live updates
@@ -58,6 +63,23 @@ export function RunDetailView({
     }
   };
 
+  const handleRerunRun = async () => {
+    if (rerunning || !run.input) return;
+
+    try {
+      setRerunning(true);
+      // Start a new run with the same workflow and input arguments
+      const newRun = await startRun(env, run.workflowName, run.input);
+      // Navigate to the new run
+      router.push(buildUrlWithConfig(`/run/${newRun.runId}`, config));
+    } catch (err) {
+      console.error('Failed to re-run workflow:', err);
+      // TODO: Show error toast/notification
+    } finally {
+      setRerunning(false);
+    }
+  };
+
   if (error) {
     return <div className="text-center py-8">Error: {error.message}</div>;
   }
@@ -80,6 +102,18 @@ export function RunDetailView({
   };
   const cancelDisabledReason = getCancelDisabledReason();
 
+  // Determine if re-run is allowed and why
+  const isRunActive = run.status === 'pending' || run.status === 'running';
+  const canRerun = !loading && !!run.input && !isRunActive;
+  const getRerunDisabledReason = () => {
+    if (rerunning) return 'Re-running workflow...';
+    if (loading) return 'Loading run data...';
+    if (isRunActive) return 'Cannot re-run while workflow is still running';
+    if (!run.input) return 'Run input data is not available';
+    return '';
+  };
+  const rerunDisabledReason = getRerunDisabledReason();
+
   return (
     <div className="space-y-6">
       <BackLink href={buildUrlWithConfig('/', config)} />
@@ -95,6 +129,12 @@ export function RunDetailView({
           <div className="flex items-center justify-between gap-2">
             {/* Right side controls */}
             <LiveStatus hasError={hasError} errorMessage={errorMessage} />
+            <RerunButton
+              canRerun={canRerun}
+              rerunning={rerunning}
+              rerunDisabledReason={rerunDisabledReason}
+              onRerun={handleRerunRun}
+            />
             <CancelButton
               canCancel={canCancel}
               cancelling={cancelling}
