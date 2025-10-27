@@ -16,7 +16,9 @@ export function dateToOtelTime(date: Date | unknown): [number, number] {
 }
 
 export function otelTimeToMs(time: [number, number]): number {
-  return (time[0] * 1_000_000_000 + time[1]) / 1_000_000;
+  const secondsToMs = time[0] * 1_000;
+  const nanosecondsToMs = time[1] / 1_000_000;
+  return secondsToMs + nanosecondsToMs;
 }
 
 /**
