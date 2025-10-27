@@ -327,13 +327,9 @@ function linkify(
             if (i % 2 === 1) {
               // It's code
               return (
-                <Link
-                  key={`link-code-${parts.length}-${i}`}
-                  href={linkUrl}
-                  className="text-primary-foreground"
-                >
-                  <code className="text-xs">{part}</code>
-                </Link>
+                <code key={`code-${parts.length}-${i}`} className="text-xs">
+                  {part}
+                </code>
               );
             }
             return part;
@@ -341,7 +337,11 @@ function linkify(
           .filter(Boolean);
 
         parts.push(
-          <Link key={parts.length} href={linkUrl}>
+          <Link
+            key={parts.length}
+            href={linkUrl}
+            className="text-primary-foreground"
+          >
             {linkContent}
           </Link>
         );
