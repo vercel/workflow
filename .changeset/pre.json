@@ -28,6 +28,7 @@
     "@workflow/example-nuxt": "0.0.0"
   },
   "changesets": [
+    "angry-owls-beg",
     "bitter-trees-rest",
     "cool-radios-beg",
     "cool-zebras-yawn",
@@ -43,6 +44,7 @@
     "legal-cycles-leave",
     "lemon-aliens-jog",
     "light-rice-rush",
+    "nasty-donuts-grow",
     "nine-beds-agree",
     "nine-insects-refuse",
     "nine-owls-write",
