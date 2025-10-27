@@ -3,6 +3,7 @@
 import { parseWorkflowName } from '@workflow/core/parse-name';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -72,9 +73,13 @@ export function RunDetailView({
       await cancelRun(env, runId);
       // Trigger a refresh of the data
       await update();
+      toast.success('Run cancelled successfully');
     } catch (err) {
       console.error('Failed to cancel run:', err);
-      // TODO: Show error toast/notification
+      toast.error('Failed to cancel run', {
+        description:
+          err instanceof Error ? err.message : 'An unknown error occurred',
+      });
     } finally {
       setCancelling(false);
     }
@@ -92,11 +97,17 @@ export function RunDetailView({
       setShowRerunDialog(false);
       // Start a new run with the same workflow and input arguments
       const newRunId = await startRun(env, run.workflowName, run.input);
+      toast.success('New run started successfully', {
+        description: `Run ID: ${newRunId}`,
+      });
       // Navigate to the new run
       router.push(buildUrlWithConfig(`/run/${newRunId}`, config));
     } catch (err) {
       console.error('Failed to re-run workflow:', err);
-      // TODO: Show error toast/notification
+      toast.error('Failed to start new run', {
+        description:
+          err instanceof Error ? err.message : 'An unknown error occurred',
+      });
     } finally {
       setRerunning(false);
     }
