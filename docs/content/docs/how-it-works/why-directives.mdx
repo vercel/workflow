@@ -90,7 +90,11 @@ When the Workflow DevKit sees `"use workflow"`, it:
 - Enables future functionality and optimizations only possible with a build tool
   - For instance, the bundled workflow code can be statically analyzed to generate UML diagrams/visualizations of the workflow
 
-In addition to being important to the compiler, `"use workflow"` explicitly signals to the developer ([and IDE](/docs/getting-started/next#setup-typescript-intellisense-optional)) that you are entering a different execution mode.
+In addition to being important to the compiler, `"use workflow"` explicitly signals to the developer that you are entering a different execution mode.
+
+<Callout type="info">
+The `"use workflow"` directive is also used by the Language Server Plugin shipped with Workflow DevKit to provide IntelliSense to your IDE. Check the [getting started instructions](/docs/getting-started) for your framework for details on setting up the Language Server Plugin.
+</Callout>
 
 But we didn't get here immediately. This took some discovery to arrive at:
 
