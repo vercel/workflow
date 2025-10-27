@@ -535,4 +535,230 @@ describe('getCustomDiagnostics', () => {
       expectDiagnostic(diagnostics, { code: 9001 });
     });
   });
+
+  describe('Error 9008: Misspelled directives', () => {
+    it('warns when using "use workfow" instead of "use workflow"', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workfow';
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9008,
+        messageIncludes: 'typo',
+      });
+    });
+
+    it('warns when using "use workflw" instead of "use workflow"', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workflw';
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9008,
+        messageIncludes: 'use workflow',
+      });
+    });
+
+    it('warns when using "use ste" instead of "use step"', () => {
+      const source = `
+        export async function myStep() {
+          'use ste';
+          return 'hello';
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9008,
+        messageIncludes: 'use step',
+      });
+    });
+
+    it('warns when using "use step " (with space) instead of "use step"', () => {
+      const source = `
+        export async function myStep() {
+          'use step ';
+          return 'hello';
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9008,
+      });
+    });
+
+    it('does not warn when directive is correct', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workflow';
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectNoDiagnostic(diagnostics, 9008);
+    });
+
+    it('does not warn for typos too different from directives', () => {
+      const source = `
+        export async function myFunc() {
+          'hello world';
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectNoDiagnostic(diagnostics, 9008);
+    });
+  });
+
+  describe('Suggestion 9009: Documentation link hint', () => {
+    it('shows suggestion when using "use workflow" directive', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workflow';
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9009,
+        messageIncludes: 'Workflow directives',
+      });
+    });
+
+    it('shows suggestion when using "use step" directive', () => {
+      const source = `
+        export async function myStep() {
+          'use step';
+          return 'hello';
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9009,
+        messageIncludes: 'Step directives',
+      });
+    });
+
+    it('does not show suggestion for misspelled directives', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workfow';
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectNoDiagnostic(diagnostics, 9009);
+      expectDiagnostic(diagnostics, { code: 9008 });
+    });
+
+    it('includes Workflow DevKit documentation link', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workflow';
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9009,
+        messageIncludes: 'https://useworkflow.dev/docs',
+      });
+    });
+
+    it('includes Workflow DevKit in message', () => {
+      const source = `
+        export async function myStep() {
+          'use step';
+          return 'hello';
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9009,
+        messageIncludes: 'Workflow DevKit documentation',
+      });
+    });
+  });
+
+  describe('Misspelled directive message formatting', () => {
+    it('uses quotes for typo in message', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workfow';
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9008,
+        messageIncludes: "'use workfow'",
+      });
+      expectDiagnostic(diagnostics, {
+        code: 9008,
+        messageIncludes: "'use workflow'",
+      });
+    });
+
+    it('shows typo and correction in quotes', () => {
+      const source = `
+        export async function myWorkflow() {
+          "use workflw";
+          return 123;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9008,
+        messageIncludes: "'use workflw'",
+      });
+      expectDiagnostic(diagnostics, {
+        code: 9008,
+        messageIncludes: "'use workflow'",
+      });
+    });
+  });
 });
