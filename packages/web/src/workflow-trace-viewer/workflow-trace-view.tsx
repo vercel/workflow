@@ -94,8 +94,8 @@ export const WorkflowTraceViewer = ({
     const sortedSpans = [
       runSpan,
       ...spans.slice().sort((a, b) => {
-        const aStart = a.startTime[0] * 1000 + a.startTime[1];
-        const bStart = b.startTime[0] * 1000 + b.startTime[1];
+        const aStart = a.startTime[0];
+        const bStart = b.startTime[0];
         return aStart - bStart;
       }),
     ];
