@@ -163,8 +163,8 @@ export const myWorkflow = workflow(async () => {
   });
 
   console.log(counter); // What is counter here? // [!code highlight]
-  // During replay: 0 (mutation lost) // [!code highlight]
   // During execution: 1 (mutation preserved) // [!code highlight]
+  // During replay: 0 (mutation lost) // [!code highlight]
   // Inconsistent behavior! // [!code highlight]
 });
 ```
@@ -226,13 +226,15 @@ Complex workflows became particularly verbose and difficult to read:
 export const myWorkflow = workflow(function*() {
   const user = yield* run(() => fetchUser());
 
-  // Combining with Promise.all required awkward syntax // [!code highlight]
-  const [orders, payments] = yield* run(() => // [!code highlight]
-    Promise.all([ // [!code highlight]
-      yield* run(() => fetchOrders(user.id)), // [!code highlight]
-      yield* run(() => fetchPayments(user.id)) // [!code highlight]
-    ]) // [!code highlight]
-  ); // [!code highlight]
+  // Can't use Promise.all directly - need sequential calls or custom helpers // [!code highlight]
+  const orders = yield* run(() => fetchOrders(user.id)); // [!code highlight]
+  const payments = yield* run(() => fetchPayments(user.id)); // [!code highlight]
+
+  // Or create a custom generator-aware parallel helper: // [!code highlight]
+  const [orders2, payments2] = yield* all([ // [!code highlight]
+    run(() => fetchOrders(user.id)), // [!code highlight]
+    run(() => fetchPayments(user.id)) // [!code highlight]
+  ]); // [!code highlight]
 
   return { user, orders, payments };
 });
@@ -408,6 +410,16 @@ export const processOrder = withRetry(async (orderId: string) => {
 
 The developer writing `processOrder` has no visible signal that they're in a deterministic, sandboxed environment. It's also ambiguous whether the retry logic executes inside the workflow (deterministic) or outside (non-deterministic)—and the actual behavior likely doesn't match developer intuition.
 
+**Why the compiler can't catch this:**
+
+To detect that `processOrder` is actually a workflow, the compiler would need whole-program analysis to track that:
+
+1. `withRetry` returns the result of `useWorkflow`
+2. Therefore `processOrder = withRetry(...)` is a workflow
+3. The function passed to `withRetry` will execute in a sandboxed context
+
+This level of cross-function analysis is impractical for build tools—it would require analyzing every function call chain in your entire codebase and all dependencies. The compiler can only reliably detect direct `useWorkflow` calls, not calls hidden behind abstractions.
+
 ---
 
 ## Why Directives Solve These Problems
@@ -500,6 +512,61 @@ export async function processOrder(orderId: string) {
   return { order, user };
 }
 ```
+
+**5. Consistent syntax for steps**
+
+The `"use step"` directive maintains consistency. While steps run in the full Node.js runtime and *could* work without a directive, they need some way to signal to the workflow runtime that they're steps.
+
+We could have used a function wrapper just for steps:
+
+```typescript lineNumbers
+// Mixed approach (inconsistent)
+export async function processOrder(orderId: string) {
+  "use workflow"; // Directive for workflow // [!code highlight]
+
+  const order = await step(async () => fetchOrder(orderId));
+  return order;
+}
+
+const fetchOrder = useStep(() => { // Wrapper for step? // [!code highlight]
+  // ...
+})
+```
+
+Mixing syntaxes felt inconsistent.
+
+An alternative approach we considered was to treat *all* async function calls as steps by default:
+
+```typescript lineNumbers
+export async function processOrder(orderId: string) {
+  "use workflow";
+
+  // Every async call becomes a step automatically?
+  const [order, user] = await Promise.all([ // [!code highlight]
+    fetchOrder(orderId), // Step
+    fetchUser(userId)    // Step
+  ]);
+
+  return { order, user };
+}
+```
+
+This breaks down because many valid async operations inside workflows aren't steps:
+
+```typescript lineNumbers
+export async function processOrder(orderId: string) {
+  "use workflow";
+
+  // These are valid async calls that SHOULD NOT be steps:
+  const results = await Promise.all([...]); // Language primitive // [!code highlight]
+  const winner = await Promise.race([...]); // Language primitive // [!code highlight]
+
+  // Helper function that formats data
+  const formatted = await formatOrderData(order); // Pure async helper // [!code highlight]
+}
+```
+
+By requiring explicit `"use step"` directives, developers have fine-grained control over what becomes a durable, retryable step versus what runs inline in the workflow sandbox.
 
 <Callout>
 To understand how directives are transformed at compile time, see [How the Code Transform Works](/docs/how-it-works/code-transform).
