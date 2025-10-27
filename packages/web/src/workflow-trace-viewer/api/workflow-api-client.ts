@@ -899,20 +899,11 @@ export async function cancelRun(env: EnvMap, runId: string): Promise<void> {
  */
 export async function startRun(
   env: EnvMap,
-  runId: string,
+  workflowName: string,
   args: any[]
 ): Promise<string> {
   try {
-    let input: any[] = args;
-    // We need to re-fetch the run so we're sure to have hydrated IO
-    const run = await fetchRun(env, runId, 'all');
-    const workflowName = run.workflowName;
-    input = run.input;
-    if (!input || input.length === 0) {
-      throw new Error('Could not start run: failed to resolve input arguments');
-    }
-    const newRunId = await startRunServerAction(env, workflowName, input);
-    return newRunId;
+    return await startRunServerAction(env, workflowName, args);
   } catch (err) {
     console.error('Error starting run:', err);
     throw err;
