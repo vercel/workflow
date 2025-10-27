@@ -77,6 +77,7 @@ export function getCodeFixes(
 
   fixes.push({
     fixName: 'fix-directive-typo',
+    fixId: 'workflow--fix-directive-typo',
     description: `Replace with '${expectedDirective}'`,
     changes: [change],
   });
