@@ -110,6 +110,7 @@ export function RunDetailView({
       });
     } finally {
       setRerunning(false);
+      setShowRerunDialog(false);
     }
   };
 
