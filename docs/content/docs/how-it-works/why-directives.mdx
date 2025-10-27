@@ -336,10 +336,10 @@ As the JavaScript ecosystem has moved toward function-forward programming—exem
 While decorators can be handled at compile-time with build tool support, they present workflow functions as if they were regular, composable JavaScript code—when they're actually compile-time declarations that need special handling.
 
 <Callout>
-See the [Macro Wrapper](/docs/how-it-works/why-directives#the-macro-wrapper) section below for a deeper dive into why this approach breaks down with concrete examples.
+See the [Macro Wrapper](/docs/how-it-works/why-directives#macro-wrapper-approach) section below for a deeper dive into why this approach breaks down with concrete examples.
 </Callout>
 
-### The Macro Wrapper
+### Macro Wrapper Approach
 
 We also explored compile-time macro approaches—using a compiler to transform wrapper functions or decorators into directive-based code:
 
@@ -355,7 +355,7 @@ export const processOrder = useWorkflow(async (orderId: string) => { // [!code h
 // Decorator approach (would work similarly)
 class MyWorkflow {
   @workflow() // [!code highlight]
-  static async function processOrder2(orderId: string) {
+  static async processOrder(orderId: string) {
     const order = await fetchOrder(orderId);
     return { orderId };
   }
@@ -421,7 +421,7 @@ This level of cross-function analysis is impractical for build tools—it would 
 
 ---
 
-## Why Directives Solve These Problems
+## How Directives Solve These Problems
 
 Directives address all the issues we encountered with previous approaches:
 
@@ -451,7 +451,7 @@ export async function badWorkflow() {
 }
 ```
 
-Infact, Workflow DevKit will throw an error that links to this error page: [Node.js module in workflow](/docs/errors/node-js-module-in-workflow)
+In fact, Workflow DevKit will throw an error that links to this error page: [Node.js module in workflow](/docs/errors/node-js-module-in-workflow)
 
 **3. No closure ambiguity**
 
@@ -561,7 +561,7 @@ export async function processOrder(orderId: string) {
   const winner = await Promise.race([...]); // Language primitive // [!code highlight]
 
   // Helper function that formats data
-  const formatted = await formatOrderData(order); // Pure javascript helper // [!code highlight]
+  const formatted = await formatOrderData(order); // Pure JavaScript helper // [!code highlight]
 }
 ```
 
