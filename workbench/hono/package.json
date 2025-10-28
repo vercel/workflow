@@ -9,6 +9,7 @@
   "dependencies": {
     "@hono/node-server": "^1.19.5",
     "workflow": "workspace:*",
+    "@workflow/core": "workspace:*",
     "@workflow/hono": "workspace:*",
     "hono": "^4.10.3"
   },
