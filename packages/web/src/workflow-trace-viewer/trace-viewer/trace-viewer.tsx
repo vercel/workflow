@@ -102,7 +102,8 @@ export function TraceViewerTimeline({
   const { state, dispatch } = useTraceViewer();
   const { timelineRef, scrollSnapshotRef } = state;
   const memoCache = state.memoCacheRef.current;
-  const hideSearchBar = (highlightedSpans?.length ?? 0) > 0;
+  const hideSearchBar =
+    (highlightedSpans?.length ?? 0) > 0 || trace.spans.length <= 10;
 
   useEffect(() => {
     const { root, map: spanMap } = parseTrace(trace);
