@@ -67,8 +67,9 @@ export function withWorkflow(
         ...(supportsTurboCondition
           ? {
               condition: {
+                ...existingRules[key]?.condition,
                 any: [
-                  ...(existingRules[key]?.condition || []),
+                  ...(existingRules[key]?.condition.any || []),
                   {
                     content: /(use workflow|use step)/,
                   },
