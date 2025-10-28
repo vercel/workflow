@@ -1,5 +1,7 @@
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import { Loader2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import type { EnvMap } from './api/workflow-server-actions';
 import { WorkflowDetailPanel } from './sidebar/workflow-detail-panel';
 import {
@@ -27,6 +29,7 @@ export const WorkflowTraceViewer = ({
   events,
   env,
   isLoading,
+  error,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -34,6 +37,7 @@ export const WorkflowTraceViewer = ({
   events: Event[];
   env: EnvMap;
   isLoading?: boolean;
+  error?: Error | null;
 }) => {
   const [now, setNow] = useState(() => new Date());
 
@@ -48,6 +52,9 @@ export const WorkflowTraceViewer = ({
   }, [run?.completedAt]);
 
   const trace = useMemo(() => {
+    if (!run) {
+      return undefined;
+    }
     // Group events by their correlation ID to associate with steps/hooks
     const eventsByStepId = new Map<string, Event[]>();
     const eventsByHookId = new Map<string, Event[]>();
@@ -125,18 +132,35 @@ export const WorkflowTraceViewer = ({
     };
   }, [run, steps, hooks, events, now]);
 
+  useEffect(() => {
+    if (error && !isLoading) {
+      console.error(error);
+      toast.error('Error loading workflow trace data', {
+        description: error.message,
+      });
+    }
+  }, [error, isLoading]);
+
   return (
-    <TraceViewerContextProvider
-      withPanel
-      customSpanClassNameFunc={getCustomSpanClassName}
-      customSpanEventClassNameFunc={getCustomSpanEventClassName}
-      customPanelComponent={<WorkflowDetailPanel env={env} />}
-    >
-      <TraceViewerTimeline
-        height={800}
-        trace={!isLoading ? trace : undefined}
+    <div className="relative">
+      {isLoading && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">
+              Loading trace data...
+            </p>
+          </div>
+        </div>
+      )}
+      <TraceViewerContextProvider
         withPanel
-      />
-    </TraceViewerContextProvider>
+        customSpanClassNameFunc={getCustomSpanClassName}
+        customSpanEventClassNameFunc={getCustomSpanEventClassName}
+        customPanelComponent={<WorkflowDetailPanel env={env} />}
+      >
+        <TraceViewerTimeline height={800} trace={trace} withPanel />
+      </TraceViewerContextProvider>
+    </div>
   );
 };
