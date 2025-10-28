@@ -111,5 +111,24 @@ describe('getHoverInfo', () => {
 
       expect(hoverInfo).toBeUndefined();
     });
+
+    it('does not match at the exact end boundary of a string literal', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workflow';
+          return 123;
+        }
+      `;
+
+      const { program, sourceFile } = createTestProgram(source);
+      // Get the exact end position (exclusive boundary) of 'use workflow'
+      const stringStart = sourceFile.text.indexOf("'use workflow'");
+      const stringEnd = stringStart + "'use workflow'".length;
+
+      // Hover at the exact end position should NOT match
+      const hoverInfo = getHoverInfo('test.ts', stringEnd, program, ts);
+
+      expect(hoverInfo).toBeUndefined();
+    });
   });
 });

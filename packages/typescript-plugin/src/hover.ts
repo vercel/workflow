@@ -22,8 +22,8 @@ export function getHoverInfo(
   function visit(node: import('typescript/lib/tsserverlibrary').Node) {
     if (
       ts.isStringLiteral(node) &&
-      node.getStart(sourceFile) <= position &&
-      node.getEnd() >= position
+      position >= node.getStart(sourceFile) &&
+      position < node.getEnd()
     ) {
       directiveNode = node;
       return;
