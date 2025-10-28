@@ -35,7 +35,7 @@
   "devDependencies": {
     "@workflow/tsconfig": "workspace:*",
     "@types/node": "catalog:",
-    "next": "15.5.3"
+    "next": "16.0.1"
   },
   "peerDependencies": {
     "next": ">13"
