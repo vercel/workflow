@@ -118,7 +118,7 @@ export function RunDetailView({
     }
   };
 
-  if (error) {
+  if (error && !runData) {
     return (
       <Alert variant="destructive" className="m-4">
         <AlertCircle className="h-4 w-4" />
@@ -234,7 +234,7 @@ export function RunDetailView({
           <div className="flex items-start gap-8">
             <div className="flex flex-col gap-1">
               <div className="text-xs text-muted-foreground">Status</div>
-              <StatusBadge status={run.status} context={run} />
+              <StatusBadge status={run.status || '...'} context={run} />
             </div>
             <div className="flex flex-col gap-1">
               <div className="text-xs text-muted-foreground">Run ID</div>
