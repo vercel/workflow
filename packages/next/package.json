@@ -30,12 +30,14 @@
     "@swc/core": "1.11.24",
     "@workflow/cli": "workspace:*",
     "@workflow/core": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*"
+    "@workflow/swc-plugin": "workspace:*",
+    "semver": "7.7.3"
   },
   "devDependencies": {
     "@workflow/tsconfig": "workspace:*",
     "@types/node": "catalog:",
-    "next": "15.5.3"
+    "@types/semver": "7.7.1",
+    "next": "16.0.1"
   },
   "peerDependencies": {
     "next": ">13"
