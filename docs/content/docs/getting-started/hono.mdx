@@ -40,7 +40,7 @@ cd my-workflow-app
 </Tabs>
 
 <Callout>
-Hono doesn't include a build system. Nitro adds one which enables compiling workflows, runs, and deploys for development and production. Learn more about Nitro [here](https://nitro.build).
+By default, Hono doesn't include a build system. Nitro adds one which enables compiling workflows, runs, and deploys for development and production. Learn more about Nitro [here](https://nitro.build).
 </Callout>
 
 ### Configure Nitro
@@ -51,7 +51,6 @@ Create a new file `nitro.config.ts` for your Nitro configuration with module `wo
 import { defineNitroConfig } from "nitro/config";
 
 export default defineNitroConfig({
-  compatibilityDate: "latest",
   srcDir: "src",
   serverEntry: "index.ts",
   modules: ["workflow/nitro"],
@@ -204,7 +203,7 @@ app.post("/api/signup", async (c) => {
 export default app;
 ```
 
-This Route Handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.
+This route handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.
 
 </Step>
 
