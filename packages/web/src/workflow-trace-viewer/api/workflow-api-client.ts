@@ -42,6 +42,25 @@ function createWorkflowAPIError(
 }
 
 /**
+ * Gets a user-facing error message from an error object.
+ * Handles both WorkflowAPIError and regular Error instances.
+ */
+export const getErrorMessage = (error: Error | WorkflowAPIError): string => {
+  // WorkflowAPIError already has user-facing messages
+  if ('layer' in error && error.layer) {
+    return error.message;
+  }
+
+  if (error instanceof WorkflowAPIError) {
+    if (error.request?.status === 403) {
+      return 'Your current Vercel account does not have access to this data. Please use `vercel login` to log in, or use `vercel switch` to ensure you can access the correct team.';
+    }
+  }
+
+  return error instanceof Error ? error.message : 'An error occurred';
+};
+
+/**
  * Helper to handle server action results and throw WorkflowAPIError on failure
  */
 function unwrapServerActionResult<T>(result: {

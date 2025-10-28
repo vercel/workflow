@@ -26,8 +26,8 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import { getErrorMessage } from '@/lib/errors';
 import { useWorkflowHooks } from '@/workflow-trace-viewer';
+import { getErrorMessage } from '@/workflow-trace-viewer/api/workflow-api-client';
 import { fetchEventsByCorrelationId } from '@/workflow-trace-viewer/api/workflow-server-actions';
 import { RelativeTime } from './display-utils/relative-time';
 import { TableSkeleton } from './display-utils/table-skeleton';
