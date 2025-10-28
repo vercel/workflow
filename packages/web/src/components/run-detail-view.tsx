@@ -22,6 +22,7 @@ import {
   cancelRun,
   startRun,
   useWorkflowTraceViewerData,
+  type WorkflowRun,
   WorkflowTraceViewer,
 } from '@/workflow-trace-viewer';
 import { BackLink } from './display-utils/back-link';
@@ -53,7 +54,7 @@ export function RunDetailView({
 
   // Fetch all run data with live updates
   const {
-    run,
+    run: runData,
     steps: allSteps,
     hooks: allHooks,
     events: allEvents,
@@ -61,6 +62,7 @@ export function RunDetailView({
     error,
     update,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
+  const run = runData ?? ({} as WorkflowRun);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);
@@ -116,7 +118,7 @@ export function RunDetailView({
     }
   };
 
-  if (error && !run) {
+  if (error) {
     return (
       <Alert variant="destructive" className="m-4">
         <AlertCircle className="h-4 w-4" />
