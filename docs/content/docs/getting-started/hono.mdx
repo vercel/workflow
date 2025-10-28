@@ -6,10 +6,6 @@ title: Hono
 
 This guide will walk through setting up your first workflow in a Hono app. Along the way, you'll learn more about the concepts that are fundamental to using the development kit in your own projects.
 
-<Callout type="warn">
-    Currently, Hono is supported through Nitro v3. We're working on supporting a standalone mode for Hono.
-</Callout>
-
 ---
 
 <Steps>
@@ -42,6 +38,10 @@ cd my-workflow-app
     <CodeBlock>yarn add workflow nitro</CodeBlock>
   </Tab>
 </Tabs>
+
+<Callout>
+Hono doesn't include a build system. Nitro adds one which enables compiling workflows, runs, and deploys for development and production. Learn more about Nitro [here](https://nitro.build).
+</Callout>
 
 ### Configure Nitro
 
