@@ -9,6 +9,7 @@ import {
   isCancel,
   log,
   outro,
+  select,
   tasks,
   text,
 } from '@clack/prompts';
@@ -30,7 +31,8 @@ export default class Init extends BaseCommand {
   static flags = {
     template: Flags.string({
       description: 'template to use',
-      options: ['standalone', 'nextjs', 'express'],
+      options: ['next', 'hono', 'nitro'],
+      default: 'next',
     }),
     yes: Flags.boolean({
       char: 'y',
@@ -59,6 +61,8 @@ export default class Init extends BaseCommand {
     const { args, flags } = await this.parse(Init);
 
     intro('workflow init');
+
+    let template = flags.template ?? 'next';
 
     const isNextApp = this.isNextApp();
 
@@ -93,6 +97,24 @@ export default class Init extends BaseCommand {
         cancel('Cancelled workflow setup');
         return;
       }
+
+      template = (await select({
+        message: 'What template would you like to use?',
+        options: [
+          { label: 'Hono', value: 'hono', hint: 'via Nitro v3' },
+          { label: 'Next.js', value: 'next' },
+          {
+            label: 'Nitro',
+            value: 'nitro',
+          },
+        ],
+        initialValue: 'next',
+      })) as string;
+
+      if (isCancel(template)) {
+        cancel('Cancelled workflow setup');
+        return;
+      }
     }
 
     const useTsPlugin =
@@ -113,7 +135,8 @@ export default class Init extends BaseCommand {
 
     await tasks([
       {
-        title: 'Creating Next.js app',
+        title:
+          template === 'next' ? 'Creating Next.js app' : 'Creating Hono app',
         enabled: createNewProject,
         task: async (message) => {
           message('Creating a new Next.js app');
@@ -243,6 +266,8 @@ export async function POST(request: Request) {
         },
       },
     ]);
+
+    cancel('Cancelled workflow setup');
 
     outro(
       `${chalk.green('Success!')} Next steps:
