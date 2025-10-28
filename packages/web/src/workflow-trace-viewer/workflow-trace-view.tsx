@@ -52,6 +52,9 @@ export const WorkflowTraceViewer = ({
   }, [run?.completedAt]);
 
   const trace = useMemo(() => {
+    if (!run) {
+      return undefined;
+    }
     // Group events by their correlation ID to associate with steps/hooks
     const eventsByStepId = new Map<string, Event[]>();
     const eventsByHookId = new Map<string, Event[]>();
