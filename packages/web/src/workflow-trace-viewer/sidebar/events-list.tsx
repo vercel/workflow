@@ -28,10 +28,10 @@ export function EventsList({
       limit: 100,
       withData: true,
     }).then((evts) => {
-      if (evts.success) {
-        return convertEventsToSpanEvents(evts.data.data || [], false);
+      if (!evts.success) {
+        throw new Error(evts.error?.message || 'Failed to fetch events');
       }
-      return [];
+      return convertEventsToSpanEvents(evts.data.data || [], false);
     });
   }, [env, correlationId]);
 

@@ -49,7 +49,7 @@ function unwrapServerActionResult<T>(result: {
   data?: T;
   error?: ServerActionError;
 }): T {
-  if (!result.success || !result.data) {
+  if (!result.success) {
     if (!result.error) {
       throw new WorkflowAPIError('Unknown error occurred', { layer: 'client' });
     }
