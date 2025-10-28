@@ -1,9 +1,11 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
+import { AlertCircle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -114,8 +116,14 @@ export function RunDetailView({
     }
   };
 
-  if (error) {
-    return <div className="text-center py-8">Error: {error.message}</div>;
+  if (error && !run) {
+    return (
+      <Alert variant="destructive" className="m-4">
+        <AlertCircle className="h-4 w-4" />
+        <AlertTitle>Error loading workflow run</AlertTitle>
+        <AlertDescription>{error.message}</AlertDescription>
+      </Alert>
+    );
   }
 
   const workflowName = parseWorkflowName(run.workflowName)?.shortName || '?';
@@ -264,6 +272,7 @@ export function RunDetailView({
             </div>
           )}
           <WorkflowTraceViewer
+            error={error}
             steps={allSteps}
             events={allEvents}
             hooks={allHooks}
