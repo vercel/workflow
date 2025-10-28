@@ -17,19 +17,19 @@ This guide will walk through setting up your first workflow in a Hono app. Along
 <Step>
 ## Create Your Hono Project
 
-Start by creating a new Hono project. This command will create a new directory named `hono-app` and setup a Hono project inside it.
+Start by creating a new Hono project. This command will create a new directory named `my-workflow-app` and setup a Hono project inside it.
 
 ```bash
-npm create hono@latest hono-app
+npm create hono@latest my-workflow-app -- --template=nodejs
 ```
 
 Enter the newly made directory:
 
 ```bash
-cd hono-app
+cd my-workflow-app
 ```
 
-### Install `workflow`
+### Install `workflow` and `nitro`
 
 <Tabs items={["npm", "pnpm", "yarn"]}>
   <Tab value="npm">
@@ -45,7 +45,7 @@ cd hono-app
 
 ### Configure Nitro
 
-Add `workflow/nitro` to your `nitro.config.ts` This enables usage of the `"use workflow"` and `"use step"` directives.
+Create a new file `nitro.config.ts` for your Nitro configuration with module `workflow/nitro`. This enables usage of the `"use workflow"` and `"use step"` directives.
 
 ```typescript title="nitro.config.ts" lineNumbers
 import { defineNitroConfig } from "nitro/config";
@@ -212,7 +212,7 @@ This Route Handler creates a `POST` request endpoint at `/api/signup` that will 
 
 ## Run in development
 
-To start your development server, run the following command in your terminal in the Nitro root directory:
+To start your development server, run the following command in your terminal in the Hono root directory:
 
 ```bash
 npm run dev
@@ -224,7 +224,7 @@ Once your development server is running, you can trigger your workflow by runnin
 curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/signup
 ```
 
-Check the Nitro development server logs to see your workflow execute as well as the steps that are being processed.
+Check the Hono development server logs to see your workflow execute as well as the steps that are being processed.
 
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
