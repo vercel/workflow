@@ -428,27 +428,6 @@ export async function startRun(
   }
 }
 
-/**
- * Start a new workflow run
- */
-export async function startRun(
-  worldEnv: EnvMap,
-  workflowName: string,
-  args: any[]
-): Promise<string> {
-  try {
-    const world = getWorldFromEnv(worldEnv);
-    const deploymentId = await world.getDeploymentId();
-    const run = await start({ workflowId: workflowName }, args, {
-      deploymentId,
-    });
-    return run.runId;
-  } catch (error) {
-    console.error('Failed to start run:', error);
-    throw error;
-  }
-}
-
 export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
