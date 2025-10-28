@@ -26,7 +26,7 @@
     "directory": "packages/web"
   },
   "scripts": {
-    "build": "tsc && cp -r src/trace-viewer/*.css dist/trace-viewer/ && cp -r src/workflow-traces/*.css dist/workflow-traces/",
+    "build": "tsc && cp -r src/trace-viewer/*.css dist/trace-viewer/",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "test": "WORKFLOW_TARGET_WORLD=embedded vitest run src",
