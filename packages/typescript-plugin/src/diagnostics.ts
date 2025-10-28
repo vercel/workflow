@@ -41,22 +41,6 @@ export function getCustomDiagnostics(
     });
   }
 
-  function addDocumentationHint(
-    node: Node,
-    directiveType: 'workflow' | 'step'
-  ) {
-    const directiveName = directiveType === 'workflow' ? 'Workflow' : 'Step';
-
-    diagnostics.push({
-      file: sourceFile,
-      start: node.getStart(sourceFile),
-      length: 1, // Only underline first character
-      messageText: `Learn more about ${directiveName} directives in the Workflow DevKit documentation: https://useworkflow.dev/docs`,
-      category: ts.DiagnosticCategory.Suggestion,
-      code: 9009,
-    });
-  }
-
   function checkDirectiveStringLiteral(node: Node) {
     if (!ts.isStringLiteral(node)) {
       return;
@@ -89,10 +73,6 @@ export function getCustomDiagnostics(
     const directiveTypo = getDirectiveTypo(node.text);
     if (directiveTypo) {
       addTypoError(node, node.text, directiveTypo);
-    } else if (node.text === 'use workflow') {
-      addDocumentationHint(node, 'workflow');
-    } else if (node.text === 'use step') {
-      addDocumentationHint(node, 'step');
     }
   }
 

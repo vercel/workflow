@@ -2,6 +2,7 @@ import ts from 'typescript/lib/tsserverlibrary';
 import { getCodeFixes } from './code-fixes';
 import { enhanceCompletions } from './completions';
 import { getCustomDiagnostics } from './diagnostics';
+import { getHoverInfo } from './hover';
 
 interface PluginConfig {
   enableDiagnostics?: boolean;
@@ -90,6 +91,28 @@ function init(modules: {
           }
         };
       }
+
+      // Provide hover information
+      proxy.getQuickInfoAtPosition = (fileName: string, position: number) => {
+        const prior = info.languageService.getQuickInfoAtPosition(
+          fileName,
+          position
+        );
+        try {
+          const program = info.languageService.getProgram();
+          if (!program) return prior;
+
+          const hoverInfo = getHoverInfo(fileName, position, program, ts);
+
+          // If we have hover info for a directive, use it; otherwise use prior
+          return hoverInfo || prior;
+        } catch (error) {
+          info.project.projectService.logger.info(
+            `@workflow/typescript-plugin: Error in getQuickInfoAtPosition: ${error}`
+          );
+          return prior;
+        }
+      };
 
       // Provide code fixes for diagnostics
       if (enableDiagnostics) {
