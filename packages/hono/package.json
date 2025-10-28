@@ -1,0 +1,39 @@
+{
+  "name": "@workflow/hono",
+  "version": "4.0.0-beta.1",
+  "description": "Hono integration for Workflow DevKit",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/hono"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist"
+  },
+  "dependencies": {
+    "@swc/core": "1.11.24",
+    "@workflow/cli": "workspace:*",
+    "@workflow/core": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
+    "hono": "^4.9.10",
+    "workflow": "4.0.1-beta.4"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*"
+  }
+}
