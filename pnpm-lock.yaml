@@ -890,6 +890,9 @@ importers:
       '@hono/node-server':
         specifier: ^1.19.5
         version: 1.19.5(hono@4.10.3)
+      '@workflow/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@workflow/hono':
         specifier: workspace:*
         version: link:../../packages/hono

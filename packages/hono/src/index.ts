@@ -12,33 +12,39 @@ async function loadBundle(outdir: string, filename: string) {
 }
 
 export async function createWorkflowRoutes(
-  options: Partial<WorkflowConfig>
+  options?: Partial<WorkflowConfig>
 ): Promise<Hono> {
+  options ??= {};
   const app = new Hono();
   const outDir = '.workflow';
 
-  const builder = new LocalBuilder(options);
-  await builder.build();
+  const isVercelDeploy = process.env.VERCEL === '1';
 
-  // Load bundles
-  const stepsModule = await loadBundle(outDir, 'steps.mjs');
-  const workflowsModule = await loadBundle(outDir, 'workflows.mjs');
-  const webhookModule = await loadBundle(outDir, 'webhook.mjs');
+  if (isVercelDeploy) {
+    // TODO: Implement Vercel builder
+  } else {
+    await new LocalBuilder(options).build();
 
-  // Register routes directly on one app
-  app.post('/.well-known/workflow/v1/step', async (c) => {
-    return await stepsModule.handler(c.req.raw);
-  });
+    // Load bundles
+    const stepsModule = await loadBundle(outDir, 'steps.mjs');
+    const workflowsModule = await loadBundle(outDir, 'workflows.mjs');
+    const webhookModule = await loadBundle(outDir, 'webhook.mjs');
 
-  app.post('/.well-known/workflow/v1/flow', async (c) => {
-    return await workflowsModule.handler(c.req.raw);
-  });
+    // Register routes directly on one app
+    app.post('/v1/step', async (c) => {
+      return await stepsModule.handler(c.req.raw);
+    });
 
-  app.all('/.well-known/workflow/v1/webhook/:token', async (c) => {
-    const handler = webhookModule.handler;
-    if (!handler) return c.text('Method not supported', 405);
-    return await handler(c.req.raw);
-  });
+    app.post('/v1/flow', async (c) => {
+      return await workflowsModule.handler(c.req.raw);
+    });
+
+    app.all('/v1/webhook/:token', async (c) => {
+      const handler = webhookModule.handler;
+      if (!handler) return c.text('Method not supported', 405);
+      return await handler(c.req.raw);
+    });
+  }
 
   return app;
 }
