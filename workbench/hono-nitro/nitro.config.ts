@@ -1,0 +1,1 @@
+../nitro-v3/nitro.config.ts
