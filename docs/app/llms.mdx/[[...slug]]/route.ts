@@ -12,11 +12,16 @@ export async function GET(
   const page = source.getPage(slug);
   if (!page) notFound();
 
-  return new Response(await getLLMText(page), {
-    headers: {
-      'Content-Type': 'text/markdown',
-    },
-  });
+  return new Response(
+    (await getLLMText(page)) +
+      `\n\n## Sitemap
+[Overview of all docs pages](/docs/sitemap.md)\n`,
+    {
+      headers: {
+        'Content-Type': 'text/markdown',
+      },
+    }
+  );
 }
 
 export function generateStaticParams() {
