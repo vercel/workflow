@@ -55,7 +55,7 @@ function unwrapServerActionResult<T>(result: {
     }
     throw createWorkflowAPIError(result.error);
   }
-  return result.data;
+  return result.data as T;
 }
 
 /**
