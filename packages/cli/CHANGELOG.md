@@ -1,5 +1,15 @@
 # @workflow/cli
 
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- 66332f2: Rename vercel-static builder to standalone
+- dbf2207: Fix --backend flag not finding world when using embedded world package name explicitly
+- Updated dependencies [dbf2207]
+- Updated dependencies [eadf588]
+  - @workflow/web@4.0.1-beta.4
+
 ## 4.0.1-beta.3
 
 ### Patch Changes

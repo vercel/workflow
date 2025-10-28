@@ -1,5 +1,11 @@
 # @workflow/world-postgres
 
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- ae0972f: Fix build script to include the built files
+
 ## 4.0.1-beta.2
 
 ### Patch Changes

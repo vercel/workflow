@@ -42,6 +42,7 @@ export type Serializable =
   // Special types that need special handling when
   // serialized/deserialized (see `serialization.ts`)
   | ArrayBuffer
+  | bigint
   | BigInt64Array
   | BigUint64Array
   | Date

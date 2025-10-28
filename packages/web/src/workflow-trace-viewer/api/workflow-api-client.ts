@@ -1033,6 +1033,22 @@ export async function startRun(
   }
 }
 
+/**
+ * Start a new workflow run
+ */
+export async function startRun(
+  env: EnvMap,
+  workflowName: string,
+  args: any[]
+): Promise<string> {
+  try {
+    return await startRunServerAction(env, workflowName, args);
+  } catch (err) {
+    console.error('Error starting run:', err);
+    throw err;
+  }
+}
+
 export async function readStream(
   env: EnvMap,
   streamId: string,
