@@ -1,19 +1,20 @@
 {
-  "name": "@workflow/example-hono",
-  "private": true,
+  "name": "hono",
   "type": "module",
-  "version": "0.0.0",
   "scripts": {
-    "dev": "nitro dev",
-    "build": "nitro build"
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.5",
+    "workflow": "workspace:*",
+    "@workflow/hono": "workspace:*",
+    "hono": "^4.10.3"
   },
   "devDependencies": {
-    "workflow": "workspace:*",
-    "ai": "catalog:",
-    "hono": "^4.9.10",
-    "lodash.chunk": "^4.2.0",
-    "nitro": "npm:nitro-nightly@3.0.1-20251019-172914-d1eea57b",
-    "openai": "^6.6.0",
-    "zod": "catalog:"
+    "@types/node": "^20.11.17",
+    "tsx": "^4.7.1",
+    "typescript": "^5.8.3"
   }
 }
