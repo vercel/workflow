@@ -3,9 +3,11 @@
   "compilerOptions": {
     "outDir": "dist",
     "target": "es2022",
+    "lib": ["es2022", "dom", "dom.iterable", "webworker"],
     "jsx": "preserve",
-    "module": "nodenext",
-    "moduleResolution": "nodenext"
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node", "react", "react-dom"]
   },
   "include": ["src"],
   "exclude": ["node_modules", "**/*.test.ts"]

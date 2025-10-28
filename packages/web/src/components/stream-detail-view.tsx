@@ -1,7 +1,7 @@
 'use client';
 
 import { readStream } from '@workflow/web-shared';
-import type { EnvMap } from '@workflow/workflow-server-actions';
+import type { EnvMap } from '@workflow/web-shared/server';
 import { useParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';

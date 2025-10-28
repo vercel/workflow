@@ -1,6 +1,7 @@
 'use client';
 
 import { getErrorMessage, useWorkflowHooks } from '@workflow/web-shared';
+import { fetchEventsByCorrelationId } from '@workflow/web-shared/server';
 import type { Event, Hook } from '@workflow/world';
 import {
   AlertCircle,

@@ -8,7 +8,7 @@ import type {
   WorkflowRunStatus,
 } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getPaginationDisplay } from '@/lib/utils';
+import { getPaginationDisplay } from '../lib/utils';
 import type { EnvMap, ServerActionError } from './workflow-server-actions';
 import {
   cancelRun as cancelRunServerAction,
