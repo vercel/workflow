@@ -440,8 +440,8 @@ export const Next = (props: ComponentProps<'svg'>) => (
         gradientTransform="scale(.71111)"
         gradientUnits="userSpaceOnUse"
       >
-        <stop stop-color="#fff" />
-        <stop offset="1" stop-color="#fff" stop-opacity="0" />
+        <stop stopColor="#fff" />
+        <stop offset="1" stopColor="#fff" stopOpacity="0" />
       </linearGradient>
       <linearGradient
         id="SVGbF2jJbfB"
@@ -452,8 +452,8 @@ export const Next = (props: ComponentProps<'svg'>) => (
         gradientTransform="scale(.71111)"
         gradientUnits="userSpaceOnUse"
       >
-        <stop stop-color="#fff" />
-        <stop offset="1" stop-color="#fff" stop-opacity="0" />
+        <stop stopColor="#fff" />
+        <stop offset="1" stopColor="#fff" stopOpacity="0" />
       </linearGradient>
     </defs>
   </svg>
