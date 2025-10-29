@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "nitro dev",
     "build": "nitro build",
-    "start": "node .output/server/index.mjs"
+    "start": "node .output/server/index.mjs",
+    "test:e2e": "vitest run packages/core/e2e/e2e.test.ts"
   },
   "dependencies": {
     "express": "^5.1.0",

@@ -13,6 +13,7 @@
     "nextjs-webpack",
     "@workflow/example-app",
     "@workflow/example-hono",
+    "@workflow/example-express",
     "@workflow/example-nitro-v3",
     "@workflow/example-nitro-v2",
     "@workflow/example-nuxt",
