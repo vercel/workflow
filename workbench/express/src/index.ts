@@ -6,6 +6,9 @@ import { allWorkflows } from '../_workflows';
 
 const app = express();
 
+app.use(express.json());
+app.use(express.text({ type: 'text/*' }));
+
 app.post('/api/hook', async (req, res, _) => {
   const token = req.body.token;
   const data = req.body.data;
@@ -141,10 +144,8 @@ app.post('/api/trigger', async (req, res, _) => {
       return Number.isNaN(num) ? arg.trim() : num;
     });
   } else {
-    // Args from body
-    const body = await req.body;
-    if (body) {
-      args = hydrateWorkflowArguments(body, globalThis);
+    if (req.body) {
+      args = hydrateWorkflowArguments(JSON.parse(req.body), globalThis);
     } else {
       args = [42];
     }
