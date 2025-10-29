@@ -29,8 +29,6 @@
     "build": "tsc && cp -r src/trace-viewer/*.css dist/trace-viewer/",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
-    "test": "WORKFLOW_TARGET_WORLD=embedded vitest run src",
-    "test:e2e": "vitest run e2e",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome format --write"
