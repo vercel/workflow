@@ -73,6 +73,8 @@ jobs:
             project-id: "prj_MqnBLm71ceXGSnm3Fs8i8gBnI23G"
           - name: "hono"
             project-id: "prj_p0GIEsfl53L7IwVbosPvi9rPSOYW"
+          - name: "express"
+            project-id: "prj_80Ii5C4kMVMjhT0u4TI5DiuR1OUz"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
