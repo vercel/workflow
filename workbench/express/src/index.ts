@@ -30,66 +30,6 @@ app.post('/api/hook', async (req, res, _) => {
   return res.json(hook);
 });
 
-app.post('/api/trigger', async (req, res, _) => {
-  const workflowFile =
-    (req.query.workflowFile as string) || 'workflows/99_e2e.ts';
-  if (!workflowFile) {
-    return res.status(400).json({
-      error: 'No workflowFile query parameter provided',
-      status: 400,
-    });
-  }
-  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
-  if (!workflows) {
-    return res.status(400).json({
-      error: `Workflow file "${workflowFile}" not found`,
-      status: 400,
-    });
-  }
-
-  const workflowFn = (req.query.workflowFn as string) || 'simple';
-  if (!workflowFn) {
-    return res.status(400).json({
-      error: 'No workflow query parameter provided',
-      status: 400,
-    });
-  }
-  const workflow = workflows[workflowFn as keyof typeof workflows];
-  if (!workflow) {
-    return res.status(400).json({
-      error: `Workflow "${workflowFn}" not found`,
-    });
-  }
-
-  let args: any[] = [];
-
-  // Args from query string
-  const argsParam = req.query.args as string;
-  if (argsParam) {
-    args = argsParam.split(',').map((arg) => {
-      const num = parseFloat(arg);
-      return Number.isNaN(num) ? arg.trim() : num;
-    });
-  } else {
-    // Args from body
-    if (req.body) {
-      args = hydrateWorkflowArguments(req.body, globalThis);
-    } else {
-      args = [42];
-    }
-  }
-  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
-
-  try {
-    const run = await start(workflow as any, args as any);
-    console.log('Run:', run);
-    return res.json(run);
-  } catch (err) {
-    console.error(`Failed to start!!`, err);
-    throw err;
-  }
-});
-
 app.get('/api/trigger', async (req, res, _) => {
   const runId = req.query.runId as string;
   if (!runId) {
@@ -133,11 +73,19 @@ app.get('/api/trigger', async (req, res, _) => {
   } catch (error) {
     if (error instanceof Error) {
       if (error.name === 'WorkflowRunNotCompletedError') {
-        return res.status(202).json(error);
+        return res.status(202).json({
+          ...error,
+          name: error.name,
+          message: error.message,
+        });
       }
 
       if (error.name === 'WorkflowRunFailedError') {
-        return res.status(400).json(error);
+        return res.status(400).json({
+          ...error,
+          name: error.name,
+          message: error.message,
+        });
       }
     }
 
@@ -148,6 +96,68 @@ app.get('/api/trigger', async (req, res, _) => {
     return res.status(500).json({
       error: 'Internal server error',
     });
+  }
+});
+
+app.post('/api/trigger', async (req, res, _) => {
+  const workflowFile =
+    (req.query.workflowFile as string) || 'workflows/99_e2e.ts';
+  if (!workflowFile) {
+    return res.status(400).json({
+      error: 'No workflowFile query parameter provided',
+      status: 400,
+    });
+  }
+  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
+  if (!workflows) {
+    return res.status(400).json({
+      error: `Workflow file "${workflowFile}" not found`,
+      status: 400,
+    });
+  }
+
+  const workflowFn = (req.query.workflowFn as string) || 'simple';
+  if (!workflowFn) {
+    return res.status(400).json({
+      error: 'No workflow query parameter provided',
+      status: 400,
+    });
+  }
+  const workflow = workflows[workflowFn as keyof typeof workflows];
+  if (!workflow) {
+    return res.status(400).json({
+      error: `Workflow "${workflowFn}" not found`,
+      status: 400,
+    });
+  }
+
+  let args: any[] = [];
+
+  // Args from query string
+  const argsParam = req.query.args as string;
+  if (argsParam) {
+    args = argsParam.split(',').map((arg) => {
+      const num = parseFloat(arg);
+      return Number.isNaN(num) ? arg.trim() : num;
+    });
+  } else {
+    // Args from body
+    const body = await req.body;
+    if (body) {
+      args = hydrateWorkflowArguments(body, globalThis);
+    } else {
+      args = [42];
+    }
+  }
+  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
+
+  try {
+    const run = await start(workflow as any, args as any);
+    console.log('Run:', run);
+    return res.json(run);
+  } catch (err) {
+    console.error(`Failed to start!!`, err);
+    throw err;
   }
 });
 
