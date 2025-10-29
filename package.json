@@ -30,7 +30,7 @@
     "test": "turbo test",
     "clean": "turbo clean",
     "typecheck": "turbo typecheck",
-    "test:e2e": "vitest run --allowOnly packages/core/e2e/e2e.test.ts",
+    "test:e2e": "vitest run packages/core/e2e/e2e.test.ts",
     "lint": "biome check",
     "format": "biome format --write",
     "changeset": "changeset",

@@ -52,7 +52,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
         }, 0);
-        return EventConsumerResult.Finished;
+        return EventConsumerResult.NotConsumed;
       }
 
       // Check for wait_created event to remove this wait from the queue

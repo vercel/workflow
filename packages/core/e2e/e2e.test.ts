@@ -290,7 +290,7 @@ describe('e2e', () => {
     expect(body).toBe('');
   });
 
-  test.only('sleepingWorkflow', { timeout: 60_000 }, async () => {
+  test('sleepingWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('sleepingWorkflow', []);
     const returnValue = await getWorkflowReturnValue(run.runId);
     expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
