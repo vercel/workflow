@@ -1,5 +1,4 @@
 ---
-"@workflow/example-nitro-v3": patch
 "@workflow/nitro": patch
 ---
 
