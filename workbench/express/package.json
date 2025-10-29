@@ -1,0 +1,19 @@
+{
+  "name": "@workflow/example-express",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nitro dev",
+    "build": "nitro build",
+    "start": "node .output/server/index.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "h3": "2.0.1-rc.5",
+    "nitro": "3.0.1-alpha.0",
+    "workflow": "workspace:*"
+  }
+}
