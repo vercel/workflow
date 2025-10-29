@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import express from 'express';
 import { fromNodeHandler, type NodeMiddleware } from 'nitro/h3';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
@@ -59,20 +60,46 @@ app.get('/api/trigger', async (req, res, _) => {
         controller.enqueue(`${JSON.stringify(data)}\n`);
       },
     });
-    return res
-      .setHeader('Content-Type', 'application/octet-stream')
-      .send(stream.pipeThrough(streamWithFraming));
+    stream.pipeThrough(streamWithFraming);
+    res.setHeader('Content-Type', 'application/octet-stream');
+
+    const reader = stream.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    } catch (error) {
+      reader.releaseLock();
+      throw error;
+    }
+    return;
   }
 
   try {
     const run = getRun(runId);
     const returnValue = await run.returnValue;
     console.log('Return value:', returnValue);
-    return returnValue instanceof ReadableStream
-      ? res
-          .setHeader('Content-Type', 'application/octet-stream')
-          .send(returnValue)
-      : res.json(returnValue);
+    if (returnValue instanceof ReadableStream) {
+      res.setHeader('Content-Type', 'application/octet-stream');
+
+      const reader = returnValue.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
+        }
+        res.end();
+      } catch (error) {
+        reader.releaseLock();
+        throw error;
+      }
+      return;
+    }
+    return res.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
       if (error.name === 'WorkflowRunNotCompletedError') {
