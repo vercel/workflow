@@ -1,5 +1,5 @@
 import express from 'express';
-import { fromNodeHandler, type NodeMiddleware } from 'nitro/h3';
+import { toFetchHandler} from 'srvx/node';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from '../_workflows';
@@ -188,4 +188,4 @@ app.post('/api/trigger', async (req, res, _) => {
   }
 });
 
-export default fromNodeHandler(app as NodeMiddleware);
+export default toFetchHandler(app as any);
