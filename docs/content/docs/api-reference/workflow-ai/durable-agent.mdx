@@ -184,23 +184,34 @@ import { DurableAgent } from '@workflow/ai/agent';
 import { sleep, defineHook } from 'workflow';
 import { z } from 'zod';
 
-const approvalHook = defineHook({
-  id: 'approval',
-  handler: async (input: { message: string }) => input,
-});
+// Define a reusable hook type
+const approvalHook = defineHook<{ approved: boolean; reason: string }>();
 
-async function scheduleTask({ taskName, delaySeconds }: { taskName: string; delaySeconds: number }) {
+async function scheduleTask({ delaySeconds }: { delaySeconds: number }) {
   "use step";
   // Use core library features like sleep() in tools
   await sleep(`${delaySeconds}s`);
-  return `Task "${taskName}" has been executed`;
+  return `Slept for ${delaySeconds} seconds`;
 }
 
 async function requestApproval({ message }: { message: string }) {
-  "use step";
-  // Use Hooks within tool execution
-  const approval = await approvalHook.trigger({ message });
-  return `Approval received: ${approval.message}`;
+  // Note: No "use step" for this tool call
+
+  // Utilize a Hook for Human-in-the-loop approval
+  const hook = approvalHook.create({
+    metadata: { message }
+  });
+
+  console.log(`Approval needed - token: ${hook.token}`);
+
+  // Wait for the approval payload
+  const approval = await hook;
+
+  if (approval.approved) {
+    return `Request approved: ${approval.reason}`;
+  } else {
+    throw new Error(`Request denied: ${approval.reason}`);
+  }
 }
 
 async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
@@ -210,9 +221,8 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
     model: 'anthropic/claude-haiku-4.5',
     tools: {
       scheduleTask: {
-        description: 'Schedule a task to run after a delay',
+        description: 'Pause the workflow for the specified number of seconds',
         inputSchema: z.object({
-          taskName: z.string(),
           delaySeconds: z.number(),
         }),
         execute: scheduleTask,
