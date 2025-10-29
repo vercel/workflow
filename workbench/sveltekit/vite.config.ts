@@ -6,9 +6,9 @@ import { workflowRollupPlugin } from 'workflow/rollup-plugin';
 
 export default defineConfig({
   plugins: [
-    sveltekit(),
-    devtoolsJson(),
     workflowBuilderPlugin(),
     workflowRollupPlugin(),
+    devtoolsJson(),
+    sveltekit(),
   ],
 });

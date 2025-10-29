@@ -260,7 +260,19 @@ export abstract class BaseBuilder {
     // User steps
     ${imports}
     // API entrypoint
-    export { stepEntrypoint as POST } from 'workflow/runtime';`;
+    import { stepEntrypoint } from 'workflow/runtime';
+    export const POST = async ({request}) => {
+      const body = await request.arrayBuffer()
+      const normalRequest = new Request(request.url, {
+        method: request.method,
+        headers: new Headers(request.headers),
+        ...(request.method !== 'GET' && request.method !== 'HEAD') ? {
+          body
+        } : {}
+      })
+      return stepEntrypoint(normalRequest);
+    }
+    `;
 
     // Bundle with esbuild and our custom SWC plugin
     const esbuildCtx = await esbuild.context({
@@ -462,7 +474,17 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+export const POST = async ({ request }) => {
+  const body = await request.arrayBuffer()
+  const normalRequest = new Request(request.url, {
+    method: request.method,
+    headers: new Headers(request.headers),
+    ...(request.method !== 'GET' && request.method !== 'HEAD') ? {
+      body
+    } : {}
+  })
+  return workflowEntrypoint(workflowCode)(normalRequest);
+}`;
 
       // we skip the final bundling step for Next.js so it can bundle itself
       if (!bundleFinalOutput) {
