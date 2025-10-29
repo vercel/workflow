@@ -283,7 +283,7 @@ export async function launchWebUI(
       return; // Exit early since we opened the dashboard
     } catch (error) {
       logger.error(`Failed to open browser: ${error}`);
-      logger.info(`Please open manually: ${dashboardUrl}`);
+      logger.info(`Please open the link manually.`);
       return;
     }
     // } else {
@@ -325,7 +325,7 @@ export async function launchWebUI(
       await open(url);
     } catch (error) {
       logger.error(`Failed to open browser: ${error}`);
-      logger.info(`Please open manually.`);
+      logger.info(`Please open the link manually.`);
     }
   }
 

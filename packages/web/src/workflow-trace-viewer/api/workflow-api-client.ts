@@ -21,7 +21,7 @@ import {
   fetchStep,
   fetchSteps,
   readStreamServerAction,
-  startRun as startRunServerAction,
+  recreateRun as recreateRunServerAction,
 } from './workflow-server-actions';
 
 const MAX_ITEMS = 1000;
@@ -1032,13 +1032,9 @@ export async function cancelRun(env: EnvMap, runId: string): Promise<void> {
 /**
  * Start a new workflow run
  */
-export async function startRun(
-  env: EnvMap,
-  runId: string,
-  args: any[]
-): Promise<string> {
+export async function recreateRun(env: EnvMap, runId: string): Promise<string> {
   try {
-    const result = await startRunServerAction(env, runId, args);
+    const result = await recreateRunServerAction(env, runId);
     return unwrapServerActionResult(result);
   } catch (err) {
     console.error('Error starting run:', err);

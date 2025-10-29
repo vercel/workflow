@@ -409,14 +409,14 @@ export async function cancelRun(
  *
  * This requires the ID of an existing run of which to re-use the deployment ID of.
  */
-export async function startRun(
+export async function recreateRun(
   worldEnv: EnvMap,
-  runId: string,
-  args: any[]
+  runId: string
 ): Promise<ServerActionResult<string>> {
   try {
     const world = getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
+    const args = run.input;
     const deploymentId = run.deploymentId;
     const newRun = await start({ workflowId: run.workflowName }, args, {
       deploymentId,
@@ -426,7 +426,7 @@ export async function startRun(
     console.error('Failed to start run:', error);
     return {
       success: false,
-      error: createServerActionError(error, 'startRun', { runId, args }),
+      error: createServerActionError(error, 'recreateRun', { runId }),
     };
   }
 }
