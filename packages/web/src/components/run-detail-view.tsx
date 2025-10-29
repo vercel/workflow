@@ -100,7 +100,7 @@ export function RunDetailView({
       setRerunning(true);
       setShowRerunDialog(false);
       // Start a new run with the same workflow and input arguments
-      const newRunId = await startRun(env, run.workflowName, run.input);
+      const newRunId = await startRun(env, run.runId, run.input);
       toast.success('New run started successfully', {
         description: `Run ID: ${newRunId}`,
       });

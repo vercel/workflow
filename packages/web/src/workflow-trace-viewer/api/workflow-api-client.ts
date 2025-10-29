@@ -1034,11 +1034,11 @@ export async function cancelRun(env: EnvMap, runId: string): Promise<void> {
  */
 export async function startRun(
   env: EnvMap,
-  workflowName: string,
+  runId: string,
   args: any[]
 ): Promise<string> {
   try {
-    const result = await startRunServerAction(env, workflowName, args);
+    const result = await startRunServerAction(env, runId, args);
     return unwrapServerActionResult(result);
   } catch (err) {
     console.error('Error starting run:', err);

@@ -409,21 +409,23 @@ export async function cancelRun(
  */
 export async function startRun(
   worldEnv: EnvMap,
-  workflowName: string,
+  runId: string,
   args: any[]
 ): Promise<ServerActionResult<string>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
-    const deploymentId = await world.getDeploymentId();
-    const run = await start({ workflowId: workflowName }, args, {
+    const world = getWorldFromEnv({ ...worldEnv });
+    const run = await world.runs.get(runId);
+    const deploymentId = run.deploymentId;
+    console.log('deploymentId', deploymentId, run.workflowName);
+    const newRun = await start({ workflowId: run.workflowName }, args, {
       deploymentId,
     });
-    return createResponse(run.runId);
+    return createResponse(newRun.runId);
   } catch (error) {
     console.error('Failed to start run:', error);
     return {
       success: false,
-      error: createServerActionError(error, 'start', { workflowName, args }),
+      error: createServerActionError(error, 'startRun', { runId, args }),
     };
   }
 }
