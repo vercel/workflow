@@ -416,7 +416,6 @@ export async function startRun(
     const world = getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const deploymentId = run.deploymentId;
-    console.log('deploymentId', deploymentId, run.workflowName);
     const newRun = await start({ workflowId: run.workflowName }, args, {
       deploymentId,
     });

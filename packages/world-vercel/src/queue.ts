@@ -1,4 +1,3 @@
-import { handleCallback, send } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
@@ -6,6 +5,7 @@ import {
   ValidQueueName,
 } from '@workflow/world';
 import * as z from 'zod';
+import { handleCallback, send } from './alt-vqs/index.js';
 import { type APIConfig, getHttpUrl } from './utils.js';
 
 const MessageWrapper = z.object({
@@ -22,6 +22,11 @@ export function createQueue(config?: APIConfig): Queue {
     process.env.VERCEL_QUEUE_BASE_PATH = '/queues/v2/messages';
     if (config?.token) {
       process.env.VERCEL_QUEUE_TOKEN = config.token;
+    }
+    if (config?.headers) {
+      Object.entries(config.headers).forEach(([key, value]) => {
+        process.env[`VERCEL_QUEUE_HEADER_${key}`] = value;
+      });
     }
   }
 
