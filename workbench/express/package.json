@@ -12,8 +12,10 @@
   },
   "dependencies": {
     "express": "^5.1.0",
-    "h3": "2.0.1-rc.5",
     "nitro": "3.0.1-alpha.0",
     "workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5"
   }
 }
