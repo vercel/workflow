@@ -49,9 +49,8 @@ triggerRouter.post('/api/trigger', async (req, res, _) => {
     });
   } else {
     // Args from body
-    const body = await req.body;
-    if (body) {
-      args = hydrateWorkflowArguments(JSON.parse(body), globalThis);
+    if (req.body) {
+      args = hydrateWorkflowArguments(req.body, globalThis);
     } else {
       args = [42];
     }
