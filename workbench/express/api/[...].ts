@@ -1,5 +1,5 @@
 import express from 'express';
-import { toFetchHandler} from 'srvx/node';
+import { toFetchHandler } from 'srvx/node';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from '../_workflows';
@@ -10,13 +10,11 @@ app.use(express.json());
 app.use(express.text({ type: 'text/*' }));
 
 app.post('/api/hook', async (req, res, _) => {
-  const token = req.body.token;
-  const data = req.body.data;
+  const { token, data } = JSON.parse(req.body);
 
   let hook: Awaited<ReturnType<typeof getHookByToken>>;
   try {
     hook = await getHookByToken(token);
-    console.log('hook', hook);
   } catch (error) {
     console.log('error during getHookByToken', error);
     // TODO: `WorkflowAPIError` is not exported, so for now
