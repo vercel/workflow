@@ -1,22 +1,22 @@
 ---
-title: Express [WIP]
+title: Express
 ---
 
-# Express [WIP]
+# Express
 
-This guide will walk through setting up your first workflow in a Hono app. Along the way, you'll learn more about the concepts that are fundamental to using the development kit in your own projects.
+This guide will walk through setting up your first workflow in a Express app. Along the way, you'll learn more about the concepts that are fundamental to using the development kit in your own projects.
 
 ---
 
 <Steps>
 
 <Step>
-## Create Your Hono Project
+## Create Your Express Project
 
-Start by creating a new Hono project. This command will create a new directory named `my-workflow-app` and setup a Hono project inside it.
+Start by creating a new Express project.
 
 ```bash
-npm create hono@latest my-workflow-app -- --template=nodejs
+mkdir my-workflow-app
 ```
 
 Enter the newly made directory:
@@ -25,23 +25,35 @@ Enter the newly made directory:
 cd my-workflow-app
 ```
 
-### Install `workflow` and `nitro`
+Initialize the project:
+
+```bash
+npm init --y
+```
+
+### Install `workflow`, `express` and `nitro`
 
 <Tabs items={["npm", "pnpm", "yarn"]}>
   <Tab value="npm">
-    <CodeBlock>npm i workflow nitro</CodeBlock>
+    <CodeBlock>npm i workflow express nitro</CodeBlock>
   </Tab>
   <Tab value="pnpm">
-    <CodeBlock>pnpm i workflow nitro</CodeBlock>
+    <CodeBlock>pnpm i workflow express nitro</CodeBlock>
   </Tab>
   <Tab value="yarn">
-    <CodeBlock>yarn add workflow nitro</CodeBlock>
+    <CodeBlock>yarn add workflow express nitro</CodeBlock>
   </Tab>
 </Tabs>
 
 <Callout>
-By default, Hono doesn't include a build system. Nitro adds one which enables compiling workflows, runs, and deploys for development and production. Learn more about Nitro [here](https://v3.nitro.build).
+By default, Express doesn't include a build system. Nitro adds one which enables compiling workflows, runs, and deploys for development and production. Learn more about Nitro [here](https://v3.nitro.build).
 </Callout>
+
+If using TypeScript, you need to install the `@types/express` package.
+
+```bash
+npm i -D @types/express
+```
 
 ### Configure Nitro
 
@@ -185,22 +197,24 @@ Taking a look at this code:
 
 ## Create Your Route Handler
 
-To invoke your new workflow, we'll create a new API route handler at `src/index.ts` with the following code:
+To invoke your new workflow, we'll create both the Express app and a new API route handler at `src/index.ts` with the following code:
 
 ```typescript title="src/index.ts"
-import { Hono } from "hono";
+import express from "express";
+import { fromNodeHandler, type NodeMiddleware } from "nitro/h3";
 import { start } from "workflow/api";
 import { handleUserSignup } from "../workflows/user-signup.js";
 
-const app = new Hono();
+const app = express();
+app.use(express.json());
 
-app.post("/api/signup", async (c) => {
-    const { email } = await c.req.json();
-    await start(handleUserSignup, [email]);
-    return c.json({ message: "User signup workflow started" });
+app.post("/api/signup", async (req, res) => {
+  const { email } = req.body;
+  await start(handleUserSignup, [email]);
+  return res.json({ message: "User signup workflow started" });
 });
 
-export default app;
+export default fromNodeHandler(app as NodeMiddleware);
 ```
 
 This route handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.
@@ -211,7 +225,7 @@ This route handler creates a `POST` request endpoint at `/api/signup` that will 
 
 ## Run in development
 
-To start your development server, run the following command in your terminal in the Hono root directory:
+To start your development server, run the following command in your terminal in the Express root directory:
 
 ```bash
 npm run dev
@@ -223,7 +237,7 @@ Once your development server is running, you can trigger your workflow by runnin
 curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/signup
 ```
 
-Check the Hono development server logs to see your workflow execute as well as the steps that are being processed.
+Check the Express development server logs to see your workflow execute as well as the steps that are being processed.
 
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
