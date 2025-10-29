@@ -2,7 +2,8 @@
 
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
+import { toast } from 'sonner';
 import { useWorkflowResourceData } from '../api/workflow-api-client';
 import type { EnvMap } from '../api/workflow-server-actions';
 import { EventsList } from '../sidebar/events-list';
@@ -40,7 +41,7 @@ export function WorkflowDetailPanel({
       return { resource: 'hook', resourceId: hook.hookId, runId: undefined };
     }
     return { resource: undefined, resourceId: undefined, runId: undefined };
-  }, [selected]);
+  }, [selected, data]);
 
   // Fetch full resource data with events
   const {
@@ -54,16 +55,16 @@ export function WorkflowDetailPanel({
     { runId }
   );
 
+  useEffect(() => {
+    if (error && selected && resource) {
+      toast.error(`Failed to load ${resource} details`, {
+        description: error.message,
+      });
+    }
+  }, [error, resource, selected]);
+
   if (!selected || !resource || !resourceId) {
     return null;
-  }
-
-  if (error) {
-    return (
-      <div className="text-copy-14 text-red-600 p-2">
-        Failed to load {resource} details: {error.message}
-      </div>
-    );
   }
 
   const displayData = fetchedData || data;

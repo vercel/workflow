@@ -50,15 +50,9 @@
   --span-secondary: var(--ds-blue-900);
 }
 
-/* Sleep step with striped background */
+/* Sleep step - light yellow/orange */
 .spanSleep {
-  --span-background: repeating-linear-gradient(
-    45deg,
-    var(--ds-amber-200),
-    var(--ds-amber-200) 10px,
-    color-mix(in srgb, var(--ds-amber-200) 70%, white) 10px,
-    color-mix(in srgb, var(--ds-amber-200) 70%, white) 20px
-  );
+  --span-background: var(--ds-amber-200);
   --span-border: var(--ds-amber-500);
   --span-line: var(--ds-amber-400);
   --span-text: var(--ds-gray-1000);

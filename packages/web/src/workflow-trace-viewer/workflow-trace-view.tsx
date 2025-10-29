@@ -1,5 +1,7 @@
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import { Loader2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import type { EnvMap } from './api/workflow-server-actions';
 import { WorkflowDetailPanel } from './sidebar/workflow-detail-panel';
 import {
@@ -14,7 +16,9 @@ import {
   hookToSpan,
   runToSpan,
   stepToSpan,
+  WORKFLOW_LIBRARY,
 } from './workflow-traces/trace-span-construction';
+import { otelTimeToMs } from './workflow-traces/trace-time-utils';
 
 const RE_RENDER_INTERVAL_MS = 2000;
 
@@ -25,6 +29,7 @@ export const WorkflowTraceViewer = ({
   events,
   env,
   isLoading,
+  error,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -32,6 +37,7 @@ export const WorkflowTraceViewer = ({
   events: Event[];
   env: EnvMap;
   isLoading?: boolean;
+  error?: Error | null;
 }) => {
   const [now, setNow] = useState(() => new Date());
 
@@ -46,13 +52,9 @@ export const WorkflowTraceViewer = ({
   }, [run?.completedAt]);
 
   const trace = useMemo(() => {
-    // Sort steps by createdAt to maintain chronological order
-    const sortedSteps = steps.slice().sort((a, b) => {
-      const aTime = new Date(a.createdAt).getTime();
-      const bTime = new Date(b.createdAt).getTime();
-      return aTime - bTime;
-    });
-
+    if (!run) {
+      return undefined;
+    }
     // Group events by their correlation ID to associate with steps/hooks
     const eventsByStepId = new Map<string, Event[]>();
     const eventsByHookId = new Map<string, Event[]>();
@@ -60,14 +62,11 @@ export const WorkflowTraceViewer = ({
 
     for (const event of events) {
       // Try to associate event with a step or hook via correlationId
-      // For now, collect all events at run level
-      // TODO: Better event association logic
+      // For now, all other events are collected at run level
       const correlationId = event.correlationId;
       if (correlationId) {
         // Check if correlation ID matches a step or hook
-        const matchingStep = sortedSteps.find(
-          (s) => s.stepId === correlationId
-        );
+        const matchingStep = steps.find((s) => s.stepId === correlationId);
         const matchingHook = hooks.find((h) => h.hookId === correlationId);
 
         if (matchingStep) {
@@ -88,45 +87,80 @@ export const WorkflowTraceViewer = ({
 
     // Chain steps together so each one appears on its own row
     // First step is child of root, each subsequent step is child of previous
-    const stepSpans = sortedSteps.map((step, index) => {
-      const parentSpanId =
-        index === 0 ? run.runId : String(sortedSteps[index - 1].stepId);
+    const stepSpans = steps.map((step) => {
       const stepEvents = eventsByStepId.get(step.stepId) || [];
-      return stepToSpan(step, parentSpanId, stepEvents, now);
+      return stepToSpan(step, stepEvents, now);
     });
 
     const hookSpans = hooks.map((hook) => {
       const hookEvents = eventsByHookId.get(hook.hookId) || [];
-      return hookToSpan(hook, run.runId, hookEvents);
+      return hookToSpan(hook, hookEvents);
+    });
+
+    const runSpan = runToSpan(run, runLevelEvents, now);
+    const spans = [...stepSpans, ...hookSpans];
+    const sortedSpans = [
+      runSpan,
+      ...spans.slice().sort((a, b) => {
+        const aStart = otelTimeToMs(a.startTime);
+        const bStart = otelTimeToMs(b.startTime);
+        return aStart - bStart;
+      }),
+    ];
+
+    const sortedCascadingSpans = sortedSpans.map((span, index) => {
+      const parentSpanId =
+        index === 0 ? undefined : String(sortedSpans[index - 1].spanId);
+      return {
+        ...span,
+        parentSpanId,
+      };
     });
 
     return {
       traceId: run.runId,
       rootSpanId: run.runId,
-      spans: [runToSpan(run, runLevelEvents, now), ...stepSpans, ...hookSpans],
+      spans: sortedCascadingSpans,
       resources: [
         {
           name: 'workflow',
           attributes: {
-            'service.name': 'vercel-workflow',
+            'service.name': WORKFLOW_LIBRARY.name,
           },
         },
       ],
     };
   }, [run, steps, hooks, events, now]);
 
+  useEffect(() => {
+    if (error && !isLoading) {
+      console.error(error);
+      toast.error('Error loading workflow trace data', {
+        description: error.message,
+      });
+    }
+  }, [error, isLoading]);
+
   return (
-    <TraceViewerContextProvider
-      withPanel
-      customSpanClassNameFunc={getCustomSpanClassName}
-      customSpanEventClassNameFunc={getCustomSpanEventClassName}
-      customPanelComponent={<WorkflowDetailPanel env={env} />}
-    >
-      <TraceViewerTimeline
-        height={800}
-        trace={!isLoading ? trace : undefined}
+    <div className="relative">
+      {isLoading && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">
+              Loading trace data...
+            </p>
+          </div>
+        </div>
+      )}
+      <TraceViewerContextProvider
         withPanel
-      />
-    </TraceViewerContextProvider>
+        customSpanClassNameFunc={getCustomSpanClassName}
+        customSpanEventClassNameFunc={getCustomSpanEventClassName}
+        customPanelComponent={<WorkflowDetailPanel env={env} />}
+      >
+        <TraceViewerTimeline height={800} trace={trace} withPanel />
+      </TraceViewerContextProvider>
+    </div>
   );
 };

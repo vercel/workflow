@@ -52,7 +52,7 @@ async function callAPI(endpoint) {
 }
 
 // Customize max retries
-chargeCard.maxRetries = 5;`,
+callAPI.maxRetries = 5;`,
   },
   {
     id: 'sleep',

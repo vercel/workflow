@@ -316,6 +316,32 @@ module.exports = {
 
 Route the three endpoints to the generated handlers. The exact implementation depends on your framework's routing API.
 
+In the bun example above, we left routing to the user. Essentially, the user has to serve routes like this:
+
+```typescript title="server.ts" lineNumbers
+import flow from "./.well-known/workflow/v1/flow.js";
+import step from "./.well-known/workflow/v1/step.js";
+import * as webhook from "./.well-known/workflow/v1/webhook.js";
+
+// Expose the 3 generated routes
+const server = Bun.serve({
+  routes: {
+    "/.well-known/workflow/v1/flow": {
+      POST: (req) => flow.POST(req),
+    },
+    "/.well-known/workflow/v1/step": {
+      POST: (req) => step.POST(req),
+    },
+    // webhook exports handlers for GET, POST, DELETE, etc.
+    "/.well-known/workflow/v1/webhook/:token": webhook,
+  },
+});
+```
+
+Production framework integrations should handle this routing in the plugin instead of leaving it to the user, and this depends on each framework's unique implementaiton.
+Check the Workflow DevKit source code for examples of production framework implementations.
+In the future, the Workflow DevKit will emit more routes under the `.well-known/workflow` namespace.
+
 ---
 
 ## Security
