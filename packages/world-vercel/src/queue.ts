@@ -18,7 +18,8 @@ export function createQueue(config?: APIConfig): Queue {
   if (usingProxy) {
     // If we're using a proxy for the Workflow API, we should also go
     // through the proxy for the queues API.
-    process.env.VERCEL_QUEUE_BASE_URL = `${baseUrl}/queues`;
+    process.env.VERCEL_QUEUE_BASE_URL = `${baseUrl}`;
+    process.env.VERCEL_QUEUE_BASE_PATH = '/queues/v2/messages';
     if (config?.token) {
       process.env.VERCEL_QUEUE_TOKEN = config.token;
     }
