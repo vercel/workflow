@@ -1,11 +1,10 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder';
 import { VercelBuildOutputAPIBuilder } from '@workflow/cli/dist/lib/builders/vercel-build-output-api';
 import type { Nitro } from 'nitro/types';
+import { join, resolve } from 'pathe';
 
 const CommonBuildOptions = {
-  dirs: ['workflows'],
   buildTarget: 'next' as const, // unused in base
   stepsBundlePath: '', // unused in base
   workflowsBundlePath: '', // unused in base
@@ -16,6 +15,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
       ...CommonBuildOptions,
+      dirs: getWorkflowDirs(nitro),
       workingDir: nitro.options.rootDir,
     });
   }
@@ -38,6 +38,7 @@ export class LocalBuilder extends BaseBuilder {
     const outDir = join(nitro.options.buildDir, 'workflow');
     super({
       ...CommonBuildOptions,
+      dirs: getWorkflowDirs(nitro),
       workingDir: nitro.options.rootDir,
       watch: nitro.options.dev,
     });
@@ -67,4 +68,16 @@ export class LocalBuilder extends BaseBuilder {
       bundle: false,
     });
   }
+}
+
+export function getWorkflowDirs(nitro: Nitro) {
+  return unique([
+    ...(nitro.options.workflow?.dirs ?? []),
+    join(nitro.options.rootDir, 'workflows'),
+    ...nitro.options.scanDirs.map((dir) => join(dir, 'workflows')),
+  ].map((dir) => resolve(nitro.options.rootDir, dir))).sort();
+}
+
+function unique<T>(array: T[]): T[] {
+  return Array.from(new Set(array));
 }
