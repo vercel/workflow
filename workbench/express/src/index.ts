@@ -1,15 +1,12 @@
 import express from 'express';
-import { fromNodeHandler } from 'h3';
-import { start } from 'workflow/api';
-import { handleUserSignup } from '../workflows/user-signup';
+import { fromNodeHandler, type NodeMiddleware } from 'nitro/h3';
+import hookRouter from '../routes/hook.routes';
+import triggerRouter from '../routes/trigger.routes';
 
 const app = express();
 
-app.post('/api/signup', async (req, res, next) => {
-  await start(handleUserSignup, ['test@example.com']);
-  return res.json({
-    message: 'User signup workflow started',
-  });
-});
+app.use(express.json());
+app.use(hookRouter);
+app.use(triggerRouter);
 
-export default fromNodeHandler(app);
+export default fromNodeHandler(app as NodeMiddleware);
