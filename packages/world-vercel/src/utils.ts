@@ -42,9 +42,8 @@ export const getHttpUrl = (
   return { baseUrl, usingProxy };
 };
 
-export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
+export const getHeaders = (config?: APIConfig): Headers => {
   const projectConfig = config?.projectConfig;
-
   const headers = new Headers(config?.headers);
   if (projectConfig) {
     headers.set(
@@ -58,12 +57,15 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
       headers.set('x-vercel-team-id', projectConfig.teamId);
     }
   }
+  return headers;
+};
 
+export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
+  const headers = await getHeaders(config);
   const token = config?.token ?? (await getVercelOidcToken());
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
-
   const { baseUrl, usingProxy } = getHttpUrl(config);
   return { baseUrl, headers, usingProxy };
 }
