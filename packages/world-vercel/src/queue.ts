@@ -6,7 +6,7 @@ import {
   ValidQueueName,
 } from '@workflow/world';
 import * as z from 'zod';
-import type { APIConfig } from './utils.js';
+import { type APIConfig, getHttpUrl } from './utils.js';
 
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
@@ -14,11 +14,16 @@ const MessageWrapper = z.object({
 });
 
 export function createQueue(config?: APIConfig): Queue {
-  if (config?.baseUrl) {
+  const { baseUrl, usingProxy } = getHttpUrl(config);
+  if (usingProxy) {
     // If we're using a proxy for the Workflow API, we should also go
     // through the proxy for the queues API.
-    process.env.VERCEL_QUEUE_BASE_URL = `${config.baseUrl}/queues`;
+    process.env.VERCEL_QUEUE_BASE_URL = `${baseUrl}/queues`;
+    if (config?.token) {
+      process.env.VERCEL_QUEUE_TOKEN = config.token;
+    }
   }
+
   const queue: Queue['queue'] = async (queueName, x, opts) => {
     const encoded = MessageWrapper.encode({
       payload: x,

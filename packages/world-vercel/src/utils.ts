@@ -28,10 +28,22 @@ export interface HttpConfig {
   usingProxy: boolean;
 }
 
-export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
+export const getHttpUrl = (
+  config?: APIConfig
+): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
   const defaultUrl = 'https://vercel-workflow.com/api';
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
+  const usingProxy = Boolean(
+    config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)
+  );
+  const baseUrl =
+    config?.baseUrl || (usingProxy ? defaultProxyUrl : defaultUrl);
+  return { baseUrl, usingProxy };
+};
+
+export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
+  const projectConfig = config?.projectConfig;
 
   const headers = new Headers(config?.headers);
   if (projectConfig) {
@@ -52,11 +64,7 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const usingProxy = Boolean(
-    config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)
-  );
-  const baseUrl =
-    config?.baseUrl || (usingProxy ? defaultProxyUrl : defaultUrl);
+  const { baseUrl, usingProxy } = getHttpUrl(config);
   return { baseUrl, headers, usingProxy };
 }
 
