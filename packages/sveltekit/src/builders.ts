@@ -60,14 +60,14 @@ export class LocalBuilder extends BaseBuilder {
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
   }) {
-    // Create steps route: .well-known/workflow/v1/step/+server.ts
+    // Create steps route: .well-known/workflow/v1/step/+server.js
     const stepsRouteDir = join(workflowGeneratedDir, 'step');
     await mkdir(stepsRouteDir, { recursive: true });
 
     return await this.createStepsBundle({
       format: 'esm',
       inputFiles,
-      outfile: join(stepsRouteDir, '+server.ts'),
+      outfile: join(stepsRouteDir, '+server.js'),
       externalizeNonSteps: true,
       tsBaseUrl,
       tsPaths,
@@ -85,13 +85,13 @@ export class LocalBuilder extends BaseBuilder {
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
   }) {
-    // Create workflows route: .well-known/workflow/v1/flow/+server.ts
+    // Create workflows route: .well-known/workflow/v1/flow/+server.js
     const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
     await mkdir(workflowsRouteDir, { recursive: true });
 
     return await this.createWorkflowsBundle({
       format: 'esm',
-      outfile: join(workflowsRouteDir, '+server.ts'),
+      outfile: join(workflowsRouteDir, '+server.js'),
       bundleFinalOutput: false,
       inputFiles,
       tsBaseUrl,
@@ -104,10 +104,10 @@ export class LocalBuilder extends BaseBuilder {
   }: {
     workflowGeneratedDir: string;
   }) {
-    // Create webhook route: .well-known/workflow/v1/webhook/[token]/+server.ts
+    // Create webhook route: .well-known/workflow/v1/webhook/[token]/+server.js
     const webhookRouteFile = join(
       workflowGeneratedDir,
-      'webhook/[token]/+server.ts'
+      'webhook/[token]/+server.js'
     );
 
     return await this.createWebhookBundle({
