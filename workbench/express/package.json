@@ -11,12 +11,14 @@
     "start": "node .output/server/index.mjs",
     "test:e2e": "vitest run packages/core/e2e/e2e.test.ts"
   },
-  "dependencies": {
+  "devDependencies": {
+    "@types/express": "^5.0.5",
     "express": "^5.1.0",
     "nitro": "3.0.1-alpha.0",
-    "workflow": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/express": "^5.0.5"
+    "workflow": "workspace:*",
+    "ai": "catalog:",
+    "lodash.chunk": "^4.2.0",
+    "openai": "^6.1.0",
+    "zod": "catalog:"
   }
 }
