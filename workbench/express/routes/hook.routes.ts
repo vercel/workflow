@@ -4,7 +4,7 @@ import { getHookByToken, resumeHook } from 'workflow/api';
 const hookRouter = express.Router();
 
 hookRouter.post('/api/hook', async (req, res, _) => {
-  const { token, data } = await req.body;
+  const { token, data } = req.body;
 
   let hook: Awaited<ReturnType<typeof getHookByToken>>;
   try {
