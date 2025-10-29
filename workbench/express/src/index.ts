@@ -1,4 +1,3 @@
-import { Readable } from 'node:stream';
 import express from 'express';
 import { fromNodeHandler, type NodeMiddleware } from 'nitro/h3';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
@@ -60,10 +59,10 @@ app.get('/api/trigger', async (req, res, _) => {
         controller.enqueue(`${JSON.stringify(data)}\n`);
       },
     });
-    stream.pipeThrough(streamWithFraming);
+    const transformedStream = stream.pipeThrough(streamWithFraming);
     res.setHeader('Content-Type', 'application/octet-stream');
 
-    const reader = stream.getReader();
+    const reader = transformedStream.getReader();
     try {
       while (true) {
         const { done, value } = await reader.read();
