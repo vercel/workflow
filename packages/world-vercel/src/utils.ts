@@ -61,7 +61,7 @@ export const getHeaders = (config?: APIConfig): Headers => {
 };
 
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
-  const headers = await getHeaders(config);
+  const headers = getHeaders(config);
   const token = config?.token ?? (await getVercelOidcToken());
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
