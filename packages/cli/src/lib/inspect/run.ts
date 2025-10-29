@@ -39,9 +39,14 @@ export const startRun = async (
   if (workflowNameOrRunId.startsWith('wrun_')) {
     run = await world.runs.get(workflowNameOrRunId);
   } else {
-    // Get the first run for that name
+    // Get the first run for that name, hopefully the newest deployment,
+    // but can't guarantee that.
     const runList = await world.runs.list({
       workflowName: workflowNameOrRunId,
+      pagination: {
+        sortOrder: 'desc',
+        limit: 1,
+      },
     });
     run = runList.data[0];
   }

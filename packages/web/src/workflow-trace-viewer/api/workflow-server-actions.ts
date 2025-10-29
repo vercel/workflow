@@ -405,7 +405,9 @@ export async function cancelRun(
 }
 
 /**
- * Start a new workflow run
+ * Start a new workflow run.
+ *
+ * This requires the ID of an existing run of which to re-use the deployment ID of.
  */
 export async function startRun(
   worldEnv: EnvMap,
