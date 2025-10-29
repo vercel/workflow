@@ -9,34 +9,39 @@ import { generateDefinition } from "@/lib/tsdoc"
 
 <ExperimentalPackageCallout packageName="@workflow/ai" />
 
-A class for building durable AI agents within workflows. `DurableAgent` enables you to create AI-powered agents that can maintain state across workflow steps, call tools, and gracefully handle interruptions and resumptions.
+The `DurableAgent` class enables you to create AI-powered agents that can maintain state across workflow steps, call tools, and gracefully handle interruptions and resumptions.
 
-<Callout>
-`DurableAgent` is part of the `@workflow/ai` package. Tools can be implemented as workflow steps for automatic retries, or as regular workflow-level logic using core library features like `sleep()` and Hooks.
-</Callout>
+Tool calls can be implemented as workflow steps for automatic retries, or as regular workflow-level logic utilizing core library features such as [`sleep()`](/docs/api-reference/workflow/sleep) and [Hooks](/docs/foundations/hooks).
 
 ```typescript lineNumbers
 import { DurableAgent } from '@workflow/ai/agent';
 import { z } from 'zod';
 
-const agent = new DurableAgent({
-  model: 'anthropic/claude-4-opus-20250514',
-  tools: {
-    getWeather: {
-      description: 'Get weather for a city',
-      inputSchema: z.object({ city: z.string() }),
-      execute: async ({ city }) => {
-        "use step";
-        return `Weather in ${city} is sunny`;
+async function getWeather({ city }: { city: string }) {
+  "use step";
+
+  return `Weather in ${city} is sunny`;
+}
+
+async function myAgent() {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: 'anthropic/claude-haiku-4.5',
+    system: 'You are a helpful weather assistant.',
+    tools: {
+      getWeather: {
+        description: 'Get weather for a city',
+        inputSchema: z.object({ city: z.string() }),
+        execute: getWeather,
       },
     },
-  },
-  system: 'You are a helpful weather assistant.',
-});
+  });
 
-await agent.stream({
-  messages: [{ role: 'user', content: 'What is the weather?' }],
-});
+  await agent.stream({
+    messages: [{ role: 'user', content: 'How is the weather in San Francisco?' }],
+  });
+}
 ```
 
 ## API Signature
@@ -76,15 +81,13 @@ export default DurableAgentStreamOptions;`
 - **Durable Execution**: Agents can be interrupted and resumed without losing state
 - **Flexible Tool Implementation**: Tools can be implemented as workflow steps for automatic retries, or as regular workflow-level logic
 - **Stream Processing**: Handles streaming responses and tool calls in a structured way
-- **Workflow Native**: Fully integrated with the Workflow framework for production-grade reliability
+- **Workflow Native**: Fully integrated with Workflow DevKit for production-grade reliability
 
 ## Good to Know
 
 - Tools can be implemented as workflow steps (using `"use step"` for automatic retries), or as regular workflow-level logic
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
 - The agent processes tool calls iteratively until completion
-- Messages must be serializable for workflow persistence
-- The `system` prompt in `stream()` options overrides the constructor's system prompt
 - When no custom `writable` stream is provided, the agent uses the workflow's default writable stream
 
 ## Examples
@@ -106,7 +109,7 @@ async function weatherAgentWorkflow(userQuery: string) {
   'use workflow';
 
   const agent = new DurableAgent({
-    model: 'anthropic/claude-opus',
+    model: 'anthropic/claude-haiku-4.5',
     tools: {
       getWeather: {
         description: 'Get current weather for a location',
@@ -148,7 +151,7 @@ async function multiToolAgentWorkflow(userQuery: string) {
   'use workflow';
 
   const agent = new DurableAgent({
-    model: 'gpt-4',
+    model: 'anthropic/claude-haiku-4.5',
     tools: {
       getWeather: {
         description: 'Get weather for a location',
@@ -170,29 +173,6 @@ async function multiToolAgentWorkflow(userQuery: string) {
         content: userQuery,
       },
     ],
-  });
-}
-```
-
-### With System Prompt Override
-
-```typescript
-import { DurableAgent } from '@workflow/ai/agent';
-
-async function customSystemPromptWorkflow() {
-  'use workflow';
-
-  const agent = new DurableAgent({
-    model: 'anthropic/claude-opus',
-    tools: {
-      // ... tools configuration
-    },
-    system: 'Default system prompt',
-  });
-
-  await agent.stream({
-    messages: [{ role: 'user', content: 'Hello!' }],
-    system: 'Override system prompt for this specific call',
   });
 }
 ```
@@ -227,7 +207,7 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
   'use workflow';
 
   const agent = new DurableAgent({
-    model: 'gpt-4',
+    model: 'anthropic/claude-haiku-4.5',
     tools: {
       scheduleTask: {
         description: 'Schedule a task to run after a delay',

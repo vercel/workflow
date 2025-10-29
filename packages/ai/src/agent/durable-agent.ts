@@ -60,7 +60,7 @@ export interface DurableAgentStreamOptions {
  *
  * DurableAgent enables you to create AI-powered agents that can maintain state
  * across workflow steps, call tools, and gracefully handle interruptions and resumptions.
- * It integrates seamlessly with the AI SDK and the Workflow framework for
+ * It integrates seamlessly with the AI SDK and the Workflow DevKit for
  * production-grade reliability.
  *
  * @example
