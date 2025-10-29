@@ -114,10 +114,10 @@ import type { NextConfig } from "next";
 import { withWorkflow } from "workflow/next";
 
 const nextConfig: NextConfig = {
-  experimental: {
-    instrumentationHook: true,
-  },
+  // … rest of your Next.js config
 };
+
+export default withWorkflow(nextConfig);
 
 export default withWorkflow(nextConfig);
 ```
