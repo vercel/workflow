@@ -4,4 +4,4 @@
 "@workflow/core": patch
 ---
 
-Move sleep natively into the workflow runtime
+Implement `sleep()` natively into the workflow runtime
