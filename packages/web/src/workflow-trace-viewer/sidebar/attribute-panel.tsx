@@ -2,8 +2,9 @@
 
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import { AlertCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
-import useSWR from 'swr';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { DetailCard } from './detail-card';
 
 const JsonBlock = (value: unknown) => {
@@ -155,7 +156,7 @@ export const AttributeBlock = ({
   return (
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
-        <div className="absolute top-2 right-2">
+        <div className="absolute top-9 right-4">
           <div
             className="animate-spin rounded-full h-4 w-4 border-b-2"
             style={{ borderColor: 'var(--ds-gray-900)' }}
@@ -199,9 +200,13 @@ export const AttributePanel = ({
         />
       ))}
       {error ? (
-        <div className="text-copy-14 text-red-600">
-          Failed to load step details: {error.message}
-        </div>
+        <Alert variant="destructive" className="my-4">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Failed to load resource details</AlertTitle>
+          <AlertDescription className="text-sm">
+            {error.message}
+          </AlertDescription>
+        </Alert>
       ) : (
         resolvedAttributes.map((attribute) => (
           <AttributeBlock

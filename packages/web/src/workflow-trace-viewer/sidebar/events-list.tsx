@@ -1,7 +1,9 @@
 'use client';
 
+import { AlertCircle } from 'lucide-react';
 import { useCallback } from 'react';
 import useSWR from 'swr';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   type EnvMap,
   fetchEventsByCorrelationId,
@@ -25,7 +27,12 @@ export function EventsList({
       sortOrder: 'asc',
       limit: 100,
       withData: true,
-    }).then((evts) => convertEventsToSpanEvents(evts.data || [], false));
+    }).then((evts) => {
+      if (!evts.success) {
+        throw new Error(evts.error?.message || 'Failed to fetch events');
+      }
+      return convertEventsToSpanEvents(evts.data.data || [], false);
+    });
   }, [env, correlationId]);
 
   const {
@@ -45,20 +52,28 @@ export function EventsList({
 
   return (
     <div className="mt-2" style={{ color: 'var(--ds-gray-1000)' }}>
-      <h4>Associated Events</h4>
+      <h3
+        className="text-heading-16 font-medium mt-4 mb-2"
+        style={{ color: 'var(--ds-gray-1000)' }}
+      >
+        Events ({eventsLoading ? '...' : displayData.length})
+      </h3>
       {/* Events section */}
       {eventError ? (
-        <div>Error loading events: {eventError.message}</div>
+        <Alert variant="destructive" className="my-4">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Failed to load event data</AlertTitle>
+          <AlertDescription className="text-sm">
+            {eventError.message}
+          </AlertDescription>
+        </Alert>
       ) : null}
       {eventsLoading ? <div>Loading events...</div> : null}
+      {!eventsLoading && !eventError && displayData.length === 0 && (
+        <div className="text-sm">No events found</div>
+      )}
       {displayData.length > 0 && !eventError ? (
         <>
-          <h3
-            className="text-heading-16 font-medium mt-4 mb-2"
-            style={{ color: 'var(--ds-gray-1000)' }}
-          >
-            Events ({displayData.length})
-          </h3>
           <div className="flex flex-col gap-2">
             {displayData.map((event, index) => (
               <DetailCard

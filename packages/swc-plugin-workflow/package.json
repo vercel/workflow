@@ -28,6 +28,7 @@
   ],
   "scripts": {
     "build": "./build.sh",
+    "clean": "cargo clean",
     "test": "cargo test -p swc_workflow",
     "prepublishOnly": "pnpm build"
   },

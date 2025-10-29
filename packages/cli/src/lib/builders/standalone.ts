@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 
-export class VercelStaticBuilder extends BaseBuilder {
+export class StandaloneBuilder extends BaseBuilder {
   async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     const tsConfig = await this.getTsConfigOptions();
@@ -14,6 +14,7 @@ export class VercelStaticBuilder extends BaseBuilder {
     };
     await this.buildStepsBundle(options);
     await this.buildWorkflowsBundle(options);
+    await this.buildWebhookFunction();
 
     await this.buildClientLibrary();
   }
@@ -75,6 +76,25 @@ export class VercelStaticBuilder extends BaseBuilder {
       inputFiles,
       tsBaseUrl,
       tsPaths,
+    });
+  }
+
+  private async buildWebhookFunction(): Promise<void> {
+    console.log(
+      'Creating vercel API webhook bundle at',
+      this.config.webhookBundlePath
+    );
+
+    const webhookBundlePath = resolve(
+      this.config.workingDir,
+      this.config.webhookBundlePath
+    );
+
+    // Ensure directory exists
+    await mkdir(dirname(webhookBundlePath), { recursive: true });
+
+    await this.createWebhookBundle({
+      outfile: webhookBundlePath,
     });
   }
 }

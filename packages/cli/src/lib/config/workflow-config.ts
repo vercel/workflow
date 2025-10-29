@@ -8,7 +8,7 @@ export const getWorkflowConfig = (
     buildTarget?: BuildTarget;
     workflowManifest?: string;
   } = {
-    buildTarget: 'vercel-static',
+    buildTarget: 'standalone',
   }
 ) => {
   const config: WorkflowConfig = {
@@ -17,6 +17,7 @@ export const getWorkflowConfig = (
     buildTarget: buildTarget as BuildTarget,
     stepsBundlePath: './.well-known/workflow/v1/step.js',
     workflowsBundlePath: './.well-known/workflow/v1/flow.js',
+    webhookBundlePath: './.well-known/workflow/v1/webhook.js',
     workflowManifestPath: workflowManifest,
 
     // WIP: generate a client library to easily execute workflows/steps

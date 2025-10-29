@@ -165,9 +165,6 @@ jobs:
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
 
-      - name: Link to Vercel and Pull env
-        run: pnpm i -g vercel@latest && vc link --token=${{ secrets.VERCEL_LABS_TOKEN }} --project=${{ matrix.app.project }} --scope=vercel-labs -y && vc env pull --token=${{ secrets.VERCEL_LABS_TOKEN }} workbench/${{ matrix.app.name }}/.env.local
-
       - name: Resolve symlinks for next dev to work
         if: matrix.app.name == 'nextjs-webpack'
         run: cd workbench/${{ matrix.app.name }} && ./resolve-symlinks.sh
@@ -225,9 +222,6 @@ jobs:
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
-
-      - name: Link to Vercel and Pull env
-        run: pnpm i -g vercel@latest && vc link --token=${{ secrets.VERCEL_LABS_TOKEN }} --project=${{ matrix.app.project }} --scope=vercel-labs -y && vc env pull --token=${{ secrets.VERCEL_LABS_TOKEN }} workbench/${{ matrix.app.name }}/.env.local
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts

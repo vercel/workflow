@@ -1,17 +1,25 @@
 import { NextBuilder } from '@workflow/cli/dist/lib/builders/next-build';
 import type { NextConfig } from 'next';
+import semver from 'semver';
 
-export function withWorkflow({
-  workflows,
-  ...nextConfig
-}: NextConfig & {
-  workflows?: {
-    embedded?: {
-      port?: number;
-      dataDir?: string;
+export function withWorkflow(
+  nextConfigOrFn:
+    | NextConfig
+    | ((
+        phase: string,
+        ctx: { defaultConfig: NextConfig }
+      ) => Promise<NextConfig>),
+  {
+    workflows,
+  }: {
+    workflows?: {
+      embedded?: {
+        port?: number;
+        dataDir?: string;
+      };
     };
-  };
-}) {
+  } = {}
+) {
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
       process.env.WORKFLOW_TARGET_WORLD = 'embedded';
@@ -27,56 +35,73 @@ export function withWorkflow({
     }
   }
 
-  const loaderPath = require.resolve('./loader');
+  return async function buildConfig(
+    phase: string,
+    ctx: { defaultConfig: NextConfig }
+  ) {
+    const loaderPath = require.resolve('./loader');
 
-  // configure the loader if turbopack is being used
-  if (!nextConfig.turbopack) {
-    nextConfig.turbopack = {};
-  }
-  if (!nextConfig.turbopack.rules) {
-    nextConfig.turbopack.rules = {};
-  }
-  const existingRules = nextConfig.turbopack.rules as any;
+    let nextConfig: NextConfig;
 
-  nextConfig.turbopack.rules = {
-    ...existingRules,
-    '*.tsx': {
-      loaders: [...(existingRules['*.tsx']?.loaders || []), loaderPath],
-    },
-    '*.ts': {
-      loaders: [...(existingRules['*.ts']?.loaders || []), loaderPath],
-    },
-    '*.jsx': {
-      loaders: [...(existingRules['*.jsx']?.loaders || []), loaderPath],
-    },
-    '*.js': {
-      loaders: [...(existingRules['*.js']?.loaders || []), loaderPath],
-    },
-  };
-
-  // configure the loader for webpack
-  const existingWebpackModify = nextConfig.webpack;
-  nextConfig.webpack = (...args) => {
-    const [webpackConfig] = args;
-    if (!webpackConfig.module) {
-      webpackConfig.module = {};
+    if (typeof nextConfigOrFn === 'function') {
+      nextConfig = await nextConfigOrFn(phase, ctx);
+    } else {
+      nextConfig = nextConfigOrFn;
     }
-    if (!webpackConfig.module.rules) {
-      webpackConfig.module.rules = [];
+    // shallow clone to avoid read-only on top-level
+    nextConfig = Object.assign({}, nextConfig);
+
+    // configure the loader if turbopack is being used
+    if (!nextConfig.turbopack) {
+      nextConfig.turbopack = {};
     }
-    // loaders in webpack apply bottom->up so ensure
-    // ours comes before the default swc transform
-    webpackConfig.module.rules.push({
-      test: /.*\.(mjs|cjs|cts|ts|tsx|js|jsx)$/,
-      loader: loaderPath,
-    });
+    if (!nextConfig.turbopack.rules) {
+      nextConfig.turbopack.rules = {};
+    }
+    const existingRules = nextConfig.turbopack.rules as any;
+    const nextVersion = require('next/package.json').version;
+    const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
-    return existingWebpackModify
-      ? existingWebpackModify(...args)
-      : webpackConfig;
-  };
+    for (const key of ['*.tsx', '*.ts', '*.jsx', '*.js']) {
+      nextConfig.turbopack.rules[key] = {
+        ...(supportsTurboCondition
+          ? {
+              condition: {
+                ...existingRules[key]?.condition,
+                any: [
+                  ...(existingRules[key]?.condition.any || []),
+                  {
+                    content: /(use workflow|use step)/,
+                  },
+                ],
+              },
+            }
+          : {}),
+        loaders: [...(existingRules[key]?.loaders || []), loaderPath],
+      };
+    }
 
-  return async function buildConfig(phase: string) {
+    // configure the loader for webpack
+    const existingWebpackModify = nextConfig.webpack;
+    nextConfig.webpack = (...args) => {
+      const [webpackConfig] = args;
+      if (!webpackConfig.module) {
+        webpackConfig.module = {};
+      }
+      if (!webpackConfig.module.rules) {
+        webpackConfig.module.rules = [];
+      }
+      // loaders in webpack apply bottom->up so ensure
+      // ours comes before the default swc transform
+      webpackConfig.module.rules.push({
+        test: /.*\.(mjs|cjs|cts|ts|tsx|js|jsx)$/,
+        loader: loaderPath,
+      });
+
+      return existingWebpackModify
+        ? existingWebpackModify(...args)
+        : webpackConfig;
+    };
     // only run this in the main process so it only runs once
     // as Next.js uses child processes for different builds
     if (
@@ -90,8 +115,9 @@ export function withWorkflow({
         dirs: ['pages', 'app', 'src/pages', 'src/app'],
         workingDir: process.cwd(),
         buildTarget: 'next',
-        workflowsBundlePath: '',
-        stepsBundlePath: '',
+        workflowsBundlePath: '', // not used in base
+        stepsBundlePath: '', // not used in base
+        webhookBundlePath: '', // node used in base
         externalPackages: [
           ...require('next/dist/lib/server-external-packages.json'),
           ...(nextConfig.serverExternalPackages || []),

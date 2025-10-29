@@ -1,5 +1,4 @@
-import type { AuthProvider, Storage } from '@workflow/world';
-import { checkHealth, getAuthInfo } from './auth.js';
+import type { Storage } from '@workflow/world';
 import { createWorkflowRunEvent, getWorkflowRunEvents } from './events.js';
 import {
   createHook,
@@ -25,12 +24,8 @@ import {
 } from './steps.js';
 import type { APIConfig } from './utils.js';
 
-export function createStorage(config?: APIConfig): Storage & AuthProvider {
+export function createStorage(config?: APIConfig): Storage {
   return {
-    // AuthProvider interface
-    getAuthInfo: () => getAuthInfo(config),
-    checkHealth: () => checkHealth(config),
-
     // Storage interface with namespaced methods
     runs: {
       create: (data) => createWorkflowRun(data, config),

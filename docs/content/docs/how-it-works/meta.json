@@ -1,0 +1,9 @@
+{
+  "title": "How it works",
+  "pages": [
+    "understanding-directives",
+    "code-transform",
+    "framework-integrations"
+  ],
+  "defaultOpen": false
+}

@@ -132,8 +132,8 @@ function FunctionSignature({
                       <Row key={id} id={id}>
                         <NameCell optional={prop.optional} name={prop.name} />
                         <TypeCell type={prop.type} typeLinkMap={typeLinkMap} />
-                        <td className="p-3 block lg:table-cell lg:before:content-none before:content-['Type:_'] break-words">
-                          {linkify(prop.type, typeLinkMap)}
+                        <td className="p-3 table-cell break-words">
+                          {linkify(prop.description || '', typeLinkMap)}
                         </td>
                       </Row>
                     );
@@ -175,12 +175,12 @@ function FunctionSignature({
 
                   return (
                     <Row key={id} id={id}>
-                      <td className="relative block lg:table-cell pr-3">
+                      <td className="relative table-cell pr-3">
                         <code className="bg-muted px-1.5 py-0.5 rounded text-xs whitespace-nowrap my-0">
                           {linkify(type, typeLinkMap)}
                         </code>
                       </td>
-                      <td className="p-3 block lg:table-cell lg:before:content-none before:content-['Description:_'] break-words">
+                      <td className="p-3 table-cell break-words">
                         {description && (
                           <p className="text-sm whitespace-pre-wrap !my-0 break-words">
                             {linkify(description, typeLinkMap)}
@@ -210,10 +210,7 @@ const Row: FC<{
   return (
     <tr
       id={id}
-      className={cn(
-        classes.card,
-        'group mb-2 block lg:table-row not-last:lg:border-b lg:mb-0'
-      )}
+      className={cn(classes.card, 'group mb-2 table-row not-last:border-b')}
     >
       {children}
     </tr>
@@ -225,7 +222,7 @@ const NameCell: FC<{
   optional?: boolean;
 }> = ({ name, optional }) => {
   return (
-    <td className="relative block lg:table-cell pr-3">
+    <td className="relative table-cell pr-3">
       {name && (
         <code
           className={cn(
@@ -245,9 +242,7 @@ const TypeCell: FC<{
   typeLinkMap: TSDocProps['typeLinkMap'];
 }> = ({ type, typeLinkMap }) => {
   return (
-    <td className="p-3 block lg:table-cell lg:before:content-none before:content-['Type:_'] break-words">
-      {linkify(type, typeLinkMap)}
-    </td>
+    <td className="p-3 table-cell break-words">{linkify(type, typeLinkMap)}</td>
   );
 };
 
@@ -283,11 +278,9 @@ const FieldsTable: FC<{
               <TypeCell type={field.type} typeLinkMap={typeLinkMap} />
               <td
                 className={cn(
-                  'block lg:table-cell',
-                  description
-                    ? 'py-3 pt-0 px-3 lg:pt-3 before:content-["Type:_"] lg:before:content-none'
-                    : 'lg:after:content-["-"]',
-                  'break-words overflow-hidden text-sm whitespace-pre-wrap [&_a]:no-underline [&_a]:font-normal [&_a]:hover:no-underline'
+                  'table-cell p-3',
+                  !description && 'after:content-["-"]',
+                  'break-words overflow-hidden text-sm [&_a]:no-underline [&_a]:font-normal [&_a]:hover:no-underline'
                 )}
               >
                 {linkify(description, typeLinkMap)}
@@ -334,13 +327,9 @@ function linkify(
             if (i % 2 === 1) {
               // It's code
               return (
-                <Link
-                  key={`link-code-${parts.length}-${i}`}
-                  href={linkUrl}
-                  className="text-primary-foreground"
-                >
-                  <code className="text-xs">{part}</code>
-                </Link>
+                <code key={`code-${parts.length}-${i}`} className="text-xs">
+                  {part}
+                </code>
               );
             }
             return part;
@@ -348,7 +337,7 @@ function linkify(
           .filter(Boolean);
 
         parts.push(
-          <Link key={parts.length} href={linkUrl}>
+          <Link key={parts.length} href={linkUrl} className="text-primary-blue">
             {linkContent}
           </Link>
         );
@@ -392,11 +381,7 @@ function linkify(
         : undefined;
       if (href) {
         result.push(
-          <Link
-            key={result.length}
-            href={href}
-            className="text-primary-foreground"
-          >
+          <Link key={result.length} href={href} className="text-primary-blue">
             {chunk}
           </Link>
         );
@@ -428,7 +413,7 @@ function linkify(
           <Link
             key={`${index}-${processedChunks.length}`}
             href={href}
-            className="text-primary-foreground hover:underline"
+            className="text-primary-blue hover:underline"
           >
             <code>{chunk}</code>
           </Link>

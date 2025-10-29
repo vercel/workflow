@@ -1,5 +1,5 @@
 export const validBuildTargets = [
-  'vercel-static',
+  'standalone',
   'vercel-build-output-api',
   'next',
 ] as const;
@@ -26,6 +26,7 @@ export interface WorkflowConfig {
   buildTarget: BuildTarget;
   stepsBundlePath: string;
   workflowsBundlePath: string;
+  webhookBundlePath: string;
 
   // Optionally generate a client library for workflow execution. The preferred
   // method of using workflow is to use a loader within a framework (like
@@ -40,5 +41,5 @@ export interface WorkflowConfig {
 export function isValidBuildTarget(
   target: string | undefined
 ): target is BuildTarget {
-  return target === 'vercel-static' || target === 'vercel-build-output-api';
+  return target === 'standalone' || target === 'vercel-build-output-api';
 }

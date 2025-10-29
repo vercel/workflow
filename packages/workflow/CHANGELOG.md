@@ -1,5 +1,31 @@
 # workflow
 
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- Updated dependencies [66332f2]
+- Updated dependencies [dbf2207]
+- Updated dependencies [e20b4ff]
+  - @workflow/cli@4.0.1-beta.4
+  - @workflow/typescript-plugin@4.0.1-beta.2
+  - @workflow/next@4.0.1-beta.4
+  - @workflow/nitro@4.0.1-beta.4
+
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- 7dad974: README fixes
+- Updated dependencies [dfdb280]
+- Updated dependencies [57419e5]
+- Updated dependencies [d3a4ed3]
+  - @workflow/cli@4.0.1-beta.3
+  - @workflow/core@4.0.1-beta.3
+  - @workflow/next@4.0.1-beta.3
+  - @workflow/nitro@4.0.1-beta.3
+  - @workflow/typescript-plugin@4.0.1-beta.1
+
 ## 4.0.1-beta.2
 
 ### Patch Changes
