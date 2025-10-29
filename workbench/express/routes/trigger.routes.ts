@@ -6,10 +6,8 @@ import { allWorkflows } from '../_workflows';
 const triggerRouter = express.Router();
 
 triggerRouter.post('/api/trigger', async (req, res, _) => {
-  const url = new URL(req.url);
-
   const workflowFile =
-    url.searchParams.get('workflowFile') || 'workflows/99_e2e.ts';
+    (req.query.workflowFile as string) || 'workflows/99_e2e.ts';
   if (!workflowFile) {
     return res.status(400).json({
       error: 'No workflowFile query parameter provided',
@@ -24,7 +22,7 @@ triggerRouter.post('/api/trigger', async (req, res, _) => {
     });
   }
 
-  const workflowFn = url.searchParams.get('workflowFn') || 'simple';
+  const workflowFn = (req.query.workflowFn as string) || 'simple';
   if (!workflowFn) {
     return res.status(400).json({
       error: 'No workflow query parameter provided',
@@ -41,7 +39,7 @@ triggerRouter.post('/api/trigger', async (req, res, _) => {
   let args: any[] = [];
 
   // Args from query string
-  const argsParam = url.searchParams.get('args');
+  const argsParam = req.query.args as string;
   if (argsParam) {
     args = argsParam.split(',').map((arg) => {
       const num = parseFloat(arg);
@@ -68,8 +66,7 @@ triggerRouter.post('/api/trigger', async (req, res, _) => {
 });
 
 triggerRouter.get('/api/trigger', async (req, res, _) => {
-  const url = new URL(req.url);
-  const runId = url.searchParams.get('runId');
+  const runId = req.query.runId as string;
   if (!runId) {
     return res.status(400).json({
       error: 'No runId provided',
@@ -77,7 +74,7 @@ triggerRouter.get('/api/trigger', async (req, res, _) => {
     });
   }
 
-  const outputStreamParam = url.searchParams.get('output-stream');
+  const outputStreamParam = req.query['output-stream'] as string;
   if (outputStreamParam) {
     const namespace = outputStreamParam === '1' ? undefined : outputStreamParam;
     const run = getRun(runId);
