@@ -36,7 +36,7 @@ import {
 import { contextStorage } from './step/context-storage.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace, withTraceContext } from './telemetry.js';
-import { getErrorName, getErrorStack, isInstanceOf } from './types.js';
+import { getErrorName, getErrorStack } from './types.js';
 import {
   buildWorkflowSuspensionMessage,
   getWorkflowRunStreamId,
@@ -210,7 +210,7 @@ export class Run<TResult> {
 
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
-        if (error instanceof WorkflowRunNotCompletedError) {
+        if (WorkflowRunNotCompletedError.is(error)) {
           await new Promise((resolve) => setTimeout(resolve, 1_000));
           continue;
         }
@@ -349,7 +349,7 @@ export function workflowEntrypoint(workflowCode: string) {
               ...Attribute.WorkflowEventsCount(events.length),
             });
           } catch (err) {
-            if (isInstanceOf(err, WorkflowSuspension)) {
+            if (WorkflowSuspension.is(err)) {
               const suspensionMessage = buildWorkflowSuspensionMessage(
                 runId,
                 err.stepCount,
@@ -392,15 +392,14 @@ export function workflowEntrypoint(workflowCode: string) {
                       }
                     );
                   } catch (err) {
-                    if (
-                      isInstanceOf(err, WorkflowAPIError) &&
-                      err.status === 409
-                    ) {
-                      // Step already exists, so we can skip it
-                      console.warn(
-                        `Step "${queueItem.stepName}" with correlation ID "${queueItem.correlationId}" already exists, skipping: ${err.message}`
-                      );
-                      continue;
+                    if (WorkflowAPIError.is(err)) {
+                      if (err.status === 409) {
+                        // Step already exists, so we can skip it
+                        console.warn(
+                          `Step "${queueItem.stepName}" with correlation ID "${queueItem.correlationId}" already exists, skipping: ${err.message}`
+                        );
+                        continue;
+                      }
                     }
                     throw err;
                   }
@@ -427,7 +426,7 @@ export function workflowEntrypoint(workflowCode: string) {
                       correlationId: queueItem.correlationId,
                     });
                   } catch (err) {
-                    if (isInstanceOf(err, WorkflowAPIError)) {
+                    if (WorkflowAPIError.is(err)) {
                       if (err.status === 409) {
                         // Hook already exists (duplicate hook_id constraint), so we can skip it
                         console.warn(
@@ -623,7 +622,7 @@ export const stepEntrypoint =
               ...Attribute.StepErrorMessage(String(err)),
             });
 
-            if (isInstanceOf(err, WorkflowAPIError)) {
+            if (WorkflowAPIError.is(err)) {
               if (err.status === 410) {
                 // Workflow has already completed, so no-op
                 console.warn(
@@ -633,7 +632,7 @@ export const stepEntrypoint =
               }
             }
 
-            if (isInstanceOf(err, FatalError)) {
+            if (FatalError.is(err)) {
               const stackLines = getErrorStack(err).split('\n').slice(0, 4);
               console.error(
                 `[Workflows] "${workflowRunId}" - Encountered \`FatalError\` while executing step "${stepName}":\n  > ${stackLines.join('\n    > ')}\n\nBubbling up error to parent workflow`
@@ -694,7 +693,7 @@ export const stepEntrypoint =
                 });
               } else {
                 // Not at max retries yet - log as a retryable error
-                if (isInstanceOf(err, RetryableError)) {
+                if (RetryableError.is(err)) {
                   console.warn(
                     `[Workflows] "${workflowRunId}" - Encountered \`RetryableError\` while executing step "${stepName}" (attempt ${attempt}):\n  > ${String(err.message)}\n\n  This step has failed but will be retried`
                   );
@@ -717,7 +716,7 @@ export const stepEntrypoint =
                 });
                 const timeoutSeconds = Math.max(
                   1,
-                  isInstanceOf(err, RetryableError)
+                  RetryableError.is(err)
                     ? Math.floor(
                         (+err.retryAfter.getTime() - Date.now()) / 1000
                       )

@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import type { Serializable } from './schemas.js';
 
 export interface StepInvocationQueueItem {
@@ -63,6 +64,10 @@ export class WorkflowSuspension extends Error {
     this.globalThis = global;
     this.stepCount = stepCount;
     this.hookCount = hookCount;
+  }
+
+  static is(value: unknown): value is WorkflowSuspension {
+    return types.isNativeError(value) && value.name === 'WorkflowSuspension';
   }
 }
 
