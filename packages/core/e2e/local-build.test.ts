@@ -18,6 +18,8 @@ describe.each(['nextjs-webpack', 'nextjs-turbopack', 'nitro', 'sveltekit'])(
         cwd: getWorkbenchAppPath(project),
       });
 
+      console.error(result.stderr.toString(), result.stdout.toString());
+
       expect(result.stderr).not.toContain('Error:');
     });
   }
