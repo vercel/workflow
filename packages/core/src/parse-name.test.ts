@@ -24,7 +24,19 @@ describe('parseWorkflowName', () => {
     });
   });
 
-  test('should parse a workflow name with nested function names', () => {
+  test('should parse workflow name from normalized Windows path with drive letter', () => {
+    // After normalization: C:\dev\project\file.ts becomes C:/dev/project/file.ts
+    const result = parseWorkflowName(
+      'workflow//C:/dev/birthday-card-generator/app/api/generate/route.ts//handleOrder'
+    );
+    expect(result).toEqual({
+      shortName: 'handleOrder',
+      path: 'C:/dev/birthday-card-generator/app/api/generate/route.ts',
+      functionName: 'handleOrder',
+    });
+  });
+
+  test('should parse workflow name with nested function names', () => {
     const result = parseWorkflowName(
       'workflow//src/app.ts//nested//function//name'
     );
@@ -76,6 +88,18 @@ describe('parseStepName', () => {
     expect(result).toEqual({
       shortName: 'handleStep',
       path: 'app/api/generate/route.ts',
+      functionName: 'handleStep',
+    });
+  });
+
+  test('should parse step name from normalized Windows path with drive letter', () => {
+    // After normalization: C:\dev\project\file.ts becomes C:/dev/project/file.ts
+    const result = parseStepName(
+      'step//C:/dev/birthday-card-generator/app/api/generate/route.ts//handleStep'
+    );
+    expect(result).toEqual({
+      shortName: 'handleStep',
+      path: 'C:/dev/birthday-card-generator/app/api/generate/route.ts',
       functionName: 'handleStep',
     });
   });
