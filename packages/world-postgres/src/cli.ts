@@ -1,9 +1,7 @@
-#!/usr/bin/env node
-
-import { config } from 'dotenv';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { config } from 'dotenv';
 import postgres from 'postgres';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
