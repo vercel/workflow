@@ -64,6 +64,10 @@ export class WorkflowSuspension extends Error {
     this.stepCount = stepCount;
     this.hookCount = hookCount;
   }
+
+  static is(value: unknown): value is WorkflowSuspension {
+    return value instanceof WorkflowSuspension;
+  }
 }
 
 export function ENOTSUP(): never {
