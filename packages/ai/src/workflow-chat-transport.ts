@@ -47,7 +47,7 @@ export interface WorkflowChatTransportOptions<UI_MESSAGE extends UIMessage> {
    * Defaults to /api/chat if not provided
    */
   api?: string;
-  
+
   /**
    * Custom fetch implementation to use for HTTP requests.
    * Defaults to the global fetch function if not provided.
