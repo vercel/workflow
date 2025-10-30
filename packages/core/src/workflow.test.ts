@@ -257,31 +257,34 @@ describe('runWorkflow', () => {
         {
           eventId: 'event-0',
           runId: workflowRunId,
-          eventType: 'step_started',
-          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+          },
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
         {
           eventId: 'event-1',
           runId: workflowRunId,
-          eventType: 'step_started',
-          correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
+          eventData: {
+            resumeAt: new Date('2024-01-01T00:00:02.000Z'),
+          },
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
         {
           eventId: 'event-2',
           runId: workflowRunId,
-          eventType: 'step_completed',
-          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
-          eventData: {
-            result: dehydrateStepReturnValue(undefined, ops),
-          },
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
           createdAt: new Date('2024-01-01T00:00:03.000Z'),
         },
       ];
 
       const workflowCode = `
-      const sleep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("sleep");
+      const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
       async function workflow() {
         await Promise.race([sleep(1), sleep(2)]);
         return Date.now();
@@ -296,11 +299,8 @@ describe('runWorkflow', () => {
         {
           eventId: 'event-3',
           runId: workflowRunId,
-          eventType: 'step_completed',
-          correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
-          eventData: {
-            result: dehydrateStepReturnValue(undefined, ops),
-          },
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
           createdAt: new Date('2024-01-01T00:00:04.000Z'),
         },
       ]);
@@ -1889,6 +1889,341 @@ describe('runWorkflow', () => {
       expect(result_obj.cache).toEqual('no-cache'); // from req1, NOT default 'default'
       expect(result_obj.credentials).toEqual('include'); // from req1, NOT default 'same-origin'
       expect(result_obj.redirect).toEqual('follow'); // default, since not set in req1
+    });
+  });
+
+  describe('sleep', () => {
+    it('should suspend and resume a basic single sleep', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const resumeAt = new Date('2024-01-01T00:00:05.000Z');
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            resumeAt,
+          },
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: new Date('2024-01-01T00:00:05.000Z'),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+        async function workflow() {
+          await sleep('5s');
+          return 'sleep completed';
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events
+      );
+      expect(hydrateWorkflowReturnValue(result as any, ops)).toEqual(
+        'sleep completed'
+      );
+    });
+
+    it('should throw `WorkflowSuspension` when sleep has no wait_completed event', async () => {
+      let error: Error | undefined;
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRunId = 'test-run-123';
+        const workflowRun: WorkflowRun = {
+          runId: workflowRunId,
+          workflowName: 'workflow',
+          status: 'running',
+          input: dehydrateWorkflowArguments([], ops),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        const events: Event[] = [];
+
+        await runWorkflow(
+          `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+          async function workflow() {
+            await sleep('5s');
+            return 'done';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+      assert(error);
+      expect(error.name).toEqual('WorkflowSuspension');
+      expect(error.message).toEqual('1 wait has not been created yet');
+      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).steps[0].type).toEqual('wait');
+    });
+
+    it('should handle multiple simultaneous sleeps with Promise.all()', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            resumeAt: new Date('2024-01-01T00:00:02.000Z'),
+          },
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
+          eventData: {
+            resumeAt: new Date('2024-01-01T00:00:05.000Z'),
+          },
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-2',
+          runId: workflowRunId,
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: new Date('2024-01-01T00:00:02.000Z'),
+        },
+        {
+          eventId: 'event-3',
+          runId: workflowRunId,
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
+          createdAt: new Date('2024-01-01T00:00:05.000Z'),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+        async function workflow() {
+          const results = await Promise.all([sleep('2s'), sleep('5s')]);
+          return 'all sleeps completed';
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events
+      );
+      expect(hydrateWorkflowReturnValue(result as any, ops)).toEqual(
+        'all sleeps completed'
+      );
+    });
+
+    it('should suspend with multiple sleeps but only one wait_completed event (partial completion)', async () => {
+      let error: Error | undefined;
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRunId = 'test-run-123';
+        const workflowRun: WorkflowRun = {
+          runId: workflowRunId,
+          workflowName: 'workflow',
+          status: 'running',
+          input: dehydrateWorkflowArguments([], ops),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        const events: Event[] = [
+          {
+            eventId: 'event-0',
+            runId: workflowRunId,
+            eventType: 'wait_created',
+            correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+            eventData: {
+              resumeAt: new Date('2024-01-01T00:00:02.000Z'),
+            },
+            createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          },
+          {
+            eventId: 'event-1',
+            runId: workflowRunId,
+            eventType: 'wait_created',
+            correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
+            eventData: {
+              resumeAt: new Date('2024-01-01T00:00:05.000Z'),
+            },
+            createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          },
+          {
+            eventId: 'event-2',
+            runId: workflowRunId,
+            eventType: 'wait_completed',
+            correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+            createdAt: new Date('2024-01-01T00:00:02.000Z'),
+          },
+        ];
+
+        await runWorkflow(
+          `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+          async function workflow() {
+            const results = await Promise.all([sleep('2s'), sleep('5s')]);
+            return 'all sleeps completed';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+      assert(error);
+      expect(error.name).toEqual('WorkflowSuspension');
+      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).steps[0].type).toEqual('wait');
+    });
+
+    it('should handle sleep combined with steps', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            result: dehydrateStepReturnValue(42, ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        {
+          eventId: 'event-2',
+          runId: workflowRunId,
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
+          eventData: {
+            resumeAt: new Date('2024-01-01T00:00:03.000Z'),
+          },
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        {
+          eventId: 'event-3',
+          runId: workflowRunId,
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
+          createdAt: new Date('2024-01-01T00:00:03.000Z'),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+        const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+        async function workflow() {
+          const stepResult = await add(1, 2);
+          await sleep('2s');
+          return { step: stepResult, slept: true };
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events
+      );
+      expect(hydrateWorkflowReturnValue(result as any, ops)).toEqual({
+        step: 42,
+        slept: true,
+      });
+    });
+
+    it('should handle sleep with Date parameter', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const resumeAt = new Date('2024-01-01T00:00:05.000Z');
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            resumeAt,
+          },
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: resumeAt,
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+        async function workflow() {
+          const resumeDate = new Date('2024-01-01T00:00:05.000Z');
+          await sleep(resumeDate);
+          return 'sleep with date completed';
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events
+      );
+      expect(hydrateWorkflowReturnValue(result as any, ops)).toEqual(
+        'sleep with date completed'
+      );
     });
   });
 });
