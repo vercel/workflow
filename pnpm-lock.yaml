@@ -1211,9 +1211,33 @@ importers:
 
   workbench/sveltekit:
     dependencies:
+      '@ai-sdk/react':
+        specifier: 2.0.76
+        version: 2.0.76(react@19.2.0)(zod@4.1.11)
+      '@node-rs/xxhash':
+        specifier: 1.7.6
+        version: 1.7.6
+      '@opentelemetry/api':
+        specifier: ^1.9.0
+        version: 1.9.0
+      '@vercel/otel':
+        specifier: ^1.13.0
+        version: 1.13.0(@opentelemetry/api-logs@0.57.2)(@opentelemetry/api@1.9.0)(@opentelemetry/instrumentation@0.57.2(@opentelemetry/api@1.9.0))(@opentelemetry/resources@1.30.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.57.2(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@1.30.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.9.0))
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
+      ai:
+        specifier: 'catalog:'
+        version: 5.0.76(zod@4.1.11)
+      lodash.chunk:
+        specifier: ^4.2.0
+        version: 4.2.0
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow
+      zod:
+        specifier: 'catalog:'
+        version: 4.1.11
     devDependencies:
       '@sveltejs/adapter-node':
         specifier: ^5.3.2
@@ -1224,6 +1248,9 @@ importers:
       '@sveltejs/vite-plugin-svelte':
         specifier: ^6.2.0
         version: 6.2.1(svelte@5.43.0)(vite@7.1.11(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.0))
+      '@types/lodash.chunk':
+        specifier: ^4.2.9
+        version: 4.2.9
       '@workflow/sveltekit':
         specifier: workspace:*
         version: link:../../packages/sveltekit
@@ -9887,6 +9914,16 @@ snapshots:
       ai: 5.0.76(zod@4.1.11)
       react: 19.1.1
       swr: 2.3.6(react@19.1.1)
+      throttleit: 2.1.0
+    optionalDependencies:
+      zod: 4.1.11
+
+  '@ai-sdk/react@2.0.76(react@19.2.0)(zod@4.1.11)':
+    dependencies:
+      '@ai-sdk/provider-utils': 3.0.12(zod@4.1.11)
+      ai: 5.0.76(zod@4.1.11)
+      react: 19.2.0
+      swr: 2.3.6(react@19.2.0)
       throttleit: 2.1.0
     optionalDependencies:
       zod: 4.1.11
@@ -19143,6 +19180,12 @@ snapshots:
       react: 19.1.1
       use-sync-external-store: 1.5.0(react@19.1.1)
 
+  swr@2.3.6(react@19.2.0):
+    dependencies:
+      dequal: 2.0.3
+      react: 19.2.0
+      use-sync-external-store: 1.5.0(react@19.2.0)
+
   system-architecture@0.1.0: {}
 
   tagged-tag@1.0.0: {}
@@ -19599,6 +19642,10 @@ snapshots:
   use-sync-external-store@1.5.0(react@19.1.1):
     dependencies:
       react: 19.1.1
+
+  use-sync-external-store@1.5.0(react@19.2.0):
+    dependencies:
+      react: 19.2.0
 
   util-deprecate@1.0.2: {}
 

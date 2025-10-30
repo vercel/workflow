@@ -26,7 +26,8 @@
     "nextjs-webpack": "0.0.2-alpha.5",
     "@workflow/example-nitro-v3": "0.0.0",
     "@workflow/example-nitro-v2": "0.0.0",
-    "@workflow/example-nuxt": "0.0.0"
+    "@workflow/example-nuxt": "0.0.0",
+    "@workflow/example-sveltekit": "0.0.0"
   },
   "changesets": [
     "angry-owls-beg",
