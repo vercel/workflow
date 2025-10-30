@@ -94,7 +94,7 @@ export interface HookOptions {
    *   role: 'viewer' | 'editor';
    * }>({
    *   schema: z.object({
-   *     memberId: z.string().uuid(),
+   *     memberId: z.uuid(),
    *     role: z.enum(['viewer', 'editor']),
    *   }),
    * });
