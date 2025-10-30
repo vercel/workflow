@@ -2,6 +2,7 @@
 
 import { hydrateResourceIO } from '@workflow/core/observability';
 import { createWorld, start } from '@workflow/core/runtime';
+import { hydrateWorkflowArguments } from '@workflow/core/serialization';
 import type {
   Event,
   Hook,
@@ -174,7 +175,9 @@ export async function fetchRun(
   try {
     const world = getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData });
-    return createResponse(hydrate(run as WorkflowRun));
+    const hydratedRun = hydrate(run as WorkflowRun);
+    console.log('hydratedRun', hydratedRun.input);
+    return createResponse(hydratedRun);
   } catch (error) {
     console.error('Failed to fetch run:', error);
     return {
@@ -416,11 +419,15 @@ export async function recreateRun(
   try {
     const world = getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
-    const args = run.input;
+    const hydratedRun = hydrate(run as WorkflowRun);
     const deploymentId = run.deploymentId;
-    const newRun = await start({ workflowId: run.workflowName }, args, {
-      deploymentId,
-    });
+    const newRun = await start(
+      { workflowId: run.workflowName },
+      hydratedRun.input,
+      {
+        deploymentId,
+      }
+    );
     return createResponse(newRun.runId);
   } catch (error) {
     console.error('Failed to start run:', error);
