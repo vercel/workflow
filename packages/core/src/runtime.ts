@@ -490,10 +490,7 @@ export function workflowEntrypoint(workflowCode: string) {
                     });
                     return { timeoutSeconds };
                   } catch (err) {
-                    if (
-                      isInstanceOf(err, WorkflowAPIError) &&
-                      err.status === 409
-                    ) {
+                    if (WorkflowAPIError.is(err) && err.status === 409) {
                       // Wait already exists, so we can skip it
                       console.warn(
                         `Wait with correlation ID "${queueItem.correlationId}" already exists, skipping: ${err.message}`
