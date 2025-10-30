@@ -354,7 +354,9 @@ async function stepThatRetriesAndSucceeds() {
 async function stepThatRetriesWithRetryableError() {
   'use step';
   const { attempt, stepStartedAt } = getStepMetadata();
-  console.log(`stepThatRetriesWithRetryableError - attempt: ${attempt}`);
+  console.log(
+    `stepThatRetriesWithRetryableError - attempt: ${attempt}, stepStartedAt: ${stepStartedAt}`
+  );
   if (attempt === 1) {
     throw new RetryableError(`Failed on attempt ${attempt}`, {
       retryAfter: '10s',
