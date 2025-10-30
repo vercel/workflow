@@ -4,10 +4,13 @@ export function workflowPlugin() {
   return {
     name: 'workflow-sveltekit-plugin',
     async configResolved() {
+      if (process.env.NODE_ENV === 'development') {
+        await new LocalBuilder({}).build();
+      }
+    },
+    async closeBundle() {
       if (process.env.VERCEL === '1') {
         await new VercelBuilder({}).build();
-      } else {
-        await new LocalBuilder({}).build();
       }
     },
   };
