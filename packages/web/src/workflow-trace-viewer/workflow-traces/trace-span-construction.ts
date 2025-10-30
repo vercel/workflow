@@ -51,6 +51,40 @@ export function convertEventsToSpanEvents(
 }
 
 /**
+ * Converts a workflow Wait to an OpenTelemetry Span
+ */
+export function waitToSpan(
+  correlationId: string,
+  events: Event[],
+  nowTime?: Date
+): Span {
+  const startEvent = events.find((event) => event.eventType === 'wait_created');
+  const endEvent = events.find((event) => event.eventType === 'wait_completed');
+  const start = dateToOtelTime(startEvent?.createdAt ?? nowTime);
+  const end = dateToOtelTime(endEvent?.createdAt ?? nowTime);
+  const duration = calculateDuration(start, end);
+  return {
+    spanId: `wait-${correlationId}`,
+    name: 'sleep',
+    kind: 1, // INTERNAL span kind
+    resource: 'sleep',
+    library: WORKFLOW_LIBRARY,
+    status: { code: 0 },
+    traceFlags: 1,
+    attributes: {
+      resource: 'sleep' as const,
+      data: {
+        correlationId,
+      },
+    },
+    events: convertEventsToSpanEvents(events),
+    duration,
+    startTime: start,
+    endTime: end,
+  };
+}
+
+/**
  * Converts a workflow Step to an OpenTelemetry Span
  */
 export function stepToSpan(
