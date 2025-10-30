@@ -4,8 +4,10 @@ Workflow Observability tools for NextJS. See [Workflow DevKit](https://useworkfl
 
 ## Usage
 
-This package contains client and server code to interact with the Workflow API.
-You can use it like so to display your own runs list:
+This package contains client and server code to interact with the Workflow API, as well as some pre-styled components.
+If you want to deploy a full observability experience with your NextJS app, take a look at [`@workflow/web`](../web/README.md) instead, which can be self-hosted.
+
+You can use the API to create your own display UI, like so:
 
 ```tsx
 import { useWorkflowRuns } from '@workflow/web-shared';
