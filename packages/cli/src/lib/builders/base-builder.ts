@@ -255,22 +255,18 @@ export abstract class BaseBuilder {
     // will get registered thanks to the swc transform.
     const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
 
-    let entryContent = '';
-    if (this.config.buildTarget === 'next') {
-      entryContent = `
+    let entryContent = `
     // Built in steps
     import '${builtInSteps}';
     // User steps
-    ${imports}
+    ${imports}`;
+    if (this.config.buildTarget === 'next') {
+      entryContent += `
     // API entrypoint
     export { stepEntrypoint as POST } from 'workflow/runtime';
     `;
     } else if (this.config.buildTarget === 'sveltekit') {
-      entryContent = `
-    // Built in steps
-    import '${builtInSteps}';
-    // User steps
-    ${imports}
+      entryContent += `
     // API entrypoint
     import { stepEntrypoint } from 'workflow/runtime';
     export const POST = async ({request}) => {
@@ -278,9 +274,9 @@ export abstract class BaseBuilder {
       const normalRequest = new Request(request.url, {
         method: request.method,
         headers: new Headers(request.headers),
-        ...(request.method !== 'GET' && request.method !== 'HEAD') ? {
+        ...(['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) ? {} : {
           body
-        } : {}
+        }
       })
       return stepEntrypoint(normalRequest);
     }
@@ -480,31 +476,25 @@ export abstract class BaseBuilder {
     const bundleFinal = async (interimBundle: string) => {
       const workflowBundleCode = interimBundle;
 
-      let workflowFunctionCode = '';
-      if (this.config.buildTarget === 'next') {
-        workflowFunctionCode = `// biome-ignore-all lint: generated file
+      let workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
-
+`;
+      if (this.config.buildTarget === 'next') {
+        workflowFunctionCode += `
 export const POST = workflowEntrypoint(workflowCode);`;
       } else if (this.config.buildTarget === 'sveltekit') {
-        // Create the workflow function handler with proper linter suppressions
-        workflowFunctionCode = `// biome-ignore-all lint: generated file
-/* eslint-disable */
-import { workflowEntrypoint } from 'workflow/runtime';
-
-const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
-
+        workflowFunctionCode += `
 export const POST = async ({ request }) => {
   const body = await request.arrayBuffer()
   const normalRequest = new Request(request.url, {
     method: request.method,
     headers: new Headers(request.headers),
-    ...(request.method !== 'GET' && request.method !== 'HEAD') ? {
+    ...(['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) ? {} : {
       body
-    } : {}
+    }
   })
   return workflowEntrypoint(workflowCode)(normalRequest);
 }`;
@@ -631,7 +621,7 @@ export const POST = async ({ request }) => {
 
     // Create a static route that calls resumeWebhook
     // This route works for both Next.js and Vercel Build Output API
-    const routeContent = `import { resumeWebhook } from 'workflow/api';
+    let routeContent = `import { resumeWebhook } from 'workflow/api';
 
 async function handler(request) {
   const url = new URL(request.url);
@@ -651,8 +641,9 @@ async function handler(request) {
     console.error('Error during resumeWebhook', error);
     return new Response(null, { status: 404 });
   }
-}
-
+}`;
+    if (this.config.buildTarget === 'next') {
+      routeContent += `
 export const GET = handler;
 export const POST = handler;
 export const PUT = handler;
@@ -661,7 +652,29 @@ export const DELETE = handler;
 export const HEAD = handler;
 export const OPTIONS = handler;
 `;
+    } else if (this.config.buildTarget === 'sveltekit') {
+      routeContent += `
+const createSvelteKitHandler = (method) => async ({ request }) => {
+  const options = {
+    method: request.method,
+    headers: new Headers(request.headers)
+  };
+  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
+    options.body = await request.arrayBuffer();
+  }
+  const normalRequest = new Request(request.url, options);
+  return handler(normalRequest);
+};
 
+export const GET = createSvelteKitHandler('GET');
+export const POST = createSvelteKitHandler('POST');
+export const PUT = createSvelteKitHandler('PUT');
+export const PATCH = createSvelteKitHandler('PATCH');
+export const DELETE = createSvelteKitHandler('DELETE');
+export const HEAD = createSvelteKitHandler('HEAD');
+export const OPTIONS = createSvelteKitHandler('OPTIONS');
+`;
+    }
     if (!bundle) {
       // For Next.js, just write the unbundled file
       await writeFile(outfile, routeContent);
