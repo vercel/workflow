@@ -92,6 +92,14 @@ export const cliFlags = {
     helpGroup: 'Output',
     helpLabel: '-w, --web',
   }),
+  noBrowser: Flags.boolean({
+    description: 'Disable automatic browser opening when launching web UI',
+    required: false,
+    default: false,
+    env: 'WORKFLOW_DISABLE_BROWSER_OPEN',
+    helpGroup: 'Output',
+    helpLabel: '--no-browser',
+  }),
   sort: Flags.string({
     description: 'sort order for list commands',
     required: false,

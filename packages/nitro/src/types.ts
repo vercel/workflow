@@ -1,4 +1,4 @@
-  export interface ModuleOptions {
+export interface ModuleOptions {
   /**
    * Directories to scan for workflows and steps.
    *

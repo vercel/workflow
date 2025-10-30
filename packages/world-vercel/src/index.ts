@@ -11,7 +11,7 @@ export type { APIConfig } from './utils.js';
 
 export function createVercelWorld(config?: APIConfig): World {
   return {
-    ...createQueue(),
+    ...createQueue(config),
     ...createStorage(config),
     ...createStreamer(config),
   };

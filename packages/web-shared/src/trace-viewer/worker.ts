@@ -82,7 +82,6 @@ const calculateSpanPositions = (root: RootNode): void => {
   }
 };
 
-// @ts-expect-error
 const ATTR_FILTER_REGEX = /(?<=^|\s)(?<pair>(?<key>[\w.]+):(?<value>\S*))/g;
 
 const filterSpans = (root: RootNode, filter: string): void => {

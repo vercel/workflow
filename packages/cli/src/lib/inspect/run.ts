@@ -1,4 +1,4 @@
-import type { World } from '@workflow/world';
+import type { WorkflowRun, World } from '@workflow/world';
 import chalk from 'chalk';
 import { logger } from '../config/log.js';
 import { start } from '../runtime.js';
@@ -33,15 +33,37 @@ export const startRun = async (
       throw error;
     }
   });
-  const workflowId = await getWorkflowName(world, workflowNameOrRunId);
-  const deploymentId = await world.getDeploymentId();
 
-  const run = await start({ workflowId }, jsonArgs, { deploymentId });
+  let run: WorkflowRun | undefined;
+  // If the workflowNameOrRunId is a run ID, get the run
+  if (workflowNameOrRunId.startsWith('wrun_')) {
+    run = await world.runs.get(workflowNameOrRunId);
+  } else {
+    // Get the first run for that name, hopefully the newest deployment,
+    // but can't guarantee that.
+    const runList = await world.runs.list({
+      workflowName: workflowNameOrRunId,
+      pagination: {
+        sortOrder: 'desc',
+        limit: 1,
+      },
+    });
+    run = runList.data[0];
+  }
+
+  if (!run) {
+    throw new Error(`Run "${workflowNameOrRunId}" not found`);
+  }
+
+  const deploymentId = run.deploymentId;
+  const workflowId = await getWorkflowName(world, workflowNameOrRunId);
+
+  const newRun = await start({ workflowId }, jsonArgs, { deploymentId });
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify(run, null, 2));
+    process.stdout.write(JSON.stringify(newRun, null, 2));
   } else {
-    logger.log(run);
+    logger.log(newRun);
   }
 };
 

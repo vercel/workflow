@@ -3,8 +3,8 @@
  */
 
 import type { Step, WorkflowRun } from '@workflow/world';
+import styles from '../trace-viewer/trace-viewer.module.css';
 import type { SpanNode, SpanNodeEvent } from '../trace-viewer/types';
-import styles from './workflow-trace.module.css';
 
 /**
  * Get the CSS class name for a workflow entity based on its status
