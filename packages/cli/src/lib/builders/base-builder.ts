@@ -260,12 +260,7 @@ export abstract class BaseBuilder {
     import '${builtInSteps}';
     // User steps
     ${imports}`;
-    if (this.config.buildTarget === 'next') {
-      entryContent += `
-    // API entrypoint
-    export { stepEntrypoint as POST } from 'workflow/runtime';
-    `;
-    } else if (this.config.buildTarget === 'sveltekit') {
+    if (this.config.buildTarget === 'sveltekit') {
       entryContent += `
     // API entrypoint
     import { stepEntrypoint } from 'workflow/runtime';
@@ -280,6 +275,11 @@ export abstract class BaseBuilder {
       })
       return stepEntrypoint(normalRequest);
     }
+    `;
+    } else {
+      entryContent += `
+    // API entrypoint
+    export { stepEntrypoint as POST } from 'workflow/runtime';
     `;
     }
 
@@ -482,10 +482,7 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 `;
-      if (this.config.buildTarget === 'next') {
-        workflowFunctionCode += `
-export const POST = workflowEntrypoint(workflowCode);`;
-      } else if (this.config.buildTarget === 'sveltekit') {
+      if (this.config.buildTarget === 'sveltekit') {
         workflowFunctionCode += `
 export const POST = async ({ request }) => {
   const body = await request.arrayBuffer()
@@ -498,6 +495,9 @@ export const POST = async ({ request }) => {
   })
   return workflowEntrypoint(workflowCode)(normalRequest);
 }`;
+      } else {
+        workflowFunctionCode += `
+export const POST = workflowEntrypoint(workflowCode);`;
       }
 
       // we skip the final bundling step for Next.js so it can bundle itself
@@ -642,17 +642,7 @@ async function handler(request) {
     return new Response(null, { status: 404 });
   }
 }`;
-    if (this.config.buildTarget === 'next') {
-      routeContent += `
-export const GET = handler;
-export const POST = handler;
-export const PUT = handler;
-export const PATCH = handler;
-export const DELETE = handler;
-export const HEAD = handler;
-export const OPTIONS = handler;
-`;
-    } else if (this.config.buildTarget === 'sveltekit') {
+    if (this.config.buildTarget === 'sveltekit') {
       routeContent += `
 const createSvelteKitHandler = (method) => async ({ request }) => {
   const options = {
@@ -673,6 +663,16 @@ export const PATCH = createSvelteKitHandler('PATCH');
 export const DELETE = createSvelteKitHandler('DELETE');
 export const HEAD = createSvelteKitHandler('HEAD');
 export const OPTIONS = createSvelteKitHandler('OPTIONS');
+`;
+    } else {
+      routeContent += `
+export const GET = handler;
+export const POST = handler;
+export const PUT = handler;
+export const PATCH = handler;
+export const DELETE = handler;
+export const HEAD = handler;
+export const OPTIONS = handler;
 `;
     }
     if (!bundle) {
