@@ -784,6 +784,9 @@ importers:
       '@workflow/world-local':
         specifier: workspace:*
         version: link:../world-local
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
       drizzle-orm:
         specifier: ^0.31.2
         version: 0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.1.13)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0)
@@ -13618,13 +13621,13 @@ snapshots:
 
   '@types/docker-modem@3.0.6':
     dependencies:
-      '@types/node': 24.6.2
+      '@types/node': 20.19.7
       '@types/ssh2': 1.15.5
 
   '@types/dockerode@3.3.44':
     dependencies:
       '@types/docker-modem': 3.0.6
-      '@types/node': 24.6.2
+      '@types/node': 20.19.7
       '@types/ssh2': 1.15.5
 
   '@types/estree-jsx@1.0.5':
@@ -13637,7 +13640,7 @@ snapshots:
 
   '@types/graceful-fs@4.1.9':
     dependencies:
-      '@types/node': 24.6.2
+      '@types/node': 20.19.7
 
   '@types/hast@3.0.4':
     dependencies:
@@ -13648,7 +13651,7 @@ snapshots:
 
   '@types/jsonlines@0.1.5':
     dependencies:
-      '@types/node': 24.6.2
+      '@types/node': 20.19.7
 
   '@types/lodash.chunk@4.2.9':
     dependencies:
@@ -13698,11 +13701,11 @@ snapshots:
 
   '@types/ssh2-streams@0.1.12':
     dependencies:
-      '@types/node': 24.6.2
+      '@types/node': 20.19.7
 
   '@types/ssh2@0.5.52':
     dependencies:
-      '@types/node': 24.6.2
+      '@types/node': 20.19.7
       '@types/ssh2-streams': 0.1.12
 
   '@types/ssh2@1.15.5':
@@ -17989,7 +17992,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.0
-      '@types/node': 24.6.2
+      '@types/node': 20.19.7
       long: 5.3.2
 
   protocols@2.0.2: {}
