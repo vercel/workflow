@@ -4,7 +4,11 @@ import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import z from 'zod';
 
-const LOCAL_QUEUE_MAX_VISIBILITY = 10; // 10 seconds
+// For local queue, there is no technical limit on the message visibility lifespan,
+// but the environment variable can be used for testing purposes to set a max visibility limit.
+const LOCAL_QUEUE_MAX_VISIBILITY =
+  parseInt(process.env.WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
+  Infinity;
 
 export function createQueue(port?: number): Queue {
   const transport = new JsonTransport();
@@ -130,8 +134,6 @@ export function createQueue(port?: number): Queue {
 
         let timeoutSeconds: number | null = null;
         if (typeof result?.timeoutSeconds === 'number') {
-          // For local queue, enforce the max visibility limit
-          // NOTE: This is set artificially to 10 seconds for testing purposes
           timeoutSeconds = Math.min(
             result.timeoutSeconds,
             LOCAL_QUEUE_MAX_VISIBILITY
