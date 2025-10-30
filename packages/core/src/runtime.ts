@@ -739,9 +739,7 @@ export const stepEntrypoint =
                 const timeoutSeconds = Math.max(
                   1,
                   isInstanceOf(err, RetryableError)
-                    ? Math.floor(
-                        (+err.retryAfter.getTime() - Date.now()) / 1000
-                      )
+                    ? Math.ceil((+err.retryAfter.getTime() - Date.now()) / 1000)
                     : 1
                 );
 
