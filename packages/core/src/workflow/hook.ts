@@ -1,3 +1,4 @@
+import type { ZodType } from 'zod';
 import type { HookReceivedEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
@@ -12,6 +13,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
+    const schema = options.schema as ZodType<T> | undefined;
 
     // Add hook creation to invocations queue
     ctx.invocationsQueue.push({
@@ -19,6 +21,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       correlationId,
       token,
       metadata: options.metadata,
+      schema,
     });
 
     // Queue of hook events that have been received but not yet processed
@@ -74,7 +77,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               event.eventData.payload,
               ctx.globalThis
             );
-            next.resolve(payload);
+            try {
+              const parsed = schema ? schema.parse(payload) : (payload as T);
+              next.resolve(parsed);
+            } catch (error) {
+              next.reject(error);
+              ctx.onWorkflowError(error as Error);
+              return EventConsumerResult.Finished;
+            }
           }
         } else {
           payloadsQueue.push(event);
@@ -96,7 +106,13 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             nextPayload.eventData.payload,
             ctx.globalThis
           );
-          resolvers.resolve(payload);
+          try {
+            const parsed = schema ? schema.parse(payload) : (payload as T);
+            resolvers.resolve(parsed);
+          } catch (error) {
+            resolvers.reject(error);
+            ctx.onWorkflowError(error as Error);
+          }
           return resolvers.promise;
         }
       }

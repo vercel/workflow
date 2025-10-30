@@ -92,12 +92,10 @@ export interface HookOptions {
    * const accessRequestHook = createHook<{
    *   memberId: string;
    *   role: 'viewer' | 'editor';
-   *   requestedBy: string;
    * }>({
    *   schema: z.object({
    *     memberId: z.string().uuid(),
    *     role: z.enum(['viewer', 'editor']),
-   *     requestedBy: z.string().uuid(),
    *   }),
    * });
    * ```

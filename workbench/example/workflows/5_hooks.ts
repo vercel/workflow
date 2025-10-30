@@ -1,5 +1,11 @@
 import OpenAI from 'openai';
-import { createHook, getStepMetadata, getWorkflowMetadata } from 'workflow';
+import { z } from 'zod';
+import {
+  createHook,
+  defineHook,
+  getStepMetadata,
+  getWorkflowMetadata,
+} from 'workflow';
 
 /**
  * `getStepMetadata()` is a hook that allows you to access the step's context
@@ -77,4 +83,33 @@ export async function withCreateHook() {
   }
 
   console.log('Hook demo workflow completed');
+}
+
+const approvalHook = defineHook(
+  z.object({
+    approved: z.boolean(),
+    approver: z.string(),
+    comment: z.string().optional(),
+  })
+);
+
+export async function withDefineHook() {
+  'use workflow';
+
+  const approvalId = Math.random().toString(36).slice(2);
+  const hook = approvalHook.create({
+    token: `approval:${approvalId}`,
+  });
+
+  console.log('Waiting for approval via token:', hook.token);
+
+  const result = await hook;
+  const status = result.approved ? 'approved' : 'rejected';
+  console.log(`Request ${status} by ${result.approver}`);
+
+  if (!result.approved) {
+    console.log('Comment from approver:', result.comment ?? '(none)');
+  }
+
+  return result;
 }

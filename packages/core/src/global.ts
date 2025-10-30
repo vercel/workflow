@@ -1,4 +1,5 @@
 import type { Serializable } from './schemas.js';
+import type { HookOptions } from './create-hook.js';
 
 export interface StepInvocationQueueItem {
   type: 'step';
@@ -12,6 +13,7 @@ export interface HookInvocationQueueItem {
   correlationId: string;
   token: string;
   metadata?: Serializable;
+  schema?: HookOptions['schema'];
 }
 
 export type QueueItem = StepInvocationQueueItem | HookInvocationQueueItem;
