@@ -6,7 +6,7 @@ import type { WorkflowConfig } from '@workflow/cli/dist/lib/config/types.js';
 
 const CommonBuildOptions = {
   dirs: ['workflows', 'src/workflows'],
-  buildTarget: 'next' as const, // unused in base
+  buildTarget: 'sveltekit' as const, // unused in base
   stepsBundlePath: '', // unused in base
   workflowsBundlePath: '', // unused in base
   webhookBundlePath: '', // unused in base
