@@ -2,7 +2,6 @@
 
 import { hydrateResourceIO } from '@workflow/core/observability';
 import { createWorld, start } from '@workflow/core/runtime';
-import { hydrateWorkflowArguments } from '@workflow/core/serialization';
 import type {
   Event,
   Hook,
