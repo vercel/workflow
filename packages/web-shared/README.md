@@ -1,3 +1,60 @@
-# @workflow/web
+# @workflow/web-shared
 
-Observability Web UI Package bundled in the [Workflow DevKit](https://useworkflow.dev/docs/observability).
+Workflow Observability tools for NextJS. See [Workflow DevKit](https://useworkflow.dev/docs/observability) for more information.
+
+## Usage
+
+This package contains client and server code to interact with the Workflow API.
+You can use it like so to display your own runs list:
+
+```tsx
+import { useWorkflowRuns } from '@workflow/web-shared';
+
+export default function MyRunsList() {
+  const {
+    data,
+    error,
+    nextPage,
+    previousPage,
+    hasNextPage,
+    hasPreviousPage,
+    reload,
+    pageInfo,
+  } = useWorkflowRuns(env, {
+    sortOrder,
+    workflowName: workflowNameFilter === 'all' ? undefined : workflowNameFilter,
+    status: status === 'all' ? undefined : status,
+  });
+
+  // Shows an interactive trace viewer for the given run
+  return <div>{runs.map((run) => (
+    <div key={run.runId}>
+      {run.workflowName}
+      {run.status}
+      {run.startedAt}
+      {run.completedAt}
+    </div>
+  ))}</div>;
+}
+```
+
+It also comes with a pre-styled interactive trace viewer that you can use to display the trace for a given run:
+
+```tsx
+import { RunTraceView } from '@workflow/web-shared';
+
+export default function MyRunDetailView({ env, runId }: { env: EnvMap, runId: string }) {
+  // ... your other code
+
+  // Shows an interactive trace viewer for the given run
+  return <RunTraceView env={env} runId={runId} />;
+}
+```
+
+## Environment Variables
+
+For API calls to work, you'll need to pass the same environment variables that are used by the Workflow CLI.
+See `npx workflow inspect --help` for more information.
+
+If you're deploying this as part of your Vercel NextJS app, setting `WORKFLOW_TARGET_WORLD` to `vercel` is enough
+to infer your other project details from the Vercel environment variables.
