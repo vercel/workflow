@@ -64,7 +64,9 @@ export class LocalBuilder extends BaseBuilder {
     await mkdir(workflowGeneratedDir, { recursive: true });
 
     // Add .gitignore to exclude generated files from version control
-    await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+    if (process.env.VERCEL !== '1') {
+      await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+    }
 
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
