@@ -1,15 +1,16 @@
-import { LocalBuilder, VercelBuilder } from './builders.js';
+import { LocalBuilder } from './builders.js';
 
 export function workflowPlugin() {
   return {
     name: 'workflow-sveltekit-plugin',
     async configResolved() {
-      if (process.env.VERCEL === '1') {
-        await new VercelBuilder({}).build();
-      } else {
-        await new LocalBuilder({}).build();
-      }
+      await new LocalBuilder({}).build();
     },
+    // async buildEnd() {
+    //   if (process.env.VERCEL === '1') {
+    //     await new VercelBuilder({}).build();
+    //   }
+    // },
   };
 }
 
