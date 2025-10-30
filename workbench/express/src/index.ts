@@ -188,5 +188,4 @@ app.post('/api/trigger', async (req, res, _) => {
   }
 });
 
-
 export default toFetchHandler(app as any);
