@@ -1,7 +1,21 @@
-import { types } from 'node:util';
 import ms, { type StringValue } from 'ms';
 
 const BASE_URL = 'https://useworkflow.dev/err';
+
+/**
+ * @internal
+ * Check if a value is an Error without relying on Node.js utilities.
+ * This is needed for error classes that can be used in VM contexts where
+ * Node.js imports are not available.
+ */
+function isError(value: unknown): value is { name: string; message: string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'name' in value &&
+    'message' in value
+  );
+}
 
 /**
  * @internal
@@ -58,7 +72,7 @@ export class WorkflowError extends Error {
   }
 
   static is(value: unknown): value is WorkflowError {
-    return types.isNativeError(value) && value.name === 'WorkflowError';
+    return isError(value) && value.name === 'WorkflowError';
   }
 }
 
@@ -98,7 +112,7 @@ export class WorkflowAPIError extends WorkflowError {
   }
 
   static is(value: unknown): value is WorkflowAPIError {
-    return types.isNativeError(value) && value.name === 'WorkflowAPIError';
+    return isError(value) && value.name === 'WorkflowAPIError';
   }
 }
 
@@ -129,9 +143,7 @@ export class WorkflowRunFailedError extends WorkflowError {
   }
 
   static is(value: unknown): value is WorkflowRunFailedError {
-    return (
-      types.isNativeError(value) && value.name === 'WorkflowRunFailedError'
-    );
+    return isError(value) && value.name === 'WorkflowRunFailedError';
   }
 }
 
@@ -153,10 +165,7 @@ export class WorkflowRunNotCompletedError extends WorkflowError {
   }
 
   static is(value: unknown): value is WorkflowRunNotCompletedError {
-    return (
-      types.isNativeError(value) &&
-      value.name === 'WorkflowRunNotCompletedError'
-    );
+    return isError(value) && value.name === 'WorkflowRunNotCompletedError';
   }
 }
 
@@ -176,7 +185,7 @@ export class WorkflowRuntimeError extends WorkflowError {
   }
 
   static is(value: unknown): value is WorkflowRuntimeError {
-    return types.isNativeError(value) && value.name === 'WorkflowRuntimeError';
+    return isError(value) && value.name === 'WorkflowRuntimeError';
   }
 }
 
@@ -190,9 +199,7 @@ export class WorkflowRunNotFoundError extends WorkflowError {
   }
 
   static is(value: unknown): value is WorkflowRunNotFoundError {
-    return (
-      types.isNativeError(value) && value.name === 'WorkflowRunNotFoundError'
-    );
+    return isError(value) && value.name === 'WorkflowRunNotFoundError';
   }
 }
 
@@ -206,9 +213,7 @@ export class WorkflowRunCancelledError extends WorkflowError {
   }
 
   static is(value: unknown): value is WorkflowRunCancelledError {
-    return (
-      types.isNativeError(value) && value.name === 'WorkflowRunCancelledError'
-    );
+    return isError(value) && value.name === 'WorkflowRunCancelledError';
   }
 }
 
@@ -226,7 +231,7 @@ export class FatalError extends Error {
   }
 
   static is(value: unknown): value is FatalError {
-    return types.isNativeError(value) && value.name === 'FatalError';
+    return isError(value) && value.name === 'FatalError';
   }
 }
 
@@ -266,6 +271,6 @@ export class RetryableError extends Error {
   }
 
   static is(value: unknown): value is RetryableError {
-    return types.isNativeError(value) && value.name === 'RetryableError';
+    return isError(value) && value.name === 'RetryableError';
   }
 }
