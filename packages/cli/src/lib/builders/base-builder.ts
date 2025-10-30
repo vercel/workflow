@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import builtinModules from 'builtin-modules';
 import chalk from 'chalk';
 import { parse } from 'comment-json';
 import enhancedResolveOriginal from 'enhanced-resolve';
@@ -394,6 +395,11 @@ export abstract class BaseBuilder {
       // TODO: investigate proper source map support
       sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
       resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      // Mark Node.js built-in modules as external to prevent bundling errors
+      // when dependencies use them. The workflow VM doesn't have access to these
+      // modules, but we need to allow bundling to succeed. The createNodeModuleErrorPlugin
+      // will catch any runtime usage and provide a helpful error message.
+      external: [...builtinModules],
       plugins: [
         createSwcPlugin({
           mode: 'workflow',
