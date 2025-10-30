@@ -1,9 +1,17 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { getRun, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import * as calcWorkflow from '../../../../workflows/0_calc';
 import * as batchingWorkflow from '../../../../workflows/6_batching';
 import * as duplicateE2e from '../../../../workflows/98_duplicate_case';
 import * as e2eWorkflows from '../../../../workflows/99_e2e';
+
+const WORKFLOW_MODULES = {
+  'workflows/0_calc.ts': calcWorkflow,
+  'workflows/6_batching.ts': batchingWorkflow,
+  'workflows/98_duplicate_case.ts': duplicateE2e,
+  'workflows/99_e2e.ts': e2eWorkflows,
+} as const;
 
 export const POST: RequestHandler = async ({ request }) => {
   const url = new URL(request.url);
@@ -12,6 +20,25 @@ export const POST: RequestHandler = async ({ request }) => {
   const workflowFn = url.searchParams.get('workflowFn') || 'simple';
 
   console.log('calling workflow', { workflowFile, workflowFn });
+
+  const workflows =
+    WORKFLOW_MODULES[workflowFile as keyof typeof WORKFLOW_MODULES];
+  if (!workflows) {
+    return json(
+      { error: `Workflow file "${workflowFile}" not found` },
+      { status: 404 }
+    );
+  }
+
+  const workflow = workflows[workflowFn as keyof typeof workflows];
+  if (!workflow) {
+    return json(
+      {
+        error: `Workflow "${workflowFn}" not found in "${workflowFile}"`,
+      },
+      { status: 404 }
+    );
+  }
 
   let args: any[] = [];
 
@@ -36,16 +63,7 @@ export const POST: RequestHandler = async ({ request }) => {
   );
 
   try {
-    let workflows: any;
-    if (workflowFile === 'workflows/99_e2e.ts') {
-      workflows = e2eWorkflows;
-    } else if (workflowFile === 'workflows/6_batching.ts') {
-      workflows = batchingWorkflow;
-    } else {
-      workflows = duplicateE2e;
-    }
-
-    const run = await start((workflows as any)[workflowFn], args);
+    const run = await start(workflow as any, args);
     console.log('Run:', run);
     return json(run);
   } catch (err) {
