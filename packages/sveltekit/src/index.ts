@@ -8,7 +8,8 @@ const localBuilder = new LocalBuilder({});
 // a race to be created before svelte discovers entries
 await localBuilder.build();
 
-process.on('exit', () => {
+process.on('beforeExit', () => {
+  console.log('BEFORE EXIT');
   // don't attempt patching functions output if not Vercel adapter
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     return;
@@ -46,6 +47,7 @@ process.on('exit', () => {
       },
     },
   ]) {
+    console.log('UPDATED FUNCTION CONFIG', file);
     const existingConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.writeFileSync(
       file,
