@@ -7,6 +7,7 @@ import {
   getWorkflowMetadata,
   getWritable,
   type RequestWithResponse,
+  RetryableError,
   sleep,
 } from 'workflow';
 
@@ -359,4 +360,38 @@ export async function retryAttemptCounterWorkflow() {
 
   console.log(`Workflow completed with final attempt: ${finalAttempt}`);
   return { finalAttempt };
+}
+
+//////////////////////////////////////////////////////////
+
+async function stepThatThrowsRetryableError() {
+  'use step';
+  const { attempt, stepStartedAt } = getStepMetadata();
+  if (attempt === 1) {
+    throw new RetryableError('Retryable error', {
+      retryAfter: '10s',
+    });
+  }
+  return {
+    attempt,
+    stepStartedAt,
+    duration: Date.now() - stepStartedAt.getTime(),
+  };
+}
+
+export async function retryableAndFatalErrorWorkflow() {
+  'use workflow';
+
+  const retryableResult = await stepThatThrowsRetryableError();
+
+  let gotFatalError = false;
+  try {
+    await stepThatFails();
+  } catch (error: any) {
+    if (FatalError.is(error)) {
+      gotFatalError = true;
+    }
+  }
+
+  return { retryableResult, gotFatalError };
 }
