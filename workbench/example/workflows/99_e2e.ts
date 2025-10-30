@@ -358,9 +358,13 @@ async function stepThatRetriesWithRetryableError() {
     `stepThatRetriesWithRetryableError - attempt: ${attempt}, stepStartedAt: ${stepStartedAt}`
   );
   if (attempt === 1) {
-    throw new RetryableError(`Failed on attempt ${attempt}`, {
+    const err = new RetryableError(`Failed on attempt ${attempt}`, {
       retryAfter: '10s',
     });
+    console.log(
+      `stepThatRetriesWithRetryableError - now: ${new Date()}, retryAfter: ${err.retryAfter}`
+    );
+    throw err;
   }
   const duration = Date.now() - stepStartedAt.getTime();
   console.log(`stepThatRetriesWithRetryableError - duration: ${duration}ms`);
