@@ -434,7 +434,11 @@ describe('e2e', () => {
     const returnValue = await getWorkflowReturnValue(run.runId);
 
     // The step should have succeeded on attempt 3
-    expect(returnValue).toEqual({ finalAttempt: 3 });
+    expect(returnValue.finalAttempt).toBe(3);
+
+    // The step that throws a RetryableError and retries after 10 seconds should have succeeded on attempt 2
+    expect(returnValue.withRetryableError.attempt).toBe(2);
+    expect(returnValue.withRetryableError.duration).toBeGreaterThan(10_000);
 
     // Also verify the run data shows the correct output
     const { json: runData } = await cliInspectJson(

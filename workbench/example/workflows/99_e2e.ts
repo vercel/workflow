@@ -7,6 +7,7 @@ import {
   getWorkflowMetadata,
   getWritable,
   type RequestWithResponse,
+  RetryableError,
   sleep,
 } from 'workflow';
 
@@ -350,6 +351,20 @@ async function stepThatRetriesAndSucceeds() {
   return attempt;
 }
 
+async function stepThatRetriesWithRetryableError() {
+  'use step';
+  const { attempt, stepStartedAt } = getStepMetadata();
+  console.log(`stepThatRetriesWithRetryableError - attempt: ${attempt}`);
+  if (attempt === 1) {
+    throw new RetryableError(`Failed on attempt ${attempt}`, {
+      retryAfter: '10s',
+    });
+  }
+  const duration = Date.now() - stepStartedAt.getTime();
+  console.log(`stepThatRetriesWithRetryableError - duration: ${duration}ms`);
+  return { attempt, duration };
+}
+
 export async function retryAttemptCounterWorkflow() {
   'use workflow';
   console.log('Starting retry attempt counter workflow');
@@ -357,6 +372,9 @@ export async function retryAttemptCounterWorkflow() {
   // This step should fail twice and succeed on the third attempt
   const finalAttempt = await stepThatRetriesAndSucceeds();
 
+  // Step that throws a RetryableError and retries after 10 seconds
+  const withRetryableError = await stepThatRetriesWithRetryableError();
+
   console.log(`Workflow completed with final attempt: ${finalAttempt}`);
-  return { finalAttempt };
+  return { finalAttempt, withRetryableError };
 }
