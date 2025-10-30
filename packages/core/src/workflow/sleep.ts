@@ -55,17 +55,17 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.NotConsumed;
       }
 
-      // Check for wait_created event to remove this wait from the queue
+      // Check for wait_created event to mark this wait as having the event created
       if (
         event?.eventType === 'wait_created' &&
         event.correlationId === correlationId
       ) {
-        // Remove this wait from the invocations queue if it exists
-        const index = ctx.invocationsQueue.findIndex(
+        // Mark this wait as having the created event, but keep it in the queue
+        const waitItem = ctx.invocationsQueue.find(
           (item) => item.type === 'wait' && item.correlationId === correlationId
         );
-        if (index !== -1) {
-          ctx.invocationsQueue.splice(index, 1);
+        if (waitItem && waitItem.type === 'wait') {
+          waitItem.hasCreatedEvent = true;
         }
         return EventConsumerResult.Consumed;
       }

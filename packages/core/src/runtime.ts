@@ -468,19 +468,21 @@ export function workflowEntrypoint(workflowCode: string) {
                 } else if (queueItem.type === 'wait') {
                   // Handle wait operations
                   try {
-                    // Create wait_created event in event log
-                    await world.events.create(runId, {
-                      eventType: 'wait_created',
-                      correlationId: queueItem.correlationId,
-                      eventData: {
-                        resumeAt: queueItem.resumeAt,
-                      },
-                    });
+                    // Only create wait_created event if it hasn't been created yet
+                    if (!queueItem.hasCreatedEvent) {
+                      await world.events.create(runId, {
+                        eventType: 'wait_created',
+                        correlationId: queueItem.correlationId,
+                        eventData: {
+                          resumeAt: queueItem.resumeAt,
+                        },
+                      });
+                    }
 
                     // Calculate how long to wait before resuming
                     const now = Date.now();
                     const resumeAtMs = queueItem.resumeAt.getTime();
-                    const delayMs = Math.max(0, resumeAtMs - now);
+                    const delayMs = Math.max(1000, resumeAtMs - now);
                     const timeoutSeconds = Math.ceil(delayMs / 1000);
 
                     // Return timeout to have the queue retry after the delay
