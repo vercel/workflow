@@ -17,6 +17,7 @@ import {
   runToSpan,
   stepToSpan,
   WORKFLOW_LIBRARY,
+  waitToSpan,
 } from './workflow-traces/trace-span-construction';
 import { otelTimeToMs } from './workflow-traces/trace-time-utils';
 

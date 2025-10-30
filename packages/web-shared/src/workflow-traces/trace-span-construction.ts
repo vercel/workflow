@@ -77,6 +77,7 @@ export function waitToSpan(
         correlationId,
       },
     },
+    links: [],
     events: convertEventsToSpanEvents(events),
     duration,
     startTime: start,
