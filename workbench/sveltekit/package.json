@@ -1,7 +1,7 @@
 {
-  "name": "sveltekit",
+  "name": "@workflow/example-sveltekit",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite dev --port 3000",
