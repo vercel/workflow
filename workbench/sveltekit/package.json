@@ -7,7 +7,7 @@
     "dev": "vite dev --port 3000",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node build/index.js",
+    "start": "node build/index.js --port 3000",
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
@@ -28,6 +28,7 @@
     "@node-rs/xxhash": "1.7.6",
     "@opentelemetry/api": "^1.9.0",
     "@sveltejs/adapter-auto": "^7.0.0",
+    "@sveltejs/adapter-node": "^5.4.0",
     "@vercel/otel": "^1.13.0",
     "@workflow/ai": "workspace:*",
     "ai": "catalog:",
