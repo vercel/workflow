@@ -1,12 +1,10 @@
 'use client';
 
-import {
-  useWorkflowTraceViewerData,
-  type WorkflowRun,
-  WorkflowTraceViewer,
-} from '@workflow/web-shared';
+import type { WorkflowRun } from '@workflow/world';
 import { AlertCircle } from 'lucide-react';
+import { useWorkflowTraceViewerData } from './api/workflow-api-client';
 import type { EnvMap } from './api/workflow-server-actions';
+import { WorkflowTraceViewer } from './workflow-trace-view';
 
 interface RunTraceViewProps {
   env: EnvMap;
