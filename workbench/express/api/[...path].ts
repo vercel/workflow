@@ -10,7 +10,9 @@ app.use(express.json());
 app.use(express.text({ type: 'text/*' }));
 
 app.post('/api/hook', async (req, res, _) => {
-  const { token, data } = JSON.parse(req.body);
+  const parsedBody =
+    typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+  const { token, data } = parsedBody ?? {};
 
   let hook: Awaited<ReturnType<typeof getHookByToken>>;
   try {
@@ -167,12 +169,12 @@ app.post('/api/trigger', async (req, res, _) => {
       const num = parseFloat(arg);
       return Number.isNaN(num) ? arg.trim() : num;
     });
+  } else if (req.body) {
+    const parsedBody =
+      typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    args = hydrateWorkflowArguments(parsedBody, globalThis);
   } else {
-    if (req.body) {
-      args = hydrateWorkflowArguments(JSON.parse(req.body), globalThis);
-    } else {
-      args = [42];
-    }
+    args = [42];
   }
   console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
 
