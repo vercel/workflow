@@ -57,10 +57,19 @@ export function createQueue(config?: APIConfig): Queue {
           if (typeof result?.timeoutSeconds === 'number') {
             // For Vercel Queue, enforce the max visibility limit:
             //   - When a step function throws a `RetryableError`, the retryAfter timestamp is updated and stored on the Step document
-            result.timeoutSeconds = Math.min(
+            const adjustedTimeoutSeconds = Math.min(
               result.timeoutSeconds,
               VERCEL_QUEUE_MAX_VISIBILITY
             );
+
+            // TODO: temporary logging for debugging
+            console.info(
+              `[Workflows] Vercel Queue - TimeoutSeconds: ${result.timeoutSeconds} -> Adjusted to ${adjustedTimeoutSeconds}`
+            );
+
+            if (adjustedTimeoutSeconds !== result.timeoutSeconds) {
+              result.timeoutSeconds = adjustedTimeoutSeconds;
+            }
           }
           return result;
         },
