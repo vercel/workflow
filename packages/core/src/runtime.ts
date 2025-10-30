@@ -709,17 +709,17 @@ export const stepEntrypoint =
                     stack: getErrorStack(err),
                   },
                 });
-                await world.steps.update(workflowRunId, stepId, {
-                  status: 'pending', // TODO: Should be "retrying" once we have that status
-                });
+
                 const timeoutSeconds = Math.max(
                   1,
                   RetryableError.is(err)
-                    ? Math.floor(
-                        (+err.retryAfter.getTime() - Date.now()) / 1000
-                      )
+                    ? Math.ceil((+err.retryAfter.getTime() - Date.now()) / 1000)
                     : 1
                 );
+
+                await world.steps.update(workflowRunId, stepId, {
+                  status: 'pending', // TODO: Should be "retrying" once we have that status
+                });
 
                 span?.setAttributes({
                   ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
