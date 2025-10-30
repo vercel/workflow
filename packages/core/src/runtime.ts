@@ -535,6 +535,24 @@ export const stepEntrypoint =
             ...Attribute.StepStatus(step.status),
           });
 
+          // Check if the step has a `retryAfter` timestamp that hasn't been reached yet
+          const now = Date.now();
+          if (step.retryAfter && step.retryAfter.getTime() > now) {
+            const timeoutSeconds = Math.ceil(
+              (step.retryAfter.getTime() - now) / 1000
+            );
+            span?.setAttributes({
+              ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
+            });
+            runtimeLogger.debug('Step retryAfter timestamp not yet reached', {
+              stepName,
+              stepId: step.stepId,
+              retryAfter: step.retryAfter,
+              timeoutSeconds,
+            });
+            return { timeoutSeconds };
+          }
+
           let result: unknown;
           const attempt = step.attempt + 1;
           try {
@@ -714,6 +732,9 @@ export const stepEntrypoint =
                 });
                 await world.steps.update(workflowRunId, stepId, {
                   status: 'pending', // TODO: Should be "retrying" once we have that status
+                  ...(isInstanceOf(err, RetryableError) && {
+                    retryAfter: err.retryAfter,
+                  }),
                 });
                 const timeoutSeconds = Math.max(
                   1,
