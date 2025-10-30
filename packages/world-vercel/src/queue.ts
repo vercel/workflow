@@ -62,11 +62,6 @@ export function createQueue(config?: APIConfig): Queue {
               VERCEL_QUEUE_MAX_VISIBILITY
             );
 
-            // TODO: temporary logging for debugging
-            console.info(
-              `[Workflows] Vercel Queue - TimeoutSeconds: ${result.timeoutSeconds} -> Adjusted to ${adjustedTimeoutSeconds}`
-            );
-
             if (adjustedTimeoutSeconds !== result.timeoutSeconds) {
               result.timeoutSeconds = adjustedTimeoutSeconds;
             }

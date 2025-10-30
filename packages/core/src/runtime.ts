@@ -59,16 +59,6 @@ export {
   setWorld,
 } from './runtime/world.js';
 
-console.log(FatalError.name);
-console.log(RetryableError.name);
-console.log(WorkflowAPIError.name);
-console.log(WorkflowRunCancelledError.name);
-console.log(WorkflowRunFailedError.name);
-console.log(WorkflowRunNotCompletedError.name);
-console.log(WorkflowRuntimeError.name);
-console.log(WorkflowRunCancelledError.name);
-console.log(WorkflowSuspension.name);
-
 /**
  * Options for configuring a workflow's readable stream.
  */
