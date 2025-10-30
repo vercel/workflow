@@ -1,3 +1,4 @@
+import type { ZodType } from 'zod';
 import type { Serializable } from './schemas.js';
 
 /**
@@ -76,6 +77,32 @@ export interface HookOptions {
    * ```
    */
   metadata?: Serializable;
+
+  /**
+   * Zod schema describing the payload accepted by this hook.
+   *
+   * This is typically generated internally via `defineHook` and persisted in the world
+   * for client-side validation of resume payloads.
+   *
+   * @example
+   *
+   * ```ts
+   * import { z } from "zod";
+   *
+   * const accessRequestHook = createHook<{
+   *   memberId: string;
+   *   role: 'viewer' | 'editor';
+   *   requestedBy: string;
+   * }>({
+   *   schema: z.object({
+   *     memberId: z.string().uuid(),
+   *     role: z.enum(['viewer', 'editor']),
+   *     requestedBy: z.string().uuid(),
+   *   }),
+   * });
+   * ```
+   */
+  schema?: ZodType;
 }
 
 export interface WebhookOptions extends HookOptions {
