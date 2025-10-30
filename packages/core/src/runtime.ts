@@ -384,6 +384,7 @@ export function workflowEntrypoint(workflowCode: string) {
                 // console.debug(suspensionMessage);
               }
               // Process each operation in the queue (steps and hooks)
+              let minTimeoutSeconds: number | null = null;
               for (const queueItem of err.steps) {
                 if (queueItem.type === 'step') {
                   // Handle step operations
@@ -485,12 +486,13 @@ export function workflowEntrypoint(workflowCode: string) {
                     const delayMs = Math.max(1000, resumeAtMs - now);
                     const timeoutSeconds = Math.ceil(delayMs / 1000);
 
-                    // Return timeout to have the queue retry after the delay
-                    span?.setAttributes({
-                      ...Attribute.WorkflowRunStatus('pending_steps'),
-                      ...Attribute.WorkflowStepsCreated(err.steps.length),
-                    });
-                    return { timeoutSeconds };
+                    // Track the minimum timeout across all waits
+                    if (
+                      minTimeoutSeconds === null ||
+                      timeoutSeconds < minTimeoutSeconds
+                    ) {
+                      minTimeoutSeconds = timeoutSeconds;
+                    }
                   } catch (err) {
                     if (WorkflowAPIError.is(err) && err.status === 409) {
                       // Wait already exists, so we can skip it
@@ -503,10 +505,16 @@ export function workflowEntrypoint(workflowCode: string) {
                   }
                 }
               }
+
               span?.setAttributes({
                 ...Attribute.WorkflowRunStatus('pending_steps'),
                 ...Attribute.WorkflowStepsCreated(err.steps.length),
               });
+
+              // If we encountered any waits, return the minimum timeout
+              if (minTimeoutSeconds !== null) {
+                return { timeoutSeconds: minTimeoutSeconds };
+              }
             } else {
               const errorName = getErrorName(err);
               const errorStack = getErrorStack(err);

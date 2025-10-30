@@ -1,7 +1,7 @@
 import type { StringValue } from 'ms';
 import ms from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
-import { WorkflowSuspension } from '../global.js';
+import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { withResolvers } from '../util.js';
 
@@ -63,9 +63,10 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         // Mark this wait as having the created event, but keep it in the queue
         const waitItem = ctx.invocationsQueue.find(
           (item) => item.type === 'wait' && item.correlationId === correlationId
-        );
-        if (waitItem && waitItem.type === 'wait') {
+        ) as WaitInvocationQueueItem | undefined;
+        if (waitItem) {
           waitItem.hasCreatedEvent = true;
+          waitItem.resumeAt = event.eventData.resumeAt;
         }
         return EventConsumerResult.Consumed;
       }
@@ -75,6 +76,14 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         event?.eventType === 'wait_completed' &&
         event.correlationId === correlationId
       ) {
+        // Remove this wait from the invocations queue
+        const index = ctx.invocationsQueue.findIndex(
+          (item) => item.type === 'wait' && item.correlationId === correlationId
+        );
+        if (index !== -1) {
+          ctx.invocationsQueue.splice(index, 1);
+        }
+
         // Wait has elapsed, resolve the sleep
         setTimeout(() => {
           resolve();
