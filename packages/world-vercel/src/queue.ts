@@ -13,6 +13,8 @@ const MessageWrapper = z.object({
   queueName: ValidQueueName,
 });
 
+const VERCEL_QUEUE_MAX_VISIBILITY = 82800; // 23 hours in seconds
+
 export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config);
@@ -45,13 +47,26 @@ export function createQueue(config?: APIConfig): Queue {
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return handleCallback({
       [`${prefix}*`]: {
-        default: (body, meta) => {
+        default: async (body, meta) => {
           const { payload, queueName } = MessageWrapper.parse(body);
-          return handler(payload, {
+          const result = await handler(payload, {
             queueName,
             messageId: MessageId.parse(meta.messageId),
             attempt: meta.deliveryCount,
           });
+          if (typeof result?.timeoutSeconds === 'number') {
+            // For Vercel Queue, enforce the max visibility limit:
+            //   - When a step function throws a `RetryableError`, the retryAfter timestamp is updated and stored on the Step document
+            const adjustedTimeoutSeconds = Math.min(
+              result.timeoutSeconds,
+              VERCEL_QUEUE_MAX_VISIBILITY
+            );
+
+            if (adjustedTimeoutSeconds !== result.timeoutSeconds) {
+              result.timeoutSeconds = adjustedTimeoutSeconds;
+            }
+          }
+          return result;
         },
       },
     });

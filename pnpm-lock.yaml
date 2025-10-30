@@ -784,6 +784,9 @@ importers:
       '@workflow/world-local':
         specifier: workspace:*
         version: link:../world-local
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
       drizzle-orm:
         specifier: ^0.31.2
         version: 0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.1.13)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0)
