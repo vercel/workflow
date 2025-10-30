@@ -261,10 +261,10 @@ jobs:
           cache: "pnpm"
 
       - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
+        run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
 
       - name: Build and Test Example App
         run: |
