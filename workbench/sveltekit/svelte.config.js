@@ -2,7 +2,7 @@ import node from '@sveltejs/adapter-node';
 import vercel from '@sveltejs/adapter-vercel';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
-const adapter = process.env.VERCEL_DEPLOYMENT_ID === '1' ? vercel() : node();
+const adapter = process.env.VERCEL_DEPLOYMENT_ID ? vercel() : node();
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
