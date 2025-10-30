@@ -1,6 +1,13 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
+import {
+  cancelRun,
+  recreateRun,
+  useWorkflowTraceViewerData,
+  type WorkflowRun,
+  WorkflowTraceViewer,
+} from '@workflow/web-shared';
 import { AlertCircle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
@@ -18,13 +25,6 @@ import {
 } from '@/components/ui/alert-dialog';
 import { buildUrlWithConfig, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import {
-  cancelRun,
-  recreateRun,
-  useWorkflowTraceViewerData,
-  type WorkflowRun,
-  WorkflowTraceViewer,
-} from '@/workflow-trace-viewer';
 import { BackLink } from './display-utils/back-link';
 import { CancelButton } from './display-utils/cancel-button';
 import { CopyableText } from './display-utils/copyable-text';

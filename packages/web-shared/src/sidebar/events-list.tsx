@@ -3,11 +3,11 @@
 import { AlertCircle } from 'lucide-react';
 import { useCallback } from 'react';
 import useSWR from 'swr';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   type EnvMap,
   fetchEventsByCorrelationId,
 } from '../api/workflow-server-actions';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import type { SpanEvent } from '../trace-viewer/types';
 import { convertEventsToSpanEvents } from '../workflow-traces/trace-span-construction';
 import { AttributeBlock } from './attribute-panel';
@@ -73,51 +73,49 @@ export function EventsList({
         <div className="text-sm">No events found</div>
       )}
       {displayData.length > 0 && !eventError ? (
-        <>
-          <div className="flex flex-col gap-2">
-            {displayData.map((event, index) => (
-              <DetailCard
-                key={`${event.name}-${index}`}
-                summary={
-                  <>
-                    <span
-                      className="font-medium"
-                      style={{ color: 'var(--ds-gray-1000)' }}
-                    >
-                      {event.name}
-                    </span>{' '}
-                    -{' '}
-                    <span style={{ color: 'var(--ds-gray-700)' }}>
-                      {new Date(
-                        event.timestamp[0] * 1000 + event.timestamp[1] / 1e6
-                      ).toLocaleString()}
-                    </span>
-                  </>
-                }
-              >
-                <div className="mt-2 px-4">
-                  {Object.entries(event.attributes)
-                    .filter(([key]) => key !== 'eventData')
-                    .map(([key, value]) => (
-                      <AttributeBlock key={key} attribute={key} value={value} />
-                    ))}
-                  <div className="relative">
-                    {eventError && <div>Error loading event data</div>}
-                    {!eventError &&
-                      !eventsLoading &&
-                      event.attributes.eventData && (
-                        <AttributeBlock
-                          isLoading={eventsLoading}
-                          attribute="eventData"
-                          value={event.attributes.eventData}
-                        />
-                      )}
-                  </div>
+        <div className="flex flex-col gap-2">
+          {displayData.map((event, index) => (
+            <DetailCard
+              key={`${event.name}-${index}`}
+              summary={
+                <>
+                  <span
+                    className="font-medium"
+                    style={{ color: 'var(--ds-gray-1000)' }}
+                  >
+                    {event.name}
+                  </span>{' '}
+                  -{' '}
+                  <span style={{ color: 'var(--ds-gray-700)' }}>
+                    {new Date(
+                      event.timestamp[0] * 1000 + event.timestamp[1] / 1e6
+                    ).toLocaleString()}
+                  </span>
+                </>
+              }
+            >
+              <div className="mt-2 px-4">
+                {Object.entries(event.attributes)
+                  .filter(([key]) => key !== 'eventData')
+                  .map(([key, value]) => (
+                    <AttributeBlock key={key} attribute={key} value={value} />
+                  ))}
+                <div className="relative">
+                  {eventError && <div>Error loading event data</div>}
+                  {!eventError &&
+                    !eventsLoading &&
+                    event.attributes.eventData && (
+                      <AttributeBlock
+                        isLoading={eventsLoading}
+                        attribute="eventData"
+                        value={event.attributes.eventData}
+                      />
+                    )}
                 </div>
-              </DetailCard>
-            ))}
-          </div>
-        </>
+              </div>
+            </DetailCard>
+          ))}
+        </div>
       ) : null}
     </div>
   );

@@ -583,6 +583,9 @@ importers:
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
+      '@workflow/web-shared':
+        specifier: workspace:*
+        version: link:../web-shared
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
@@ -595,15 +598,54 @@ importers:
       date-fns:
         specifier: ^4.1.0
         version: 4.1.0
-      json-colorizer:
-        specifier: ^3.0.1
-        version: 3.0.1
       lucide-react:
         specifier: ^0.469.0
         version: 0.469.0(react@19.1.0)
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      react:
+        specifier: 19.1.0
+        version: 19.1.0
+      react-dom:
+        specifier: 19.1.0
+        version: 19.1.0(react@19.1.0)
+      sonner:
+        specifier: ^2.0.7
+        version: 2.0.7(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      tailwind-merge:
+        specifier: ^2.5.5
+        version: 2.6.0
+      tailwindcss:
+        specifier: ^4
+        version: 4.1.13
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
+  packages/web-shared:
+    dependencies:
+      '@tailwindcss/postcss':
+        specifier: ^4
+        version: 4.1.13
+      '@workflow/core':
+        specifier: workspace:*
+        version: link:../core
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../world
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      date-fns:
+        specifier: ^4.1.0
+        version: 4.1.0
+      lucide-react:
+        specifier: ^0.469.0
+        version: 0.469.0(react@19.1.0)
       react:
         specifier: 19.1.0
         version: 19.1.0
@@ -622,6 +664,22 @@ importers:
       tailwindcss:
         specifier: ^4
         version: 4.1.13
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 'catalog:'
+        version: 2.2.5
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.6.2
+      '@types/react':
+        specifier: ^19
+        version: 19.1.13
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.1.9(@types/react@19.1.13)
+      '@workflow/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -6782,9 +6840,6 @@ packages:
 
   json-buffer@3.0.1:
     resolution: {integrity: sha512-4bV5BfR2mqfQTJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm9G6mI2sfSQ==}
-
-  json-colorizer@3.0.1:
-    resolution: {integrity: sha512-4YyRAbD6eHeRnJD9vo0zjiU5fyY9QR6T+iYuH5DpO0XPThKWozpD4MaeY/8nLZIkHC3yEQMFLL+6P94E+JekDw==}
 
   json-schema-traverse@0.4.1:
     resolution: {integrity: sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==}
@@ -16011,10 +16066,6 @@ snapshots:
 
   json-buffer@3.0.1:
     optional: true
-
-  json-colorizer@3.0.1:
-    dependencies:
-      colorette: 2.0.20
 
   json-schema-traverse@0.4.1:
     optional: true

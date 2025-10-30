@@ -1,5 +1,7 @@
 'use client';
 
+import { getErrorMessage, useWorkflowHooks } from '@workflow/web-shared';
+import { fetchEventsByCorrelationId } from '@workflow/web-shared/server';
 import type { Event, Hook } from '@workflow/world';
 import {
   AlertCircle,
@@ -26,9 +28,6 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import { useWorkflowHooks } from '@/workflow-trace-viewer';
-import { getErrorMessage } from '@/workflow-trace-viewer/api/workflow-api-client';
-import { fetchEventsByCorrelationId } from '@/workflow-trace-viewer/api/workflow-server-actions';
 import { RelativeTime } from './display-utils/relative-time';
 import { TableSkeleton } from './display-utils/table-skeleton';
 
