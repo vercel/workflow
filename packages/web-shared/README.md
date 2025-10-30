@@ -58,3 +58,17 @@ See `npx workflow inspect --help` for more information.
 
 If you're deploying this as part of your Vercel NextJS app, setting `WORKFLOW_TARGET_WORLD` to `vercel` is enough
 to infer your other project details from the Vercel environment variables.
+
+## Styling
+
+In order for tailwind classes to be picked up correctly, you might need to configure your NextJS app
+to use the correct CSS processor. E.g. if you're using PostCSS with TailwindCSS, you can do the following:
+
+```tsx
+// postcss.config.mjs in your NextJS app
+const config = {
+  plugins: ['@tailwindcss/postcss'],
+};
+
+export default config;
+```
