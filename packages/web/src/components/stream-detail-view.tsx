@@ -1,11 +1,11 @@
 'use client';
 
+import { readStream } from '@workflow/web-shared';
+import type { EnvMap } from '@workflow/web-shared/server';
 import { useParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { buildUrlWithConfig } from '@/lib/config';
-import { readStream } from '@/workflow-trace-viewer';
-import type { EnvMap } from '@/workflow-trace-viewer/api/workflow-server-actions';
 import { BackLink } from './display-utils/back-link';
 
 interface StreamDetailViewProps {

@@ -174,7 +174,9 @@ export async function fetchRun(
   try {
     const world = getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData });
-    return createResponse(hydrate(run as WorkflowRun));
+    const hydratedRun = hydrate(run as WorkflowRun);
+    console.log('hydratedRun', hydratedRun.input);
+    return createResponse(hydratedRun);
   } catch (error) {
     console.error('Failed to fetch run:', error);
     return {
@@ -405,25 +407,32 @@ export async function cancelRun(
 }
 
 /**
- * Start a new workflow run
+ * Start a new workflow run.
+ *
+ * This requires the ID of an existing run of which to re-use the deployment ID of.
  */
-export async function startRun(
+export async function recreateRun(
   worldEnv: EnvMap,
-  workflowName: string,
-  args: any[]
+  runId: string
 ): Promise<ServerActionResult<string>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
-    const deploymentId = await world.getDeploymentId();
-    const run = await start({ workflowId: workflowName }, args, {
-      deploymentId,
-    });
-    return createResponse(run.runId);
+    const world = getWorldFromEnv({ ...worldEnv });
+    const run = await world.runs.get(runId);
+    const hydratedRun = hydrate(run as WorkflowRun);
+    const deploymentId = run.deploymentId;
+    const newRun = await start(
+      { workflowId: run.workflowName },
+      hydratedRun.input,
+      {
+        deploymentId,
+      }
+    );
+    return createResponse(newRun.runId);
   } catch (error) {
     console.error('Failed to start run:', error);
     return {
       success: false,
-      error: createServerActionError(error, 'start', { workflowName, args }),
+      error: createServerActionError(error, 'recreateRun', { runId }),
     };
   }
 }

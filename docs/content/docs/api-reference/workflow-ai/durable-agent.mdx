@@ -188,14 +188,15 @@ import { z } from 'zod';
 const approvalHook = defineHook<{ approved: boolean; reason: string }>();
 
 async function scheduleTask({ delaySeconds }: { delaySeconds: number }) {
-  "use step";
-  // Use core library features like sleep() in tools
+  // Note: No "use step" for this tool call,
+  // since `sleep()` is a workflow level function
   await sleep(`${delaySeconds}s`);
   return `Slept for ${delaySeconds} seconds`;
 }
 
 async function requestApproval({ message }: { message: string }) {
-  // Note: No "use step" for this tool call
+  // Note: No "use step" for this tool call either,
+  // since hooks are awaited at the workflow level
 
   // Utilize a Hook for Human-in-the-loop approval
   const hook = approvalHook.create({

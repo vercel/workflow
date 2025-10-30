@@ -1,6 +1,7 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
+import { getErrorMessage, useWorkflowRuns } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
@@ -37,8 +38,6 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import { useWorkflowRuns } from '@/workflow-trace-viewer';
-import { getErrorMessage } from '@/workflow-trace-viewer/api/workflow-api-client';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { TableSkeleton } from './display-utils/table-skeleton';

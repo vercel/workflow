@@ -2,6 +2,7 @@ import { Args } from '@oclif/core';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import { cliFlags } from '../lib/inspect/flags.js';
+import { setupCliWorld } from '../lib/inspect/setup.js';
 import { launchWebUI } from '../lib/inspect/web.js';
 
 export default class Web extends BaseCommand {
@@ -45,6 +46,10 @@ export default class Web extends BaseCommand {
     try {
       const { args, flags } = await this.parse(Web);
       const id = args.id;
+
+      // Setup the CLI world to write env vars from flags
+      // This ensures backend, authToken, team, project, etc. are properly set
+      await setupCliWorld(flags, this.config.version);
 
       // Launch web UI with 'run' as the default resource
       await launchWebUI('run', id, flags, this.config.version);

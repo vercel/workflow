@@ -1,9 +1,9 @@
 'use client';
 
+import type { EnvMap } from '@workflow/web-shared/server';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useMemo } from 'react';
 import type { WorldConfig } from '@/lib/config-world';
-import type { EnvMap } from '@/workflow-trace-viewer/api/workflow-server-actions';
 
 // Default configuration
 const DEFAULT_CONFIG: WorldConfig = {

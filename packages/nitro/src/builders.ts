@@ -71,11 +71,13 @@ export class LocalBuilder extends BaseBuilder {
 }
 
 export function getWorkflowDirs(nitro: Nitro) {
-  return unique([
-    ...(nitro.options.workflow?.dirs ?? []),
-    join(nitro.options.rootDir, 'workflows'),
-    ...nitro.options.scanDirs.map((dir) => join(dir, 'workflows')),
-  ].map((dir) => resolve(nitro.options.rootDir, dir))).sort();
+  return unique(
+    [
+      ...(nitro.options.workflow?.dirs ?? []),
+      join(nitro.options.rootDir, 'workflows'),
+      ...nitro.options.scanDirs.map((dir) => join(dir, 'workflows')),
+    ].map((dir) => resolve(nitro.options.rootDir, dir))
+  ).sort();
 }
 
 function unique<T>(array: T[]): T[] {
