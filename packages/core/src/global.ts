@@ -18,6 +18,7 @@ export interface WaitInvocationQueueItem {
   type: 'wait';
   correlationId: string;
   resumeAt: Date;
+  hasCreatedEvent?: boolean;
 }
 
 export type QueueItem =

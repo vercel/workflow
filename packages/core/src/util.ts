@@ -52,7 +52,7 @@ export function buildWorkflowSuspensionMessage(
   runId: string,
   stepCount: number,
   hookCount: number,
-  waitCount: number = 0
+  waitCount: number
 ): string | null {
   if (stepCount === 0 && hookCount === 0 && waitCount === 0) {
     return null;
@@ -66,17 +66,20 @@ export function buildWorkflowSuspensionMessage(
     parts.push(`${hookCount} ${hookCount === 1 ? 'hook' : 'hooks'}`);
   }
   if (waitCount > 0) {
-    parts.push(`${waitCount} ${waitCount === 1 ? 'wait' : 'waits'}`);
+    parts.push(`${waitCount} ${waitCount === 1 ? 'timer' : 'timers'}`);
   }
 
-  let resumeMsg = 'steps are created';
-  if (hookCount > 0 && waitCount > 0) {
-    resumeMsg = 'steps are created, hooks are triggered, and waits fire';
-  } else if (hookCount > 0) {
-    resumeMsg = 'steps are created and hooks are triggered';
-  } else if (waitCount > 0) {
-    resumeMsg = 'steps are created and waits fire';
+  const resumeMsgParts: string[] = [];
+  if (stepCount > 0) {
+    resumeMsgParts.push('steps are completed');
   }
+  if (hookCount > 0) {
+    resumeMsgParts.push('hooks are received');
+  }
+  if (waitCount > 0) {
+    resumeMsgParts.push('timers have elapsed');
+  }
+  const resumeMsg = resumeMsgParts.join(' and ');
 
   return `[Workflows] "${runId}" - ${parts.join(' and ')} to be enqueued\n  Workflow will suspend and resume when ${resumeMsg}`;
 }
