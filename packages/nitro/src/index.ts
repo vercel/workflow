@@ -1,7 +1,10 @@
-import { posix } from 'node:path';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
+import { join } from 'pathe';
 import { LocalBuilder, VercelBuilder } from './builders';
 import { workflowRollupPlugin } from './rollup-plugin';
+import type { ModuleOptions } from './types';
+
+export type { ModuleOptions };
 
 export default {
   name: 'workflow/nitro',
@@ -61,13 +64,13 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
     // Nitro v2 (legacy)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import { fromWebHandler } from "h3";
-    import { POST } from "${posix.join(nitro.options.buildDir, buildPath)}";
+    import { POST } from "${join(nitro.options.buildDir, buildPath)}";
     export default fromWebHandler(POST);
   `;
   } else {
     // Nitro v3+ (native web handlers)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
-    import { POST } from "${posix.join(nitro.options.buildDir, buildPath)}";
+    import { POST } from "${join(nitro.options.buildDir, buildPath)}";
     export default ({ req }) => POST(req);
   `;
   }
