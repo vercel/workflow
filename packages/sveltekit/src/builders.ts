@@ -7,7 +7,7 @@ import type { WorkflowConfig } from '@workflow/cli/dist/lib/config/types.js';
 
 const CommonBuildOptions = {
   dirs: ['workflows', 'src/workflows'],
-  buildTarget: 'sveltekit' as const, // unused in base
+  buildTarget: 'sveltekit' as const,
   stepsBundlePath: '', // unused in base
   workflowsBundlePath: '', // unused in base
   webhookBundlePath: '', // unused in base
@@ -26,11 +26,23 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       this.config.workingDir,
       '.vercel/output/config.json'
     );
-    const originalConfig = JSON.parse(await readFile(configPath, 'utf-8'));
+
+    let existingConfig: { version?: number; routes?: any[] } | null = null;
+    try {
+      const existingConfigContent = await readFile(configPath, 'utf-8');
+      existingConfig = JSON.parse(existingConfigContent);
+    } catch {}
+
     await super.build();
-    const newConfig = JSON.parse(await readFile(configPath, 'utf-8'));
-    originalConfig.routes.unshift(...newConfig.routes);
-    await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
+
+    if (existingConfig?.routes) {
+      const workflowConfig = JSON.parse(await readFile(configPath, 'utf-8'));
+      const mergedConfig = {
+        ...workflowConfig,
+        routes: [...workflowConfig.routes, ...existingConfig.routes],
+      };
+      await writeFile(configPath, JSON.stringify(mergedConfig, null, 2));
+    }
   }
 }
 
