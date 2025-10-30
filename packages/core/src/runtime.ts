@@ -392,14 +392,12 @@ export function workflowEntrypoint(workflowCode: string) {
                       }
                     );
                   } catch (err) {
-                    if (WorkflowAPIError.is(err)) {
-                      if (err.status === 409) {
-                        // Step already exists, so we can skip it
-                        console.warn(
-                          `Step "${queueItem.stepName}" with correlation ID "${queueItem.correlationId}" already exists, skipping: ${err.message}`
-                        );
-                        continue;
-                      }
+                    if (WorkflowAPIError.is(err) && err.status === 409) {
+                      // Step already exists, so we can skip it
+                      console.warn(
+                        `Step "${queueItem.stepName}" with correlation ID "${queueItem.correlationId}" already exists, skipping: ${err.message}`
+                      );
+                      continue;
                     }
                     throw err;
                   }
