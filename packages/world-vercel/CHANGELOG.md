@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- e367046: Allow setting baseUrl and token for queue service
+
 ## 4.0.1-beta.2
 
 ### Patch Changes
