@@ -53,7 +53,7 @@ process.on('beforeExit', () => {
       file,
       JSON.stringify({
         ...existingConfig,
-        config,
+        ...config,
       })
     );
   }
