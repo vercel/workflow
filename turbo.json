@@ -4,17 +4,17 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "outputs": ["dist/**", "build", ".svelte-kit"]
     },
     "dev": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "outputs": ["dist/**", "build", ".svelte-kit"]
     },
     "typecheck": {
-      "dependsOn": ["^build"]
+      "outputs": ["dist/**", "build", ".svelte-kit"]
     },
     "test": {
-      "dependsOn": ["^build"]
+      "outputs": ["dist/**", "build", ".svelte-kit"]
     },
     "clean": {
       "cache": false
