@@ -47,7 +47,6 @@ process.on('beforeExit', () => {
       },
     },
   ]) {
-    console.log('UPDATED FUNCTION CONFIG', file);
     const existingConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.writeFileSync(
       file,
@@ -56,6 +55,8 @@ process.on('beforeExit', () => {
         ...config,
       })
     );
+
+    console.log('UPDATED FUNCTION CONFIG', file, fs.readFileSync(file, 'utf8'));
   }
 });
 
