@@ -2,7 +2,7 @@ import express from 'express';
 import { toFetchHandler } from 'srvx/node';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from '../_workflows';
+import { allWorkflows } from '../_workflows.js';
 
 const app = express();
 
