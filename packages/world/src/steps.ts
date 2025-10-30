@@ -45,6 +45,7 @@ export interface UpdateStepRequest {
   output?: SerializedData;
   error?: string;
   errorCode?: string;
+  retryAfter?: Date;
 }
 
 export interface GetStepParams {
