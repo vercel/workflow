@@ -254,7 +254,19 @@ export abstract class BaseBuilder {
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
     const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
-    const entryContent = `
+
+    let entryContent = '';
+    if (this.config.buildTarget === 'next') {
+      entryContent = `
+    // Built in steps
+    import '${builtInSteps}';
+    // User steps
+    ${imports}
+    // API entrypoint
+    export { stepEntrypoint as POST } from 'workflow/runtime';
+    `;
+    } else if (this.config.buildTarget === 'sveltekit') {
+      entryContent = `
     // Built in steps
     import '${builtInSteps}';
     // User steps
@@ -273,6 +285,7 @@ export abstract class BaseBuilder {
       return stepEntrypoint(normalRequest);
     }
     `;
+    }
 
     // Bundle with esbuild and our custom SWC plugin
     const esbuildCtx = await esbuild.context({
@@ -467,8 +480,18 @@ export abstract class BaseBuilder {
     const bundleFinal = async (interimBundle: string) => {
       const workflowBundleCode = interimBundle;
 
-      // Create the workflow function handler with proper linter suppressions
-      const workflowFunctionCode = `// biome-ignore-all lint: generated file
+      let workflowFunctionCode = '';
+      if (this.config.buildTarget === 'next') {
+        workflowFunctionCode = `// biome-ignore-all lint: generated file
+/* eslint-disable */
+import { workflowEntrypoint } from 'workflow/runtime';
+
+const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
+
+export const POST = workflowEntrypoint(workflowCode);`;
+      } else if (this.config.buildTarget === 'sveltekit') {
+        // Create the workflow function handler with proper linter suppressions
+        workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
@@ -485,6 +508,7 @@ export const POST = async ({ request }) => {
   })
   return workflowEntrypoint(workflowCode)(normalRequest);
 }`;
+      }
 
       // we skip the final bundling step for Next.js so it can bundle itself
       if (!bundleFinalOutput) {
