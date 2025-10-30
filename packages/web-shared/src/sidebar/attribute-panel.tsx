@@ -4,7 +4,7 @@ import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import { AlertCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { DetailCard } from './detail-card';
 
 const JsonBlock = (value: unknown) => {
@@ -50,6 +50,7 @@ const attributeOrder: AttributeKey[] = [
   'startedAt',
   'updatedAt',
   'completedAt',
+  'retryAfter',
   'error',
   'errorCode',
   'metadata',
@@ -98,6 +99,7 @@ const attributeToDisplayFn: Record<
   startedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   updatedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   completedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
+  retryAfter: (value: unknown) => new Date(String(value)).toLocaleString(),
   // Resolved attributes, won't actually use this function
   metadata: JsonBlock,
   input: (value: unknown) => {

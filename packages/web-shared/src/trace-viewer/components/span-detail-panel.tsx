@@ -97,7 +97,7 @@ const getGroupedAttributes = (
 };
 
 // biome-ignore lint/correctness/noUnusedFunctionParameters: ignored using `--suppress`
-const getAncestors = (root: RootNode, start: SpanNode | null): SpanNode[] => {
+const getAncestors = (_root: RootNode, start: SpanNode | null): SpanNode[] => {
   const result: SpanNode[] = [];
 
   if (!start) return result;

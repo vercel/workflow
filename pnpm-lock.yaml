@@ -583,6 +583,9 @@ importers:
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
+      '@workflow/web-shared':
+        specifier: workspace:*
+        version: link:../web-shared
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
@@ -595,15 +598,54 @@ importers:
       date-fns:
         specifier: ^4.1.0
         version: 4.1.0
-      json-colorizer:
-        specifier: ^3.0.1
-        version: 3.0.1
       lucide-react:
         specifier: ^0.469.0
         version: 0.469.0(react@19.1.0)
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      react:
+        specifier: 19.1.0
+        version: 19.1.0
+      react-dom:
+        specifier: 19.1.0
+        version: 19.1.0(react@19.1.0)
+      sonner:
+        specifier: ^2.0.7
+        version: 2.0.7(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      tailwind-merge:
+        specifier: ^2.5.5
+        version: 2.6.0
+      tailwindcss:
+        specifier: ^4
+        version: 4.1.13
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
+  packages/web-shared:
+    dependencies:
+      '@tailwindcss/postcss':
+        specifier: ^4
+        version: 4.1.13
+      '@workflow/core':
+        specifier: workspace:*
+        version: link:../core
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../world
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      date-fns:
+        specifier: ^4.1.0
+        version: 4.1.0
+      lucide-react:
+        specifier: ^0.469.0
+        version: 0.469.0(react@19.1.0)
       react:
         specifier: 19.1.0
         version: 19.1.0
@@ -622,6 +664,22 @@ importers:
       tailwindcss:
         specifier: ^4
         version: 4.1.13
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 'catalog:'
+        version: 2.2.5
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.6.2
+      '@types/react':
+        specifier: ^19
+        version: 19.1.13
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.1.9(@types/react@19.1.13)
+      '@workflow/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -726,6 +784,9 @@ importers:
       '@workflow/world-local':
         specifier: workspace:*
         version: link:../world-local
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
       drizzle-orm:
         specifier: ^0.31.2
         version: 0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.1.13)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0)
@@ -807,8 +868,8 @@ importers:
         specifier: 'catalog:'
         version: 3.0.3
       '@vercel/queue':
-        specifier: 0.0.0-alpha.24
-        version: 0.0.0-alpha.24
+        specifier: 0.0.0-alpha.28
+        version: 0.0.0-alpha.28
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -4665,8 +4726,8 @@ packages:
     engines: {node: '>=20.0.0'}
     hasBin: true
 
-  '@vercel/queue@0.0.0-alpha.24':
-    resolution: {integrity: sha512-TnXWT/k6A/Hy+Mf6y14hnzftFJ3x+pZkczX4GQWU1E1hpv8xMspxtDa70NWlvsqKb2ADhQ9DhUj02G9kdJGrhQ==}
+  '@vercel/queue@0.0.0-alpha.28':
+    resolution: {integrity: sha512-EPFrBQPJrGjt8lr9kTmio5G57CGILnf4+pKalQNt88cAinXxaWLrvpBTzwG0esx+yreaUoqkFzpgWxTjsgZtlg==}
     engines: {node: '>=20.0.0'}
     hasBin: true
 
@@ -6783,9 +6844,6 @@ packages:
   json-buffer@3.0.1:
     resolution: {integrity: sha512-4bV5BfR2mqfQTJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm9G6mI2sfSQ==}
 
-  json-colorizer@3.0.1:
-    resolution: {integrity: sha512-4YyRAbD6eHeRnJD9vo0zjiU5fyY9QR6T+iYuH5DpO0XPThKWozpD4MaeY/8nLZIkHC3yEQMFLL+6P94E+JekDw==}
-
   json-schema-traverse@0.4.1:
     resolution: {integrity: sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==}
 
@@ -7299,6 +7357,10 @@ packages:
   mixpart@0.0.5-alpha.0:
     resolution: {integrity: sha512-XS3bfxqdHsxqLoK0DnkGiM++KZGhXFj8KrzfNND/4d0DDBkbVdmlEajIAOQ+2+tHVw2zFI1ng8SnJSOfVZg0HA==}
     engines: {node: '>=22.0.0'}
+
+  mixpart@0.0.5-alpha.1:
+    resolution: {integrity: sha512-2ZfG/NO2SVE9HLk1/W+yOrIOA0d674ljZExLdievZQpYjbJYQjIdye8vNMR63yF7nN/NbO9q8mp16JUEYBCilg==}
+    engines: {node: '>=20.0.0'}
 
   mkdirp-classic@0.5.3:
     resolution: {integrity: sha512-gKLcREMhtuZRwRAfqP3RFW+TK4JqApVBtOIftVgjuABpAtpxhPGaDcfvbhNvD0B8iD1oUr/txX35NjcaY6Ns/A==}
@@ -13732,10 +13794,10 @@ snapshots:
     dependencies:
       mixpart: 0.0.5-alpha.0
 
-  '@vercel/queue@0.0.0-alpha.24':
+  '@vercel/queue@0.0.0-alpha.28':
     dependencies:
       '@vercel/oidc': 3.0.3
-      mixpart: 0.0.5-alpha.0
+      mixpart: 0.0.5-alpha.1
 
   '@vitejs/plugin-vue-jsx@5.1.1(vite@7.1.11(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.0))(vue@3.5.22(typescript@5.9.3))':
     dependencies:
@@ -16008,10 +16070,6 @@ snapshots:
   json-buffer@3.0.1:
     optional: true
 
-  json-colorizer@3.0.1:
-    dependencies:
-      colorette: 2.0.20
-
   json-schema-traverse@0.4.1:
     optional: true
 
@@ -16796,6 +16854,8 @@ snapshots:
   mixpart@0.0.4: {}
 
   mixpart@0.0.5-alpha.0: {}
+
+  mixpart@0.0.5-alpha.1: {}
 
   mkdirp-classic@0.5.3: {}
 

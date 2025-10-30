@@ -1,5 +1,13 @@
 # @workflow/core
 
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- 6504e42: Add support for bigint serialization
+- Updated dependencies [e367046]
+  - @workflow/world-vercel@4.0.1-beta.3
+
 ## 4.0.1-beta.3
 
 ### Patch Changes
