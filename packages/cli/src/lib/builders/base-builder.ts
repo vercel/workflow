@@ -253,7 +253,12 @@ export abstract class BaseBuilder {
 
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
-    const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
+    const imports = stepFiles
+      .map((file) => {
+        const normalizedFile = file.replace(/\\/g, '/');
+        return `import '${normalizedFile}';`;
+      })
+      .join('\n');
     const entryContent = `
     // Built in steps
     import '${builtInSteps}';
@@ -361,11 +366,11 @@ export abstract class BaseBuilder {
     const imports =
       `globalThis.__private_workflows = new Map();\n` +
       workflowFiles
-        .map(
-          (file, workflowFileIdx) =>
-            `import * as workflowFile${workflowFileIdx} from '${file}';
-            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`
-        )
+        .map((file, workflowFileIdx) => {
+          const normalizedFile = file.replace(/\\/g, '/');
+          return `import * as workflowFile${workflowFileIdx} from '${normalizedFile}';
+            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
+        })
         .join('\n');
 
     const bundleStartTime = Date.now();

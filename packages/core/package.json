@@ -41,7 +41,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
-    "test": "WORKFLOW_TARGET_WORLD=embedded vitest run src",
+    "test": "node ./scripts/run-tests.js",
     "test:e2e": "vitest run e2e",
     "typecheck": "tsc --noEmit"
   },
