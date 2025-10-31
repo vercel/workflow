@@ -1,8 +1,8 @@
 import type { Nitro } from 'nitro/types';
 import { join, resolve } from 'pathe';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder';
-import { VercelBuildOutputAPIBuilder } from '@workflow/cli/dist/lib/builders/vercel-build-output-api';
+import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder.js';
+import { VercelBuildOutputAPIBuilder } from '@workflow/cli/dist/lib/builders/vercel-build-output-api.js';
 
 const CommonBuildOptions = {
   buildTarget: 'next' as const, // unused in base
