@@ -1,5 +1,13 @@
 # @workflow/ai
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 577d212: Use instance API endpoint in WorkflowChatTransport
+- Updated dependencies [70be894]
+  - workflow@4.0.1-beta.6
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

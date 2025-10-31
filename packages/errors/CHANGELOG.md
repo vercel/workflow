@@ -1,5 +1,11 @@
 # @workflow/errors
 
+## 4.0.1-beta.2
+
+### Patch Changes
+
+- 796fafd: Add static `is()` methods to all Error subclasses
+
 ## 4.0.1-beta.1
 
 ### Patch Changes

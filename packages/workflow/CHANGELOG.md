@@ -1,5 +1,21 @@
 # workflow
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 70be894: Implement `sleep()` natively into the workflow runtime
+- Updated dependencies [796fafd]
+- Updated dependencies [796fafd]
+- Updated dependencies [70be894]
+- Updated dependencies [20d51f0]
+  - @workflow/core@4.0.1-beta.5
+  - @workflow/errors@4.0.1-beta.2
+  - @workflow/cli@4.0.1-beta.6
+  - @workflow/next@4.0.1-beta.6
+  - @workflow/nitro@4.0.1-beta.6
+  - @workflow/typescript-plugin@4.0.1-beta.3
+
 ## 4.0.1-beta.5
 
 ### Patch Changes
