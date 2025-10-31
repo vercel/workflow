@@ -28,6 +28,7 @@
       "default": "./dist/index.js"
     },
     "./api": "./dist/api.js",
+    "./bun": "./dist/bun.js",
     "./internal/errors": "./dist/internal/errors.js",
     "./internal/serialization": "./dist/internal/serialization.js",
     "./internal/builtins": "./dist/internal/builtins.js",
@@ -45,13 +46,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@types/bun": "^1.3.1",
+    "@workflow/bun": "workspace:*",
     "@workflow/cli": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
-    "@workflow/typescript-plugin": "workspace:*",
-    "ms": "2.1.3",
     "@workflow/next": "workspace:*",
-    "@workflow/nitro": "workspace:*"
+    "@workflow/nitro": "workspace:*",
+    "@workflow/typescript-plugin": "workspace:*",
+    "bun": "^1.3.0",
+    "ms": "2.1.3"
   },
   "devDependencies": {
     "@types/ms": "^2.1.0",
