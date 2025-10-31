@@ -13,7 +13,7 @@ This guide will walk through setting up your first workflow in a SvelteKit app. 
 <Step>
 ## Create Your SvelteKit Project
 
-Start by creating a new Next.js project. This command will create a new directory named `my-workflow-app` and setup a Next.js project inside it.
+Start by creating a new SvelteKit project. This command will create a new directory named `my-workflow-app` with a minimal setup and setup a SvelteKit project inside it.
 
 ```bash
 npx sv create my-workflow-app --template=minimal --types=ts --no-add-ons
@@ -232,7 +232,7 @@ Once your development server is running, you can trigger your workflow by runnin
 curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/signup
 ```
 
-Check the Next.js development server logs to see your workflow execute as well as the steps that are being processed.
+Check the SvelteKit development server logs to see your workflow execute as well as the steps that are being processed.
 
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
