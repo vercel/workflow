@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { transform } from '@swc/core';
 import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder';
 import type { WorkflowConfig } from '@workflow/cli/dist/lib/config/types';
@@ -69,15 +69,62 @@ export class LocalBuilder extends BaseBuilder {
       inputFiles,
     });
 
-    await this.createWebhookBundle({
-      outfile: join(this.#outDir, 'webhook.js'),
-      bundle: false,
-    });
+    await this.createBunWebhookBundle(join(this.#outDir, 'webhook.js'));
 
     // Add .workflows to .gitignore
-    writeFileSync(
-      join(this.config.workingDir, '.workflows', '.gitignore'),
-      '*\n'
-    );
+    writeFileSync(join(this.#outDir, '.gitignore'), '*\n');
+  }
+
+  private async createBunWebhookBundle(outfile: string): Promise<void> {
+    console.log('Creating webhook route');
+    await mkdir(dirname(outfile), { recursive: true });
+
+    const routeContent = `import { resumeWebhook } from 'workflow/api';
+
+async function handler(request) {
+  const url = new URL(request.url);
+  const pathParts = url.pathname.split('/');
+  const token = decodeURIComponent(pathParts[pathParts.length - 1]);
+
+  if (!token) {
+    return new Response('Missing token', { status: 400 });
+  }
+
+  try {
+    const response = await resumeWebhook(token, request);
+    return response;
+  } catch (error) {
+    console.error('Error during resumeWebhook', error);
+    return new Response(null, { status: 404 });
+  }
+}
+
+export const GET = handler;
+export const POST = handler;
+export const PUT = handler;
+export const PATCH = handler;
+export const DELETE = handler;
+export const HEAD = handler;
+export const OPTIONS = handler;
+`;
+
+    const tempFile = join(dirname(outfile), 'webhook-temp.js');
+    writeFileSync(tempFile, routeContent);
+
+    const result = await Bun.build({
+      entrypoints: [tempFile],
+      outdir: dirname(outfile),
+      naming: 'webhook.js',
+      target: 'bun',
+      format: 'esm',
+    });
+
+    if (!result.success) {
+      throw new Error('Failed to build webhook bundle');
+    }
+
+    // Clean up temp file
+    const fs = await import('node:fs');
+    fs.unlinkSync(tempFile);
   }
 }
