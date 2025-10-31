@@ -1,2 +1,1 @@
-preload = ["./workflow-plugin.ts"]
-
+preload = ["workflow/bun"]

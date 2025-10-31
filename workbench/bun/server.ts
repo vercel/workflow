@@ -1,10 +1,9 @@
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import * as step from './.workflows/steps.js';
+import * as webhook from './.workflows/webhook.js';
+import * as flow from './.workflows/workflows.js';
 import { allWorkflows } from './_workflows.js';
-
-const flow = await import('./.workflows/workflows.js');
-const step = await import('./.workflows/steps.js');
-const webhook = await import('./.workflows/webhook.js');
 
 const server = Bun.serve({
   port: 3000,
