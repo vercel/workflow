@@ -11,7 +11,7 @@ await localBuilder.build();
 
 process.on('beforeExit', () => {
   console.log('BEFORE EXIT');
-  // don't attempt patching functions output if not Vercel adapter
+  // Don't patch functions output if not in Vercel adapter
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     return;
   }
@@ -47,7 +47,7 @@ process.on('beforeExit', () => {
       },
     },
   ]) {
-    // we need to un-symlink these as they can't be shared due to different
+    // Un-symlink these as they can't be shared due to different
     // experimental triggers config
     const toCopy = fs.readdirSync(path.dirname(file));
     fs.unlinkSync(path.dirname(file));
@@ -64,6 +64,7 @@ process.on('beforeExit', () => {
       );
     }
 
+    // Update .vc-config.json with the new experimental triggers config
     const existingConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.writeFileSync(
       file,
@@ -72,8 +73,6 @@ process.on('beforeExit', () => {
         ...config,
       })
     );
-
-    console.log('UPDATED FUNCTION CONFIG', file, fs.readFileSync(file, 'utf8'));
   }
 });
 
