@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc && node ./scripts/copy-trace-css.mjs",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && npx rimraf dist",
+    "clean": "tsc --build --clean && node ./scripts/clean.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome format --write"
