@@ -440,7 +440,7 @@ export const Nest = (props: ComponentProps<'svg'>) => (
 export const NestGray = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
-    id="Bun"
+    id="NestJS"
     viewBox="0 0 80 70"
     {...props}
   >
