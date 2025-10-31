@@ -1,16 +1,43 @@
 import workflowPlugin from 'workflow/bun';
 
-Bun.plugin(workflowPlugin());
+await Bun.plugin(workflowPlugin());
+
+const flow = await import('./.workflows/workflows.js');
+const step = await import('./.workflows/steps.js');
+const webhook = await import('./.workflows/webhook.js');
 
 const server = Bun.serve({
-  // `routes` requires Bun v1.2.3+
-  routes: {
-    '/': new Response(await Bun.file('./index.html').text()),
-  },
+  port: 3000,
+  async fetch(req: Request) {
+    const url = new URL(req.url);
 
-  // (optional) fallback for unmatched routes:
-  // Required if Bun's version < 1.2.3
-  fetch(_) {
+    if (
+      url.pathname === '/.well-known/workflow/v1/flow' &&
+      req.method === 'POST'
+    ) {
+      return flow.POST(req);
+    }
+
+    if (
+      url.pathname === '/.well-known/workflow/v1/step' &&
+      req.method === 'POST'
+    ) {
+      return step.POST(req);
+    }
+
+    if (url.pathname.startsWith('/.well-known/workflow/v1/webhook/')) {
+      const handler = webhook[req.method as keyof typeof webhook];
+      if (handler && typeof handler === 'function') {
+        return handler(req);
+      }
+    }
+
+    if (url.pathname === '/') {
+      return new Response(await Bun.file('./index.html').text(), {
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }
+
     return new Response('Not Found', { status: 404 });
   },
 });

@@ -1,0 +1,13 @@
+{
+  "workflowFiles": [
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/example/workflows/3_streams.ts",
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/example/workflows/2_control_flow.ts",
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/example/workflows/4_ai.ts",
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/example/workflows/5_hooks.ts",
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/bun/workflows/0_demo.ts",
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/example/workflows/6_batching.ts",
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/example/workflows/98_duplicate_case.ts",
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/example/workflows/1_simple.ts",
+    "/Users/eshanbetrabet/Documents/Projects/feat-add-bun-support/workbench/example/workflows/99_e2e.ts"
+  ]
+}
