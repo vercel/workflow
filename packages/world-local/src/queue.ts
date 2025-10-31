@@ -4,6 +4,12 @@ import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import z from 'zod';
 
+// For local queue, there is no technical limit on the message visibility lifespan,
+// but the environment variable can be used for testing purposes to set a max visibility limit.
+const LOCAL_QUEUE_MAX_VISIBILITY =
+  parseInt(process.env.WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
+  Infinity;
+
 export function createQueue(port?: number): Queue {
   const transport = new JsonTransport();
   const generateId = monotonicFactory();
@@ -69,8 +75,8 @@ export function createQueue(port?: number): Queue {
 
         if (response.status === 503) {
           try {
-            const retryIn = Number(JSON.parse(text).retryIn);
-            await setTimeout(retryIn * 1000);
+            const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
+            await setTimeout(timeoutSeconds * 1000);
             defaultRetriesLeft++;
             continue;
           } catch {}
@@ -124,12 +130,18 @@ export function createQueue(port?: number): Queue {
 
       const body = await new JsonTransport().deserialize(req.body);
       try {
-        const response = await handler(body, { attempt, queueName, messageId });
-        const retryIn =
-          typeof response === 'undefined' ? null : response.timeoutSeconds;
+        const result = await handler(body, { attempt, queueName, messageId });
 
-        if (retryIn) {
-          return Response.json({ retryIn }, { status: 503 });
+        let timeoutSeconds: number | null = null;
+        if (typeof result?.timeoutSeconds === 'number') {
+          timeoutSeconds = Math.min(
+            result.timeoutSeconds,
+            LOCAL_QUEUE_MAX_VISIBILITY
+          );
+        }
+
+        if (timeoutSeconds) {
+          return Response.json({ timeoutSeconds }, { status: 503 });
         }
 
         return Response.json({ ok: true });

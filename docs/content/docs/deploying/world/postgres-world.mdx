@@ -2,7 +2,8 @@
 title: Postgres World
 ---
 
-import { Callout } from '@/components/ui/callout';
+import { Callout } from "@/components/ui/callout";
+import { Steps } from "@/components/steps";
 
 # Postgres World
 
@@ -24,25 +25,112 @@ The PostgreSQL world is a reference implementation of a [world](/docs/deploying/
 
 This world is designed for long-running processes, so it can receive and dispatch events from a PostgreSQL database, and isn't meant to be deployed on serverless platforms like Vercel due to that nature.
 
+## Setup
 
-## Usage
+<Steps>
 
-Install the package and set the world target using the following commands:
+### Install the package
+
+Install the `@workflow/world-postgres` package:
 
 ```bash
-# Install the package
-$ npm install @workflow/world-postgres
-# Set the world target environment variable
-$ export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+npm install @workflow/world-postgres
 ```
 
-## Configuration
+### Set up the database schema
 
-Configure the world using the following environments variables:
+Run the setup script to create the required database tables:
 
-| Variable                               | Description                                                  | Default                                         |
-| -------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------- |
-| `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `postgres://world:world@localhost:5432/world` |
-| `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | `workflow_`                                               |
-| `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `10`                                            |
+```bash
+pnpm exec workflow-postgres-setup
+```
 
+This will create the following tables in your PostgreSQL database:
+
+- `workflow_runs` - Stores workflow execution state
+- `workflow_events` - Stores workflow events
+- `workflow_steps` - Stores workflow step state
+- `workflow_hooks` - Stores workflow hooks
+- `workflow_stream_chunks` - Stores streaming data
+
+You should see output like:
+
+```
+🔧 Setting up database schema...
+📍 Connection: postgres://postgres:****@db.yourcloudprovider.co:5432/postgres
+✅ Database schema created successfully!
+```
+
+### Configure environment variables
+
+Add the following environment variables to your `.env` file:
+
+```bash
+WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+WORKFLOW_POSTGRES_URL="postgres://postgres:password@db.yourdb.co:5432/postgres"
+WORKFLOW_POSTGRES_JOB_PREFIX="workflow_"
+WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10
+```
+
+| Variable                               | Description                        | Default                                       |
+| -------------------------------------- | ---------------------------------- | --------------------------------------------- |
+| `WORKFLOW_TARGET_WORLD`                | Target world implementation to use | Required                                      |
+| `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string       | `postgres://world:world@localhost:5432/world` |
+| `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names         | `workflow_`                                   |
+| `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers       | `10`                                          |
+
+### Initialize the world
+
+Create an `instrumentation.ts` file in your project root to initialize and start the world:
+
+```ts title="instrumentation.ts"
+import { createWorld } from "@workflow/world-postgres";
+
+export async function register() {
+  if (process.env.NEXT_RUNTIME !== "edge") {
+    console.log("Starting workflow workers...");
+
+    const world = createWorld({
+      connectionString: process.env.WORKFLOW_POSTGRES_URL!,
+      jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX || "workflow_",
+      queueConcurrency: parseInt(
+        process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || "10",
+        10
+      ),
+    });
+
+    await world.start?.();
+    console.log("Workflow workers started!");
+  }
+}
+```
+
+### Configure Next.js
+
+Enable the instrumentation hook in your `next.config.ts`:
+
+```ts title="next.config.ts"
+import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
+
+const nextConfig: NextConfig = {
+  // … rest of your Next.js config
+};
+
+export default withWorkflow(nextConfig);
+
+export default withWorkflow(nextConfig);
+```
+
+</Steps>
+
+## How it works
+
+The Postgres World uses PostgreSQL as a durable backend for workflow execution:
+
+- **Job Queue**: Uses [pg-boss](https://github.com/timgit/pg-boss) for reliable job processing
+- **Event Streaming**: Leverages PostgreSQL's NOTIFY/LISTEN for real-time event distribution
+- **State Persistence**: All workflow state is stored in PostgreSQL tables
+- **Worker Management**: Supports configurable concurrent workers for job processing
+
+This setup ensures that your workflows can survive application restarts and failures, with all state reliably persisted to your PostgreSQL database.

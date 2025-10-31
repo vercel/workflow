@@ -9,11 +9,11 @@
     "start": "node .output/server/index.mjs"
   },
   "devDependencies": {
-    "workflow": "workspace:*",
     "ai": "catalog:",
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",
     "openai": "^6.1.0",
+    "workflow": "workspace:*",
     "zod": "catalog:"
   }
 }

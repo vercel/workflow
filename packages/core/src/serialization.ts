@@ -133,6 +133,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 // ! If a type is added here, it MUST also be added to the `Serializable` type in `schemas.ts`
 export interface SerializableSpecial {
   ArrayBuffer: string; // base64 string
+  BigInt: string; // string representation of bigint
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
   Date: string; // ISO string
@@ -210,6 +211,7 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
     ArrayBuffer: (value) =>
       value instanceof global.ArrayBuffer &&
       abToBase64(value, 0, value.byteLength),
+    BigInt: (value) => typeof value === 'bigint' && value.toString(),
     BigInt64Array: (value) =>
       value instanceof global.BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
@@ -474,6 +476,7 @@ function getCommonRevivers(global: Record<string, any> = globalThis) {
   }
   return {
     ArrayBuffer: reviveArrayBuffer,
+    BigInt: (value: string) => global.BigInt(value),
     BigInt64Array: (value: string) => {
       const ab = reviveArrayBuffer(value);
       return new global.BigInt64Array(ab);

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Workflow SDK is a durable functions framework for JavaScript/TypeScript that enables writing long-running, stateful application logic on top of stateless compute. The runtime persists progress as an event log and deterministically replays code to reconstruct state after cold starts, failures, or scale events.
+Workflow DevKit is a durable functions framework for JavaScript/TypeScript that enables writing long-running, stateful application logic on top of stateless compute. The runtime persists progress as an event log and deterministically replays code to reconstruct state after cold starts, failures, or scale events.
 
-This repository contains the client side SDK code for workflows, along example apps that showcase workflow SDK in action.
+This repository contains the client side SDK code for workflows, along example apps that showcase Workflow DevKit in action.
 
 ## Architecture
 
@@ -64,8 +64,32 @@ cd packages/core && pnpm test
 # Test specific file
 cd packages/core && pnpm vitest run src/[filename].test.ts
 
-# Run E2E tests
-cd packages/core && pnpm test:e2e
+# Run E2E tests (requires environment variables and running dev server)
+# Note: Use nextjs-turbopack for local e2e testing (not example app - it has no dev server)
+
+# Step 1: Start the dev server in background
+cd workbench/nextjs-turbopack && pnpm dev > /tmp/nextjs-dev.log 2>&1 &
+
+# Step 2: Wait for server to be ready (usually 15-20 seconds)
+sleep 15
+
+# Step 3: Run the e2e tests from the project root
+DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest run packages/core/e2e/e2e.test.ts
+
+# Step 4: Stop the dev server when done
+pkill -f "pnpm dev"
+
+# To run specific tests, use the -t flag:
+DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest run packages/core/e2e/e2e.test.ts -t "sleeping"
+
+# For production testing against deployed Vercel app:
+# See .github/workflows/tests.yml for required environment variables:
+# - DEPLOYMENT_URL: URL of deployed app
+# - APP_NAME: App name (example, nextjs-turbopack, nextjs-webpack, nitro)
+# - WORKFLOW_VERCEL_ENV: Environment (production or preview)
+# - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token
+# - WORKFLOW_VERCEL_TEAM: Vercel team ID
+# - WORKFLOW_VERCEL_PROJECT: Vercel project ID
 ```
 
 ### Example App Development
@@ -94,7 +118,7 @@ cd workbench/nextjs-turbopack && pnpm start
 
 ## Key Workflow Concepts
 
-**These are only relevant when writing code using the workflow SDK/framework**
+**These are only relevant when writing code using the Workflow DevKit**
 
 - Workflow functions orchestrate step execution but have limited runtime access
 - Step functions handle side effects, API calls, and complex logic with full Node.js access
@@ -104,7 +128,7 @@ cd workbench/nextjs-turbopack && pnpm start
 
 ## File Structure Conventions
 
-**These are only relevant when writing code using the workflow SDK/framework**
+**These are only relevant when writing code using the Workflow DevKit**
 
 - Workflow files go in `workflows/` directory (or `src/workflows/` if using src)
 - Generated API routes appear in `app/.well-known/workflow/v1/` (Next.js integration)

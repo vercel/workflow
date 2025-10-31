@@ -53,7 +53,7 @@ export const setupCliWorld = async (
     await inferVercelEnvVars();
   } else if (
     flags.backend === 'embedded' ||
-    flags.backend === '@workflow/world-embedded'
+    flags.backend === '@workflow/world-local'
   ) {
     await inferEmbeddedWorldEnvVars();
   }

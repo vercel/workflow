@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-vercel",
-  "version": "4.0.1-beta.2",
+  "version": "4.0.1-beta.4",
   "description": "Vercel platform World implementation for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@vercel/oidc": "catalog:",
-    "@vercel/queue": "0.0.0-alpha.24",
+    "@vercel/queue": "0.0.0-alpha.28",
     "@workflow/world": "workspace:*",
     "@workflow/errors": "workspace:*",
     "zod": "catalog:"

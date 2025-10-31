@@ -1,5 +1,7 @@
 'use client';
 
+import { getErrorMessage, useWorkflowHooks } from '@workflow/web-shared';
+import { fetchEventsByCorrelationId } from '@workflow/web-shared/server';
 import type { Event, Hook } from '@workflow/world';
 import {
   AlertCircle,
@@ -26,9 +28,6 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import { get403ErrorMessage } from '@/lib/errors';
-import { useWorkflowHooks } from '@/workflow-trace-viewer';
-import { fetchEventsByCorrelationId } from '@/workflow-trace-viewer/api/workflow-server-actions';
 import { RelativeTime } from './display-utils/relative-time';
 import { TableSkeleton } from './display-utils/table-skeleton';
 
@@ -108,12 +107,27 @@ export function HooksTable({
       const results = await Promise.allSettled(
         hooks.map(async (hook) => {
           try {
-            const events = await fetchEventsByCorrelationId(env, hook.hookId, {
-              sortOrder: 'asc',
-              limit: 100,
-            });
+            const serverResult = await fetchEventsByCorrelationId(
+              env,
+              hook.hookId,
+              {
+                sortOrder: 'asc',
+                limit: 100,
+              }
+            );
+
+            if (!serverResult.success) {
+              return {
+                hookId: hook.hookId,
+                count: new Error(
+                  serverResult.error?.message || 'Failed to fetch events'
+                ),
+                hasMore: false,
+              };
+            }
 
             // Count only hook_received events
+            const events = serverResult.data;
             const count = events.data.filter(
               (e: Event) => e.eventType === 'hook_received'
             ).length;
@@ -155,7 +169,7 @@ export function HooksTable({
     };
 
     fetchInvocations();
-  }, [hooks, config]);
+  }, [hooks, env]);
 
   // Render invocation count for a hook
   const renderInvocationCount = (hook: Hook) => {
@@ -232,7 +246,7 @@ export function HooksTable({
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error loading hooks</AlertTitle>
-          <AlertDescription>{get403ErrorMessage(error)}</AlertDescription>
+          <AlertDescription>{getErrorMessage(error)}</AlertDescription>
         </Alert>
       ) : !loading && (!hooks || hooks.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">
