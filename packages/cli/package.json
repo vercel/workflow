@@ -21,7 +21,7 @@
     "directory": "packages/cli"
   },
   "scripts": {
-    "build": "tsc && node ./scripts/set-bin-permissions.js",
+    "build": "tsc && node ./scripts/set-bin-permissions.mjs",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "dev": "tsc --watch",
     "test": "vitest run src",

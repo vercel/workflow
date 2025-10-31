@@ -38,7 +38,7 @@
     "./runtime": "./dist/runtime.js"
   },
   "scripts": {
-    "build": "tsc && chmod +x bin/run.js",
+    "build": "tsc && node ./scripts/set-bin-permissions.mjs",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "dev": "tsc --watch",
     "test": "vitest run src",
