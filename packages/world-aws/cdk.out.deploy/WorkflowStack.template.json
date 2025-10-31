@@ -1,0 +1,1042 @@
+{
+  "Description": "AWS Workflow DevKit Infrastructure - DynamoDB, SQS, Lambda, S3",
+  "Resources": {
+    "WorkflowRunsTableF990965C": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "runId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "workflowName",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "createdAt",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "status",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "deploymentId",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "workflowName-createdAt-index",
+            "KeySchema": [
+              {
+                "AttributeName": "workflowName",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          },
+          {
+            "IndexName": "status-createdAt-index",
+            "KeySchema": [
+              {
+                "AttributeName": "status",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          },
+          {
+            "IndexName": "deploymentId-createdAt-index",
+            "KeySchema": [
+              {
+                "AttributeName": "deploymentId",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "runId",
+            "KeyType": "HASH"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": false
+        },
+        "StreamSpecification": {
+          "StreamViewType": "NEW_AND_OLD_IMAGES"
+        },
+        "TableName": "workflow_runs"
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowRunsTable/Resource"
+      }
+    },
+    "WorkflowStepsTable0BC1E75C": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "stepId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "runId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "createdAt",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "status",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "runId-createdAt-index",
+            "KeySchema": [
+              {
+                "AttributeName": "runId",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          },
+          {
+            "IndexName": "status-createdAt-index",
+            "KeySchema": [
+              {
+                "AttributeName": "status",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "stepId",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "runId",
+            "KeyType": "RANGE"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": false
+        },
+        "TableName": "workflow_steps"
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowStepsTable/Resource"
+      }
+    },
+    "WorkflowEventsTable8D2C44F9": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "eventId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "runId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "createdAt",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "correlationId",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "runId-createdAt-index",
+            "KeySchema": [
+              {
+                "AttributeName": "runId",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          },
+          {
+            "IndexName": "correlationId-createdAt-index",
+            "KeySchema": [
+              {
+                "AttributeName": "correlationId",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "eventId",
+            "KeyType": "HASH"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": false
+        },
+        "TableName": "workflow_events",
+        "TimeToLiveSpecification": {
+          "AttributeName": "ttl",
+          "Enabled": true
+        }
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowEventsTable/Resource"
+      }
+    },
+    "WorkflowHooksTable1D14C84A": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "hookId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "token",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "runId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "createdAt",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "token-index",
+            "KeySchema": [
+              {
+                "AttributeName": "token",
+                "KeyType": "HASH"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          },
+          {
+            "IndexName": "runId-createdAt-index",
+            "KeySchema": [
+              {
+                "AttributeName": "runId",
+                "KeyType": "HASH"
+              },
+              {
+                "AttributeName": "createdAt",
+                "KeyType": "RANGE"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "hookId",
+            "KeyType": "HASH"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": false
+        },
+        "TableName": "workflow_hooks"
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowHooksTable/Resource"
+      }
+    },
+    "WorkflowStreamsTable10EAA44F": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "streamId",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "chunkId",
+            "AttributeType": "S"
+          }
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+        "KeySchema": [
+          {
+            "AttributeName": "streamId",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "chunkId",
+            "KeyType": "RANGE"
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": false
+        },
+        "TableName": "workflow_stream_chunks"
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowStreamsTable/Resource"
+      }
+    },
+    "WorkflowStreamBucket6C60534C": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "BucketName": {
+          "Fn::Join": [
+            "",
+            [
+              "workflow-streams-",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              "-",
+              {
+                "Ref": "AWS::Region"
+              }
+            ]
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "ExpirationInDays": 30,
+              "Id": "DeleteOldStreams",
+              "Status": "Enabled"
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "Tags": [
+          {
+            "Key": "aws-cdk:auto-delete-objects",
+            "Value": "true"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowStreamBucket/Resource"
+      }
+    },
+    "WorkflowStreamBucketPolicy745CF04D": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "WorkflowStreamBucket6C60534C"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:DeleteObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:PutBucketPolicy"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+                    "Arn"
+                  ]
+                }
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": ["WorkflowStreamBucket6C60534C", "Arn"]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": ["WorkflowStreamBucket6C60534C", "Arn"]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowStreamBucket/Policy/Resource"
+      }
+    },
+    "WorkflowStreamBucketAutoDeleteObjectsCustomResource4287CB43": {
+      "Type": "Custom::S3AutoDeleteObjects",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+            "Arn"
+          ]
+        },
+        "BucketName": {
+          "Ref": "WorkflowStreamBucket6C60534C"
+        }
+      },
+      "DependsOn": ["WorkflowStreamBucketPolicy745CF04D"],
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowStreamBucket/AutoDeleteObjectsCustomResource/Default"
+      }
+    },
+    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/Custom::S3AutoDeleteObjectsCustomResourceProvider/Role"
+      }
+    },
+    "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": "cdk-hnb659fds-assets-211684936431-us-east-1",
+          "S3Key": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip"
+        },
+        "Timeout": 900,
+        "MemorySize": 128,
+        "Handler": "index.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs22.x",
+        "Description": {
+          "Fn::Join": [
+            "",
+            [
+              "Lambda function for auto-deleting objects in ",
+              {
+                "Ref": "WorkflowStreamBucket6C60534C"
+              },
+              " S3 bucket."
+            ]
+          ]
+        }
+      },
+      "DependsOn": [
+        "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+      ],
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/Custom::S3AutoDeleteObjectsCustomResourceProvider/Handler",
+        "aws:asset:path": "asset.faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6",
+        "aws:asset:property": "Code"
+      }
+    },
+    "WorkflowDeadLetterQueueB2231F73": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "MessageRetentionPeriod": 1209600,
+        "QueueName": "workflow-dlq",
+        "SqsManagedSseEnabled": true
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowDeadLetterQueue/Resource"
+      }
+    },
+    "WorkflowQueue883428C9": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": "workflow-flows",
+        "ReceiveMessageWaitTimeSeconds": 20,
+        "RedrivePolicy": {
+          "deadLetterTargetArn": {
+            "Fn::GetAtt": ["WorkflowDeadLetterQueueB2231F73", "Arn"]
+          },
+          "maxReceiveCount": 3
+        },
+        "SqsManagedSseEnabled": true,
+        "VisibilityTimeout": 900
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowQueue/Resource"
+      }
+    },
+    "WorkflowStepQueue00BF991E": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": "workflow-steps",
+        "ReceiveMessageWaitTimeSeconds": 20,
+        "RedrivePolicy": {
+          "deadLetterTargetArn": {
+            "Fn::GetAtt": ["WorkflowDeadLetterQueueB2231F73", "Arn"]
+          },
+          "maxReceiveCount": 3
+        },
+        "SqsManagedSseEnabled": true,
+        "VisibilityTimeout": 900
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowStepQueue/Resource"
+      }
+    },
+    "WorkflowWorkerRoleBF2CA6DD": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Description": "Execution role for Workflow worker Lambda",
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          },
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/AWSXRayDaemonWriteAccess"
+              ]
+            ]
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowWorkerRole/Resource"
+      }
+    },
+    "WorkflowWorkerRoleDefaultPolicyDE04ADC0": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "dynamodb:BatchGetItem",
+                "dynamodb:BatchWriteItem",
+                "dynamodb:ConditionCheckItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:DescribeTable",
+                "dynamodb:GetItem",
+                "dynamodb:GetRecords",
+                "dynamodb:GetShardIterator",
+                "dynamodb:PutItem",
+                "dynamodb:Query",
+                "dynamodb:Scan",
+                "dynamodb:UpdateItem"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": ["WorkflowEventsTable8D2C44F9", "Arn"]
+                },
+                {
+                  "Fn::GetAtt": ["WorkflowHooksTable1D14C84A", "Arn"]
+                },
+                {
+                  "Fn::GetAtt": ["WorkflowRunsTableF990965C", "Arn"]
+                },
+                {
+                  "Fn::GetAtt": ["WorkflowStepsTable0BC1E75C", "Arn"]
+                },
+                {
+                  "Fn::GetAtt": ["WorkflowStreamsTable10EAA44F", "Arn"]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": ["WorkflowEventsTable8D2C44F9", "Arn"]
+                      },
+                      "/index/*"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": ["WorkflowHooksTable1D14C84A", "Arn"]
+                      },
+                      "/index/*"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": ["WorkflowRunsTableF990965C", "Arn"]
+                      },
+                      "/index/*"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": ["WorkflowStepsTable0BC1E75C", "Arn"]
+                      },
+                      "/index/*"
+                    ]
+                  ]
+                },
+                {
+                  "Ref": "AWS::NoValue"
+                }
+              ]
+            },
+            {
+              "Action": [
+                "s3:Abort*",
+                "s3:DeleteObject*",
+                "s3:GetBucket*",
+                "s3:GetObject*",
+                "s3:List*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": ["WorkflowStreamBucket6C60534C", "Arn"]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": ["WorkflowStreamBucket6C60534C", "Arn"]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": [
+                "sqs:ChangeMessageVisibility",
+                "sqs:DeleteMessage",
+                "sqs:GetQueueAttributes",
+                "sqs:GetQueueUrl",
+                "sqs:ReceiveMessage",
+                "sqs:SendMessage"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": ["WorkflowQueue883428C9", "Arn"]
+                },
+                {
+                  "Fn::GetAtt": ["WorkflowStepQueue00BF991E", "Arn"]
+                }
+              ]
+            },
+            {
+              "Action": ["xray:PutTelemetryRecords", "xray:PutTraceSegments"],
+              "Effect": "Allow",
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "WorkflowWorkerRoleDefaultPolicyDE04ADC0",
+        "Roles": [
+          {
+            "Ref": "WorkflowWorkerRoleBF2CA6DD"
+          }
+        ]
+      },
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowWorkerRole/DefaultPolicy/Resource"
+      }
+    },
+    "WorkflowWorkerLogsB710DD01": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/aws/lambda/workflow-worker",
+        "RetentionInDays": 7
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete",
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowWorkerLogs/Resource"
+      }
+    },
+    "WorkflowWorker475B735B": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": "cdk-hnb659fds-assets-211684936431-us-east-1",
+          "S3Key": "b5bc558d3b1e592254d0ef341b5efdb4a549b3bd8984331f0f398e819428636f.zip"
+        },
+        "Environment": {
+          "Variables": {
+            "WORKFLOW_TARGET_WORLD": "aws-workflow",
+            "WORKFLOW_AWS_RUNS_TABLE": {
+              "Ref": "WorkflowRunsTableF990965C"
+            },
+            "WORKFLOW_AWS_STEPS_TABLE": {
+              "Ref": "WorkflowStepsTable0BC1E75C"
+            },
+            "WORKFLOW_AWS_EVENTS_TABLE": {
+              "Ref": "WorkflowEventsTable8D2C44F9"
+            },
+            "WORKFLOW_AWS_HOOKS_TABLE": {
+              "Ref": "WorkflowHooksTable1D14C84A"
+            },
+            "WORKFLOW_AWS_STREAMS_TABLE": {
+              "Ref": "WorkflowStreamsTable10EAA44F"
+            },
+            "WORKFLOW_AWS_STREAM_BUCKET": {
+              "Ref": "WorkflowStreamBucket6C60534C"
+            },
+            "WORKFLOW_AWS_WORKFLOW_QUEUE_URL": {
+              "Ref": "WorkflowQueue883428C9"
+            },
+            "WORKFLOW_AWS_STEP_QUEUE_URL": {
+              "Ref": "WorkflowStepQueue00BF991E"
+            },
+            "ENVIRONMENT": "dev",
+            "AWS_NODEJS_CONNECTION_REUSE_ENABLED": "1",
+            "NODE_OPTIONS": "--enable-source-maps"
+          }
+        },
+        "FunctionName": "workflow-worker",
+        "Handler": "index.handler",
+        "LoggingConfig": {
+          "LogGroup": {
+            "Ref": "WorkflowWorkerLogsB710DD01"
+          }
+        },
+        "MemorySize": 512,
+        "ReservedConcurrentExecutions": 10,
+        "Role": {
+          "Fn::GetAtt": ["WorkflowWorkerRoleBF2CA6DD", "Arn"]
+        },
+        "Runtime": "nodejs20.x",
+        "Timeout": 900,
+        "TracingConfig": {
+          "Mode": "Active"
+        }
+      },
+      "DependsOn": [
+        "WorkflowWorkerRoleDefaultPolicyDE04ADC0",
+        "WorkflowWorkerRoleBF2CA6DD"
+      ],
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowWorker/Resource",
+        "aws:asset:path": "asset.b5bc558d3b1e592254d0ef341b5efdb4a549b3bd8984331f0f398e819428636f",
+        "aws:asset:is-bundled": false,
+        "aws:asset:property": "Code"
+      }
+    },
+    "WorkflowWorkerSqsEventSourceWorkflowStackWorkflowQueue83BEB8E883975F30": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "BatchSize": 10,
+        "EventSourceArn": {
+          "Fn::GetAtt": ["WorkflowQueue883428C9", "Arn"]
+        },
+        "FunctionName": {
+          "Ref": "WorkflowWorker475B735B"
+        },
+        "FunctionResponseTypes": ["ReportBatchItemFailures"],
+        "MaximumBatchingWindowInSeconds": 5
+      },
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowWorker/SqsEventSource:WorkflowStackWorkflowQueue83BEB8E8/Resource"
+      }
+    },
+    "WorkflowWorkerSqsEventSourceWorkflowStackWorkflowStepQueueFDA6BF1F23D0EB78": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "Properties": {
+        "BatchSize": 10,
+        "EventSourceArn": {
+          "Fn::GetAtt": ["WorkflowStepQueue00BF991E", "Arn"]
+        },
+        "FunctionName": {
+          "Ref": "WorkflowWorker475B735B"
+        },
+        "FunctionResponseTypes": ["ReportBatchItemFailures"],
+        "MaximumBatchingWindowInSeconds": 5
+      },
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/WorkflowWorker/SqsEventSource:WorkflowStackWorkflowStepQueueFDA6BF1F/Resource"
+      }
+    },
+    "CDKMetadata": {
+      "Type": "AWS::CDK::Metadata",
+      "Properties": {
+        "Analytics": "v2:deflate64:H4sIAAAAAAAA/21RwVLDIBD9Fu9k1dQfsB31omObeu8QwAxNwqYsxOkw+XeBRHPQ03v7HvuWhRLK8h7ubvgXFUK2RadrCEfHRcuidAryaniPMoofvO4U232aTCZGGwhbL1rlkriwGfbYaXFd5aWeiy2n1H0hCAevfI7MZGKa9xAqnMdkXJNmNrEOm9j5is2LRT8k54dHj/e15BCevRFOo0nuL38alXFH9FaoNz4M2jTJ/qumzU6cSDmCxwQTqxTlE2znyWG/lvGW/1t7i6OWyqZlWU6Jb9osM9+9G3yMNSgVnOl2LB9gE//gTFoX1hunewXVjN8GR2p6oAEAAA=="
+      },
+      "Metadata": {
+        "aws:cdk:path": "WorkflowStack/CDKMetadata/Default"
+      }
+    }
+  },
+  "Outputs": {
+    "RunsTableName": {
+      "Description": "DynamoDB table for workflow runs",
+      "Value": {
+        "Ref": "WorkflowRunsTableF990965C"
+      },
+      "Export": {
+        "Name": "WorkflowStack-runs-table"
+      }
+    },
+    "StepsTableName": {
+      "Description": "DynamoDB table for workflow steps",
+      "Value": {
+        "Ref": "WorkflowStepsTable0BC1E75C"
+      },
+      "Export": {
+        "Name": "WorkflowStack-steps-table"
+      }
+    },
+    "EventsTableName": {
+      "Description": "DynamoDB table for workflow events",
+      "Value": {
+        "Ref": "WorkflowEventsTable8D2C44F9"
+      },
+      "Export": {
+        "Name": "WorkflowStack-events-table"
+      }
+    },
+    "HooksTableName": {
+      "Description": "DynamoDB table for workflow hooks",
+      "Value": {
+        "Ref": "WorkflowHooksTable1D14C84A"
+      },
+      "Export": {
+        "Name": "WorkflowStack-hooks-table"
+      }
+    },
+    "StreamsTableName": {
+      "Description": "DynamoDB table for stream chunk metadata",
+      "Value": {
+        "Ref": "WorkflowStreamsTable10EAA44F"
+      },
+      "Export": {
+        "Name": "WorkflowStack-streams-table"
+      }
+    },
+    "StreamBucketName": {
+      "Description": "S3 bucket for stream chunks",
+      "Value": {
+        "Ref": "WorkflowStreamBucket6C60534C"
+      },
+      "Export": {
+        "Name": "WorkflowStack-stream-bucket"
+      }
+    },
+    "WorkflowQueueUrl": {
+      "Description": "SQS queue URL for workflow invocations",
+      "Value": {
+        "Ref": "WorkflowQueue883428C9"
+      },
+      "Export": {
+        "Name": "WorkflowStack-workflow-queue-url"
+      }
+    },
+    "StepQueueUrl": {
+      "Description": "SQS queue URL for step executions",
+      "Value": {
+        "Ref": "WorkflowStepQueue00BF991E"
+      },
+      "Export": {
+        "Name": "WorkflowStack-step-queue-url"
+      }
+    },
+    "WorkerFunctionArn": {
+      "Description": "Lambda worker function ARN",
+      "Value": {
+        "Fn::GetAtt": ["WorkflowWorker475B735B", "Arn"]
+      },
+      "Export": {
+        "Name": "WorkflowStack-worker-function-arn"
+      }
+    },
+    "Region": {
+      "Description": "AWS Region",
+      "Value": {
+        "Ref": "AWS::Region"
+      }
+    }
+  },
+  "Parameters": {
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  ["1", "2", "3", "4", "5"],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+import * as cdk from 'aws-cdk-lib';
+import { WorkflowInfrastructure } from 'aws-workflow/cdk';
+
+const app = new cdk.App();
+
+new WorkflowInfrastructure(app, '{{stackName}}', {
+  // Path to your Next.js app (relative to infrastructure/)
+  appPath: '../app',
+  
+  // AWS configuration
+  env: {
+    region: process.env.AWS_REGION || process.env.CDK_DEFAULT_REGION,
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+  },
+  
+  // Optional: Customize stack
+  stackName: '{{stackName}}',
+  description: 'Workflow DevKit infrastructure on AWS',
+  
+  // Optional: Lambda configuration
+  lambda: {
+    memorySize: 1024,
+    timeout: cdk.Duration.minutes(15),
+  },
+});
+

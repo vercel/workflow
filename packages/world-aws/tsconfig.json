@@ -1,0 +1,14 @@
+{
+  "extends": "@workflow/tsconfig/base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*", "world/**/*", "lib/**/*", "bin/**/*"],
+  "exclude": ["node_modules", "dist", "cdk.out", "examples", "**/*.test.ts"]
+}

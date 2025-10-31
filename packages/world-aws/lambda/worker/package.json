@@ -1,0 +1,19 @@
+{
+  "name": "workflow-lambda-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.921.0",
+    "@aws-sdk/client-s3": "^3.921.0",
+    "@aws-sdk/client-sqs": "^3.921.0",
+    "@aws-sdk/lib-dynamodb": "^3.921.0",
+    "@types/aws-lambda": "^8.10.157",
+    "@vercel/queue": "0.0.0-alpha.28",
+    "@workflow/errors": "4.0.1-beta.2",
+    "@workflow/world": "4.0.1-beta.3",
+    "ulid": "^3.0.1",
+    "workflow": "4.0.1-beta.6",
+    "zod": "^4.1.12"
+  }
+}
