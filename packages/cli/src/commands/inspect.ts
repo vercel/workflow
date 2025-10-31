@@ -7,9 +7,9 @@ import {
   listEvents,
   listHooks,
   listRuns,
+  listSleeps,
   listSteps,
   listStreams,
-  listWaits,
   showHook,
   showRun,
   showStep,
@@ -29,7 +29,7 @@ export default class Inspect extends BaseCommand {
     '$ workflow inspect events --step=step_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect hooks',
     '$ workflow inspect hook hook_01K5WAJZ8W367CV2RFKDSDNWB8',
-    '$ workflow inspect waits --runId=run_01K5WAJZ8W367CV2RFKDSDNWB8',
+    '$ workflow inspect sleeps --runId=run_01K5WAJZ8W367CV2RFKDSDNWB8',
   ];
 
   async catch(error: any) {
@@ -50,7 +50,7 @@ export default class Inspect extends BaseCommand {
   static args = {
     resource: Args.string({
       description:
-        'what to inspect: run(s) | step(s) | stream(s) | event(s) | hook(s) | wait(s) | sleep(s)',
+        'what to inspect: run(s) | step(s) | stream(s) | event(s) | hook(s) | sleep(s)',
       required: true,
       options: [
         'r',
@@ -70,8 +70,6 @@ export default class Inspect extends BaseCommand {
         'hooks',
         'w',
         'web',
-        'wait',
-        'waits',
         'sleep',
         'sleeps',
       ],
@@ -85,7 +83,7 @@ export default class Inspect extends BaseCommand {
   static flags = {
     runId: Flags.string({
       description:
-        'run ID to filter by (required for waits, optional for steps, events, and hooks)',
+        'run ID to filter by (optional for steps, events, and hooks, required for sleeps)',
       required: false,
       char: 'r',
       aliases: ['run'],
@@ -136,7 +134,7 @@ export default class Inspect extends BaseCommand {
       const resource = normalizeResource(args.resource);
       if (!resource) {
         this.logError(
-          `Unknown resource "${args.resource}": must be one of: run(s), step(s), stream(s), event(s), hook(s), wait(s), sleep(s)`
+          `Unknown resource "${args.resource}": must be one of: run(s), step(s), stream(s), event(s), hook(s), sleep(s)`
         );
         process.exit(1);
       }
@@ -202,20 +200,20 @@ export default class Inspect extends BaseCommand {
         process.exit(0);
       }
 
-      if (resource === 'wait') {
+      if (resource === 'sleep') {
         if (id) {
           this.logError(
-            'Wait-ID is not supported for waits. Filter by run-id instead. Usage: `workflow inspect waits --runId=<id>`'
+            'Sleep-ID is not supported for sleeps. Filter by run-id instead. Usage: `workflow inspect sleeps --runId=<id>`'
           );
           process.exit(1);
         }
         if (!flags.runId) {
           this.logError(
-            'run-id is required for listing waits. Usage: `workflow inspect waits --runId=<id>`'
+            'run-id is required for listing sleeps. Usage: `workflow inspect sleeps --runId=<id>`'
           );
           process.exit(1);
         }
-        await listWaits(world, options);
+        await listSleeps(world, options);
         process.exit(0);
       }
 
@@ -246,16 +244,15 @@ function toInspectOptions(flags: any): InspectCLIOptions {
 
 function normalizeResource(
   value?: string
-): 'run' | 'step' | 'stream' | 'event' | 'hook' | 'web' | 'wait' | undefined {
+): 'run' | 'step' | 'stream' | 'event' | 'hook' | 'web' | 'sleep' | undefined {
   if (!value) return undefined;
   const v = value.toLowerCase();
   if (v.startsWith('r')) return 'run';
   if (v.startsWith('e')) return 'event';
   if (v.startsWith('str')) return 'stream';
-  if (v.startsWith('sl')) return 'wait'; // sleep -> wait
+  if (v.startsWith('sl')) return 'sleep';
   if (v.startsWith('s')) return 'step';
   if (v.startsWith('h')) return 'hook';
-  if (v === 'wait' || v === 'waits') return 'wait';
   if (v.startsWith('w')) return 'web';
   return undefined;
 }

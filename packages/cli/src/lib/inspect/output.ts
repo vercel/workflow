@@ -71,7 +71,7 @@ const HOOK_LISTED_PROPS: (keyof Hook | 'hasResponse')[] = [
   // ...HOOK_DATA_PROPS,
 ];
 
-interface Wait {
+interface Sleep {
   correlationId: string;
   runId: string;
   eventId: string;
@@ -80,7 +80,7 @@ interface Wait {
   completedAt: Date | undefined;
 }
 
-const WAIT_LISTED_PROPS: (keyof Wait)[] = [
+const WAIT_LISTED_PROPS: (keyof Sleep)[] = [
   'correlationId',
   'eventId',
   'createdAt',
@@ -1115,26 +1115,29 @@ export const showHook = async (
   }
 };
 
-export const listWaits = async (world: World, opts: InspectCLIOptions = {}) => {
+export const listSleeps = async (
+  world: World,
+  opts: InspectCLIOptions = {}
+) => {
   if (!opts.runId) {
     logger.error(
-      'run-id is required for listing waits. Usage: `workflow inspect waits --runId=<id>`'
+      'run-id is required for listing sleeps. Usage: `workflow inspect sleeps --runId=<id>`'
     );
     process.exit(1);
   }
 
   if (opts.stepId) {
     logger.warn(
-      'Filtering by step-id is not supported for waits, ignoring filter.'
+      'Filtering by step-id is not supported for sleeps, ignoring filter.'
     );
   }
   if (opts.workflowName) {
     logger.warn(
-      'Filtering by workflow-name is not supported for waits, ignoring filter.'
+      'Filtering by workflow-name is not supported for sleeps, ignoring filter.'
     );
   }
   if (opts.withData) {
-    logger.warn('`withData` flag is ignored when listing waits');
+    logger.warn('`withData` flag is ignored when listing sleeps');
   }
 
   try {
@@ -1148,10 +1151,10 @@ export const listWaits = async (world: World, opts: InspectCLIOptions = {}) => {
       resolveData: 'none',
     });
 
-    // Show info message if there might be more waits
+    // Show info message if there might be more sleeps
     if (events.hasMore) {
       logger.info(
-        'Warning: This run has more than 1000 events. Some waits might not be shown. Please use the web UI to ensure getting a complete list.'
+        'Warning: This run has more than 1000 events. Some sleeps might not be shown. Please use the web UI to ensure getting a complete list.'
       );
     }
 
@@ -1164,7 +1167,7 @@ export const listWaits = async (world: World, opts: InspectCLIOptions = {}) => {
     }
 
     if (waitCorrelationIds.size === 0) {
-      logger.warn('No waits found for this run.');
+      logger.warn('No sleeps found for this run.');
       if (opts.json) {
         showJson([]);
       } else {
@@ -1179,7 +1182,7 @@ export const listWaits = async (world: World, opts: InspectCLIOptions = {}) => {
     }
 
     // For each unique correlationId, fetch events by correlationId with resolveData=true
-    const waits: Wait[] = [];
+    const sleeps: Sleep[] = [];
     for (const correlationId of waitCorrelationIds) {
       const correlationEvents = await world.events.listByCorrelationId({
         correlationId,
@@ -1199,7 +1202,7 @@ export const listWaits = async (world: World, opts: InspectCLIOptions = {}) => {
       );
 
       if (waitCreated) {
-        const wait: Wait = {
+        const sleep: Sleep = {
           correlationId,
           runId: waitCreated.runId,
           eventId: waitCreated.eventId,
@@ -1210,25 +1213,25 @@ export const listWaits = async (world: World, opts: InspectCLIOptions = {}) => {
               : undefined,
           completedAt: waitCompleted?.createdAt,
         };
-        waits.push(wait);
+        sleeps.push(sleep);
       }
     }
 
-    // Sort waits by createdAt
-    waits.sort((a, b) => {
+    // Sort sleeps by createdAt
+    sleeps.sort((a, b) => {
       const timeA = a.createdAt.getTime();
       const timeB = b.createdAt.getTime();
       return opts.sort === 'asc' ? timeA - timeB : timeB - timeA;
     });
 
     if (opts.json) {
-      showJson(waits);
+      showJson(sleeps);
       return;
     }
 
     logger.log(
       showTable(
-        waits as unknown as Record<string, unknown>[],
+        sleeps as unknown as Record<string, unknown>[],
         WAIT_LISTED_PROPS,
         { ...opts, disableRelativeDates: true }
       )
