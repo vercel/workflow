@@ -1,6 +1,6 @@
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router';
-import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools';
 import { TanStackDevtools } from '@tanstack/react-devtools';
+import { createRootRoute, HeadContent, Scripts } from '@tanstack/react-router';
+import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools';
 
 import Header from '../components/Header';
 
@@ -17,7 +17,7 @@ export const Route = createRootRoute({
         content: 'width=device-width, initial-scale=1',
       },
       {
-        title: 'TanStack Start Starter',
+        title: 'Workflows DevKit + TanStack Example',
       },
     ],
     links: [
@@ -36,6 +36,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
+        <title>Workflows DevKit + TanStack Example</title>
       </head>
       <body>
         <Header />
