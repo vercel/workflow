@@ -39,6 +39,12 @@ export function WorkflowDetailPanel({
     } else if (resource === 'hook') {
       const hook = data as Hook;
       return { resource: 'hook', resourceId: hook.hookId, runId: undefined };
+    } else if (resource === 'sleep') {
+      return {
+        resource: 'sleep',
+        resourceId: selected?.span?.spanId,
+        runId: undefined,
+      };
     }
     return { resource: undefined, resourceId: undefined, runId: undefined };
   }, [selected, data]);

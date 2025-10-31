@@ -48,7 +48,7 @@ export function EventsList({
     }
   );
 
-  const displayData = data || events || [];
+  const displayData = (data?.length ? data : events) || [];
 
   return (
     <div className="mt-2" style={{ color: 'var(--ds-gray-1000)' }}>
