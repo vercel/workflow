@@ -4,7 +4,7 @@ import { getHookByToken, resumeHook } from 'workflow/api';
 export const Route = createFileRoute('/api/hook')({
   server: {
     handlers: {
-      GET: async ({ request }) => {
+      POST: async ({ request }) => {
         const { token, data } = await request.json();
 
         let hook: Awaited<ReturnType<typeof getHookByToken>>;
