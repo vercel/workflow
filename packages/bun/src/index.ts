@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { transform } from '@swc/core';
@@ -44,7 +45,7 @@ const CommonBuildOptions = {
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
   constructor(config?: Partial<WorkflowConfig>) {
-    const outDir = join(config?.workingDir ?? process.cwd(), 'workflow');
+    const outDir = join(config?.workingDir ?? process.cwd(), '.workflows');
     super({
       ...CommonBuildOptions,
       dirs: config?.dirs ?? ['./workflows'],
@@ -58,22 +59,28 @@ export class LocalBuilder extends BaseBuilder {
     await mkdir(this.#outDir, { recursive: true });
 
     await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
+      outfile: join(this.#outDir, 'workflows.js'),
       bundleFinalOutput: false,
       format: 'esm',
       inputFiles,
     });
 
     await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
+      outfile: join(this.#outDir, 'steps.js'),
       externalizeNonSteps: true,
       format: 'esm',
       inputFiles,
     });
 
     await this.createWebhookBundle({
-      outfile: join(this.#outDir, 'webhook.mjs'),
+      outfile: join(this.#outDir, 'webhook.js'),
       bundle: false,
     });
+
+    // Add .workflows to .gitignore
+    writeFileSync(
+      join(this.config.workingDir, '.workflows', '.gitignore'),
+      '*\n'
+    );
   }
 }
