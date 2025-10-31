@@ -7,7 +7,7 @@ export function workflow(): Plugin[] {
     workflowRollupPlugin(),
     {
       name: 'workflow:nitro',
-      // @ts-expect-error https://github.com/nitrojs/nitro/pull/3712
+      // @ts-ignore
       nitro: nitroModule
     }
   ]
