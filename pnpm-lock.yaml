@@ -329,6 +329,9 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.25.11
       exsolve:
         specifier: ^1.0.7
         version: 1.0.7
@@ -5446,7 +5449,6 @@ packages:
 
   bun@1.3.0:
     resolution: {integrity: sha512-YI7mFs7iWc/VsGsh2aw6eAPD2cjzn1j+LKdYVk09x1CrdTWKYIHyd+dG5iQoN9//3hCDoZj8U6vKpZzEf5UARA==}
-    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 
