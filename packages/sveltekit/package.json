@@ -31,9 +31,11 @@
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "exsolve": "^1.0.7",
+    "fs-extra": "^11.3.2",
     "workflow": "workspace:*"
   },
   "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "vite": "^7.1.11"

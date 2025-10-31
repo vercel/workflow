@@ -1,4 +1,5 @@
-import fs from 'node:fs';
+import path from 'node:path';
+import fs from 'fs-extra';
 import { LocalBuilder } from './builders.js';
 
 const localBuilder = new LocalBuilder({});
@@ -14,7 +15,6 @@ process.on('beforeExit', () => {
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     return;
   }
-
   for (const { file, config } of [
     {
       file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
@@ -47,6 +47,23 @@ process.on('beforeExit', () => {
       },
     },
   ]) {
+    // we need to un-symlink these as they can't be shared due to different
+    // experimental triggers config
+    const toCopy = fs.readdirSync(path.dirname(file));
+    fs.unlinkSync(path.dirname(file));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+
+    for (const item of toCopy) {
+      fs.copySync(
+        path.join(
+          path.dirname(file).replace(/\.func$/, ''),
+          '__data.json.func',
+          item
+        ),
+        path.join(path.dirname(file), item)
+      );
+    }
+
     const existingConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.writeFileSync(
       file,
