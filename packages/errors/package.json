@@ -25,7 +25,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true})).catch(()=>{})\"",
+    "clean": "tsc --build --clean && node ./scripts/clean.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
