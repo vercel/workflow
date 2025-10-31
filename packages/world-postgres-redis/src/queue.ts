@@ -10,7 +10,7 @@ import { createEmbeddedWorld } from '@workflow/world-local';
 import type { RedisClientType, RedisScripts, RedisFunctions, RedisDefaultModules } from 'redis';
 import { monotonicFactory } from 'ulid';
 import { MessageData } from './zod.js';
-import type { PostgresWorldConfig } from './config.js';
+import type { PostgresRedisWorldConfig } from './config.js';
 
 /**
  * The Redis queue works by creating two Redis lists (one for workflows, one for steps):
@@ -24,7 +24,7 @@ import type { PostgresWorldConfig } from './config.js';
  */
 export function createQueue(
   redis: RedisClientType<RedisDefaultModules, RedisFunctions, RedisScripts>,
-  config: PostgresWorldConfig
+  config: PostgresRedisWorldConfig
 ): Queue & { start(): Promise<void> } {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const embeddedWorld = createEmbeddedWorld({ dataDir: undefined, port });

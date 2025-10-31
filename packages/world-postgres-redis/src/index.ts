@@ -1,7 +1,7 @@
 import type { Storage, World } from '@workflow/world';
 import { createClient as createRedisClient } from 'redis';
 import createPostgres from 'postgres';
-import type { PostgresWorldConfig } from './config.js';
+import type { PostgresRedisWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
 import {
@@ -22,10 +22,12 @@ function createStorage(drizzle: Drizzle): Storage {
 }
 
 export function createWorld(
-  config: PostgresWorldConfig = {
+  config: PostgresRedisWorldConfig = {
     connectionString:
       process.env.WORKFLOW_POSTGRES_URL ||
       'postgres://world:world@localhost:5432/world',
+    redisUrl:
+      process.env.WORKFLOW_REDIS_URL || 'redis://127.0.0.1:6379',
     jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '10', 10) ||
@@ -35,7 +37,7 @@ export function createWorld(
   const postgres = createPostgres(config.connectionString);
   const drizzle = createClient(postgres);
   const redis = createRedisClient({
-    url: process.env.WORKFLOW_REDIS_URL || 'redis://127.0.0.1:6379',
+    url: config.redisUrl,
   });
   const queue = createQueue(redis, config);
   const storage = createStorage(drizzle);
