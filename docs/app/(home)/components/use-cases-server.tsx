@@ -85,7 +85,7 @@ export async function validatePaymentMethod(rideId) {
   const webhook = createWebhook();
 
   // Every webhook has a url that can be used to resume
-  // the worklfow
+  // the workflow
   await fetch("https://api.example-payments.com/validate-method", {
     method: "POST",
     body: JSON.stringify({ rideId, callback: webhook.url }),
