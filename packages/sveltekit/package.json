@@ -26,11 +26,7 @@
   },
   "dependencies": {
     "@sveltejs/kit": "^2.48.2",
-    "@swc/core": "1.11.24",
     "@workflow/cli": "workspace:*",
-    "@workflow/core": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
-    "exsolve": "^1.0.7",
     "fs-extra": "^11.3.2",
     "workflow": "workspace:*"
   },
