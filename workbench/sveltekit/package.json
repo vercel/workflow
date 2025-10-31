@@ -25,7 +25,6 @@
     "@ai-sdk/react": "2.0.76",
     "@node-rs/xxhash": "1.7.6",
     "@opentelemetry/api": "^1.9.0",
-    "@sveltejs/adapter-auto": "^7.0.0",
     "@sveltejs/adapter-node": "^5.4.0",
     "@sveltejs/adapter-vercel": "^6.1.1",
     "@vercel/otel": "^1.13.0",
