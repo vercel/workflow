@@ -23,6 +23,8 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'step_retrying',
   'step_failed',
   'workflow_failed',
+  'wait_created',
+  'wait_completed',
 ]);
 
 /**
@@ -48,6 +50,44 @@ export function convertEventsToSpanEvents(
       // Control whether to show vertical line in timeline
       showVerticalLine: shouldShowVerticalLine(event.eventType),
     }));
+}
+
+/**
+ * Converts a workflow Wait to an OpenTelemetry Span
+ */
+export function waitToSpan(
+  correlationId: string,
+  events: Event[],
+  nowTime?: Date
+): Span {
+  const startEvent = events.find((event) => event.eventType === 'wait_created');
+  const endEvent = events.find((event) => event.eventType === 'wait_completed');
+  const startTime = startEvent?.createdAt ?? nowTime;
+  const endTime = endEvent?.createdAt ?? nowTime;
+  const start = dateToOtelTime(startTime);
+  const end = dateToOtelTime(endTime);
+  const duration = calculateDuration(startTime, endTime);
+  const spanEvents = convertEventsToSpanEvents(events);
+  return {
+    spanId: correlationId,
+    name: 'sleep',
+    kind: 1, // INTERNAL span kind
+    resource: 'sleep',
+    library: WORKFLOW_LIBRARY,
+    status: { code: 0 },
+    traceFlags: 1,
+    attributes: {
+      resource: 'sleep' as const,
+      data: {
+        correlationId,
+      },
+    },
+    links: [],
+    events: spanEvents,
+    duration,
+    startTime: start,
+    endTime: end,
+  };
 }
 
 /**

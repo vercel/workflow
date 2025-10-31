@@ -39,7 +39,7 @@ function getStatusClassName(
  * Check if a step name indicates it's a sleep step
  */
 function isSleepStep(stepName: string): boolean {
-  return String(stepName).toLowerCase().includes('sleep');
+  return String(stepName).toLowerCase().endsWith('sleep');
 }
 
 /**
@@ -54,7 +54,7 @@ export const getCustomSpanClassName = (span: SpanNode): string => {
     const stepData = attributes.data as Step;
     const stepName = stepData?.stepName;
 
-    // Check if it's a sleep step
+    // DEPRECATED: Check if it's a sleep step
     if (stepName && isSleepStep(stepName)) {
       return styles.spanSleep;
     }
@@ -71,6 +71,10 @@ export const getCustomSpanClassName = (span: SpanNode): string => {
 
   if (resource === 'hook') {
     return styles.spanHook;
+  }
+
+  if (resource === 'sleep') {
+    return styles.spanSleep;
   }
 
   // Default: no custom class

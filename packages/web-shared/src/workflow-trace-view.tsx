@@ -17,6 +17,7 @@ import {
   runToSpan,
   stepToSpan,
   WORKFLOW_LIBRARY,
+  waitToSpan,
 } from './workflow-traces/trace-span-construction';
 import { otelTimeToMs } from './workflow-traces/trace-time-utils';
 
@@ -59,8 +60,18 @@ export const WorkflowTraceViewer = ({
     const eventsByStepId = new Map<string, Event[]>();
     const eventsByHookId = new Map<string, Event[]>();
     const runLevelEvents: Event[] = [];
+    const timerEvents = new Map<string, Event[]>();
 
     for (const event of events) {
+      if (
+        event.eventType === 'wait_created' ||
+        event.eventType === 'wait_completed'
+      ) {
+        const existing = timerEvents.get(event.correlationId) || [];
+        existing.push(event);
+        timerEvents.set(event.correlationId, existing);
+        continue;
+      }
       // Try to associate event with a step or hook via correlationId
       // For now, all other events are collected at run level
       const correlationId = event.correlationId;
@@ -97,8 +108,14 @@ export const WorkflowTraceViewer = ({
       return hookToSpan(hook, hookEvents);
     });
 
+    const waitSpans = Array.from(timerEvents.entries()).map(
+      ([correlationId, events]) => {
+        return waitToSpan(correlationId, events, now);
+      }
+    );
+
     const runSpan = runToSpan(run, runLevelEvents, now);
-    const spans = [...stepSpans, ...hookSpans];
+    const spans = [...stepSpans, ...hookSpans, ...waitSpans];
     const sortedSpans = [
       runSpan,
       ...spans.slice().sort((a, b) => {
