@@ -49,7 +49,7 @@ process.on('beforeExit', () => {
     // Un-symlink these as they can't be shared due to different
     // experimental triggers config
     const toCopy = fs.readdirSync(path.dirname(file));
-    fs.unlinkSync(path.dirname(file));
+    fs.removeSync(path.dirname(file));
     fs.mkdirSync(path.dirname(file), { recursive: true });
 
     for (const item of toCopy) {
