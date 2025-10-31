@@ -900,37 +900,6 @@ async function fetchResourceWithCorrelationId(
   return { data: resourceData, correlationId };
 }
 
-// Helper function to exhaustively fetch events by correlation ID
-// async function fetchAllEventsByCorrelationId(
-//   env: EnvMap,
-//   correlationId: string,
-//   params?: {
-//     sortOrder?: 'asc' | 'desc';
-//     limit?: number;
-//   }
-// ): Promise<Event[]> {
-//   const { sortOrder = 'asc', limit = 1000 } = params ?? {};
-
-//   let eventsData: Event[] = [];
-//   let cursor: string | undefined;
-//   while (true) {
-//     const serverResult = await fetchEventsByCorrelationId(env, correlationId, {
-//       cursor: cursor,
-//       sortOrder: sortOrder,
-//       limit: limit,
-//     });
-//     const result = unwrapServerActionResult(serverResult);
-
-//     eventsData = [...eventsData, ...result.data];
-//     if (!result.hasMore || !result.cursor || eventsData.length >= MAX_ITEMS) {
-//       break;
-//     }
-//     cursor = result.cursor;
-//   }
-
-//   return eventsData;
-// }
-
 /**
  * Returns (and keeps up-to-date) data inherent to a specific run/step/hook,
  * resolving input/output/metadata, AND loading all related events with full event data.
