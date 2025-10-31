@@ -1,3 +1,1 @@
-import { workflowPlugin } from '@workflow/bun';
-
-export default workflowPlugin;
+export * from '@workflow/bun';
