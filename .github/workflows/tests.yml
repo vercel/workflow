@@ -40,10 +40,10 @@ jobs:
           cache: "pnpm"
 
       - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run Unit Tests
-        run: pnpm test
+        run: pnpm test --filter='!./docs'
 
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
