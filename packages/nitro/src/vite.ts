@@ -13,9 +13,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       // @ts-ignore
       nitro: {
         setup: (nitro: Nitro) => {
-          nitro.options.alias['debug'] = 'unenv/runtime/mock/debug'
-
-          nitro.options.workflow = { ...nitro.options.workflow, ...options }
+          nitro.options.workflow = { _vite: true, ...nitro.options.workflow, ...options }
           return nitroModule.setup(nitro)
         }
       }

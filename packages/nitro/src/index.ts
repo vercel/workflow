@@ -18,7 +18,9 @@ export default {
     });
 
     // Temporary workaround for debug unenv mock
-    nitro.options.alias['debug'] ??= 'debug';
+    if (!nitro.options.workflow?._vite) {
+      nitro.options.alias['debug'] ??= 'debug';
+    }
 
     // Generate functions for vercel build
     if (isVercelDeploy) {
