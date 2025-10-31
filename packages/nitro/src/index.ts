@@ -1,7 +1,7 @@
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
-import { LocalBuilder, VercelBuilder } from './builders';
-import { workflowRollupPlugin } from './rollup-plugin';
+import { LocalBuilder, VercelBuilder } from './builders.js';
+import { workflowRollupPlugin } from './rollup-plugin.js';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
