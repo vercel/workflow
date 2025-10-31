@@ -161,7 +161,7 @@ export const UseCases = async () => {
           code={useCase.code}
           lang="ts"
           codeblock={{
-            className: 'shadow-none bg-background dark:bg-sidebar rounded-md',
+            className: 'shadow-none !bg-background dark:bg-sidebar rounded-md',
           }}
         />
       ),
