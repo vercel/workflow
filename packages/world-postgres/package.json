@@ -39,7 +39,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist",
+    "clean": "tsc --build --clean && node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true})).catch(()=>{})\"",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "db:push": "pnpm exec drizzle-kit --version && drizzle-kit push"

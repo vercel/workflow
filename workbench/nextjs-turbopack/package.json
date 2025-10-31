@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
-    "clean": "rm -rf .next .swc app/.well-known/workflow",
+    "clean": "node -e \"import('node:fs').then(fs=>{['.next','.swc','app/.well-known/workflow'].forEach(d=>fs.rmSync(d,{recursive:true,force:true}).catch(()=>{}))})\"",
     "start": "next start",
     "lint": "next lint"
   },

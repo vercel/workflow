@@ -24,7 +24,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist"
+    "clean": "tsc --build --clean && node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true})).catch(()=>{})\""
   },
   "dependencies": {
     "@swc/core": "1.11.24",

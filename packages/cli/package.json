@@ -22,7 +22,7 @@
   },
   "scripts": {
     "build": "tsc && node ./scripts/set-bin-permissions.mjs",
-    "clean": "tsc --build --clean && rm -r dist ||:",
+    "clean": "tsc --build --clean && node ./scripts/clean.mjs",
     "dev": "tsc --watch",
     "test": "vitest run src",
     "typecheck": "tsc --noEmit"
