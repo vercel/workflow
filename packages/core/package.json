@@ -40,7 +40,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rimraf dist",
+    "clean": "tsc --build --clean && npx rimraf dist",
     "test": "node ./scripts/run-tests.js",
     "test:e2e": "vitest run e2e",
     "typecheck": "tsc --noEmit"
