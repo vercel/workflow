@@ -23,6 +23,8 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'step_retrying',
   'step_failed',
   'workflow_failed',
+  'wait_created',
+  'wait_completed',
 ]);
 
 /**
@@ -60,11 +62,14 @@ export function waitToSpan(
 ): Span {
   const startEvent = events.find((event) => event.eventType === 'wait_created');
   const endEvent = events.find((event) => event.eventType === 'wait_completed');
-  const start = dateToOtelTime(startEvent?.createdAt ?? nowTime);
-  const end = dateToOtelTime(endEvent?.createdAt ?? nowTime);
-  const duration = calculateDuration(start, end);
+  const startTime = startEvent?.createdAt ?? nowTime;
+  const endTime = endEvent?.createdAt ?? nowTime;
+  const start = dateToOtelTime(startTime);
+  const end = dateToOtelTime(endTime);
+  const duration = calculateDuration(startTime, endTime);
+  const spanEvents = convertEventsToSpanEvents(events);
   return {
-    spanId: `wait-${correlationId}`,
+    spanId: correlationId,
     name: 'sleep',
     kind: 1, // INTERNAL span kind
     resource: 'sleep',
@@ -78,7 +83,7 @@ export function waitToSpan(
       },
     },
     links: [],
-    events: convertEventsToSpanEvents(events),
+    events: spanEvents,
     duration,
     startTime: start,
     endTime: end,

@@ -952,7 +952,9 @@ export function useWorkflowResourceData(
     setLoading(true);
     setData(null);
     setError(null);
-
+    if (!['run', 'step', 'hook'].includes(resource)) {
+      return;
+    }
     try {
       // Fetch resource with full data
       const { data: resourceData, correlationId } =

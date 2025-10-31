@@ -65,12 +65,14 @@ function createServerActionError(
     err.message?.includes('HTTP') ||
     err.message?.includes('network');
 
-  return {
+  const actionError: ServerActionError = {
     message: getUserFacingMessage(err),
     layer: isAPIError ? 'API' : 'server',
     cause: err.stack || err.message,
     request: params ? { operation, params } : undefined,
   };
+  console.error('actionError', actionError);
+  return actionError;
 }
 
 /**

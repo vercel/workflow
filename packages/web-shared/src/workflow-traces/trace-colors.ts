@@ -73,6 +73,10 @@ export const getCustomSpanClassName = (span: SpanNode): string => {
     return styles.spanHook;
   }
 
+  if (resource === 'sleep') {
+    return styles.spanSleep;
+  }
+
   // Default: no custom class
   return '';
 };
