@@ -67,9 +67,9 @@ export function createQueue(
       return { messageId };
     }
     
-    // Set TTL on the Set (10 minutes) to prevent memory leaks
+    // Set TTL on the Set (24 hours) to provide a longer safety net
     // Note: TTL is fixed duration, not tied to actual job completion time
-    await redis.expire(idempotencySetKey, 600);
+    await redis.expire(idempotencySetKey, 86400);
     
     const messageData: MessageData = {
       id,
@@ -98,8 +98,21 @@ export function createQueue(
     
     try {
     while (true) {
-        // Use BRPOP to wait for items; blocks indefinitely with timeout=0
-        const result = await workerRedis.brPop(listKey, 0);
+        let result;
+        
+        try {
+          // Use BRPOP to wait for items; blocks indefinitely with timeout=0
+          result = await workerRedis.brPop(listKey, 0);
+        } catch (error) {
+          // Handle brPop errors gracefully (network issues, disconnections, etc.)
+          // Log the error and wait before retrying to avoid rapid error loops
+          console.error(`[Redis Queue] Error calling brPop on ${listKey}:`, error);
+          
+          // Wait 1 second before retrying to allow recovery
+          // (e.g., Redis reconnection, network restoration)
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
 
         if (!result) {
           // Should not happen with timeout=0, but handle gracefully
@@ -126,13 +139,17 @@ export function createQueue(
         await embeddedWorld.queue(queueName, message, {
           idempotencyKey: parsed.idempotencyKey,
         });
+        // After successful processing, explicitly remove the idempotency key to avoid stale entries
+        if (parsed.idempotencyKey) {
+          await workerRedis.sRem(`${listKey}:idempotent`, parsed.idempotencyKey);
+        }
       } catch (error) {
         // Log parsing/deserialization errors but continue processing
         // This prevents worker crashes from malformed messages
         console.error(`[Redis Queue] Error processing message from ${listKey}:`, error);
       }
       
-      // Note: idempotency key is automatically cleaned up via TTL (10 minutes, set when added)
+      // Note: idempotency key is also protected by TTL (24 hours) for incomplete/abandoned messages
       }
     } finally {
       await workerRedis.quit();
