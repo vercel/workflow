@@ -30,7 +30,7 @@ export class LocalBuilder extends BaseBuilder {
     await mkdir(workflowGeneratedDir, { recursive: true });
 
     // Add .gitignore to exclude generated files from version control
-    if (process.env.VERCEL !== '1') {
+    if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
     }
 
