@@ -401,7 +401,7 @@ export function workflowEntrypoint(workflowCode: string) {
                       input: dehydratedArgs as Serializable[],
                     });
 
-                    waitUntil(Promise.all(ops));
+                    waitUntil(Promise.all(ops).catch(() => {}));
 
                     await world.queue(
                       `__wkf_step_${queueItem.stepName}`,
@@ -680,7 +680,7 @@ export const stepEntrypoint =
 
             result = dehydrateStepReturnValue(result, ops);
 
-            waitUntil(Promise.all(ops));
+            waitUntil(Promise.all(ops).catch(() => {}));
 
             // Update the event log with the step result
             await world.events.create(workflowRunId, {

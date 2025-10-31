@@ -36,6 +36,6 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "nitro": "latest"
+    "nitro": "catalog:"
   }
 }

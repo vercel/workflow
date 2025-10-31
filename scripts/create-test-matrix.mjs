@@ -26,4 +26,10 @@ matrix.app.push({
   project: 'workbench-nitro-workflow',
 });
 
+// Manually add express
+matrix.app.push({
+  name: 'express',
+  project: 'workbench-express-workflow',
+});
+
 console.log(JSON.stringify(matrix));

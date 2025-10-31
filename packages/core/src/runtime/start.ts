@@ -91,7 +91,7 @@ export async function start<TArgs extends unknown[], TResult>(
       input: workflowArguments,
       executionContext: { traceCarrier },
     });
-    waitUntil(Promise.all(ops));
+    waitUntil(Promise.all(ops).catch(() => {}));
 
     span?.setAttributes({
       ...Attribute.WorkflowRunId(runResponse.runId),
