@@ -71,7 +71,6 @@ function createServerActionError(
     cause: err.stack || err.message,
     request: params ? { operation, params } : undefined,
   };
-  console.error('actionError', actionError);
   return actionError;
 }
 
