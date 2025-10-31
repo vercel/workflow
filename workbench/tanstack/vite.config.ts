@@ -16,15 +16,17 @@ const config = defineConfig({
     nitro({
       config: {
         modules: ['workflow/nitro'],
-        alias: {
-          debug: 'unenv/dist/runtime/npm/debug.mjs',
-        },
       },
     }),
     tailwindcss(),
     tanstackStart(),
     viteReact(),
   ],
+  build: {
+    commonjsOptions: {
+      transformMixedEsModules: true,
+    },
+  },
 });
 
 export default config;
