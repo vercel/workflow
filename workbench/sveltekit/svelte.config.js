@@ -12,6 +12,10 @@ const config = {
   preprocess: vitePreprocess(),
   kit: {
     adapter: adapter,
+    // WARNING: CSRF protection is disabled for testing/development purposes.
+    // This configuration trusts all origins and should NOT be used in production.
+    // In production, specify only trusted origins or remove this configuration
+    // to use SvelteKit's default CSRF protection.
     csrf: { trustedOrigins: ['*'] },
   },
 };
