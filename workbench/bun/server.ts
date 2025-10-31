@@ -1,3 +1,7 @@
+import workflowPlugin from 'workflow/bun';
+
+Bun.plugin(workflowPlugin());
+
 const server = Bun.serve({
   // `routes` requires Bun v1.2.3+
   routes: {
@@ -6,7 +10,7 @@ const server = Bun.serve({
 
   // (optional) fallback for unmatched routes:
   // Required if Bun's version < 1.2.3
-  fetch(req) {
+  fetch(_) {
     return new Response('Not Found', { status: 404 });
   },
 });
