@@ -1,8 +1,7 @@
 import { constants } from 'node:fs';
-import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder.js';
-import { VercelBuildOutputAPIBuilder } from '@workflow/cli/dist/lib/builders/vercel-build-output-api.js';
 import type { WorkflowConfig } from '@workflow/cli/dist/lib/config/types.js';
 
 const CommonBuildOptions = {
@@ -12,39 +11,6 @@ const CommonBuildOptions = {
   workflowsBundlePath: '', // unused in base
   webhookBundlePath: '', // unused in base
 };
-
-export class VercelBuilder extends VercelBuildOutputAPIBuilder {
-  constructor(config: Partial<WorkflowConfig>) {
-    super({
-      ...CommonBuildOptions,
-      ...config,
-      workingDir: config.workingDir || process.cwd(),
-    });
-  }
-  override async build(): Promise<void> {
-    const configPath = join(
-      this.config.workingDir,
-      '.vercel/output/config.json'
-    );
-
-    let existingConfig: { version?: number; routes?: any[] } | null = null;
-    try {
-      const existingConfigContent = await readFile(configPath, 'utf-8');
-      existingConfig = JSON.parse(existingConfigContent);
-    } catch {}
-
-    await super.build();
-
-    if (existingConfig?.routes) {
-      const workflowConfig = JSON.parse(await readFile(configPath, 'utf-8'));
-      const mergedConfig = {
-        ...workflowConfig,
-        routes: [...workflowConfig.routes, ...existingConfig.routes],
-      };
-      await writeFile(configPath, JSON.stringify(mergedConfig, null, 2));
-    }
-  }
-}
 
 export class LocalBuilder extends BaseBuilder {
   constructor(config: Partial<WorkflowConfig>) {
