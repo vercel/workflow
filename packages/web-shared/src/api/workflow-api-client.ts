@@ -923,27 +923,27 @@ export function useWorkflowResourceData(
     setLoading(true);
     setData(null);
     setError(null);
-    if (resource === 'sleep') {
-      const events = await fetchEventsByCorrelationId(env, resourceId, {
-        sortOrder: 'asc',
-        limit: 100,
-        withData: true,
-      });
-      const eventsData = unwrapServerActionResult(events);
-      const waitStartEvent = eventsData.data.find(
-        (event) => event.eventType === 'wait_created'
-      );
-      if (waitStartEvent) {
-        setData({
-          waitId: waitStartEvent.correlationId,
-          runId: waitStartEvent.runId,
-          createdAt: waitStartEvent.createdAt,
-          resumeAt: waitStartEvent.eventData.resumeAt,
-        } as unknown as Event);
-      }
-      return;
-    }
     try {
+      if (resource === 'sleep') {
+        const events = await fetchEventsByCorrelationId(env, resourceId, {
+          sortOrder: 'asc',
+          limit: 100,
+          withData: true,
+        });
+        const eventsData = unwrapServerActionResult(events);
+        const waitStartEvent = eventsData.data.find(
+          (event) => event.eventType === 'wait_created'
+        );
+        if (waitStartEvent) {
+          setData({
+            waitId: waitStartEvent.correlationId,
+            runId: waitStartEvent.runId,
+            createdAt: waitStartEvent.createdAt,
+            resumeAt: waitStartEvent.eventData.resumeAt,
+          } as unknown as Event);
+        }
+        return;
+      }
       // Fetch resource with full data
       const { data: resourceData } = await fetchResourceWithCorrelationId(
         env,
