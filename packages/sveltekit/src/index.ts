@@ -75,10 +75,4 @@ process.on('beforeExit', () => {
   }
 });
 
-export function workflowPlugin() {
-  return {
-    name: 'workflow-sveltekit-plugin',
-  };
-}
-
-export { workflowRollupPlugin } from 'workflow/rollup-plugin';
+export { workflowRollupPlugin as workflowPlugin } from 'workflow/rollup-plugin';
