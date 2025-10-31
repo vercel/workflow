@@ -901,35 +901,35 @@ async function fetchResourceWithCorrelationId(
 }
 
 // Helper function to exhaustively fetch events by correlation ID
-async function fetchAllEventsByCorrelationId(
-  env: EnvMap,
-  correlationId: string,
-  params?: {
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-  }
-): Promise<Event[]> {
-  const { sortOrder = 'asc', limit = 1000 } = params ?? {};
+// async function fetchAllEventsByCorrelationId(
+//   env: EnvMap,
+//   correlationId: string,
+//   params?: {
+//     sortOrder?: 'asc' | 'desc';
+//     limit?: number;
+//   }
+// ): Promise<Event[]> {
+//   const { sortOrder = 'asc', limit = 1000 } = params ?? {};
 
-  let eventsData: Event[] = [];
-  let cursor: string | undefined;
-  while (true) {
-    const serverResult = await fetchEventsByCorrelationId(env, correlationId, {
-      cursor: cursor,
-      sortOrder: sortOrder,
-      limit: limit,
-    });
-    const result = unwrapServerActionResult(serverResult);
+//   let eventsData: Event[] = [];
+//   let cursor: string | undefined;
+//   while (true) {
+//     const serverResult = await fetchEventsByCorrelationId(env, correlationId, {
+//       cursor: cursor,
+//       sortOrder: sortOrder,
+//       limit: limit,
+//     });
+//     const result = unwrapServerActionResult(serverResult);
 
-    eventsData = [...eventsData, ...result.data];
-    if (!result.hasMore || !result.cursor || eventsData.length >= MAX_ITEMS) {
-      break;
-    }
-    cursor = result.cursor;
-  }
+//     eventsData = [...eventsData, ...result.data];
+//     if (!result.hasMore || !result.cursor || eventsData.length >= MAX_ITEMS) {
+//       break;
+//     }
+//     cursor = result.cursor;
+//   }
 
-  return eventsData;
-}
+//   return eventsData;
+// }
 
 /**
  * Returns (and keeps up-to-date) data inherent to a specific run/step/hook,
@@ -937,14 +937,16 @@ async function fetchAllEventsByCorrelationId(
  */
 export function useWorkflowResourceData(
   env: EnvMap,
-  resource: 'run' | 'step' | 'hook',
+  resource: 'run' | 'step' | 'hook' | 'sleep',
   resourceId: string,
   options: { refreshInterval?: number; runId?: string } = {}
 ) {
   const { refreshInterval = 0, runId } = options;
 
-  const [data, setData] = useState<WorkflowRun | Step | Hook | null>(null);
-  const [events, setEvents] = useState<Event[]>([]);
+  const [data, setData] = useState<WorkflowRun | Step | Hook | Event | null>(
+    null
+  );
+  // const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
@@ -952,15 +954,36 @@ export function useWorkflowResourceData(
     setLoading(true);
     setData(null);
     setError(null);
-    if (!['run', 'step', 'hook'].includes(resource)) {
+    if (resource === 'sleep') {
+      const events = await fetchEventsByCorrelationId(env, resourceId, {
+        sortOrder: 'asc',
+        limit: 100,
+        withData: true,
+      });
+      const eventsData = unwrapServerActionResult(events);
+      const waitStartEvent = eventsData.data.find(
+        (event) => event.eventType === 'wait_created'
+      );
+      if (waitStartEvent) {
+        setData({
+          waitId: waitStartEvent.correlationId,
+          runId: waitStartEvent.runId,
+          createdAt: waitStartEvent.createdAt,
+          resumeAt: waitStartEvent.eventData.resumeAt,
+        } as unknown as Event);
+      }
       return;
     }
     try {
       // Fetch resource with full data
-      const { data: resourceData, correlationId } =
-        await fetchResourceWithCorrelationId(env, resource, resourceId, {
+      const { data: resourceData } = await fetchResourceWithCorrelationId(
+        env,
+        resource,
+        resourceId,
+        {
           runId,
-        });
+        }
+      );
 
       setData(resourceData);
       if (resource === 'run') {
@@ -968,12 +991,12 @@ export function useWorkflowResourceData(
         return;
       }
 
-      // Fetch events by correlation ID
-      const eventsData = await fetchAllEventsByCorrelationId(
-        env,
-        correlationId
-      );
-      setEvents(eventsData);
+      // // Fetch events by correlation ID
+      // const eventsData = await fetchAllEventsByCorrelationId(
+      //   env,
+      //   correlationId
+      // );
+      // setEvents(eventsData);
     } catch (err) {
       const error =
         err instanceof WorkflowAPIError
@@ -1005,7 +1028,7 @@ export function useWorkflowResourceData(
 
   return {
     data,
-    events,
+    // events,
     loading,
     error,
     refresh: fetchData,
