@@ -17,6 +17,7 @@
     "@workflow/example-nitro-v2",
     "@workflow/example-nuxt",
     "@workflow/example-vite",
-    "@workflow/example-sveltekit"
+    "@workflow/example-sveltekit",
+    "@workflow/example-tanstack"
   ]
 }

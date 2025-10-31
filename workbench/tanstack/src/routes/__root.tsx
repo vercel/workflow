@@ -36,7 +36,6 @@ function RootDocument({ children }: { children: React.ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
-        <title>Workflows DevKit + TanStack Example</title>
       </head>
       <body>
         <Header />
