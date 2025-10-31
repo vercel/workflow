@@ -13,11 +13,11 @@ const CommonBuildOptions = {
 };
 
 export class LocalBuilder extends BaseBuilder {
-  constructor(config: Partial<WorkflowConfig>) {
+  constructor(config?: Partial<WorkflowConfig>) {
     super({
       ...CommonBuildOptions,
       ...config,
-      workingDir: config.workingDir || process.cwd(),
+      workingDir: config?.workingDir || process.cwd(),
     });
   }
 
