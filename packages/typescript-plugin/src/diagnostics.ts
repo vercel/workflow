@@ -1,10 +1,22 @@
-import builtinModules from 'builtin-modules';
 import {
   findFunctionCalls,
   getDirective,
   getDirectiveTypo,
   isAsyncFunction,
 } from './utils';
+
+const BUILTIN_MODULES = new Set<string>();
+
+// Get built-in modules from Node.js repl module and add node: variants
+for (const mod of require('node:repl')._builtinLibs as string[]) {
+  // Add both unprefixed and 'node:' prefixed variants to the set of builtin modules
+  BUILTIN_MODULES.add(mod);
+  BUILTIN_MODULES.add(`node:${mod}`);
+}
+
+function isBuiltinModule(moduleName: string): boolean {
+  return BUILTIN_MODULES.has(moduleName);
+}
 
 type TypeScriptLib = typeof import('typescript/lib/tsserverlibrary');
 type Program = import('typescript/lib/tsserverlibrary').Program;
@@ -262,7 +274,7 @@ export function getCustomDiagnostics(
 
           // Check if it's a disallowed Node.js module
           // builtin-modules already includes both 'fs' and 'node:fs' variants
-          if (builtinModules.includes(moduleName)) {
+          if (isBuiltinModule(moduleName)) {
             diagnostics.push({
               file: sourceFile,
               start: callNode.getStart(),
@@ -340,8 +352,7 @@ export function getCustomDiagnostics(
                 }
 
                 if (
-                  importDecl &&
-                  importDecl.moduleSpecifier &&
+                  importDecl?.moduleSpecifier &&
                   ts.isStringLiteral(importDecl.moduleSpecifier)
                 ) {
                   const moduleName = importDecl.moduleSpecifier.text;

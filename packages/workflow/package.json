@@ -25,6 +25,7 @@
     ".": {
       "types": "./dist/index.d.ts",
       "workflow": "./dist/workflow.js",
+      "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     },
     "./api": "./dist/api.js",

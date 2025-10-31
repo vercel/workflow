@@ -6,9 +6,10 @@
 import { createRequire } from 'node:module';
 const requireFromHere = createRequire(__filename);
 
-const sdk = requireFromHere('./index.js');
+//const sdk = requireFromHere('./index.js');
 
 function createTSPlugin(options: any): any {
+  console.log('createTSPlugin', options);
   // The package is being used as a TypeScript Language Service plugin
   if (
     options &&
@@ -16,6 +17,7 @@ function createTSPlugin(options: any): any {
     typeof options.typescript === 'object'
   ) {
     const pluginInit = requireFromHere('@workflow/typescript-plugin');
+    console.log('pluginInit', pluginInit);
     return pluginInit(options);
   }
 
@@ -26,8 +28,8 @@ function createTSPlugin(options: any): any {
 }
 
 // Export all named exports from the SDK
-Object.keys(sdk).forEach((key) => {
-  (createTSPlugin as any)[key] = sdk[key];
-});
+//Object.keys(sdk).forEach((key) => {
+//  (createTSPlugin as any)[key] = sdk[key];
+//});
 
 module.exports = createTSPlugin;
