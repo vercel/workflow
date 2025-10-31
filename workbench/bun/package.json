@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun --hot server.ts"
+    "dev": "bun server.ts"
   },
   "dependencies": {
     "workflow": "workspace:*"

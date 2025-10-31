@@ -22,7 +22,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist"
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test:e2e": "vitest run e2e"
   },
   "dependencies": {
     "@swc/core": "1.11.24",
@@ -35,6 +36,7 @@
   "devDependencies": {
     "@types/bun": "^1.3.1",
     "@types/node": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "vitest": "catalog:"
   }
 }
