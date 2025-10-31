@@ -1,7 +1,7 @@
-import { posix } from 'node:path';
+import { join } from 'pathe';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
-import { LocalBuilder, VercelBuilder } from './builders';
-import { workflowRollupPlugin } from './rollup-plugin';
+import { LocalBuilder, VercelBuilder } from './builders.js';
+import { workflowRollupPlugin } from './rollup-plugin.js';
 
 export default {
   name: 'workflow/nitro',
@@ -13,9 +13,6 @@ export default {
     nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
       (config.plugins as Array<unknown>).push(workflowRollupPlugin());
     });
-
-    // Temporary workaround for debug unenv mock
-    nitro.options.alias['debug'] ??= 'debug';
 
     // Generate functions for vercel build
     if (isVercelDeploy) {
@@ -61,13 +58,13 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
     // Nitro v2 (legacy)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import { fromWebHandler } from "h3";
-    import { POST } from "${posix.join(nitro.options.buildDir, buildPath)}";
+    import { POST } from "${join(nitro.options.buildDir, buildPath)}";
     export default fromWebHandler(POST);
   `;
   } else {
     // Nitro v3+ (native web handlers)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
-    import { POST } from "${posix.join(nitro.options.buildDir, buildPath)}";
+    import { POST } from "${join(nitro.options.buildDir, buildPath)}";
     export default ({ req }) => POST(req);
   `;
   }

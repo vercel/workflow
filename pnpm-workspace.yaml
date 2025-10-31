@@ -9,7 +9,7 @@ catalog:
   '@vercel/functions': ^3.1.4
   '@vercel/oidc': ^3.0.3
   '@vitest/coverage-v8': ^3.2.4
-  "nitro": "npm:nitro-nightly@3.1.0-20251025-144733-946505c1"
+  "nitro": "npm:nitro-nightly@3.0.1-20251031-191411-219987c6"
   ai: 5.0.76
   esbuild: ^0.25.11
   typescript: ^5.9.3

@@ -1,9 +1,7 @@
 import { defineConfig } from 'vite'
 import { nitro } from 'nitro/vite'
+import { workflow } from 'workflow/vite'
 
 export default defineConfig({
-  plugins: [nitro()],
-  nitro: {
-    modules: ['workflow/nitro']
-  }
+  plugins: [nitro(), workflow()]
 });
