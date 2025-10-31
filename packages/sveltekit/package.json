@@ -28,7 +28,7 @@
     "@sveltejs/kit": "^2.48.2",
     "@workflow/cli": "workspace:*",
     "fs-extra": "^11.3.2",
-    "workflow": "workspace:*"
+    "@workflow/nitro": "workspace:*"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",

@@ -15,7 +15,6 @@
     "@sveltejs/kit": "^2.43.2",
     "@sveltejs/vite-plugin-svelte": "^6.2.0",
     "@types/lodash.chunk": "^4.2.9",
-    "@workflow/sveltekit": "workspace:*",
     "svelte": "^5.39.5",
     "svelte-check": "^4.3.2",
     "typescript": "^5.9.2",

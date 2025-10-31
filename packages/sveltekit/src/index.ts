@@ -75,4 +75,4 @@ process.on('beforeExit', () => {
   }
 });
 
-export { workflowRollupPlugin as workflowPlugin } from 'workflow/rollup-plugin';
+export { workflowRollupPlugin as workflowPlugin } from '@workflow/nitro/rollup-plugin';
