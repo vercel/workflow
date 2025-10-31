@@ -1,6 +1,7 @@
 packages:
   - workbench/*
   - packages/*
+  - docs
 
 catalog:
   '@biomejs/biome': ^2.2.5
