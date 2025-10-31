@@ -1,6 +1,6 @@
 import type { Plugin } from 'vite'
 import type { ModuleOptions } from './index.js'
-import { Nitro } from 'nitro/types';
+import type { Nitro } from 'nitro/types';
 import { workflowRollupPlugin } from './rollup-plugin.js';
 import nitroModule from './index.js'
 
