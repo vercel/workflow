@@ -10,7 +10,6 @@ const localBuilder = new LocalBuilder({});
 await localBuilder.build();
 
 process.on('beforeExit', () => {
-  console.log('BEFORE EXIT');
   // Don't patch functions output if not in Vercel adapter
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     return;
