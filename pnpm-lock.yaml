@@ -28,8 +28,8 @@ catalogs:
       specifier: ^0.25.11
       version: 0.25.11
     nitro:
-      specifier: npm:nitro-nightly@3.1.0-20251024-201544-aec6dd26
-      version: 3.1.0-20251024-201544-aec6dd26
+      specifier: npm:nitro-nightly@3.0.1-20251031-191411-219987c6
+      version: 3.0.1-20251031-191411-219987c6
     typescript:
       specifier: ^5.9.3
       version: 5.9.3
@@ -510,6 +510,9 @@ importers:
       nitro:
         specifier: latest
         version: 3.0.1-alpha.0(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
+      vite:
+        specifier: ^7.1.12
+        version: 7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
 
   packages/swc-plugin-workflow:
     dependencies:
@@ -942,7 +945,7 @@ importers:
         version: 4.2.0
       nitro:
         specifier: 'catalog:'
-        version: nitro-nightly@3.1.0-20251024-201544-aec6dd26(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
+        version: nitro-nightly@3.0.1-20251031-191411-219987c6(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
       openai:
         specifier: ^6.6.0
         version: 6.6.0(ws@8.18.3)(zod@4.1.11)
@@ -1091,7 +1094,7 @@ importers:
         version: 4.2.0
       nitro:
         specifier: 'catalog:'
-        version: nitro-nightly@3.1.0-20251024-201544-aec6dd26(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
+        version: nitro-nightly@3.0.1-20251031-191411-219987c6(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
       openai:
         specifier: ^6.1.0
         version: 6.6.0(ws@8.18.3)(zod@4.1.11)
@@ -1139,7 +1142,7 @@ importers:
         version: 4.2.0
       nitro:
         specifier: 'catalog:'
-        version: nitro-nightly@3.1.0-20251024-201544-aec6dd26(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
+        version: nitro-nightly@3.0.1-20251031-191411-219987c6(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
       openai:
         specifier: ^6.1.0
         version: 6.6.0(ws@8.18.3)(zod@4.1.11)
@@ -1187,7 +1190,7 @@ importers:
         version: 4.2.0
       nitro:
         specifier: 'catalog:'
-        version: nitro-nightly@3.1.0-20251024-201544-aec6dd26(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
+        version: nitro-nightly@3.0.1-20251031-191411-219987c6(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
       openai:
         specifier: ^6.6.0
         version: 6.6.0(ws@8.18.3)(zod@4.1.11)
@@ -7370,8 +7373,8 @@ packages:
   nf3@0.1.5:
     resolution: {integrity: sha512-kb6KFkGzOx1ux95s8kSJF17D/j2hgkWn7/gW6qgLYEZYY6a3eJH463zqb/H/gZLNgQAdGd7FpLkdfbSrXncqhw==}
 
-  nitro-nightly@3.1.0-20251024-201544-aec6dd26:
-    resolution: {integrity: sha512-T5MYzHGABVEzIII9f5LA8fMXL2stI44EhdC7R8gAHQK+XTH0ZEzKi1Ee+fa4Uk4m3MUAHpZMraMMaBdUWVFO6Q==}
+  nitro-nightly@3.0.1-20251031-191411-219987c6:
+    resolution: {integrity: sha512-ODuP/N+QYx9cnm090qmz4vAxJQ86x+gqlchL47PykAvxuFgOkKUx6ELqaPQX1b0EJhgFsYHYuV0gaOqvquoW8g==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
@@ -7497,6 +7500,9 @@ packages:
 
   ofetch@1.4.1:
     resolution: {integrity: sha512-QZj2DfGplQAr2oj9KzceK9Hwz6Whxazmn85yYeVuS3u9XTMOGMRx0kO95MQ+vLsj/S/NwBDMMLU5hpxvI6Tklw==}
+
+  ofetch@2.0.0-alpha.3:
+    resolution: {integrity: sha512-zpYTCs2byOuft65vI3z43Dd6iSdFbOZZLb9/d21aCpx2rGastVU9dOCv0lu4ykc1Ur1anAYjDi3SUvR0vq50JA==}
 
   ohash@2.0.11:
     resolution: {integrity: sha512-RdR9FQrFwNBNXAr4GixM8YaRZRJ5PUWbKYbE5eOsrwAjJW0q2REGcf79oYPsLyskQCZG1PLN+S/K1V00joZAoQ==}
@@ -16627,25 +16633,22 @@ snapshots:
 
   nf3@0.1.5: {}
 
-  nitro-nightly@3.1.0-20251024-201544-aec6dd26(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)):
+  nitro-nightly@3.0.1-20251031-191411-219987c6(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)):
     dependencies:
       consola: 3.4.2
-      cookie-es: 2.0.0
       crossws: 0.4.1(srvx@0.9.4)
       db0: 0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))
       esbuild: 0.25.11
-      fetchdts: 0.1.7
       h3: 2.0.1-rc.5(crossws@0.4.1(srvx@0.9.4))
       jiti: 2.6.1
       nf3: 0.1.5
-      ofetch: 1.4.1
+      ofetch: 2.0.0-alpha.3
       ohash: 2.0.11
-      rendu: 0.0.6
       rollup: 4.52.5
       srvx: 0.9.4
       undici: 7.16.0
       unenv: 2.0.0-rc.24
-      unstorage: 2.0.0-alpha.4(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0)))(ioredis@5.8.2)(lru-cache@11.2.2)(ofetch@1.4.1)
+      unstorage: 2.0.0-alpha.4(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0)))(ioredis@5.8.2)(lru-cache@11.2.2)(ofetch@2.0.0-alpha.3)
     optionalDependencies:
       vite: 7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
     transitivePeerDependencies:
@@ -17014,6 +17017,8 @@ snapshots:
       destr: 2.0.5
       node-fetch-native: 1.6.7
       ufo: 1.6.1
+
+  ofetch@2.0.0-alpha.3: {}
 
   ohash@2.0.11: {}
 
@@ -18781,14 +18786,14 @@ snapshots:
       lru-cache: 11.2.2
       ofetch: 1.4.1
 
-  unstorage@2.0.0-alpha.4(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0)))(ioredis@5.8.2)(lru-cache@11.2.2)(ofetch@1.4.1):
+  unstorage@2.0.0-alpha.4(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0)))(ioredis@5.8.2)(lru-cache@11.2.2)(ofetch@2.0.0-alpha.3):
     optionalDependencies:
       '@vercel/functions': 3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0)
       chokidar: 4.0.3
       db0: 0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.2.2)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))
       ioredis: 5.8.2
       lru-cache: 11.2.2
-      ofetch: 1.4.1
+      ofetch: 2.0.0-alpha.3
 
   untun@0.1.3:
     dependencies:

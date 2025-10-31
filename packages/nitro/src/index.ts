@@ -17,9 +17,6 @@ export default {
       (config.plugins as Array<unknown>).push(workflowRollupPlugin());
     });
 
-    // Temporary workaround for debug unenv mock
-    nitro.options.alias['debug'] ??= 'debug';
-
     // Generate functions for vercel build
     if (isVercelDeploy) {
       nitro.hooks.hook('compiled', async () => {
