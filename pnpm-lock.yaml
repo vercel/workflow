@@ -329,9 +329,6 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.25.11
       exsolve:
         specifier: ^1.0.7
         version: 1.0.7
