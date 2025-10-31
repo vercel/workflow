@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "clean": "node -e \"import('node:fs').then(fs=>{['.next','.swc','app/.well-known/workflow'].forEach(d=>fs.rmSync(d,{recursive:true,force:true}).catch(()=>{}))})\"",
+    "clean": "node -e \"import('node:fs').then(fs=>{['.next','.swc','app/.well-known/workflow'].forEach(d=>{try{fs.rmSync(d,{recursive:true,force:true})}catch(e){}})})\"",
     "start": "next start",
     "lint": "next lint"
   },
