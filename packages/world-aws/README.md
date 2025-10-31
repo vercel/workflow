@@ -35,18 +35,18 @@ Configure the AWS world using environment variables:
 export AWS_REGION="us-east-1"
 
 # Required: SQS queue URLs
-export WORKFLOW_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/..."
-export WORKFLOW_STEP_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/..."
+export WORKFLOW_AWS_WORKFLOW_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/..."
+export WORKFLOW_AWS_STEP_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/..."
 
 # Required: DynamoDB table names
-export WORKFLOW_RUNS_TABLE="workflow_runs"
-export WORKFLOW_STEPS_TABLE="workflow_steps"
-export WORKFLOW_EVENTS_TABLE="workflow_events"
-export WORKFLOW_HOOKS_TABLE="workflow_hooks"
-export WORKFLOW_STREAM_CHUNKS_TABLE="workflow_stream_chunks"
+export WORKFLOW_AWS_RUNS_TABLE="workflow_runs"
+export WORKFLOW_AWS_STEPS_TABLE="workflow_steps"
+export WORKFLOW_AWS_EVENTS_TABLE="workflow_events"
+export WORKFLOW_AWS_HOOKS_TABLE="workflow_hooks"
+export WORKFLOW_AWS_STREAMS_TABLE="workflow_stream_chunks"
 
 # Required: S3 bucket for large payloads
-export WORKFLOW_STREAM_BUCKET="workflow-streams-..."
+export WORKFLOW_AWS_STREAM_BUCKET="workflow-streams-..."
 
 # Optional: AWS credentials (local dev only, not required on AWS)
 export AWS_ACCESS_KEY_ID="your-access-key"
@@ -78,14 +78,14 @@ const world = createWorld({
 | Option              | Type     | Default                        | Description                                   |
 | ------------------- | -------- | ------------------------------ | --------------------------------------------- |
 | `region`            | `string` | `process.env.AWS_REGION`       | AWS region                                    |
-| `queueUrl`          | `string` | `process.env.WORKFLOW_QUEUE_URL` | SQS queue URL for workflow orchestration     |
-| `stepQueueUrl`      | `string` | `process.env.WORKFLOW_STEP_QUEUE_URL` | SQS queue URL for step execution            |
-| `runsTable`         | `string` | `process.env.WORKFLOW_RUNS_TABLE` | DynamoDB table for workflow runs            |
-| `stepsTable`        | `string` | `process.env.WORKFLOW_STEPS_TABLE` | DynamoDB table for step execution           |
-| `eventsTable`       | `string` | `process.env.WORKFLOW_EVENTS_TABLE` | DynamoDB table for workflow events          |
-| `hooksTable`        | `string` | `process.env.WORKFLOW_HOOKS_TABLE` | DynamoDB table for webhook hooks            |
-| `streamChunksTable` | `string` | `process.env.WORKFLOW_STREAM_CHUNKS_TABLE` | DynamoDB table for stream chunks           |
-| `streamBucket`      | `string` | `process.env.WORKFLOW_STREAM_BUCKET` | S3 bucket for large payload storage        |
+| `queueUrl`          | `string` | `process.env.WORKFLOW_AWS_WORKFLOW_QUEUE_URL` | SQS queue URL for workflow orchestration     |
+| `stepQueueUrl`      | `string` | `process.env.WORKFLOW_AWS_STEP_QUEUE_URL` | SQS queue URL for step execution            |
+| `runsTable`         | `string` | `process.env.WORKFLOW_AWS_RUNS_TABLE` | DynamoDB table for workflow runs            |
+| `stepsTable`        | `string` | `process.env.WORKFLOW_AWS_STEPS_TABLE` | DynamoDB table for step execution           |
+| `eventsTable`       | `string` | `process.env.WORKFLOW_AWS_EVENTS_TABLE` | DynamoDB table for workflow events          |
+| `hooksTable`        | `string` | `process.env.WORKFLOW_AWS_HOOKS_TABLE` | DynamoDB table for webhook hooks            |
+| `streamChunksTable` | `string` | `process.env.WORKFLOW_AWS_STREAMS_TABLE` | DynamoDB table for stream chunks           |
+| `streamBucket`      | `string` | `process.env.WORKFLOW_AWS_STREAM_BUCKET` | S3 bucket for large payload storage        |
 
 ## Environment Variables
 
@@ -93,14 +93,14 @@ const world = createWorld({
 | ----------------------------- | ---------------------------------------------- | -------- | ------- |
 | `WORKFLOW_TARGET_WORLD`       | Set to `"@workflow/world-aws"` to use this world | -        | -       |
 | `AWS_REGION`                  | AWS region                                     | ✅       | -       |
-| `WORKFLOW_QUEUE_URL`          | SQS queue URL for workflow orchestration       | ✅       | -       |
-| `WORKFLOW_STEP_QUEUE_URL`     | SQS queue URL for step execution               | ✅       | -       |
-| `WORKFLOW_RUNS_TABLE`         | DynamoDB table for workflow runs               | ✅       | -       |
-| `WORKFLOW_STEPS_TABLE`        | DynamoDB table for step execution              | ✅       | -       |
-| `WORKFLOW_EVENTS_TABLE`        | DynamoDB table for workflow events             | ✅       | -       |
-| `WORKFLOW_HOOKS_TABLE`         | DynamoDB table for webhook hooks               | ✅       | -       |
-| `WORKFLOW_STREAM_CHUNKS_TABLE` | DynamoDB table for stream chunks              | ✅       | -       |
-| `WORKFLOW_STREAM_BUCKET`       | S3 bucket for large payloads                  | ✅       | -       |
+| `WORKFLOW_AWS_WORKFLOW_QUEUE_URL` | SQS queue URL for workflow orchestration       | ✅       | -       |
+| `WORKFLOW_AWS_STEP_QUEUE_URL`     | SQS queue URL for step execution               | ✅       | -       |
+| `WORKFLOW_AWS_RUNS_TABLE`         | DynamoDB table for workflow runs               | ✅       | -       |
+| `WORKFLOW_AWS_STEPS_TABLE`        | DynamoDB table for step execution              | ✅       | -       |
+| `WORKFLOW_AWS_EVENTS_TABLE`        | DynamoDB table for workflow events             | ✅       | -       |
+| `WORKFLOW_AWS_HOOKS_TABLE`         | DynamoDB table for webhook hooks               | ✅       | -       |
+| `WORKFLOW_AWS_STREAMS_TABLE` | DynamoDB table for stream chunks              | ✅       | -       |
+| `WORKFLOW_AWS_STREAM_BUCKET`       | S3 bucket for large payloads                  | ✅       | -       |
 | `AWS_ACCESS_KEY_ID`            | AWS access key (local dev only)               | ✅*      | -       |
 | `AWS_SECRET_ACCESS_KEY`        | AWS secret key (local dev only)                | ✅*      | -       |
 

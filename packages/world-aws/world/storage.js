@@ -118,7 +118,7 @@ function createRunsStorage(client, config) {
       }
       if (params?.workflowName) {
         // If querying by workflow name, we need a GSI
-        queryParams.IndexName = 'workflowName-index';
+        queryParams.IndexName = 'workflowName-createdAt-index';
         queryParams.KeyConditionExpression = 'workflowName = :workflowName';
         queryParams.ExpressionAttributeValues = {
           ':workflowName': params.workflowName,
