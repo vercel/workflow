@@ -516,12 +516,12 @@ importers:
       '@workflow/cli':
         specifier: workspace:*
         version: link:../cli
+      '@workflow/nitro':
+        specifier: workspace:*
+        version: link:../nitro
       fs-extra:
         specifier: ^11.3.2
         version: 11.3.2
-      workflow:
-        specifier: workspace:*
-        version: link:../workflow
     devDependencies:
       '@types/fs-extra':
         specifier: ^11.0.4
@@ -1254,9 +1254,6 @@ importers:
       '@types/lodash.chunk':
         specifier: ^4.2.9
         version: 4.2.9
-      '@workflow/sveltekit':
-        specifier: workspace:*
-        version: link:../../packages/sveltekit
       svelte:
         specifier: ^5.39.5
         version: 5.43.0
