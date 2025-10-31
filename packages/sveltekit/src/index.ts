@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { LocalBuilder } from './builders.js';
 
-const localBuilder = new LocalBuilder({});
+const localBuilder = new LocalBuilder();
 
 // This needs to be in the top-level as we need to create these
 // entries before svelte plugin is started or the entries are
