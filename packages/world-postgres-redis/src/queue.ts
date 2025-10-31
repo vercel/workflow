@@ -83,7 +83,8 @@ export function createQueue(
     const payload = JSON.stringify(validated);
     
     // Pipeline operations for better performance (Redis executes atomically)
-    await redis.multi()
+    await redis
+      .multi()
       .lPush(listKey, payload)
       .publish(`chan:${listKey}`, 'new')
       .exec();
@@ -91,27 +92,24 @@ export function createQueue(
   };
 
   async function worker(queuePrefix: QueuePrefix, listKey: string) {
+    // Each worker uses its own Redis client because BRPOP blocks the connection
+    const workerRedis = redis.duplicate();
+    await workerRedis.connect();
+    
+    try {
     while (true) {
-      // Try to pop, or block-wait for a signal
-      const item = await redis.rPop(listKey);
-      if (!item) {
-        // Wait for a pubsub signal to avoid hot loop
-        const sub = redis.duplicate();
-        await sub.connect();
-        try {
-          await new Promise<void>((resolve) => {
-            sub.subscribe(`chan:${listKey}`, () => {
-              resolve();
-            });
-          });
-        } finally {
-          await sub.quit();
+        // Use BRPOP to wait for items; blocks indefinitely with timeout=0
+        const result = await workerRedis.brPop(listKey, 0);
+
+        if (!result) {
+          // Should not happen with timeout=0, but handle gracefully
+          continue;
         }
-        continue;
-      }
+
+        const item = result.element;
 
       try {
-        const parsedJson = JSON.parse(item);
+        const parsedJson = JSON.parse(item as string);
         const parsed = MessageData.parse(parsedJson);
         const body = Buffer.from(parsed.data, 'base64');
         const decoded = await transport.deserialize(
@@ -135,6 +133,9 @@ export function createQueue(
       }
       
       // Note: idempotency key is automatically cleaned up via TTL (10 minutes, set when added)
+      }
+    } finally {
+      await workerRedis.quit();
     }
   }
 
