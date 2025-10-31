@@ -463,4 +463,68 @@ describe('e2e', () => {
     expect(retryStep.attempt).toBe(3);
     expect(retryStep.output).toEqual([3]);
   });
+
+  test('simpleTestEndpoint', { timeout: 60_000 }, async () => {
+    // Only run this test for nextjs-turbopack since it has the specific endpoint
+    const appName = process.env.APP_NAME;
+    if (appName !== 'nextjs-turbopack') {
+      expect(true).toBe(true); // Skip test for other apps
+      return;
+    }
+
+    const res = await fetch(`${deploymentUrl}/api/simple-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 5 }),
+    });
+
+    expect(res.status).toBe(200);
+    const result = await res.json();
+
+    expect(result).toMatchObject({
+      success: true,
+      runId: expect.any(String),
+      result: {
+        input: 5,
+        step1Result: 10, // 5 * 2
+        step2Result: 30, // 10 * 3
+        finalResult: 30,
+        success: true,
+      },
+    });
+  });
+
+  test(
+    'simpleTestEndpoint with different value',
+    { timeout: 60_000 },
+    async () => {
+      // Only run this test for nextjs-turbopack since it has the specific endpoint
+      const appName = process.env.APP_NAME;
+      if (appName !== 'nextjs-turbopack') {
+        expect(true).toBe(true); // Skip test for other apps
+        return;
+      }
+
+      const res = await fetch(`${deploymentUrl}/api/simple-test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: 3 }),
+      });
+
+      expect(res.status).toBe(200);
+      const result = await res.json();
+
+      expect(result).toMatchObject({
+        success: true,
+        runId: expect.any(String),
+        result: {
+          input: 3,
+          step1Result: 6, // 3 * 2
+          step2Result: 18, // 6 * 3
+          finalResult: 18,
+          success: true,
+        },
+      });
+    }
+  );
 });
