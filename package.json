@@ -26,7 +26,7 @@
   },
   "scripts": {
     "prepare": "husky",
-    "build": "turbo build --filter='./packages/*'",
+    "build": "turbo build",
     "test": "turbo test",
     "clean": "turbo clean",
     "typecheck": "turbo typecheck",
