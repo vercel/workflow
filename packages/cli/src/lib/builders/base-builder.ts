@@ -18,6 +18,20 @@ const enhancedResolve = promisify(enhancedResolveOriginal);
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
+// Helper function code for converting SvelteKit requests to standard Request objects
+const SVELTEKIT_REQUEST_CONVERTER = `
+async function convertSvelteKitRequest(request) {
+  const options = {
+    method: request.method,
+    headers: new Headers(request.headers)
+  };
+  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
+    options.body = await request.arrayBuffer();
+  }
+  return new Request(request.url, options);
+}
+`;
+
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
 
@@ -264,15 +278,9 @@ export abstract class BaseBuilder {
       entryContent += `
     // API entrypoint
     import { stepEntrypoint } from 'workflow/runtime';
+    ${SVELTEKIT_REQUEST_CONVERTER}
     export const POST = async ({request}) => {
-      const body = await request.arrayBuffer()
-      const normalRequest = new Request(request.url, {
-        method: request.method,
-        headers: new Headers(request.headers),
-        ...(['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) ? {} : {
-          body
-        }
-      })
+      const normalRequest = await convertSvelteKitRequest(request);
       return stepEntrypoint(normalRequest);
     }
     `;
@@ -484,15 +492,9 @@ const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 `;
       if (this.config.buildTarget === 'sveltekit') {
         workflowFunctionCode += `
+${SVELTEKIT_REQUEST_CONVERTER}
 export const POST = async ({ request }) => {
-  const body = await request.arrayBuffer()
-  const normalRequest = new Request(request.url, {
-    method: request.method,
-    headers: new Headers(request.headers),
-    ...(['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) ? {} : {
-      body
-    }
-  })
+  const normalRequest = await convertSvelteKitRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
 }`;
       } else {
@@ -644,15 +646,9 @@ async function handler(request) {
 }`;
     if (this.config.buildTarget === 'sveltekit') {
       routeContent += `
+${SVELTEKIT_REQUEST_CONVERTER}
 const createSvelteKitHandler = (method) => async ({ request }) => {
-  const options = {
-    method: request.method,
-    headers: new Headers(request.headers)
-  };
-  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
-    options.body = await request.arrayBuffer();
-  }
-  const normalRequest = new Request(request.url, options);
+  const normalRequest = await convertSvelteKitRequest(request);
   return handler(normalRequest);
 };
 
