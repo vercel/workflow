@@ -33,14 +33,11 @@
   "peerDependencies": {
     "typescript": ">=5.0.0"
   },
-  "dependencies": {
-    "builtin-modules": "^5.0.0"
-  },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
     "@workflow/core": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
-    "@vitest/coverage-v8": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
