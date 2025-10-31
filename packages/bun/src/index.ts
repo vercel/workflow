@@ -8,11 +8,12 @@ import type { BunPlugin } from 'bun';
 
 export function workflowPlugin(): BunPlugin {
   return {
-    name: 'workflow-transform',
+    name: 'workflow-plugin',
     async setup(build) {
       // Build workflows on startup
       await new LocalBuilder().build();
 
+      // Client transform plugin
       build.onLoad({ filter: /\.(ts|tsx|js|jsx)$/ }, async (args) => {
         const source = await Bun.file(args.path).text();
         // Optimization: Skip files that do not have any directives
@@ -35,19 +36,15 @@ export function workflowPlugin(): BunPlugin {
   };
 }
 
-const CommonBuildOptions = {
-  buildTarget: 'next' as const, // unused in base
-  stepsBundlePath: '', // unused in base
-  workflowsBundlePath: '', // unused in base
-  webhookBundlePath: '', // unused in base
-};
-
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
   constructor(config?: Partial<WorkflowConfig>) {
     const outDir = join(config?.workingDir ?? process.cwd(), '.workflows');
     super({
-      ...CommonBuildOptions,
+      buildTarget: 'standalone' as const,
+      stepsBundlePath: '',
+      workflowsBundlePath: '',
+      webhookBundlePath: '',
       dirs: config?.dirs ?? ['./workflows'],
       workingDir: config?.workingDir ?? process.cwd(),
     });
