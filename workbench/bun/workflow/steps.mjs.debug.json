@@ -1,0 +1,14 @@
+{
+  "stepFiles": [
+    "/Users/adrianlam/GitHub/workflow/workbench/example/workflows/98_duplicate_case.ts",
+    "/Users/adrianlam/GitHub/workflow/workbench/example/workflows/99_e2e.ts",
+    "/Users/adrianlam/GitHub/workflow/workbench/example/workflows/1_simple.ts",
+    "/Users/adrianlam/GitHub/workflow/workbench/example/workflows/2_control_flow.ts",
+    "/Users/adrianlam/GitHub/workflow/workbench/example/workflows/3_streams.ts",
+    "/Users/adrianlam/GitHub/workflow/workbench/example/workflows/6_batching.ts",
+    "/Users/adrianlam/GitHub/workflow/workbench/bun/workflows/0_demo.ts",
+    "/Users/adrianlam/GitHub/workflow/workbench/example/workflows/5_hooks.ts",
+    "/Users/adrianlam/GitHub/workflow/workbench/example/workflows/4_ai.ts",
+    "/Users/adrianlam/GitHub/workflow/packages/workflow/dist/stdlib.js"
+  ]
+}
