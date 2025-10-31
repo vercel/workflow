@@ -732,6 +732,9 @@ importers:
       '@workflow/nitro':
         specifier: workspace:*
         version: link:../nitro
+      '@workflow/sveltekit':
+        specifier: workspace:*
+        version: link:../sveltekit
       '@workflow/typescript-plugin':
         specifier: workspace:*
         version: link:../typescript-plugin
