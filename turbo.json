@@ -11,9 +11,11 @@
       "outputs": ["dist/**", "build", ".svelte-kit", ".vercel/output"]
     },
     "typecheck": {
+      "dependsOn": ["^build"],
       "outputs": ["dist/**", "build", ".svelte-kit", ".vercel/output"]
     },
     "test": {
+      "dependsOn": ["^build"],
       "outputs": ["dist/**", "build", ".svelte-kit", ".vercel/output"]
     },
     "clean": {
