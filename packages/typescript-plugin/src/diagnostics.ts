@@ -7,11 +7,14 @@ import {
 
 const BUILTIN_MODULES = new Set<string>();
 
-// Get built-in modules from Node.js repl module and add node: variants
-for (const mod of require('node:repl')._builtinLibs as string[]) {
+// Get built-in modules from Node.js `module.builtinModules`
+// https://nodejs.org/api/module.html#modulebuiltinmodules
+for (const mod of require('node:module').builtinModules as string[]) {
   // Add both unprefixed and 'node:' prefixed variants to the set of builtin modules
   BUILTIN_MODULES.add(mod);
-  BUILTIN_MODULES.add(`node:${mod}`);
+  if (!mod.startsWith('node:')) {
+    BUILTIN_MODULES.add(`node:${mod}`);
+  }
 }
 
 function isBuiltinModule(moduleName: string): boolean {
@@ -266,14 +269,12 @@ export function getCustomDiagnostics(
         }
 
         if (
-          importDecl &&
-          importDecl.moduleSpecifier &&
+          importDecl?.moduleSpecifier &&
           ts.isStringLiteral(importDecl.moduleSpecifier)
         ) {
           const moduleName = importDecl.moduleSpecifier.text;
 
           // Check if it's a disallowed Node.js module
-          // builtin-modules already includes both 'fs' and 'node:fs' variants
           if (isBuiltinModule(moduleName)) {
             diagnostics.push({
               file: sourceFile,
