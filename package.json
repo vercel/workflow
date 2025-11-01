@@ -21,7 +21,16 @@
       "rfc6902": "5.1.2"
     },
     "onlyBuiltDependencies": [
-      "bun"
+      "@parcel/watcher",
+      "@swc/core",
+      "@tailwindcss/oxide",
+      "better-sqlite3",
+      "bun",
+      "cpu-features",
+      "esbuild",
+      "protobufjs",
+      "sharp",
+      "ssh2"
     ]
   },
   "scripts": {
