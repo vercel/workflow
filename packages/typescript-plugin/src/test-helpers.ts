@@ -4,7 +4,7 @@ import ts from 'typescript/lib/tsserverlibrary';
  * Creates a TypeScript program from source code for testing
  */
 export function createTestProgram(
-  sourceCode: string,
+  sourceCode: string | Array<{ fileName: string; source: string }>,
   fileName = 'test.ts'
 ): { program: ts.Program; sourceFile: ts.SourceFile } {
   const compilerOptions: ts.CompilerOptions = {
@@ -18,7 +18,15 @@ export function createTestProgram(
 
   // Create a virtual file system
   const files = new Map<string, string>();
-  files.set(fileName, sourceCode);
+
+  // Handle both single string and multiple files
+  if (typeof sourceCode === 'string') {
+    files.set(fileName, sourceCode);
+  } else {
+    for (const file of sourceCode) {
+      files.set(file.fileName, file.source);
+    }
+  }
 
   // Create compiler host
   const host: ts.CompilerHost = {
@@ -41,8 +49,14 @@ export function createTestProgram(
     getDefaultLibFileName: () => 'lib.d.ts',
   };
 
+  // Determine which files to compile
+  const fileNames =
+    typeof sourceCode === 'string'
+      ? [fileName]
+      : sourceCode.map((f) => f.fileName);
+
   // Create program
-  const program = ts.createProgram([fileName], compilerOptions, host);
+  const program = ts.createProgram(fileNames, compilerOptions, host);
   const sourceFile = program.getSourceFile(fileName);
 
   if (!sourceFile) {

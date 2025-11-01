@@ -151,4 +151,150 @@ describe('getCodeFixes', () => {
       expect(fixes.length).toBe(0);
     });
   });
+
+  describe('Code 9009: Direct workflow invocation fixes', () => {
+    it('provides fix to use start() function with no arguments', () => {
+      const source = `
+        import { start } from 'workflow/api';
+
+        export async function myWorkflow() {
+          'use workflow';
+          return 123;
+        }
+
+        export async function handler() {
+          await myWorkflow();
+          return 'done';
+        }
+      `;
+
+      const { program, sourceFile } = createTestProgram(source);
+
+      // Find the position of myWorkflow() call
+      const callStart = sourceFile.text.lastIndexOf('myWorkflow()');
+      const callEnd = callStart + 'myWorkflow()'.length;
+
+      const fixes = getCodeFixes(
+        'test.ts',
+        callStart,
+        callEnd,
+        9009,
+        program,
+        ts
+      );
+
+      expect(fixes.length).toBe(1);
+      expect(fixes[0].fixName).toBe('use-workflow-start-function');
+      expect(fixes[0].description).toContain('start()');
+      expect(fixes[0].description).toContain('workflow/api');
+    });
+
+    it('provides fix to use start() function with arguments', () => {
+      const source = `
+        import { start } from 'workflow/api';
+
+        export async function myWorkflow(arg1: string, arg2: number) {
+          'use workflow';
+          return arg1 + arg2;
+        }
+
+        export async function handler() {
+          const result = await myWorkflow('hello', 42);
+          return result;
+        }
+      `;
+
+      const { program, sourceFile } = createTestProgram(source);
+
+      const callStart = sourceFile.text.lastIndexOf("myWorkflow('hello', 42)");
+      const callEnd = callStart + "myWorkflow('hello', 42)".length;
+
+      const fixes = getCodeFixes(
+        'test.ts',
+        callStart,
+        callEnd,
+        9009,
+        program,
+        ts
+      );
+
+      expect(fixes.length).toBe(1);
+      // Should suggest start(myWorkflow, [args])
+      const textChange = fixes[0].changes[0].textChanges[0];
+      expect(textChange.newText).toContain('start(myWorkflow');
+      expect(textChange.newText).toContain('[');
+    });
+
+    it('adds import for start() if not already imported', () => {
+      const source = `
+        export async function myWorkflow() {
+          'use workflow';
+          return 123;
+        }
+
+        export async function handler() {
+          await myWorkflow();
+          return 'done';
+        }
+      `;
+
+      const { program, sourceFile } = createTestProgram(source);
+
+      const callStart = sourceFile.text.lastIndexOf('myWorkflow()');
+      const callEnd = callStart + 'myWorkflow()'.length;
+
+      const fixes = getCodeFixes(
+        'test.ts',
+        callStart,
+        callEnd,
+        9009,
+        program,
+        ts
+      );
+
+      expect(fixes.length).toBe(1);
+      // Should have multiple text changes: call replacement + import
+      expect(fixes[0].changes[0].textChanges.length).toBeGreaterThanOrEqual(2);
+
+      // Check that one of the changes includes the import
+      const importChange = fixes[0].changes[0].textChanges.find((tc) =>
+        tc.newText.includes('import { start }')
+      );
+      expect(importChange).toBeDefined();
+    });
+
+    it('does not add duplicate import if start is already imported', () => {
+      const source = `
+        import { start } from 'workflow/api';
+
+        export async function myWorkflow() {
+          'use workflow';
+          return 123;
+        }
+
+        export async function handler() {
+          await myWorkflow();
+          return 'done';
+        }
+      `;
+
+      const { program, sourceFile } = createTestProgram(source);
+
+      const callStart = sourceFile.text.lastIndexOf('myWorkflow()');
+      const callEnd = callStart + 'myWorkflow()'.length;
+
+      const fixes = getCodeFixes(
+        'test.ts',
+        callStart,
+        callEnd,
+        9009,
+        program,
+        ts
+      );
+
+      expect(fixes.length).toBe(1);
+      // Should have only one text change (the call replacement, not the import)
+      expect(fixes[0].changes[0].textChanges.length).toBe(1);
+    });
+  });
 });
