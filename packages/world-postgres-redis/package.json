@@ -1,0 +1,57 @@
+{
+  "name": "@workflow/world-postgres-redis",
+  "version": "0.1.0",
+  "description": "A reference World implementation using PostgreSQL storage with Redis queue and streams",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-postgres-redis"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "db:push": "pnpm exec drizzle-kit --version && drizzle-kit push"
+  },
+  "dependencies": {
+    "@vercel/queue": "0.0.0-alpha.23",
+    "@workflow/errors": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "@workflow/world-local": "workspace:*",
+    "drizzle-orm": "^0.31.2",
+    "postgres": "^3.4.7",
+    "redis": "^4.6.13",
+    "ulid": "^3.0.1",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^11.7.1",
+    "@testcontainers/redis": "^11.7.1",
+    "@types/node": "catalog:",
+    "@workflow/errors": "workspace:*",
+    "@workflow/tsconfig": "workspace:*",
+    "@workflow/world-testing": "workspace:*",
+    "drizzle-kit": "^0.22.7",
+    "vitest": "catalog:"
+  },
+  "keywords": [],
+  "author": "",
+  "packageManager": "pnpm@10.15.1"
+}
