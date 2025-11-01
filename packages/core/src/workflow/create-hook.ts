@@ -24,9 +24,9 @@ export function createHook<T = any>(options?: HookOptions): Hook<T> {
 export function createWebhook(
   options: WebhookOptions & { respondWith: 'manual' }
 ): Webhook<RequestWithResponse>;
-export function createWebhook(options?: WebhookOptions): Webhook<Request>;
+export function createWebhook(_options?: WebhookOptions): Webhook<Request>;
 export function createWebhook(
-  options?: WebhookOptions
+  _options?: WebhookOptions
 ): Webhook<Request> | Webhook<RequestWithResponse> {
   const { respondWith, ...rest } = options ?? {};
   let metadata: Pick<WebhookOptions, 'respondWith'> | undefined;

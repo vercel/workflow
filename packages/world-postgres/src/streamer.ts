@@ -190,7 +190,9 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
           buffer = null;
         },
         cancel() {
-          cleanups.forEach((fn) => fn());
+          cleanups.forEach((fn) => {
+            fn();
+          });
         },
       });
     },

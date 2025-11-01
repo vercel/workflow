@@ -1,4 +1,3 @@
-import ts from 'typescript/lib/tsserverlibrary';
 import { getCodeFixes } from './code-fixes';
 import { enhanceCompletions } from './completions';
 import { getCustomDiagnostics } from './diagnostics';
@@ -35,7 +34,7 @@ function init(modules: {
       for (const k of Object.keys(info.languageService) as Array<
         keyof ts.LanguageService
       >) {
-        const x = info.languageService[k]!;
+        const x = info.languageService[k] as any;
         proxy[k] = (...args: Array<unknown>) =>
           x.apply(info.languageService, args);
       }

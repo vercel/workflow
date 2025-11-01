@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
 import ts from 'typescript/lib/tsserverlibrary';
-import { getDirective, isAsyncFunction, findFunctionCalls } from './utils';
+import { describe, expect, it } from 'vitest';
 import { createTestProgram } from './test-helpers';
+import { findFunctionCalls, getDirective, isAsyncFunction } from './utils';
 
 describe('getDirective', () => {
   it('returns "use workflow" for workflow functions', () => {

@@ -21,7 +21,7 @@ export interface WorkflowWritableStreamOptions {
  */
 export function getWritable<W = any>(
   // @ts-expect-error `options` is here for types/docs
-  options: WorkflowWritableStreamOptions = {}
+  _options: WorkflowWritableStreamOptions = {}
 ): WritableStream<W> {
   throw new Error(
     '`getWritable()` can only be called inside a workflow function'

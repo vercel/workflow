@@ -4,7 +4,7 @@ import type { RollupConfig } from 'nitro/types';
 
 type RollupPlugin = Exclude<
   RollupConfig['plugins'],
-  undefined | void | null | false | Promise<unknown> | Array<unknown>
+  undefined | undefined | null | false | Promise<unknown> | Array<unknown>
 >;
 
 // https://github.com/vercel/workflow/blob/feat/nitro/packages/next/src/loader.ts

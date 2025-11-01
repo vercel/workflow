@@ -508,34 +508,42 @@ export const Frameworks = () => {
             </span>
           </div>
         </div>
-        <div
-          className="group relative cursor-pointer size-[48px]"
+        <button
+          className="group relative cursor-pointer size-[48px] border-none bg-transparent p-0"
           onClick={() => handleRequest('SvelteKit')}
+          type="button"
+          aria-label="Request SvelteKit support"
         >
           <SvelteKitGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <SvelteKit className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[60px]"
+        </button>
+        <button
+          className="group relative cursor-pointer size-[60px] border-none bg-transparent p-0"
           onClick={() => handleRequest('Nuxt')}
+          type="button"
+          aria-label="Request Nuxt support"
         >
           <NuxtGray className="size-[60px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <Nuxt className="size-[60px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[48px]"
+        </button>
+        <button
+          className="group relative cursor-pointer size-[48px] border-none bg-transparent p-0"
           onClick={() => handleRequest('Hono')}
+          type="button"
+          aria-label="Request Hono support"
         >
           <HonoGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <Hono className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[52px]"
+        </button>
+        <button
+          className="group relative cursor-pointer size-[52px] border-none bg-transparent p-0"
           onClick={() => handleRequest('Bun')}
+          type="button"
+          aria-label="Request Bun support"
         >
           <BunGray className="size-[52px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <Bun className="size-[52px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
+        </button>
       </div>
     </div>
   );

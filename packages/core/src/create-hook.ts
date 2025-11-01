@@ -132,10 +132,10 @@ export function createHook<T = any>(options?: HookOptions): Hook<T> {
 export function createWebhook(
   options: WebhookOptions & { respondWith: 'manual' }
 ): Webhook<RequestWithResponse>;
-export function createWebhook(options?: WebhookOptions): Webhook<Request>;
+export function createWebhook(_options?: WebhookOptions): Webhook<Request>;
 export function createWebhook(
   // @ts-expect-error `options` is here for types/docs
-  options?: WebhookOptions
+  _options?: WebhookOptions
 ): Webhook<Request> | Webhook<RequestWithResponse> {
   throw new Error(
     '`createWebhook()` can only be called inside a workflow function'

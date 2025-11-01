@@ -43,7 +43,7 @@ export function defineHook<T>() {
      * @returns A Hook that resolves to the defined payload type
      */
     // @ts-expect-error `options` is here for types/docs
-    create(options?: HookOptions): Hook<T> {
+    create(_options?: HookOptions): Hook<T> {
       throw new Error(
         '`defineHook().create()` can only be called inside a workflow function.'
       );
