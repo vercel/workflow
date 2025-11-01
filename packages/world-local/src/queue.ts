@@ -59,6 +59,7 @@ export function createQueue(port?: number): Queue {
             method: 'POST',
             duplex: 'half',
             headers: {
+              'content-type': 'application/json',
               'x-vqs-queue-name': queueName,
               'x-vqs-message-id': messageId,
               'x-vqs-message-attempt': String(attempt + 1),
@@ -115,7 +116,11 @@ export function createQueue(port?: number): Queue {
 
       if (!headers.success || !req.body) {
         return Response.json(
-          { error: 'Missing required headers' },
+          {
+            error: !req.body
+              ? 'Missing request body'
+              : 'Missing required headers',
+          },
           { status: 400 }
         );
       }

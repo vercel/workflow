@@ -78,7 +78,11 @@ export async function resumeHook<T = any>(
         ops,
         globalThis
       );
-      waitUntil(Promise.all(ops));
+      waitUntil(
+        Promise.all(ops).catch((err) => {
+          console.error('Error waiting for ops', err);
+        })
+      );
 
       // Create a hook_received event with the payload
       await world.events.create(hook.runId, {

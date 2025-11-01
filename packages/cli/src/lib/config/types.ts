@@ -2,6 +2,7 @@ export const validBuildTargets = [
   'standalone',
   'vercel-build-output-api',
   'next',
+  'sveltekit',
 ] as const;
 export type BuildTarget = (typeof validBuildTargets)[number];
 
