@@ -73,26 +73,30 @@ export abstract class BaseBuilder {
   }
 
   protected async getInputFiles(): Promise<string[]> {
-    const result = await glob(
-      this.config.dirs.map(
-        (dir) =>
-          `${resolve(
-            this.config.workingDir,
-            dir
-          )}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`
-      ),
-      {
-        ignore: [
-          '**/node_modules/**',
-          '**/.git/**',
-          '**/.next/**',
-          '**/.vercel/**',
-          '**/.workflow-data/**',
-          '**/.well-known/workflow/**',
-        ],
-        absolute: true,
-      }
-    );
+    const workingDir = this.config.workingDir;
+    console.log('[DEBUG] getInputFiles workingDir:', workingDir);
+
+    const patterns = this.config.dirs.map((dir) => {
+      const absoluteDir = resolve(workingDir, dir);
+      const normalizedDir = absoluteDir.replace(/\\/g, '/');
+      return `${normalizedDir}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`;
+    });
+
+    console.log('[DEBUG] getInputFiles patterns:', patterns);
+
+    const result = await glob(patterns, {
+      ignore: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/.next/**',
+        '**/.vercel/**',
+        '**/.workflow-data/**',
+        '**/.well-known/workflow/**',
+      ],
+      absolute: true,
+    });
+
+    console.log('[DEBUG] getInputFiles glob result:', result);
     return result;
   }
 
