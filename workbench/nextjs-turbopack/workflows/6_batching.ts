@@ -1,1 +1,1 @@
-../../example/workflows/6_batching.ts
+export * from '../../example/workflows/6_batching';

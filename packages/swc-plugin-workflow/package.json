@@ -27,7 +27,7 @@
     "swc-plugin"
   ],
   "scripts": {
-    "build": "./build.sh",
+    "build": "node ./build.js",
     "clean": "cargo clean",
     "test": "cargo test -p swc_workflow",
     "prepublishOnly": "pnpm build"

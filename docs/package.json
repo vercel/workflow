@@ -6,7 +6,7 @@
     "build": "next build",
     "dev": "next dev --turbo",
     "start": "next start",
-    "postinstall": "fumadocs-mdx && npm run lint:links",
+    "postinstall": "fumadocs-mdx && node scripts/postinstall.js",
     "postbuild": "node scripts/pack.ts",
     "lint": "biome check",
     "lint:links": "bun scripts/lint.ts",

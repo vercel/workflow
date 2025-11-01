@@ -111,7 +111,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           return {
             external: true,
             path: isFilePath
-              ? relative(options.outdir || '', resolvedPath)
+              ? relative(options.outdir || '', resolvedPath).replace(/\\/g, '/')
               : args.path,
           };
         } catch (_) {}

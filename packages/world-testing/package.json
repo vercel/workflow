@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "wf build && tsc",
-    "clean": "tsc --build --clean && rm -rf dist .well-known* .workflow-data",
+    "clean": "tsc --build --clean && node ./scripts/clean.mjs",
     "start": "node --watch src/server.mts",
     "test": "vitest"
   },

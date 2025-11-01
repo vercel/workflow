@@ -12,10 +12,23 @@ export default async function workflowLoader(
   const filename = this.resourcePath;
   const normalizedSource = source.toString();
 
+  console.log(
+    '[workflowLoader] Processing file:',
+    filename,
+    'Source length:',
+    normalizedSource.length
+  );
+
   // only apply the transform if file needs it
   if (!normalizedSource.match(/(use step|use workflow)/)) {
+    console.log(
+      '[workflowLoader] No workflow/step directives found in:',
+      filename
+    );
     return normalizedSource;
   }
+
+  console.log('[workflowLoader] Found workflow/step directives in:', filename);
 
   const isTypeScript = filename.endsWith('.ts') || filename.endsWith('.tsx');
   const isTsx = filename.endsWith('.tsx');

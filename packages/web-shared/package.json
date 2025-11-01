@@ -26,9 +26,9 @@
     "directory": "packages/web-shared"
   },
   "scripts": {
-    "build": "tsc && cp -r src/trace-viewer/*.css dist/trace-viewer/",
+    "build": "tsc && node ./scripts/copy-trace-css.mjs",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -r dist ||:",
+    "clean": "tsc --build --clean && node ./scripts/clean.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome format --write"

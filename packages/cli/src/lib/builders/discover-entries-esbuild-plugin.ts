@@ -55,8 +55,24 @@ export function createDiscoverEntriesPlugin(state: {
 
           if (resolved) {
             importParents.set(args.importer, resolved);
+            if (
+              args.path.includes('simple') ||
+              args.path.includes('workflow') ||
+              args.importer.includes('simple')
+            ) {
+              console.log(
+                `[DISCOVER PLUGIN] Resolved import: ${args.path} -> ${resolved} (from ${args.importer})`
+              );
+            }
           }
-        } catch (_) {}
+        } catch (error) {
+          if (args.path.includes('simple') || args.path.includes('workflow')) {
+            console.log(
+              `[DISCOVER PLUGIN] Failed to resolve: ${args.path} from ${args.importer}`,
+              error
+            );
+          }
+        }
         return null;
       });
 
@@ -75,13 +91,21 @@ export function createDiscoverEntriesPlugin(state: {
           const hasUseStep = useStepPattern.test(source);
 
           if (hasUseWorkflow) {
+            console.log(
+              `[DISCOVER PLUGIN] Found "use workflow" in: ${args.path}`
+            );
             state.discoveredWorkflows.push(args.path);
           }
 
           if (hasUseStep) {
+            console.log(`[DISCOVER PLUGIN] Found "use step" in: ${args.path}`);
             state.discoveredSteps.push(args.path);
           }
 
+          // Note: esbuild gives us absolute Windows paths here (e.g. `C:/...`).
+          // When the SWC plugin later computes `strip_prefix`, the CWD it receives
+          // can differ in drive-letter case (`c:/`). The plugin normalizes that case,
+          // so we intentionally pass the absolute path through unmodified.
           const { code: transformedCode } = await applySwcTransform(
             args.path,
             source,

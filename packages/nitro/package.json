@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist"
+    "clean": "tsc --build --clean && node ./scripts/clean.mjs"
   },
   "dependencies": {
     "@swc/core": "1.11.24",

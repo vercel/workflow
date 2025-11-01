@@ -83,7 +83,8 @@ export const cliInspectJson = async (args: string) => {
   const cliAppPath = getWorkbenchAppPath();
   const cliArgs = getCliArgs();
 
-  const command = `./node_modules/.bin/workflow inspect`;
+  const workflowBin = path.join(cliAppPath, 'node_modules', '.bin', 'workflow');
+  const command = `${workflowBin} inspect`;
   const result = await awaitCommand(
     command,
     ['--json', args, cliArgs],

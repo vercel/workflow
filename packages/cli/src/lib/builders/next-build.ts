@@ -140,6 +140,10 @@ export class NextBuilder extends BaseBuilder {
         stepsCtx = newStepsCtx;
 
         await workflowsCtx.interimBundleCtx.dispose();
+        console.log(
+          '[DEBUG] Building workflows bundle with input files:',
+          options
+        );
         const newWorkflowsCtx = await this.buildWorkflowsFunction(options);
         if (!newWorkflowsCtx) {
           throw new Error(
@@ -317,6 +321,7 @@ export class NextBuilder extends BaseBuilder {
 
   protected async getInputFiles(): Promise<string[]> {
     const inputFiles = await super.getInputFiles();
+    console.log('[DEBUG] getInputFiles input files:', inputFiles);
     return inputFiles.filter((item) =>
       // non-exact pattern match to try to narrow
       // down to just app route entrypoints, this will
@@ -411,6 +416,7 @@ export class NextBuilder extends BaseBuilder {
   }> {
     const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
     await mkdir(workflowsRouteDir, { recursive: true });
+    console.log('Building workflows bundle with input files:', inputFiles);
     return await this.createWorkflowsBundle({
       format: 'esm',
       outfile: join(workflowsRouteDir, 'route.js'),

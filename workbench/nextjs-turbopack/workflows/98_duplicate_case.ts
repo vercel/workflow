@@ -1,1 +1,1 @@
-../../example/workflows/98_duplicate_case.ts
+export * from '../../example/workflows/98_duplicate_case';
