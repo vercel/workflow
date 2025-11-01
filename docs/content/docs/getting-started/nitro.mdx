@@ -27,7 +27,7 @@ cd nitro-app
 
 ### Install `workflow`
 
-<Tabs items={["npm", "pnpm", "yarn"]}>
+<Tabs items={['npm', 'pnpm', 'yarn', 'bun']}>
   <Tab value="npm">
     <CodeBlock>npm i workflow</CodeBlock>
   </Tab>
@@ -36,6 +36,9 @@ cd nitro-app
   </Tab>
   <Tab value="yarn">
     <CodeBlock>yarn add workflow</CodeBlock>
+  </Tab>
+  <Tab value="bun">
+    <CodeBlock>bun add workflow</CodeBlock>
   </Tab>
 </Tabs>
 
@@ -56,7 +59,7 @@ export default defineNitroConfig({
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="[&_p]:my-0 text-lg [&_p]:text-foreground">
-      Setup Typescript Intellisense (Optional)
+      Setup IntelliSense for TypeScript (Optional)
     </AccordionTrigger>
     <AccordionContent className="[&_p]:my-2">
 To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json`:
@@ -217,6 +220,8 @@ Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observabilit
 ```bash
 npx workflow inspect runs # add '--web' for an interactive Web based UI
 ```
+
+<img src="/o11y-ui.png" alt="Workflow DevKit Web UI" />
 
 </Step>
 

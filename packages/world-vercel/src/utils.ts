@@ -25,11 +25,25 @@ export function dateToStringReplacer(_key: string, value: unknown): unknown {
 export interface HttpConfig {
   baseUrl: string;
   headers: Headers;
+  usingProxy: boolean;
 }
 
-export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
+export const getHttpUrl = (
+  config?: APIConfig
+): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
+  const defaultUrl = 'https://vercel-workflow.com/api';
+  const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
+  const usingProxy = Boolean(
+    config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)
+  );
+  const baseUrl =
+    config?.baseUrl || (usingProxy ? defaultProxyUrl : defaultUrl);
+  return { baseUrl, usingProxy };
+};
 
+export const getHeaders = (config?: APIConfig): Headers => {
+  const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
   if (projectConfig) {
     headers.set(
@@ -43,22 +57,17 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
       headers.set('x-vercel-team-id', projectConfig.teamId);
     }
   }
+  return headers;
+};
 
+export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
+  const headers = getHeaders(config);
   const token = config?.token ?? (await getVercelOidcToken());
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
-
-  let baseUrl = config?.baseUrl;
-  if (!baseUrl) {
-    // If projectConfig is provided (only necessary outside of vercel deployments),
-    // we default the baseUrl to the API proxy
-    const shouldUseProxy = projectConfig?.projectId && projectConfig?.teamId;
-    baseUrl = shouldUseProxy
-      ? `https://api.vercel.com/v1/workflow`
-      : 'https://vercel-workflow.com/api';
-  }
-  return { baseUrl, headers };
+  const { baseUrl, usingProxy } = getHttpUrl(config);
+  return { baseUrl, headers, usingProxy };
 }
 
 export async function makeRequest<T>({

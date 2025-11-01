@@ -1,0 +1,59 @@
+{
+  "name": "@workflow/web-shared",
+  "description": "Shared components for Workflow Observability UI",
+  "version": "4.0.1-beta.5",
+  "private": false,
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/api/workflow-server-actions.d.ts",
+      "default": "./dist/api/workflow-server-actions.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/web-shared"
+  },
+  "scripts": {
+    "build": "tsc && cp -r src/trace-viewer/*.css dist/trace-viewer/",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -r dist ||:",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check",
+    "format": "biome format --write"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@workflow/core": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.469.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "sonner": "^2.0.7",
+    "swr": "^2.3.6",
+    "tailwind-merge": "^2.5.5",
+    "tailwindcss": "^4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "catalog:",
+    "@workflow/tsconfig": "workspace:*"
+  }
+}

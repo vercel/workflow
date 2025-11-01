@@ -1,5 +1,30 @@
 # @workflow/core
 
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- 796fafd: Remove `isInstanceOf()` function and utilize `is()` method on Error subclasses instead
+- 70be894: Implement `sleep()` natively into the workflow runtime
+- 20d51f0: Respect the `retryAfter` property in the step function callback handler
+- Updated dependencies [20d51f0]
+- Updated dependencies [796fafd]
+- Updated dependencies [20d51f0]
+- Updated dependencies [20d51f0]
+- Updated dependencies [70be894]
+  - @workflow/world-vercel@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.3
+
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- 6504e42: Add support for bigint serialization
+- Updated dependencies [e367046]
+  - @workflow/world-vercel@4.0.1-beta.3
+
 ## 4.0.1-beta.3
 
 ### Patch Changes

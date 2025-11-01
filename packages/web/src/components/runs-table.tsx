@@ -1,6 +1,7 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
+import { getErrorMessage, useWorkflowRuns } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
@@ -37,8 +38,6 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import { get403ErrorMessage } from '@/lib/errors';
-import { useWorkflowRuns } from '@/workflow-trace-viewer';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { TableSkeleton } from './display-utils/table-skeleton';
@@ -61,9 +60,6 @@ const statusMap: Record<WorkflowRunStatus, { label: string; color: string }> = {
  * RunsTable - Displays workflow runs with server-side pagination.
  * Uses the PaginatingTable pattern: fetches data for each page as needed from the server.
  * The table and fetching behavior are intertwined - pagination controls trigger new API calls.
- *
- * This is in contrast to LocalPaginatingTable (used by StepsTable and EventsTable),
- * which fetches all data upfront and paginates client-side.
  */
 export function RunsTable({ config, onRunClick }: RunsTableProps) {
   const router = useRouter();
@@ -290,7 +286,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error loading runs</AlertTitle>
-          <AlertDescription>{get403ErrorMessage(error)}</AlertDescription>
+          <AlertDescription>{getErrorMessage(error)}</AlertDescription>
         </Alert>
       ) : !loading && (!data.data || data.data.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">

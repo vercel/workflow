@@ -229,6 +229,9 @@ export async function launchWebUI(
 ): Promise<void> {
   const envVars = getEnvVars();
 
+  // Check if browser opening is disabled via flag or environment variable
+  const disableBrowserOpen = flags.noBrowser;
+
   // Check if we should try to use the Vercel dashboard
   const vercelBackendNames = ['vercel', '@workflow/world-vercel'];
   const isVercelBackend = vercelBackendNames.includes(
@@ -265,6 +268,13 @@ export async function launchWebUI(
       resource,
       id
     );
+
+    if (disableBrowserOpen) {
+      logger.info(chalk.cyan(`Vercel dashboard URL: ${dashboardUrl}`));
+      logger.info(chalk.cyan('(Browser auto-open disabled)'));
+      return;
+    }
+
     logger.info(
       chalk.green(`Opening Vercel dashboard for workflows at: ${dashboardUrl}`)
     );
@@ -273,7 +283,7 @@ export async function launchWebUI(
       return; // Exit early since we opened the dashboard
     } catch (error) {
       logger.error(`Failed to open browser: ${error}`);
-      logger.info(`Please open manually: ${dashboardUrl}`);
+      logger.info(`Please open the link manually.`);
       return;
     }
     // } else {
@@ -306,12 +316,17 @@ export async function launchWebUI(
   }
 
   // Open browser
-  logger.info(chalk.cyan(`Opening browser to: ${url}`));
-  try {
-    await open(url);
-  } catch (error) {
-    logger.error(`Failed to open browser: ${error}`);
-    logger.info(`Please open manually: ${url}`);
+  if (disableBrowserOpen) {
+    logger.info(chalk.cyan(`Web UI available at: ${url}`));
+    logger.info(chalk.cyan('(Browser auto-open disabled)'));
+  } else {
+    logger.info(chalk.cyan(`Opening browser to: ${url}`));
+    try {
+      await open(url);
+    } catch (error) {
+      logger.error(`Failed to open browser: ${error}`);
+      logger.info(`Please open the link manually.`);
+    }
   }
 
   // If we started the server, keep the process running

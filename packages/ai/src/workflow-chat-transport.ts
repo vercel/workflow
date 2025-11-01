@@ -43,6 +43,12 @@ type OnChatEnd = ({
  */
 export interface WorkflowChatTransportOptions<UI_MESSAGE extends UIMessage> {
   /**
+   * API endpoint for chat requests
+   * Defaults to /api/chat if not provided
+   */
+  api?: string;
+
+  /**
    * Custom fetch implementation to use for HTTP requests.
    * Defaults to the global fetch function if not provided.
    */
@@ -101,6 +107,7 @@ export interface WorkflowChatTransportOptions<UI_MESSAGE extends UIMessage> {
 export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   implements ChatTransport<UI_MESSAGE>
 {
+  private readonly api: string;
   private readonly fetch: typeof fetch;
   private readonly onChatSendMessage?: OnChatSendMessage<UI_MESSAGE>;
   private readonly onChatEnd?: OnChatEnd;
@@ -112,6 +119,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
    * Creates a new WorkflowChatTransport instance.
    *
    * @param options - Configuration options for the transport
+   * @param options.api - API endpoint for chat requests (defaults to '/api/chat')
    * @param options.fetch - Custom fetch implementation (defaults to global fetch)
    * @param options.onChatSendMessage - Callback after sending messages
    * @param options.onChatEnd - Callback when chat stream ends
@@ -120,6 +128,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
    * @param options.prepareReconnectToStreamRequest - Function to prepare reconnect request
    */
   constructor(options: WorkflowChatTransportOptions<UI_MESSAGE> = {}) {
+    this.api = options.api ?? '/api/chat';
     this.fetch = options.fetch ?? fetch.bind(globalThis);
     this.onChatSendMessage = options.onChatSendMessage;
     this.onChatEnd = options.onChatEnd;
@@ -174,13 +183,13 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
           body: undefined,
           credentials: undefined,
           headers: undefined,
-          api: '/api/chat',
+          api: this.api,
           trigger,
           messageId,
         })
       : undefined;
 
-    const url = requestConfig?.api ?? '/api/chat';
+    const url = requestConfig?.api ?? this.api;
     const res = await this.fetch(url, {
       method: 'POST',
       body: JSON.stringify(requestConfig?.body ?? { messages }),
@@ -266,7 +275,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   ): AsyncGenerator<UIMessageChunk> {
     let chunkIndex = initialChunkIndex;
 
-    const defaultApi = `/api/chat/${encodeURIComponent(workflowRunId ?? options.chatId)}/stream`;
+    const defaultApi = `${this.api}/${encodeURIComponent(workflowRunId ?? options.chatId)}/stream`;
 
     // Prepare the request using the configurator if provided
     const requestConfig = this.prepareReconnectToStreamRequest

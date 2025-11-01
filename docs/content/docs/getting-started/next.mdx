@@ -27,7 +27,7 @@ cd my-workflow-app
 
 ### Install `workflow`
 
-<Tabs items={['npm', 'pnpm', 'yarn']}>
+<Tabs items={['npm', 'pnpm', 'yarn', 'bun']}>
   <Tab value="npm">
     <CodeBlock>
         npm i workflow
@@ -41,6 +41,11 @@ cd my-workflow-app
   <Tab value="yarn">
     <CodeBlock>
         yarn add workflow
+    </CodeBlock>
+  </Tab>
+  <Tab value="bun">
+    <CodeBlock>
+        bun add workflow
     </CodeBlock>
   </Tab>
 </Tabs>
@@ -63,7 +68,7 @@ export default withWorkflow(nextConfig); // [!code highlight]
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="text-sm">
-      ### Setup Typescript Intellisense (Optional)
+      ### Setup IntelliSense for TypeScript (Optional)
     </AccordionTrigger>
     <AccordionContent className="[&_p]:my-2">
 
@@ -112,7 +117,7 @@ export const config = {
   matcher: [
     // ... your existing matchers
     {
-      source: '/((?!_next/static|_next/image|favicon.ico|.well-known/workflow/.*)', // [!code highlight]
+      source: '/((?!_next/static|_next/image|favicon.ico|.well-known/workflow/).*)', // [!code highlight]
     },
   ],
 };
@@ -261,6 +266,8 @@ Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observabilit
 npx workflow inspect runs
 # or add '--web' for an interactive Web based UI
 ```
+
+<img src="/o11y-ui.png" alt="Workflow DevKit Web UI" />
 
 ---
 

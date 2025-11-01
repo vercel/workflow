@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "4.0.1-beta.3",
+  "version": "4.0.1-beta.6",
   "private": false,
   "files": [
     ".next",
@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
+    "@radix-ui/react-alert-dialog": "^1.1.5",
     "@radix-ui/react-label": "^2.1.7",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-slot": "^1.1.1",
@@ -41,14 +42,15 @@
     "@types/react-dom": "^19",
     "@workflow/core": "workspace:*",
     "@workflow/world": "workspace:*",
+    "@workflow/web-shared": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
-    "json-colorizer": "^3.0.1",
     "lucide-react": "^0.469.0",
+    "next-themes": "^0.4.6",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "swr": "^2.3.6",
+    "sonner": "^2.0.7",
     "tailwind-merge": "^2.5.5",
     "tailwindcss": "^4",
     "typescript": "catalog:"

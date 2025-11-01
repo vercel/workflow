@@ -17,6 +17,7 @@ export type InspectCLIOptions = {
   workflowName?: string;
   withData?: boolean;
   backend?: string;
+  disableRelativeDates?: boolean;
 };
 
 export interface WorkflowConfig {

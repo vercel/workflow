@@ -1,10 +1,25 @@
-import builtinModules from 'builtin-modules';
 import {
   findFunctionCalls,
   getDirective,
   getDirectiveTypo,
   isAsyncFunction,
 } from './utils';
+
+const BUILTIN_MODULES = new Set<string>();
+
+// Get built-in modules from Node.js `module.builtinModules`
+// https://nodejs.org/api/module.html#modulebuiltinmodules
+for (const mod of require('node:module').builtinModules as string[]) {
+  // Add both unprefixed and 'node:' prefixed variants to the set of builtin modules
+  BUILTIN_MODULES.add(mod);
+  if (!mod.startsWith('node:')) {
+    BUILTIN_MODULES.add(`node:${mod}`);
+  }
+}
+
+function isBuiltinModule(moduleName: string): boolean {
+  return BUILTIN_MODULES.has(moduleName);
+}
 
 type TypeScriptLib = typeof import('typescript/lib/tsserverlibrary');
 type Program = import('typescript/lib/tsserverlibrary').Program;
@@ -41,22 +56,6 @@ export function getCustomDiagnostics(
     });
   }
 
-  function addDocumentationHint(
-    node: Node,
-    directiveType: 'workflow' | 'step'
-  ) {
-    const directiveName = directiveType === 'workflow' ? 'Workflow' : 'Step';
-
-    diagnostics.push({
-      file: sourceFile,
-      start: node.getStart(sourceFile),
-      length: 1, // Only underline first character
-      messageText: `Learn more about ${directiveName} directives in the Workflow DevKit documentation: https://useworkflow.dev/docs`,
-      category: ts.DiagnosticCategory.Suggestion,
-      code: 9009,
-    });
-  }
-
   function checkDirectiveStringLiteral(node: Node) {
     if (!ts.isStringLiteral(node)) {
       return;
@@ -89,10 +88,6 @@ export function getCustomDiagnostics(
     const directiveTypo = getDirectiveTypo(node.text);
     if (directiveTypo) {
       addTypoError(node, node.text, directiveTypo);
-    } else if (node.text === 'use workflow') {
-      addDocumentationHint(node, 'workflow');
-    } else if (node.text === 'use step') {
-      addDocumentationHint(node, 'step');
     }
   }
 
@@ -274,15 +269,13 @@ export function getCustomDiagnostics(
         }
 
         if (
-          importDecl &&
-          importDecl.moduleSpecifier &&
+          importDecl?.moduleSpecifier &&
           ts.isStringLiteral(importDecl.moduleSpecifier)
         ) {
           const moduleName = importDecl.moduleSpecifier.text;
 
           // Check if it's a disallowed Node.js module
-          // builtin-modules already includes both 'fs' and 'node:fs' variants
-          if (builtinModules.includes(moduleName)) {
+          if (isBuiltinModule(moduleName)) {
             diagnostics.push({
               file: sourceFile,
               start: callNode.getStart(),
@@ -360,8 +353,7 @@ export function getCustomDiagnostics(
                 }
 
                 if (
-                  importDecl &&
-                  importDecl.moduleSpecifier &&
+                  importDecl?.moduleSpecifier &&
                   ts.isStringLiteral(importDecl.moduleSpecifier)
                 ) {
                   const moduleName = importDecl.moduleSpecifier.text;

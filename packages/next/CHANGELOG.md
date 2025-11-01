@@ -1,5 +1,34 @@
 # @workflow/next
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- Updated dependencies [796fafd]
+- Updated dependencies [70be894]
+- Updated dependencies [20d51f0]
+  - @workflow/core@4.0.1-beta.5
+  - @workflow/cli@4.0.1-beta.6
+
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- f7862b7: Use turbopack rule condition when available
+- 08ed58b: Update withWorkflow and expand documentation on usage
+- Updated dependencies [6504e42]
+- Updated dependencies [0f845af]
+  - @workflow/core@4.0.1-beta.4
+  - @workflow/cli@4.0.1-beta.5
+
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- Updated dependencies [66332f2]
+- Updated dependencies [dbf2207]
+  - @workflow/cli@4.0.1-beta.4
+
 ## 4.0.1-beta.3
 
 ### Patch Changes
