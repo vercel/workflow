@@ -1,5 +1,12 @@
 # @workflow/cli
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- a3326a2: Add `workflow inspect sleep` command to list active sleep/wait events
+  - @workflow/web@4.0.1-beta.6
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

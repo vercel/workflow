@@ -1,5 +1,11 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- a3326a2: Slightly improve error handling for wait event fetching in detail panel
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

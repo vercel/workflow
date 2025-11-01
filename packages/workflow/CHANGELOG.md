@@ -1,5 +1,17 @@
 # workflow
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- fcadd7b: Fix TypeScript LSP plugin for Node.js v20
+- Updated dependencies [a3326a2]
+- Updated dependencies [fcadd7b]
+  - @workflow/cli@4.0.1-beta.7
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/next@4.0.1-beta.7
+  - @workflow/nitro@4.0.1-beta.7
+
 ## 4.0.1-beta.6
 
 ### Patch Changes
