@@ -6,7 +6,9 @@ import type { WorkflowOrchestratorContext } from '../private.js';
 import { withResolvers } from '../util.js';
 
 export function createSleep(ctx: WorkflowOrchestratorContext) {
-  return async function sleepImpl(param: StringValue | Date): Promise<void> {
+  return async function sleepImpl(
+    param: StringValue | Date | number
+  ): Promise<void> {
     const { promise, resolve } = withResolvers<void>();
     const correlationId = `wait_${ctx.generateUlid()}`;
 
@@ -20,6 +22,13 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         );
       }
       resumeAt = new Date(Date.now() + durationMs);
+    } else if (typeof param === 'number') {
+      if (param < 0 || !Number.isFinite(param)) {
+        throw new Error(
+          `Invalid sleep duration: ${param}. Expected a non-negative finite number of milliseconds.`
+        );
+      }
+      resumeAt = new Date(Date.now() + param);
     } else if (
       param instanceof Date ||
       (param &&
@@ -32,7 +41,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       resumeAt = dateParam;
     } else {
       throw new Error(
-        `Invalid sleep parameter. Expected a duration string or Date object.`
+        `Invalid sleep parameter. Expected a duration string, number (milliseconds), or Date object.`
       );
     }
 
