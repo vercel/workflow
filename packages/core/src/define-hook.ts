@@ -1,4 +1,5 @@
 import type { Hook as HookEntity } from '@workflow/world';
+import type { ZodType } from 'zod';
 import type { Hook, HookOptions } from './create-hook.js';
 import { resumeHook } from './runtime/resume-hook.js';
 
@@ -8,6 +9,7 @@ import { resumeHook } from './runtime/resume-hook.js';
  * This helper provides type safety by allowing you to define the payload type once
  * and reuse it when creating hooks and resuming them.
  *
+ * @param schema - Optional Zod schema used to validate and parse payloads before resumption
  * @returns An object with `create` and `resume` functions pre-typed with the payload type
  *
  * @example
@@ -32,7 +34,7 @@ import { resumeHook } from './runtime/resume-hook.js';
  * }
  * ```
  */
-export function defineHook<T>() {
+export function defineHook<T>(schema?: ZodType<T>) {
   return {
     /**
      * Creates a new hook with the defined payload type.
@@ -58,7 +60,7 @@ export function defineHook<T>() {
      * @returns Promise resolving to the hook entity, or null if the hook doesn't exist
      */
     resume(token: string, payload: T): Promise<HookEntity | null> {
-      return resumeHook<T>(token, payload);
+      return resumeHook<T>(token, schema ? schema.parse(payload) : payload);
     },
   };
 }

@@ -134,6 +134,29 @@ export async function slackBotWorkflow(channelId: string) {
 }
 ```
 
+### Runtime Validation with Zod
+
+Combine compile-time safety with runtime validation by providing a schema.
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+import { z } from "zod";
+
+const schema = z.object({
+  approved: z.boolean(),
+  comment: z.string().min(1),
+});
+
+const approvalHook = defineHook(schema);
+
+export async function POST(request: Request) {
+  const { token, approved, comment } = await request.json();
+  await approvalHook.resume(token, { approved, comment });
+  // If validation fails, a Zod error is thrown before resuming the hook.
+  return Response.json({ success: true });
+}
+```
+
 ## Related Functions
 
 * [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
