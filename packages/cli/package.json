@@ -42,12 +42,13 @@
     "@workflow/tsconfig": "workspace:*"
   },
   "dependencies": {
+    "@clack/prompts": "1.0.0-alpha.6",
     "@oclif/core": "^4.0.0",
     "@oclif/plugin-help": "^6.0.0",
     "@swc/core": "1.11.24",
-    "@workflow/swc-plugin": "workspace:*",
-    "@workflow/errors": "workspace:*",
     "@workflow/core": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
     "@workflow/web": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",
