@@ -1,7 +1,7 @@
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
-import { LocalBuilder, VercelBuilder } from './builders';
-import { workflowRollupPlugin } from './rollup-plugin';
+import { LocalBuilder, VercelBuilder } from './builders.js';
+import { workflowRollupPlugin } from './rollup-plugin.js';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
@@ -18,7 +18,9 @@ export default {
     });
 
     // Temporary workaround for debug unenv mock
-    nitro.options.alias['debug'] ??= 'debug';
+    if (!nitro.options.workflow?._vite) {
+      nitro.options.alias['debug'] ??= 'debug';
+    }
 
     // Generate functions for vercel build
     if (isVercelDeploy) {

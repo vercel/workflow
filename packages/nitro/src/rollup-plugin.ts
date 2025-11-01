@@ -11,7 +11,7 @@ type RollupPlugin = Exclude<
 
 export function workflowRollupPlugin(): RollupPlugin {
   return {
-    name: 'workflow-rollup-plugin',
+    name: 'workflow:transform',
     // This transform applies the "use workflow"/"use step"
     // client transformation
     async transform(code: string, id: string) {

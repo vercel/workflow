@@ -1,6 +1,6 @@
 <template>
   <div>
-    <h1>Workflows SDK + Nitro + Nuxt Example</h1>
+    <h1>Workflow DevKit + Nitro + Nuxt Example</h1>
     <hr />
     <textarea v-model="output" readonly placeholder="output"></textarea>
   </div>
