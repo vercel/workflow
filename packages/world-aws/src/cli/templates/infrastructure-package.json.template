@@ -1,0 +1,27 @@
+{
+  "name": "{{projectName}}-infrastructure",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AWS infrastructure for Workflow DevKit",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy",
+    "diff": "cdk diff",
+    "synth": "cdk synth"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "aws-cdk": "^2.138.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.3.3"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.138.0",
+    "aws-workflow": "file:../",
+    "constructs": "^10.3.0"
+  }
+}
+

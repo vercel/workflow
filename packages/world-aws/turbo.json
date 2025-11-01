@@ -1,0 +1,22 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "src",
+        "world",
+        "lib",
+        "bin",
+        "lambda",
+        "tsconfig.json",
+        "cdk.json"
+      ],
+      "outputs": ["dist"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": []
+    }
+  }
+}
