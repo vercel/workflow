@@ -24,7 +24,7 @@ export {
   type Webhook,
   type WebhookOptions,
 } from './create-hook.js';
-export { defineHook, type DefinedHook } from './define-hook.js';
+export { defineHook } from './define-hook.js';
 export {
   getStepMetadata,
   type StepMetadata,
