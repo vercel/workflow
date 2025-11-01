@@ -1,0 +1,73 @@
+<html>
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Workflows DevKit + Bun Example</title>
+  <style>
+    textarea {
+      width: 100%;
+      height: calc(100vh - 140px);
+      max-height: calc(100vh - 140px);
+      box-sizing: border-box;
+      padding: 8px;
+      font-family: monospace;
+      font-size: 14px;
+      resize: none;
+      overflow: auto;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Workflows DevKit + Bun Example</h1>
+  <hr />
+  <textarea id="output" readonly placeholder="output"></textarea>
+</body>
+<script type="module">
+  const outputEl = document.getElementById("output");
+
+  const { runId } = await fetchAndLog('/api/trigger?workflowFile=workflows/0_calc.ts&workflowFn=calc&args=2', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: "",
+  });
+
+  if (runId) {
+    log('Getting workflow status with runId:', runId);
+    await fetchAndLog(`/api/trigger?runId=${runId}`);
+  }
+
+  // --- debug utils ---
+
+  function log(...args) {
+    outputEl.textContent += args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(" ") + "\n";
+  }
+
+  function tryFormatJSON(text) {
+    try {
+      return JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      return text;
+    }
+  }
+
+  async function fetchAndLog(input, init) {
+    try {
+      const req = new Request(input, init);
+      log(`[${req.method}] ${input}`);
+      const res = await fetch(req);
+      const text = await res.text();
+      if (res.ok) {
+        log("Response:", tryFormatJSON(text));
+        return JSON.parse(text);
+      } else {
+        log("Error", res.status, res.statusText, tryFormatJSON(text));
+      }
+    } catch (error) {
+      log("Fetch error:", error.toString());
+    }
+    return {}
+  }
+</script>
+</html>

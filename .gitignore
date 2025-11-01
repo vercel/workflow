@@ -1,8 +1,10 @@
 .workflow-data
+.workflows
 node_modules
 /packages/*/dist
 .vercel
 .turbo
+.pnpm-store
 
 # This is a hack to get around the fact that `pnpm install`
 # does not run create the "bin" symlink if the file does not exist
