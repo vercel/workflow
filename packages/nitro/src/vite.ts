@@ -13,7 +13,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       // @ts-ignore
       nitro: {
         setup: (nitro: Nitro) => {
-          nitro.options.workflow = { _vite: true, ...nitro.options.workflow, ...options }
+          nitro.options.workflow = { ...nitro.options.workflow, ...options, _vite: true }
           return nitroModule.setup(nitro)
         }
       }
