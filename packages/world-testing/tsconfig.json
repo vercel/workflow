@@ -4,8 +4,13 @@
     "moduleResolution": "NodeNext",
     "allowJs": true,
     "module": "NodeNext",
-    "outDir": "dist"
+    "outDir": "dist",
+    "plugins": [
+      {
+        "name": "workflow"
+      }
+    ]
   },
-  "include": ["src", ".well-known"],
+  "include": ["src", ".well-known", "workflows"],
   "exclude": ["node_modules", "**/*.test.ts"]
 }

@@ -8,14 +8,54 @@ export function enhanceCompletions(
   program: ts.Program,
   ts: typeof import('typescript/lib/tsserverlibrary')
 ): ts.WithMetadata<ts.CompletionInfo> | undefined {
-  if (!prior) return prior;
-
   const sourceFile = program.getSourceFile(fileName);
   if (!sourceFile) return prior;
 
   // Find the enclosing function
   const node = findNodeAtPosition(sourceFile, position);
+
   if (!node) return prior;
+
+  if (
+    node.parent.getChildAt(0) === node &&
+    node.kind === ts.SyntaxKind.StringLiteral
+  ) {
+    // return `"use workflow"` or `"use step"` completions
+    return {
+      ...prior,
+      entries: [
+        {
+          name: '"use workflow"',
+          kind: ts.ScriptElementKind.string,
+          kindModifiers: '',
+          sortText: '0',
+          labelDetails: {
+            description: 'Marks the function as a workflow',
+          },
+          source: 'Workflow Development Kit',
+          insertText: '"use workflow";',
+          replacementSpan: { start: node.getStart(), length: node.getWidth() },
+          isRecommended: true,
+        },
+        {
+          name: '"use step"',
+          kind: ts.ScriptElementKind.string,
+          kindModifiers: '',
+          sortText: '0',
+          insertText: '"use step";',
+          labelDetails: {
+            description: 'Marks the function as a step',
+          },
+          source: 'Workflow Development Kit',
+          replacementSpan: { start: node.getStart(), length: node.getWidth() },
+          isRecommended: true,
+        },
+        ...(prior ? prior.entries : []),
+      ],
+    };
+  }
+
+  if (!prior) return prior;
 
   const enclosingFunction = findEnclosingFunction(node);
   if (!enclosingFunction) return prior;
