@@ -1,0 +1,216 @@
+---
+title: AWS World
+---
+
+import { Callout } from "@/components/ui/callout";
+import { Steps } from "@/components/steps";
+
+# AWS World
+
+<Callout type="wip">
+
+This page is a work in progress.
+
+</Callout>
+
+<p />
+
+<Callout type="warning">
+
+**⚠️ EXPERIMENTAL & BETA**: This package is in active development and should be used with caution in production.
+
+</Callout>
+
+<p />
+
+<Callout type="info">
+
+**This world is a reference implementation, not a production-ready product.** We do not recommend using it in production. However, you can definitely use it as inspiration for a real-world serverless solution that runs workflows on AWS infrastructure.
+
+</Callout>
+
+The AWS world is a reference implementation of a [world](/docs/deploying/world) that runs durable, resumable workflows on AWS Lambda with DynamoDB, SQS, and S3. This is a serverless implementation designed for AWS infrastructure.
+
+## Setup
+
+<Steps>
+
+### Install the package
+
+Install the `@workflow/world-aws` package:
+
+```bash
+npm install @workflow/world-aws
+```
+
+### Bootstrap AWS infrastructure
+
+The easiest way to set up your AWS infrastructure is using the included CLI tool:
+
+```bash
+npx aws-workflow bootstrap -y
+```
+
+This will create the required AWS resources and output environment variables to `.env.aws`. It creates:
+
+- 5 DynamoDB tables (workflow runs, steps, events, hooks, stream chunks)
+- 2 SQS queues (workflow queue, step queue)
+- 1 S3 bucket for large payload storage
+- Lambda worker function for executing workflows
+
+You should see output like:
+
+```
+🔧 Bootstrapping AWS infrastructure...
+✅ Created DynamoDB tables
+✅ Created SQS queues
+✅ Created S3 bucket
+✅ Deployed Lambda function
+✅ Environment variables saved to .env.aws
+```
+
+**Cost estimate:** Free tier eligible. Typical cost: $5-20/month for moderate usage.
+
+### Configure environment variables
+
+Copy the generated environment variables from `.env.aws` to your `.env.local` file:
+
+```bash
+WORKFLOW_TARGET_WORLD="@workflow/world-aws"
+AWS_REGION="us-east-1"
+WORKFLOW_AWS_WORKFLOW_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/..."
+WORKFLOW_AWS_STEP_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/..."
+WORKFLOW_AWS_RUNS_TABLE="workflow_runs"
+WORKFLOW_AWS_STEPS_TABLE="workflow_steps"
+WORKFLOW_AWS_EVENTS_TABLE="workflow_events"
+WORKFLOW_AWS_HOOKS_TABLE="workflow_hooks"
+WORKFLOW_AWS_STREAMS_TABLE="workflow_stream_chunks"
+WORKFLOW_AWS_STREAM_BUCKET="workflow-streams-..."
+
+# Optional: AWS credentials (local dev only, not required on AWS)
+AWS_ACCESS_KEY_ID="your-access-key"
+AWS_SECRET_ACCESS_KEY="your-secret-key"
+```
+
+| Variable                          | Description                                      | Required | Default |
+| --------------------------------- | ------------------------------------------------ | -------- | ------- |
+| `WORKFLOW_TARGET_WORLD`           | Set to `"@workflow/world-aws"` to use this world | ✅       | -       |
+| `AWS_REGION`                      | AWS region                                       | ✅       | -       |
+| `WORKFLOW_AWS_WORKFLOW_QUEUE_URL` | SQS queue URL for workflow orchestration         | ✅       | -       |
+| `WORKFLOW_AWS_STEP_QUEUE_URL`     | SQS queue URL for step execution                 | ✅       | -       |
+| `WORKFLOW_AWS_RUNS_TABLE`         | DynamoDB table for workflow runs                 | ✅       | -       |
+| `WORKFLOW_AWS_STEPS_TABLE`        | DynamoDB table for step execution                | ✅       | -       |
+| `WORKFLOW_AWS_EVENTS_TABLE`       | DynamoDB table for workflow events               | ✅       | -       |
+| `WORKFLOW_AWS_HOOKS_TABLE`        | DynamoDB table for webhook hooks                 | ✅       | -       |
+| `WORKFLOW_AWS_STREAMS_TABLE`      | DynamoDB table for stream chunks                 | ✅       | -       |
+| `WORKFLOW_AWS_STREAM_BUCKET`      | S3 bucket for large payloads                     | ✅       | -       |
+| `AWS_ACCESS_KEY_ID`               | AWS access key (local dev only)                  | ✅\*     | -       |
+| `AWS_SECRET_ACCESS_KEY`           | AWS secret key (local dev only)                  | ✅\*     | -       |
+
+\*Not required when running on AWS (uses IAM roles)
+
+### Deploy workflows to Lambda
+
+After setting up AWS resources, deploy your workflows to Lambda:
+
+```bash
+npx aws-workflow deploy
+```
+
+**What this does:**
+
+- Compiles your TypeScript workflows
+- Builds Next.js to generate workflow bundles
+- Packages Lambda handler with your workflows
+- Deploys to AWS Lambda (no Docker required!)
+
+### Configure Next.js
+
+Add to your `next.config.ts`:
+
+```ts title="next.config.ts"
+import { withWorkflow } from "workflow/next";
+
+export default withWorkflow({
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "10mb",
+    },
+  },
+});
+```
+
+### Programmatic usage
+
+You can also create an AWS world directly in your code:
+
+```ts title="instrumentation.ts"
+import { createWorld } from "@workflow/world-aws";
+
+export async function register() {
+  if (process.env.NEXT_RUNTIME !== "edge") {
+    console.log("Initializing AWS world...");
+
+    const world = createWorld({
+      region: process.env.AWS_REGION!,
+      queueUrl: process.env.WORKFLOW_AWS_WORKFLOW_QUEUE_URL!,
+      stepQueueUrl: process.env.WORKFLOW_AWS_STEP_QUEUE_URL!,
+      runsTable: process.env.WORKFLOW_AWS_RUNS_TABLE!,
+      stepsTable: process.env.WORKFLOW_AWS_STEPS_TABLE!,
+      eventsTable: process.env.WORKFLOW_AWS_EVENTS_TABLE!,
+      hooksTable: process.env.WORKFLOW_AWS_HOOKS_TABLE!,
+      streamChunksTable: process.env.WORKFLOW_AWS_STREAMS_TABLE!,
+      streamBucket: process.env.WORKFLOW_AWS_STREAM_BUCKET!,
+    });
+
+    await world.start?.();
+    console.log("AWS world initialized!");
+  }
+}
+```
+
+</Steps>
+
+## How it works
+
+The AWS World uses AWS services as a durable backend for serverless workflow execution:
+
+- **Serverless Execution**: Runs workflows on AWS Lambda with automatic scaling
+- **State Persistence**: All workflow state is stored in DynamoDB tables (runs, steps, events, hooks, stream chunks)
+- **Queue Processing**: Uses SQS for reliable message queuing and workflow orchestration
+- **Large Payload Storage**: Uses S3 for storing payloads larger than 256KB
+- **Automatic Retries**: Steps automatically retry on failure with exponential backoff
+
+This setup ensures that your workflows can survive Lambda cold starts and failures, with all state reliably persisted to DynamoDB. Workflows can suspend and resume without consuming resources during wait periods.
+
+## AWS Resources
+
+The setup creates the following DynamoDB tables:
+
+- `workflow_runs` - Stores workflow execution runs
+- `workflow_events` - Stores workflow events
+- `workflow_steps` - Stores individual workflow steps
+- `workflow_hooks` - Stores webhook hooks
+- `workflow_stream_chunks` - Stores streaming data chunks
+
+The S3 bucket is used for storing large payloads (>256KB).
+
+Make sure your AWS credentials have sufficient permissions to create and manage DynamoDB tables, SQS queues, S3 buckets, and Lambda functions.
+
+## CLI Commands
+
+The `aws-workflow` CLI provides several commands:
+
+```bash
+# Bootstrap AWS infrastructure (first time only)
+npx aws-workflow bootstrap -y
+
+# Deploy workflows to Lambda
+npx aws-workflow deploy
+
+# Get current AWS resource info
+npx aws-workflow outputs
+
+# Tear down all AWS resources
+npx aws-workflow teardown
+```

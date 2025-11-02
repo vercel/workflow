@@ -1,0 +1,15 @@
+{
+  "region": "us-east-1",
+  "tables": {
+    "runs": "workflow_runs",
+    "steps": "workflow_steps",
+    "events": "workflow_events",
+    "hooks": "workflow_hooks",
+    "streams": "workflow_stream_chunks"
+  },
+  "queues": {
+    "workflow": "https://sqs.us-east-1.amazonaws.com/YOUR_ACCOUNT_ID/workflow-flows",
+    "step": "https://sqs.us-east-1.amazonaws.com/YOUR_ACCOUNT_ID/workflow-steps"
+  },
+  "streamBucket": "workflow-streams-YOUR_ACCOUNT_ID-us-east-1"
+}
