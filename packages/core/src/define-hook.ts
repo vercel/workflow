@@ -11,6 +11,7 @@ import { resumeHook } from './runtime/resume-hook.js';
  *
  * @param options - Optional configuration for the hook definition
  * @param options.schema - Schema used to validate and transform the payload before resuming
+ * @returns An object with `create` and `resume` functions pre-typed with the payload type
  *
  * @example
  *
