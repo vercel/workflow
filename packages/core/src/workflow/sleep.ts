@@ -1,9 +1,8 @@
 import type { StringValue } from 'ms';
-import ms from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
-import { withResolvers } from '../util.js';
+import { parseDurationToDate, withResolvers } from '../util.js';
 
 export function createSleep(ctx: WorkflowOrchestratorContext) {
   return async function sleepImpl(
@@ -13,37 +12,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
     const correlationId = `wait_${ctx.generateUlid()}`;
 
     // Calculate the resume time
-    let resumeAt: Date;
-    if (typeof param === 'string') {
-      const durationMs = ms(param);
-      if (typeof durationMs !== 'number' || durationMs < 0) {
-        throw new Error(
-          `Invalid sleep duration: "${param}". Expected a valid duration string like "1s", "1m", "1h", etc.`
-        );
-      }
-      resumeAt = new Date(Date.now() + durationMs);
-    } else if (typeof param === 'number') {
-      if (param < 0 || !Number.isFinite(param)) {
-        throw new Error(
-          `Invalid sleep duration: ${param}. Expected a non-negative finite number of milliseconds.`
-        );
-      }
-      resumeAt = new Date(Date.now() + param);
-    } else if (
-      param instanceof Date ||
-      (param &&
-        typeof param === 'object' &&
-        typeof (param as any).getTime === 'function')
-    ) {
-      // Handle both Date instances and date-like objects (from deserialization)
-      const dateParam =
-        param instanceof Date ? param : new Date((param as any).getTime());
-      resumeAt = dateParam;
-    } else {
-      throw new Error(
-        `Invalid sleep parameter. Expected a duration string, number (milliseconds), or Date object.`
-      );
-    }
+    const resumeAt = parseDurationToDate(param);
 
     // Add wait to invocations queue
     ctx.invocationsQueue.push({

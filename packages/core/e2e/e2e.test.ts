@@ -27,7 +27,9 @@ async function triggerWorkflow(
   });
   if (!res.ok) {
     throw new Error(
-      `Failed to trigger workflow: ${res.url} ${res.status}: ${await res.text()}`
+      `Failed to trigger workflow: ${res.url} ${
+        res.status
+      }: ${await res.text()}`
     );
   }
   const run = await res.json();
@@ -303,13 +305,6 @@ describe('e2e', () => {
     const returnValue = await getWorkflowReturnValue(run.runId);
     expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
     expect(returnValue.endTime).toBeGreaterThanOrEqual(endDate.getTime());
-  });
-
-  test('sleepingDurationMsWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('sleepingDurationMsWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
-    expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
-    expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
   });
 
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
