@@ -26,11 +26,12 @@ describe('defineHook', () => {
   });
 
   it('parses payload with schema before resuming', async () => {
-    const schema = z.object({
-      approved: z.boolean(),
-      comment: z.string().transform((value) => value.trim()),
+    const hook = defineHook({
+      schema: z.object({
+        approved: z.boolean(),
+        comment: z.string().transform((value) => value.trim()),
+      }),
     });
-    const hook = defineHook(schema);
 
     resumeHookMock.mockResolvedValue(null);
 
@@ -43,11 +44,12 @@ describe('defineHook', () => {
   });
 
   it('throws when schema validation fails', () => {
-    const schema = z.object({
-      approved: z.boolean(),
-      comment: z.string(),
+    const hook = defineHook({
+      schema: z.object({
+        approved: z.boolean(),
+        comment: z.string(),
+      }),
     });
-    const hook = defineHook(schema);
 
     expect(() =>
       hook.resume('token', { approved: 'yes', comment: 123 } as unknown as {

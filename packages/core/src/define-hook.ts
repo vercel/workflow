@@ -9,8 +9,8 @@ import { resumeHook } from './runtime/resume-hook.js';
  * This helper provides type safety by allowing you to define the payload type once
  * and reuse it when creating hooks and resuming them.
  *
- * @param schema - Optional Zod schema used to validate and parse payloads before resumption
- * @returns An object with `create` and `resume` functions pre-typed with the payload type
+ * @param options - Optional configuration for the hook definition
+ * @param options.schema - Schema used to validate and transform the payload before resuming
  *
  * @example
  *
@@ -34,7 +34,7 @@ import { resumeHook } from './runtime/resume-hook.js';
  * }
  * ```
  */
-export function defineHook<T>(schema?: ZodType<T>) {
+export function defineHook<T>({ schema }: { schema?: ZodType<T> } = {}) {
   return {
     /**
      * Creates a new hook with the defined payload type.
@@ -56,7 +56,7 @@ export function defineHook<T>(schema?: ZodType<T>) {
      * This is a type-safe wrapper around the `resumeHook` runtime function.
      *
      * @param token - The unique token identifying the hook
-     * @param payload - The payload to send (must match the defined type)
+     * @param payload - The payload to send; if a `schema` is configured it is validated/transformed before resuming
      * @returns Promise resolving to the hook entity, or null if the hook doesn't exist
      */
     resume(token: string, payload: T): Promise<HookEntity | null> {

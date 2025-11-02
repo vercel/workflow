@@ -115,6 +115,38 @@ export async function POST(request: Request) {
 }
 ```
 
+### Validate and Transform with Zod
+
+Add a Zod schema to validate incoming payloads and normalize fields before the workflow continues.
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+import { z } from "zod";
+
+const approvalSchema = z.object({
+  approved: z.boolean(),
+  comment: z.string().min(1).transform((value) => value.trim()),
+});
+
+const approvalHook = defineHook({
+  // Provide a Zod schema to validate/transform payloads.
+  schema: approvalSchema, // [!code highlight]
+});
+
+export async function POST(request: Request) {
+  // comment is "   Ready!   " here
+  const { token, approved, comment } = await request.json();
+
+  // If validation fails, Zod throws and the hook is not resumed.
+  await approvalHook.resume(token, { // [!code highlight]
+    approved, // [!code highlight]
+    comment, // transformed to "Ready!" [!code highlight]
+  }); // [!code highlight]
+
+  return Response.json({ success: true });
+}
+```
+
 ### Customizing Tokens
 
 Tokens are used to identify a specific hook and for resuming a hook. You can customize the token to be more specific to a use case.
@@ -131,29 +163,6 @@ export async function slackBotWorkflow(channelId: string) {
 
   const message = await hook;
   console.log(`Message from ${message.userId}: ${message.text}`);
-}
-```
-
-### Runtime Validation with Zod
-
-Combine compile-time safety with runtime validation by providing a schema.
-
-```typescript lineNumbers
-import { defineHook } from "workflow";
-import { z } from "zod";
-
-const schema = z.object({
-  approved: z.boolean(),
-  comment: z.string().min(1),
-});
-
-const approvalHook = defineHook(schema);
-
-export async function POST(request: Request) {
-  const { token, approved, comment } = await request.json();
-  await approvalHook.resume(token, { approved, comment });
-  // If validation fails, a Zod error is thrown before resuming the hook.
-  return Response.json({ success: true });
 }
 ```
 
