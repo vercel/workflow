@@ -424,65 +424,35 @@ export function getCustomDiagnostics(
             category: ts.DiagnosticCategory.Warning,
             code: 9009,
           });
-          return;
-        }
+        } else {
+          // Second check: is it an imported workflow function?
+          let symbolToCheck = typeChecker.getSymbolAtLocation(node.expression);
 
-        // Second check: is it an imported workflow function?
-        let symbolToCheck = typeChecker.getSymbolAtLocation(node.expression);
-
-        // If this is an alias (e.g., from an import), resolve to the actual symbol
-        if (symbolToCheck && symbolToCheck.flags & ts.SymbolFlags.Alias) {
-          const aliasedSymbol = typeChecker.getAliasedSymbol(symbolToCheck);
-          if (aliasedSymbol && aliasedSymbol !== symbolToCheck) {
-            symbolToCheck = aliasedSymbol;
-          }
-        }
-
-        const declarations = symbolToCheck?.getDeclarations();
-        if (declarations && declarations.length > 0) {
-          for (const decl of declarations) {
-            if (!decl) continue;
-
-            // Check function declarations directly
-            if (
-              ts.isFunctionDeclaration(decl) ||
-              ts.isArrowFunction(decl) ||
-              ts.isFunctionExpression(decl)
-            ) {
-              // Get the source file from the declaration itself
-              const declSourceFile = decl.getSourceFile?.();
-              if (!declSourceFile) continue;
-
-              const directive = getDirective(
-                decl as FunctionLikeDeclaration,
-                declSourceFile,
-                ts
-              );
-
-              if (directive === 'use workflow') {
-                diagnostics.push({
-                  file: sourceFile,
-                  start: node.getStart(),
-                  length: node.getWidth(),
-                  messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
-                  category: ts.DiagnosticCategory.Warning,
-                  code: 9009,
-                });
-                return;
-              }
+          // If this is an alias (e.g., from an import), resolve to the actual symbol
+          if (symbolToCheck && symbolToCheck.flags & ts.SymbolFlags.Alias) {
+            const aliasedSymbol = typeChecker.getAliasedSymbol(symbolToCheck);
+            if (aliasedSymbol && aliasedSymbol !== symbolToCheck) {
+              symbolToCheck = aliasedSymbol;
             }
-            // Check variable declarations (e.g., const myWorkflow = async () => { 'use workflow'; })
-            else if (ts.isVariableDeclaration(decl)) {
-              const init = decl.initializer;
+          }
+
+          const declarations = symbolToCheck?.getDeclarations();
+          if (declarations && declarations.length > 0) {
+            for (const decl of declarations) {
+              if (!decl) continue;
+
+              // Check function declarations directly
               if (
-                init &&
-                (ts.isArrowFunction(init) || ts.isFunctionExpression(init))
+                ts.isFunctionDeclaration(decl) ||
+                ts.isArrowFunction(decl) ||
+                ts.isFunctionExpression(decl)
               ) {
+                // Get the source file from the declaration itself
                 const declSourceFile = decl.getSourceFile?.();
                 if (!declSourceFile) continue;
 
                 const directive = getDirective(
-                  init as FunctionLikeDeclaration,
+                  decl as FunctionLikeDeclaration,
                   declSourceFile,
                   ts
                 );
@@ -496,7 +466,36 @@ export function getCustomDiagnostics(
                     category: ts.DiagnosticCategory.Warning,
                     code: 9009,
                   });
-                  return;
+                  break;
+                }
+              }
+              // Check variable declarations (e.g., const myWorkflow = async () => { 'use workflow'; })
+              else if (ts.isVariableDeclaration(decl)) {
+                const init = decl.initializer;
+                if (
+                  init &&
+                  (ts.isArrowFunction(init) || ts.isFunctionExpression(init))
+                ) {
+                  const declSourceFile = decl.getSourceFile?.();
+                  if (!declSourceFile) continue;
+
+                  const directive = getDirective(
+                    init as FunctionLikeDeclaration,
+                    declSourceFile,
+                    ts
+                  );
+
+                  if (directive === 'use workflow') {
+                    diagnostics.push({
+                      file: sourceFile,
+                      start: node.getStart(),
+                      length: node.getWidth(),
+                      messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
+                      category: ts.DiagnosticCategory.Warning,
+                      code: 9009,
+                    });
+                    break;
+                  }
                 }
               }
             }

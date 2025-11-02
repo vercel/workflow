@@ -914,5 +914,145 @@ describe('getCustomDiagnostics', () => {
         messageIncludes: 'start()',
       });
     });
+
+    it('detects nested workflow function calls - both outer and inner', () => {
+      const source = `
+        export async function wf1() {
+          'use workflow';
+          return 1;
+        }
+
+        export async function wf2() {
+          'use workflow';
+          return 2;
+        }
+
+        export async function caller() {
+          const x = wf1(wf2());
+          return x;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      // Should have warnings for BOTH wf1() and wf2() calls
+      const warnings = diagnostics.filter((d) => d.code === 9009);
+      expect(warnings.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('detects deeply nested workflow function calls', () => {
+      const source = `
+        export async function wf1() {
+          'use workflow';
+          return 1;
+        }
+
+        export async function wf2() {
+          'use workflow';
+          return 2;
+        }
+
+        export async function wf3() {
+          'use workflow';
+          return 3;
+        }
+
+        export async function caller() {
+          const x = wf1(wf2(wf3()));
+          return x;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      // Should have warnings for wf1(), wf2(), and wf3() calls
+      const warnings = diagnostics.filter((d) => d.code === 9009);
+      expect(warnings.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('detects multiple nested calls in different arguments', () => {
+      const source = `
+        export async function wf1() {
+          'use workflow';
+          return 1;
+        }
+
+        export async function wf2() {
+          'use workflow';
+          return 2;
+        }
+
+        export async function wf3() {
+          'use workflow';
+          return 3;
+        }
+
+        export async function caller() {
+          const x = wf1(wf2(), wf3());
+          return x;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      // Should have warnings for wf1(), wf2(), and wf3() calls
+      const warnings = diagnostics.filter((d) => d.code === 9009);
+      expect(warnings.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('detects nested calls in array literals', () => {
+      const source = `
+        export async function wf1() {
+          'use workflow';
+          return 1;
+        }
+
+        export async function wf2() {
+          'use workflow';
+          return 2;
+        }
+
+        export async function caller() {
+          const arr = [wf1(), wf2()];
+          return arr;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      // Should have warnings for both wf1() and wf2() calls
+      const warnings = diagnostics.filter((d) => d.code === 9009);
+      expect(warnings.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('detects nested calls in object properties', () => {
+      const source = `
+        export async function wf1() {
+          'use workflow';
+          return 1;
+        }
+
+        export async function wf2() {
+          'use workflow';
+          return 2;
+        }
+
+        export async function caller() {
+          const obj = { a: wf1(), b: wf2() };
+          return obj;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      // Should have warnings for both wf1() and wf2() calls
+      const warnings = diagnostics.filter((d) => d.code === 9009);
+      expect(warnings.length).toBeGreaterThanOrEqual(2);
+    });
   });
 });
