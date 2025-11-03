@@ -5,7 +5,7 @@ export interface ModuleOptions {}
 
 export default defineNuxtModule<ModuleOptions>({
   meta: {
-    name: '@workflow/nuxt',
+    name: 'workflow',
     configKey: 'workflow',
     docs: 'https://useworkflow.dev/docs/getting-started/nuxt',
   },

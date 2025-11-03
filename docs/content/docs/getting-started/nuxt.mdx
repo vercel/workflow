@@ -44,13 +44,13 @@ cd nuxt-app
 
 ### Configure Nuxt
 
-Add `workflow/nuxt` to your `nuxt.config.ts`. This automatically configures the `workflow/nitro` module and enables usage of the `"use workflow"` and `"use step"` directives.
+Add `workflow` to your `nuxt.config.ts`. This automatically configures the Nitro integration and enables usage of the `"use workflow"` and `"use step"` directives.
 
 ```typescript title="nuxt.config.ts" lineNumbers
 import { defineNuxtConfig } from "nuxt/config";
 
 export default defineNuxtConfig({
-  modules: ["workflow/nuxt"], // [!code highlight]
+  modules: ["workflow"], // [!code highlight]
   compatibilityDate: "latest",
 });
 ```
