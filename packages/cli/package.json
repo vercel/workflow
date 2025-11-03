@@ -1,6 +1,6 @@
 {
   "name": "@workflow/cli",
-  "version": "4.0.1-beta.6",
+  "version": "4.0.1-beta.7",
   "description": "Command-line interface for Workflow DevKit",
   "type": "module",
   "bin": {
@@ -14,7 +14,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/workflow.git",
@@ -45,6 +45,7 @@
     "@oclif/core": "^4.0.0",
     "@oclif/plugin-help": "^6.0.0",
     "@swc/core": "1.11.24",
+    "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/core": "workspace:*",

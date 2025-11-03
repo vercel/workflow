@@ -1,0 +1,19 @@
+{
+  "name": "@workflow/example-vite",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "ai": "catalog:",
+    "lodash.chunk": "^4.2.0",
+    "nitro": "catalog:",
+    "openai": "^6.6.0",
+    "vite": "^7.1.12",
+    "workflow": "workspace:*",
+    "zod": "catalog:"
+  }
+}

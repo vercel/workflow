@@ -1,5 +1,17 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- a3326a2: Slightly improve error handling for wait event fetching in detail panel
+- f973954: Update license to Apache 2.0
+- 2ae7426: Export react-jsx transpiled code, not raw jsx
+- Updated dependencies [10309c3]
+- Updated dependencies [f973954]
+  - @workflow/core@4.0.1-beta.6
+  - @workflow/world@4.0.1-beta.4
+
 ## 4.0.1-beta.5
 
 ### Patch Changes
