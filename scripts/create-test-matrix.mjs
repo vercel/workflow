@@ -26,4 +26,9 @@ matrix.app.push({
   project: 'workbench-nitro-workflow',
 });
 
+matrix.app.push({
+  name: 'nuxt',
+  project: 'workbench-nuxt-workflow',
+});
+
 console.log(JSON.stringify(matrix));
