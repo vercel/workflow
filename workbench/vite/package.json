@@ -1,20 +1,19 @@
 {
-  "name": "@workflow/example-hono",
+  "name": "@workflow/example-vite",
   "private": true,
   "type": "module",
   "version": "0.0.0",
-  "license": "Apache-2.0",
   "scripts": {
-    "dev": "nitro dev",
-    "build": "nitro build"
+    "dev": "vite dev",
+    "build": "vite build"
   },
   "devDependencies": {
-    "workflow": "workspace:*",
     "ai": "catalog:",
-    "hono": "^4.9.10",
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",
     "openai": "^6.6.0",
+    "vite": "^7.1.12",
+    "workflow": "workspace:*",
     "zod": "catalog:"
   }
 }
