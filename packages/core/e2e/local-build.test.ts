@@ -5,7 +5,7 @@ import { getWorkbenchAppPath } from './utils';
 
 const exec = promisify(execOriginal);
 
-describe.each(['nextjs-webpack', 'nextjs-turbopack', 'nitro', 'vite'])(
+describe.each(['nextjs-webpack', 'nextjs-turbopack', 'nitro', 'vite', 'nuxt'])(
   'e2e',
   (project) => {
     test('builds without errors', { timeout: 180_000 }, async () => {
