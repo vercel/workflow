@@ -1,7 +1,21 @@
 import { constants } from 'node:fs';
-import { access, mkdir, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder, type WorkflowConfig } from '@workflow/builders';
+
+// Helper function code for converting SvelteKit requests to standard Request objects
+const SVELTEKIT_REQUEST_CONVERTER = `
+async function convertSvelteKitRequest(request) {
+  const options = {
+    method: request.method,
+    headers: new Headers(request.headers)
+  };
+  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
+    options.body = await request.arrayBuffer();
+  }
+  return new Request(request.url, options);
+}
+`;
 
 export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<WorkflowConfig>) {
@@ -61,7 +75,7 @@ export class SvelteKitBuilder extends BaseBuilder {
     const stepsRouteDir = join(workflowGeneratedDir, 'step');
     await mkdir(stepsRouteDir, { recursive: true });
 
-    return await this.createStepsBundle({
+    await this.createStepsBundle({
       format: 'esm',
       inputFiles,
       outfile: join(stepsRouteDir, '+server.js'),
@@ -69,6 +83,22 @@ export class SvelteKitBuilder extends BaseBuilder {
       tsBaseUrl,
       tsPaths,
     });
+
+    // Post-process the generated file to wrap with SvelteKit request converter
+    const stepsRouteFile = join(stepsRouteDir, '+server.js');
+    let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
+
+    // Replace the default export with SvelteKit-compatible handler
+    stepsRouteContent = stepsRouteContent.replace(
+      /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
+      `${SVELTEKIT_REQUEST_CONVERTER}
+export const POST = async ({request}) => {
+  const normalRequest = await convertSvelteKitRequest(request);
+  return stepEntrypoint(normalRequest);
+}`
+    );
+
+    await writeFile(stepsRouteFile, stepsRouteContent);
   }
 
   private async buildWorkflowsRoute({
@@ -86,7 +116,7 @@ export class SvelteKitBuilder extends BaseBuilder {
     const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
     await mkdir(workflowsRouteDir, { recursive: true });
 
-    return await this.createWorkflowsBundle({
+    await this.createWorkflowsBundle({
       format: 'esm',
       outfile: join(workflowsRouteDir, '+server.js'),
       bundleFinalOutput: false,
@@ -94,6 +124,21 @@ export class SvelteKitBuilder extends BaseBuilder {
       tsBaseUrl,
       tsPaths,
     });
+
+    // Post-process the generated file to wrap with SvelteKit request converter
+    const workflowsRouteFile = join(workflowsRouteDir, '+server.js');
+    let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
+
+    // Replace the default export with SvelteKit-compatible handler
+    workflowsRouteContent = workflowsRouteContent.replace(
+      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
+      `${SVELTEKIT_REQUEST_CONVERTER}
+export const POST = async ({request}) => {
+  const normalRequest = await convertSvelteKitRequest(request);
+  return workflowEntrypoint(workflowCode)(normalRequest);
+}`
+    );
+    await writeFile(workflowsRouteFile, workflowsRouteContent);
   }
 
   private async buildWebhookRoute({
@@ -107,10 +152,33 @@ export class SvelteKitBuilder extends BaseBuilder {
       'webhook/[token]/+server.js'
     );
 
-    return await this.createWebhookBundle({
+    await this.createWebhookBundle({
       outfile: webhookRouteFile,
       bundle: false, // SvelteKit will handle bundling
     });
+
+    // Post-process the generated file to wrap with SvelteKit request converter
+    let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
+
+    // Replace all HTTP method exports with SvelteKit-compatible handlers
+    webhookRouteContent = webhookRouteContent.replace(
+      /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
+      `${SVELTEKIT_REQUEST_CONVERTER}
+const createSvelteKitHandler = (method) => async ({ request }) => {
+  const normalRequest = await convertSvelteKitRequest(request);
+  return handler(normalRequest);
+};
+
+export const GET = createSvelteKitHandler('GET');
+export const POST = createSvelteKitHandler('POST');
+export const PUT = createSvelteKitHandler('PUT');
+export const PATCH = createSvelteKitHandler('PATCH');
+export const DELETE = createSvelteKitHandler('DELETE');
+export const HEAD = createSvelteKitHandler('HEAD');
+export const OPTIONS = createSvelteKitHandler('OPTIONS');`
+    );
+
+    await writeFile(webhookRouteFile, webhookRouteContent);
   }
 
   private async findRoutesDirectory(): Promise<string> {

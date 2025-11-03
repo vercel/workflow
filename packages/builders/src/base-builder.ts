@@ -18,20 +18,6 @@ const enhancedResolve = promisify(enhancedResolveOriginal);
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
-// Helper function code for converting SvelteKit requests to standard Request objects
-const SVELTEKIT_REQUEST_CONVERTER = `
-async function convertSvelteKitRequest(request) {
-  const options = {
-    method: request.method,
-    headers: new Headers(request.headers)
-  };
-  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
-    options.body = await request.arrayBuffer();
-  }
-  return new Request(request.url, options);
-}
-`;
-
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
 
@@ -269,27 +255,13 @@ export abstract class BaseBuilder {
     // will get registered thanks to the swc transform.
     const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
 
-    let entryContent = `
+    const entryContent = `
     // Built in steps
     import '${builtInSteps}';
     // User steps
-    ${imports}`;
-    if (this.config.buildTarget === 'sveltekit') {
-      entryContent += `
+    ${imports}
     // API entrypoint
-    import { stepEntrypoint } from 'workflow/runtime';
-    ${SVELTEKIT_REQUEST_CONVERTER}
-    export const POST = async ({request}) => {
-      const normalRequest = await convertSvelteKitRequest(request);
-      return stepEntrypoint(normalRequest);
-    }
-    `;
-    } else {
-      entryContent += `
-    // API entrypoint
-    export { stepEntrypoint as POST } from 'workflow/runtime';
-    `;
-    }
+    export { stepEntrypoint as POST } from 'workflow/runtime';`;
 
     // Bundle with esbuild and our custom SWC plugin
     const esbuildCtx = await esbuild.context({
@@ -484,23 +456,13 @@ export abstract class BaseBuilder {
     const bundleFinal = async (interimBundle: string) => {
       const workflowBundleCode = interimBundle;
 
-      let workflowFunctionCode = `// biome-ignore-all lint: generated file
+      const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
-`;
-      if (this.config.buildTarget === 'sveltekit') {
-        workflowFunctionCode += `
-${SVELTEKIT_REQUEST_CONVERTER}
-export const POST = async ({ request }) => {
-  const normalRequest = await convertSvelteKitRequest(request);
-  return workflowEntrypoint(workflowCode)(normalRequest);
-}`;
-      } else {
-        workflowFunctionCode += `
+
 export const POST = workflowEntrypoint(workflowCode);`;
-      }
 
       // we skip the final bundling step for Next.js so it can bundle itself
       if (!bundleFinalOutput) {
@@ -623,7 +585,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
     // Create a static route that calls resumeWebhook
     // This route works for both Next.js and Vercel Build Output API
-    let routeContent = `import { resumeWebhook } from 'workflow/api';
+    const routeContent = `import { resumeWebhook } from 'workflow/api';
 
 async function handler(request) {
   const url = new URL(request.url);
@@ -643,34 +605,15 @@ async function handler(request) {
     console.error('Error during resumeWebhook', error);
     return new Response(null, { status: 404 });
   }
-}`;
-    if (this.config.buildTarget === 'sveltekit') {
-      routeContent += `
-${SVELTEKIT_REQUEST_CONVERTER}
-const createSvelteKitHandler = (method) => async ({ request }) => {
-  const normalRequest = await convertSvelteKitRequest(request);
-  return handler(normalRequest);
-};
+}
 
-export const GET = createSvelteKitHandler('GET');
-export const POST = createSvelteKitHandler('POST');
-export const PUT = createSvelteKitHandler('PUT');
-export const PATCH = createSvelteKitHandler('PATCH');
-export const DELETE = createSvelteKitHandler('DELETE');
-export const HEAD = createSvelteKitHandler('HEAD');
-export const OPTIONS = createSvelteKitHandler('OPTIONS');
-`;
-    } else {
-      routeContent += `
 export const GET = handler;
 export const POST = handler;
 export const PUT = handler;
 export const PATCH = handler;
 export const DELETE = handler;
 export const HEAD = handler;
-export const OPTIONS = handler;
-`;
-    }
+export const OPTIONS = handler;`;
 
     if (!bundle) {
       // For Next.js, just write the unbundled file
@@ -680,7 +623,7 @@ export const OPTIONS = handler;
 
     // For Build Output API, bundle with esbuild to resolve imports
 
-    const webhookBundleStart = Date.now();
+    // const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
         js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
@@ -710,10 +653,7 @@ export const OPTIONS = handler;
     });
 
     this.logEsbuildMessages(result, 'webhook bundle creation');
-    console.log(
-      'Created webhook bundle',
-      `${Date.now() - webhookBundleStart}ms`
-    );
+    console.log('Created webhook bundle', `$Date.now() - webhookBundleStartms`);
   }
 
   private async createSwcGitignore(): Promise<void> {
