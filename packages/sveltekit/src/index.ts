@@ -1,13 +1,13 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { LocalBuilder } from './builders.js';
+import { SvelteKitBuilder } from './builders.js';
 
-const localBuilder = new LocalBuilder();
+const builder = new SvelteKitBuilder();
 
 // This needs to be in the top-level as we need to create these
 // entries before svelte plugin is started or the entries are
 // a race to be created before svelte discovers entries
-await localBuilder.build();
+await builder.build();
 
 process.on('beforeExit', () => {
   // Don't patch functions output if not in Vercel adapter

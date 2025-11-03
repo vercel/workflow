@@ -1,22 +1,17 @@
 import { constants } from 'node:fs';
 import { access, mkdir, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder.js';
-import type { WorkflowConfig } from '@workflow/cli/dist/lib/config/types.js';
+import { BaseBuilder, type WorkflowConfig } from '@workflow/builders';
 
-const CommonBuildOptions = {
-  dirs: ['workflows', 'src/workflows'],
-  buildTarget: 'sveltekit' as const,
-  stepsBundlePath: '', // unused in base
-  workflowsBundlePath: '', // unused in base
-  webhookBundlePath: '', // unused in base
-};
-
-export class LocalBuilder extends BaseBuilder {
+export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<WorkflowConfig>) {
     super({
-      ...CommonBuildOptions,
       ...config,
+      dirs: ['workflows'],
+      buildTarget: 'sveltekit' as const,
+      stepsBundlePath: '', // unused in base
+      workflowsBundlePath: '', // unused in base
+      webhookBundlePath: '', // unused in base
       workingDir: config?.workingDir || process.cwd(),
     });
   }
