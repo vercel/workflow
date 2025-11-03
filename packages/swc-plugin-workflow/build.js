@@ -6,7 +6,7 @@ function runCommand(command) {
   try {
     execSync(command, { stdio: 'inherit', shell: true });
   } catch (error) {
-    console.error(`Command failed: ${command}`);
+    console.error(`Command failed: ${command}: ${error}`);
     process.exit(1);
   }
 }
@@ -32,8 +32,12 @@ if (!commandExists('cargo')) {
       );
     } else {
       runCommand(
-        'curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal && . $HOME/.cargo/env'
+        'curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal'
       );
+      // Add Rust to PATH for this process so cargo commands work
+      const cargoPath = `${process.env.HOME}/.cargo/bin`;
+      process.env.PATH = `${cargoPath}:${process.env.PATH}`;
+      console.log('Rust installed and PATH updated');
     }
   } else {
     console.error('Rust is required but not installed.');
@@ -47,22 +51,25 @@ if (!commandExists('cargo')) {
   }
 }
 
-// Check if wasm32-unknown-unknown target exists
+// Check if wasm32-unknown-unknown target exists and install if needed
+console.log('Checking wasm32-unknown-unknown target...');
 try {
-  execSync('rustup target list --installed', { stdio: 'pipe', shell: true })
-    .toString()
-    .includes('wasm32-unknown-unknown');
-} catch {
-  if (process.env.CI) {
-    console.log('Installing wasm32-unknown-unknown target...');
+  const installedTargets = execSync('rustup target list --installed', {
+    stdio: 'pipe',
+    shell: true,
+  }).toString();
+  if (!installedTargets.includes('wasm32-unknown-unknown')) {
+    console.log('wasm32-unknown-unknown target not found, installing...');
     runCommand('rustup target add wasm32-unknown-unknown');
   } else {
-    console.error('The wasm32-unknown-unknown target is not installed.');
-    console.error(
-      'Please run "rustup target add wasm32-unknown-unknown" to install it.'
-    );
-    process.exit(1);
+    console.log('wasm32-unknown-unknown target already installed');
   }
+} catch (error) {
+  console.error(
+    'Failed to check/install wasm32-unknown-unknown target:',
+    error.message
+  );
+  process.exit(1);
 }
 
 // Build the WASM plugin
