@@ -6,7 +6,6 @@
 "@workflow/world-vercel": patch
 "@workflow/world-local": patch
 "@workflow/web-shared": patch
-"@workflow/tsconfig": patch
 "workflow": patch
 "@workflow/errors": patch
 "@workflow/nitro": patch
