@@ -73,9 +73,7 @@ try {
 
 // Build the WASM plugin
 console.log('Running cargo build...');
-runCommand(
-  'cargo build --target wasm32-unknown-unknown --release -p swc_workflow'
-);
+runCommand('cargo build-wasm32 --release -p swc_plugin_workflow');
 
 // Copy the WASM file
 const wasmSource = new URL(
