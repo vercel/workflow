@@ -35,6 +35,7 @@
     "./internal/private": "./dist/internal/private.js",
     "./next": "./dist/next.js",
     "./nitro": "./dist/nitro.js",
+    "./nuxt": "./dist/nuxt.js",
     "./rollup-plugin": "./dist/rollup-plugin.js",
     "./runtime": "./dist/runtime.js"
   },
@@ -52,7 +53,8 @@
     "@workflow/typescript-plugin": "workspace:*",
     "ms": "2.1.3",
     "@workflow/next": "workspace:*",
-    "@workflow/nitro": "workspace:*"
+    "@workflow/nitro": "workspace:*",
+    "@workflow/nuxt": "workspace:*"
   },
   "devDependencies": {
     "@types/ms": "^2.1.0",

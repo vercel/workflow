@@ -488,8 +488,14 @@ export const Frameworks = () => {
         <Link href="/docs/getting-started/next">
           <Next className="size-[56px]" />
         </Link>
+        <Link href="/docs/getting-started/hono">
+          <Hono className="size-[56px]" />
+        </Link>
         <Link href="/docs/getting-started/nitro">
           <Nitro className="size-[56px]" />
+        </Link>
+        <Link href="/docs/getting-started/nuxt">
+          <Nuxt className="size-[56px]" />
         </Link>
 
         <div className="col-span-4 w-full pt-6">
@@ -514,20 +520,6 @@ export const Frameworks = () => {
         >
           <SvelteKitGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <SvelteKit className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[60px]"
-          onClick={() => handleRequest('Nuxt')}
-        >
-          <NuxtGray className="size-[60px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
-          <Nuxt className="size-[60px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[48px]"
-          onClick={() => handleRequest('Hono')}
-        >
-          <HonoGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
-          <Hono className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
         </div>
         <div
           className="group relative cursor-pointer size-[52px]"

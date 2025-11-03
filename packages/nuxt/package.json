@@ -1,0 +1,40 @@
+{
+  "name": "@workflow/nuxt",
+  "version": "4.0.1-beta.6",
+  "description": "Nuxt integration for Workflow DevKit",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/types.d.mts",
+      "import": "./dist/module.mjs"
+    }
+  },
+  "main": "./dist/module.mjs",
+  "typesVersions": {
+    "*": {
+      ".": [
+        "./dist/types.d.mts"
+      ]
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "nuxt-module-build build",
+    "dev": "nuxt-module-build build --stub && nuxt-module-build prepare",
+    "prepare": "nuxt-module-build prepare"
+  },
+  "dependencies": {
+    "@nuxt/kit": "^4.2.0",
+    "@workflow/nitro": "workspace:*"
+  },
+  "devDependencies": {
+    "@nuxt/module-builder": "^1.0.2",
+    "@nuxt/schema": "^4.2.0",
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "nuxt": "^4.0.0"
+  }
+}
