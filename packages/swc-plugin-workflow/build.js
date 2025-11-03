@@ -98,7 +98,7 @@ if (!existsSync(wasmSource)) {
     console.error('\nDebug: Listing target directory contents...');
     const files = readdirSync(targetDir, { recursive: true });
     const wasmFiles = files.filter(
-      (f) => typeof f === 'string' && f.includes('wasm')
+      (f) => typeof f === 'string' && f.endsWith('.wasm')
     );
     console.error(
       `Found ${files.length} total files, ${wasmFiles.length} WASM-related`
