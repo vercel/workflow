@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { SvelteKitBuilder } from './builders.js';
+import { SvelteKitBuilder } from './builder.js';
 
 const builder = new SvelteKitBuilder();
 

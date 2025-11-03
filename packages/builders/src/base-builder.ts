@@ -7,16 +7,30 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
-import type { WorkflowConfig } from './types.js';
 import type { WorkflowManifest } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import type { WorkflowConfig } from './types.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
+
+// Helper function code for converting SvelteKit requests to standard Request objects
+const SVELTEKIT_REQUEST_CONVERTER = `
+async function convertSvelteKitRequest(request) {
+  const options = {
+    method: request.method,
+    headers: new Headers(request.headers)
+  };
+  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
+    options.body = await request.arrayBuffer();
+  }
+  return new Request(request.url, options);
+}
+`;
 
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
@@ -254,13 +268,28 @@ export abstract class BaseBuilder {
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
     const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
-    const entryContent = `
+
+    let entryContent = `
     // Built in steps
     import '${builtInSteps}';
     // User steps
-    ${imports}
+    ${imports}`;
+    if (this.config.buildTarget === 'sveltekit') {
+      entryContent += `
     // API entrypoint
-    export { stepEntrypoint as POST } from 'workflow/runtime';`;
+    import { stepEntrypoint } from 'workflow/runtime';
+    ${SVELTEKIT_REQUEST_CONVERTER}
+    export const POST = async ({request}) => {
+      const normalRequest = await convertSvelteKitRequest(request);
+      return stepEntrypoint(normalRequest);
+    }
+    `;
+    } else {
+      entryContent += `
+    // API entrypoint
+    export { stepEntrypoint as POST } from 'workflow/runtime';
+    `;
+    }
 
     // Bundle with esbuild and our custom SWC plugin
     const esbuildCtx = await esbuild.context({
@@ -455,14 +484,23 @@ export abstract class BaseBuilder {
     const bundleFinal = async (interimBundle: string) => {
       const workflowBundleCode = interimBundle;
 
-      // Create the workflow function handler with proper linter suppressions
-      const workflowFunctionCode = `// biome-ignore-all lint: generated file
+      let workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
-
+`;
+      if (this.config.buildTarget === 'sveltekit') {
+        workflowFunctionCode += `
+${SVELTEKIT_REQUEST_CONVERTER}
+export const POST = async ({ request }) => {
+  const normalRequest = await convertSvelteKitRequest(request);
+  return workflowEntrypoint(workflowCode)(normalRequest);
+}`;
+      } else {
+        workflowFunctionCode += `
 export const POST = workflowEntrypoint(workflowCode);`;
+      }
 
       // we skip the final bundling step for Next.js so it can bundle itself
       if (!bundleFinalOutput) {
@@ -585,7 +623,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
     // Create a static route that calls resumeWebhook
     // This route works for both Next.js and Vercel Build Output API
-    const routeContent = `import { resumeWebhook } from 'workflow/api';
+    let routeContent = `import { resumeWebhook } from 'workflow/api';
 
 async function handler(request) {
   const url = new URL(request.url);
@@ -605,8 +643,25 @@ async function handler(request) {
     console.error('Error during resumeWebhook', error);
     return new Response(null, { status: 404 });
   }
-}
+}`;
+    if (this.config.buildTarget === 'sveltekit') {
+      routeContent += `
+${SVELTEKIT_REQUEST_CONVERTER}
+const createSvelteKitHandler = (method) => async ({ request }) => {
+  const normalRequest = await convertSvelteKitRequest(request);
+  return handler(normalRequest);
+};
 
+export const GET = createSvelteKitHandler('GET');
+export const POST = createSvelteKitHandler('POST');
+export const PUT = createSvelteKitHandler('PUT');
+export const PATCH = createSvelteKitHandler('PATCH');
+export const DELETE = createSvelteKitHandler('DELETE');
+export const HEAD = createSvelteKitHandler('HEAD');
+export const OPTIONS = createSvelteKitHandler('OPTIONS');
+`;
+    } else {
+      routeContent += `
 export const GET = handler;
 export const POST = handler;
 export const PUT = handler;
@@ -615,6 +670,7 @@ export const DELETE = handler;
 export const HEAD = handler;
 export const OPTIONS = handler;
 `;
+    }
 
     if (!bundle) {
       // For Next.js, just write the unbundled file
