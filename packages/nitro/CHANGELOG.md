@@ -1,5 +1,17 @@
 # @vercel/workflow-nitro
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- Updated dependencies [10309c3]
+- Updated dependencies [f973954]
+- Updated dependencies [a3326a2]
+  - @workflow/core@4.0.1-beta.6
+  - @workflow/swc-plugin@4.0.1-beta.2
+  - @workflow/cli@4.0.1-beta.7
+
 ## 4.0.1-beta.6
 
 ### Patch Changes
