@@ -23,7 +23,8 @@
   ],
   "scripts": {
     "build": "nuxt-module-build prepare && nuxt-module-build build",
-    "dev": "nuxt-module-build build --stub && nuxt-module-build prepare"
+    "dev": "nuxt-module-build build --stub && nuxt-module-build prepare",
+    "clean": "nuxi cleanup && rm -rf dist/"
   },
   "dependencies": {
     "@nuxt/kit": "^4.2.0",

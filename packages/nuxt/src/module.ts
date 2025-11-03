@@ -14,7 +14,10 @@ export default defineNuxtModule<ModuleOptions>({
   setup(_options, nuxt) {
     nuxt.options.nitro ||= {};
     nuxt.options.nitro.modules ||= [];
-    if (!nuxt.options.nitro.modules.includes('workflow/nitro')) {
+    if (
+      !nuxt.options._prepare &&
+      !nuxt.options.nitro.modules.includes('workflow/nitro')
+    ) {
       nuxt.options.nitro.modules.push('workflow/nitro');
     }
   },
