@@ -1,5 +1,38 @@
 # @workflow/cli
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- Updated dependencies [20d51f0]
+- Updated dependencies [796fafd]
+- Updated dependencies [8f63385]
+- Updated dependencies [796fafd]
+- Updated dependencies [20d51f0]
+- Updated dependencies [20d51f0]
+- Updated dependencies [70be894]
+- Updated dependencies [20d51f0]
+- Updated dependencies [55e2d0b]
+  - @workflow/world-vercel@4.0.1-beta.4
+  - @workflow/core@4.0.1-beta.5
+  - @workflow/web@4.0.1-beta.6
+  - @workflow/errors@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.3
+
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- 0f845af: Alias workflow web to workflow inspect runs --web, hide trace viewer search for small runs
+- Updated dependencies [6504e42]
+- Updated dependencies [0f845af]
+- Updated dependencies [e367046]
+- Updated dependencies [ffb7af3]
+  - @workflow/core@4.0.1-beta.4
+  - @workflow/web@4.0.1-beta.5
+  - @workflow/world-vercel@4.0.1-beta.3
+
 ## 4.0.1-beta.4
 
 ### Patch Changes

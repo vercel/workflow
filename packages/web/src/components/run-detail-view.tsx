@@ -1,6 +1,13 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
+import {
+  cancelRun,
+  recreateRun,
+  useWorkflowTraceViewerData,
+  type WorkflowRun,
+  WorkflowTraceViewer,
+} from '@workflow/web-shared';
 import { AlertCircle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
@@ -18,13 +25,6 @@ import {
 } from '@/components/ui/alert-dialog';
 import { buildUrlWithConfig, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import {
-  cancelRun,
-  startRun,
-  useWorkflowTraceViewerData,
-  type WorkflowRun,
-  WorkflowTraceViewer,
-} from '@/workflow-trace-viewer';
 import { BackLink } from './display-utils/back-link';
 import { CancelButton } from './display-utils/cancel-button';
 import { CopyableText } from './display-utils/copyable-text';
@@ -100,7 +100,7 @@ export function RunDetailView({
       setRerunning(true);
       setShowRerunDialog(false);
       // Start a new run with the same workflow and input arguments
-      const newRunId = await startRun(env, run.workflowName, run.input);
+      const newRunId = await recreateRun(env, run.runId);
       toast.success('New run started successfully', {
         description: `Run ID: ${newRunId}`,
       });

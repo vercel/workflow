@@ -1,11 +1,16 @@
 {
   "name": "@workflow/world-postgres",
-  "version": "4.0.1-beta.3",
+  "version": "4.1.0-beta.4",
   "description": "A reference World implementation based on PostgreSQL",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "workflow-postgres-setup": "./bin/setup.js"
+  },
   "files": [
-    "dist"
+    "dist",
+    "bin",
+    "src/drizzle/migrations"
   ],
   "publishConfig": {
     "access": "public"
@@ -20,7 +25,16 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./schema": {
+      "types": "./dist/drizzle/schema.d.ts",
+      "default": "./dist/drizzle/schema.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    },
+    "./migrations/*.sql": "./src/drizzle/migrations/*.sql"
   },
   "scripts": {
     "build": "tsc",
@@ -35,6 +49,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",
+    "dotenv": "^16.4.5",
     "drizzle-orm": "^0.31.2",
     "pg-boss": "^11.0.7",
     "postgres": "^3.4.7",

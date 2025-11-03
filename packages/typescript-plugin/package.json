@@ -1,6 +1,6 @@
 {
   "name": "@workflow/typescript-plugin",
-  "version": "4.0.1-beta.2",
+  "version": "4.0.1-beta.3",
   "description": "TypeScript Language Service Plugin for Workflow DevKit",
   "main": "dist/index.js",
   "files": [
@@ -33,14 +33,11 @@
   "peerDependencies": {
     "typescript": ">=5.0.0"
   },
-  "dependencies": {
-    "builtin-modules": "^5.0.0"
-  },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
     "@workflow/core": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
-    "@vitest/coverage-v8": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

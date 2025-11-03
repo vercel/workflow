@@ -110,6 +110,7 @@ export const steps = pgTable(
       .defaultNow()
       .$onUpdateFn(() => new Date())
       .notNull(),
+    retryAfter: timestamp('retry_after'),
   } satisfies DrizzlishOfType<Step>,
   (tb) => ({
     runFk: index().on(tb.runId),

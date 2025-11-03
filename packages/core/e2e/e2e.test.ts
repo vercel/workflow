@@ -463,4 +463,12 @@ describe('e2e', () => {
     expect(retryStep.attempt).toBe(3);
     expect(retryStep.output).toEqual([3]);
   });
+
+  test('retryableAndFatalErrorWorkflow', { timeout: 60_000 }, async () => {
+    const run = await triggerWorkflow('retryableAndFatalErrorWorkflow', []);
+    const returnValue = await getWorkflowReturnValue(run.runId);
+    expect(returnValue.retryableResult.attempt).toEqual(2);
+    expect(returnValue.retryableResult.duration).toBeGreaterThan(10_000);
+    expect(returnValue.gotFatalError).toBe(true);
+  });
 });

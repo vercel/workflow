@@ -1,10 +1,25 @@
-import builtinModules from 'builtin-modules';
 import {
   findFunctionCalls,
   getDirective,
   getDirectiveTypo,
   isAsyncFunction,
 } from './utils';
+
+const BUILTIN_MODULES = new Set<string>();
+
+// Get built-in modules from Node.js `module.builtinModules`
+// https://nodejs.org/api/module.html#modulebuiltinmodules
+for (const mod of require('node:module').builtinModules as string[]) {
+  // Add both unprefixed and 'node:' prefixed variants to the set of builtin modules
+  BUILTIN_MODULES.add(mod);
+  if (!mod.startsWith('node:')) {
+    BUILTIN_MODULES.add(`node:${mod}`);
+  }
+}
+
+function isBuiltinModule(moduleName: string): boolean {
+  return BUILTIN_MODULES.has(moduleName);
+}
 
 type TypeScriptLib = typeof import('typescript/lib/tsserverlibrary');
 type Program = import('typescript/lib/tsserverlibrary').Program;
@@ -26,6 +41,9 @@ export function getCustomDiagnostics(
 
   const diagnostics: Diagnostic[] = [];
   const typeChecker = program.getTypeChecker();
+
+  // Track function declarations with "use workflow" directive
+  const workflowFunctions = new Map<string, FunctionLikeDeclaration>();
 
   function addTypoError(node: Node, typo: string, expected: string) {
     const formattedTypo = `'${typo}'`;
@@ -90,6 +108,11 @@ export function getCustomDiagnostics(
 
       if (directive === 'use workflow') {
         checkWorkflowFunction(node);
+        // Track workflow functions by name (for function declarations)
+        if (ts.isFunctionDeclaration(node) && node.name) {
+          const functionName = node.name.text;
+          workflowFunctions.set(functionName, node);
+        }
       } else if (directive === 'use step') {
         checkStepFunction(node);
       }
@@ -212,72 +235,6 @@ export function getCustomDiagnostics(
     }
   }
 
-  function checkSymbolForDisallowedModule(
-    symbol: import('typescript/lib/tsserverlibrary').Symbol | undefined,
-    callNode: CallExpression
-  ) {
-    if (!symbol) {
-      return;
-    }
-
-    const declarations = symbol.getDeclarations();
-    if (!declarations || declarations.length === 0) {
-      return;
-    }
-
-    for (const decl of declarations) {
-      if (!decl) {
-        continue;
-      }
-
-      // Check if it's an import declaration
-      if (
-        ts.isImportClause(decl) ||
-        ts.isImportSpecifier(decl) ||
-        ts.isNamespaceImport(decl)
-      ) {
-        // ImportClause: parent is ImportDeclaration
-        // ImportSpecifier: parent is NamedImports, parent.parent is ImportClause, parent.parent.parent is ImportDeclaration
-        // NamespaceImport: parent is ImportClause, parent.parent is ImportDeclaration
-        let importDecl:
-          | import('typescript/lib/tsserverlibrary').ImportDeclaration
-          | undefined;
-        if (ts.isImportClause(decl)) {
-          importDecl =
-            decl.parent as import('typescript/lib/tsserverlibrary').ImportDeclaration;
-        } else if (ts.isImportSpecifier(decl)) {
-          importDecl = decl.parent?.parent
-            ?.parent as import('typescript/lib/tsserverlibrary').ImportDeclaration;
-        } else if (ts.isNamespaceImport(decl)) {
-          importDecl = decl.parent
-            ?.parent as import('typescript/lib/tsserverlibrary').ImportDeclaration;
-        }
-
-        if (
-          importDecl &&
-          importDecl.moduleSpecifier &&
-          ts.isStringLiteral(importDecl.moduleSpecifier)
-        ) {
-          const moduleName = importDecl.moduleSpecifier.text;
-
-          // Check if it's a disallowed Node.js module
-          // builtin-modules already includes both 'fs' and 'node:fs' variants
-          if (builtinModules.includes(moduleName)) {
-            diagnostics.push({
-              file: sourceFile,
-              start: callNode.getStart(),
-              length: callNode.getWidth(),
-              messageText: `Node.js API "${moduleName}" is not available in workflow functions. Consider moving this code to a step function with "use step".`,
-              category: ts.DiagnosticCategory.Error,
-              code: 9003,
-            });
-            return;
-          }
-        }
-      }
-    }
-  }
-
   function checkDisallowedApiUsage(call: CallExpression) {
     try {
       // Check for timer functions (setTimeout, setInterval, setImmediate)
@@ -340,8 +297,7 @@ export function getCustomDiagnostics(
                 }
 
                 if (
-                  importDecl &&
-                  importDecl.moduleSpecifier &&
+                  importDecl?.moduleSpecifier &&
                   ts.isStringLiteral(importDecl.moduleSpecifier)
                 ) {
                   const moduleName = importDecl.moduleSpecifier.text;
@@ -388,6 +344,170 @@ export function getCustomDiagnostics(
     }
   }
 
+  function checkSymbolForDisallowedModule(
+    symbol: import('typescript/lib/tsserverlibrary').Symbol | undefined,
+    callNode: CallExpression
+  ) {
+    if (!symbol) {
+      return;
+    }
+
+    const declarations = symbol.getDeclarations();
+    if (!declarations || declarations.length === 0) {
+      return;
+    }
+
+    for (const decl of declarations) {
+      if (!decl) {
+        continue;
+      }
+
+      // Check if it's an import declaration
+      if (
+        ts.isImportClause(decl) ||
+        ts.isImportSpecifier(decl) ||
+        ts.isNamespaceImport(decl)
+      ) {
+        // ImportClause: parent is ImportDeclaration
+        // ImportSpecifier: parent is NamedImports, parent.parent is ImportClause, parent.parent.parent is ImportDeclaration
+        // NamespaceImport: parent is ImportClause, parent.parent is ImportDeclaration
+        let importDecl:
+          | import('typescript/lib/tsserverlibrary').ImportDeclaration
+          | undefined;
+        if (ts.isImportClause(decl)) {
+          importDecl =
+            decl.parent as import('typescript/lib/tsserverlibrary').ImportDeclaration;
+        } else if (ts.isImportSpecifier(decl)) {
+          importDecl = decl.parent?.parent
+            ?.parent as import('typescript/lib/tsserverlibrary').ImportDeclaration;
+        } else if (ts.isNamespaceImport(decl)) {
+          importDecl = decl.parent
+            ?.parent as import('typescript/lib/tsserverlibrary').ImportDeclaration;
+        }
+
+        if (
+          importDecl?.moduleSpecifier &&
+          ts.isStringLiteral(importDecl.moduleSpecifier)
+        ) {
+          const moduleName = importDecl.moduleSpecifier.text;
+
+          // Check if it's a disallowed Node.js module
+          if (isBuiltinModule(moduleName)) {
+            diagnostics.push({
+              file: sourceFile,
+              start: callNode.getStart(),
+              length: callNode.getWidth(),
+              messageText: `Node.js API "${moduleName}" is not available in workflow functions. Consider moving this code to a step function with "use step".`,
+              category: ts.DiagnosticCategory.Error,
+              code: 9003,
+            });
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  // Second pass: check all calls in the file for direct workflow function invocations
+  function checkAllCallsForDirectWorkflowInvocation(node: Node) {
+    if (ts.isCallExpression(node)) {
+      if (ts.isIdentifier(node.expression)) {
+        const functionName = node.expression.text;
+
+        // First check: is it a locally-defined workflow function?
+        if (workflowFunctions.has(functionName)) {
+          diagnostics.push({
+            file: sourceFile,
+            start: node.getStart(),
+            length: node.getWidth(),
+            messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
+            category: ts.DiagnosticCategory.Warning,
+            code: 9009,
+          });
+        } else {
+          // Second check: is it an imported workflow function?
+          let symbolToCheck = typeChecker.getSymbolAtLocation(node.expression);
+
+          // If this is an alias (e.g., from an import), resolve to the actual symbol
+          if (symbolToCheck && symbolToCheck.flags & ts.SymbolFlags.Alias) {
+            const aliasedSymbol = typeChecker.getAliasedSymbol(symbolToCheck);
+            if (aliasedSymbol && aliasedSymbol !== symbolToCheck) {
+              symbolToCheck = aliasedSymbol;
+            }
+          }
+
+          const declarations = symbolToCheck?.getDeclarations();
+          if (declarations && declarations.length > 0) {
+            for (const decl of declarations) {
+              if (!decl) continue;
+
+              // Check function declarations directly
+              if (
+                ts.isFunctionDeclaration(decl) ||
+                ts.isArrowFunction(decl) ||
+                ts.isFunctionExpression(decl)
+              ) {
+                // Get the source file from the declaration itself
+                const declSourceFile = decl.getSourceFile?.();
+                if (!declSourceFile) continue;
+
+                const directive = getDirective(
+                  decl as FunctionLikeDeclaration,
+                  declSourceFile,
+                  ts
+                );
+
+                if (directive === 'use workflow') {
+                  diagnostics.push({
+                    file: sourceFile,
+                    start: node.getStart(),
+                    length: node.getWidth(),
+                    messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
+                    category: ts.DiagnosticCategory.Warning,
+                    code: 9009,
+                  });
+                  break;
+                }
+              }
+              // Check variable declarations (e.g., const myWorkflow = async () => { 'use workflow'; })
+              else if (ts.isVariableDeclaration(decl)) {
+                const init = decl.initializer;
+                if (
+                  init &&
+                  (ts.isArrowFunction(init) || ts.isFunctionExpression(init))
+                ) {
+                  const declSourceFile = decl.getSourceFile?.();
+                  if (!declSourceFile) continue;
+
+                  const directive = getDirective(
+                    init as FunctionLikeDeclaration,
+                    declSourceFile,
+                    ts
+                  );
+
+                  if (directive === 'use workflow') {
+                    diagnostics.push({
+                      file: sourceFile,
+                      start: node.getStart(),
+                      length: node.getWidth(),
+                      messageText: `Workflow functions should not be invoked directly. Use the \`start()\` function from 'workflow/api' to invoke this workflow.`,
+                      category: ts.DiagnosticCategory.Warning,
+                      code: 9009,
+                    });
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    ts.forEachChild(node, checkAllCallsForDirectWorkflowInvocation);
+  }
+
   visit(sourceFile);
+  checkAllCallsForDirectWorkflowInvocation(sourceFile);
   return diagnostics;
 }

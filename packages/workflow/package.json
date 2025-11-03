@@ -1,8 +1,8 @@
 {
   "name": "workflow",
-  "version": "4.0.1-beta.4",
+  "version": "4.0.1-beta.6",
   "description": "Workflow DevKit - Build durable, resilient, and observable workflows",
-  "main": "dist/index.cjs",
+  "main": "dist/typescript-plugin.cjs",
   "type": "module",
   "bin": {
     "workflow": "./bin/run.js",
@@ -25,6 +25,7 @@
     ".": {
       "types": "./dist/index.d.ts",
       "workflow": "./dist/workflow.js",
+      "require": "./dist/typescript-plugin.cjs",
       "default": "./dist/index.js"
     },
     "./api": "./dist/api.js",

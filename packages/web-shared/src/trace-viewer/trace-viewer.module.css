@@ -1,0 +1,1275 @@
+.traceNode {
+  position: relative;
+}
+
+.childRow {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.spanNode {
+  position: absolute;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 0;
+  background-color: var(--span-background);
+  color: var(--span-text);
+  border: 1px solid var(--span-border);
+  border-radius: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: var(--ds-shadow-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  content-visibility: auto;
+  cursor: pointer;
+  user-select: none;
+  z-index: 2;
+
+  &.huge {
+    overflow: visible;
+
+    & .spanName {
+      flex: 0 1 auto;
+      position: sticky;
+      left: 0;
+    }
+
+    & .spanSpacer {
+      flex: 1 0 0;
+    }
+
+    & .spanDuration {
+      position: sticky;
+      right: 0;
+      background-color: var(--span-background);
+      padding-left: 6px;
+      box-shadow: -8px 0 16px 8px var(--span-background);
+    }
+  }
+
+  &::after {
+    position: absolute;
+    left: -1px;
+    top: -1px;
+    width: var(--span-width);
+    height: var(--row-height);
+    content: '';
+  }
+
+  &.small:not(.xHover)::after {
+    top: -7px;
+  }
+
+  &:hover:not(.selected) {
+    filter: brightness(0.95);
+  }
+
+  &.xHover {
+    z-index: 3;
+    min-width: var(--span-width);
+    max-width: 75%;
+    background: linear-gradient(
+      90deg,
+      var(--span-background) calc(var(--span-width) - 1px),
+      var(--span-line),
+      var(--geist-background) calc(var(--span-width) + 1px)
+    );
+
+    &[data-right-side='true'] {
+      background: linear-gradient(
+        270deg,
+        var(--span-background) calc(var(--span-width) - 1px),
+        var(--span-line),
+        var(--geist-background) calc(var(--span-width) + 1px)
+      );
+    }
+
+    & .spanName {
+      max-width: max(var(--span-width), 40vw);
+    }
+
+    & .spanDuration {
+      background: none;
+      box-shadow: none;
+    }
+  }
+
+  &.small:not(.xHover) {
+    background-color: var(--span-background);
+    border-color: var(--span-border);
+    border-radius: 4px;
+  }
+
+  &.selected {
+    border-width: 2px;
+    outline: 2px solid var(--span-border);
+    outline-offset: -1px;
+
+    &:hover {
+      filter: brightness(0.95);
+    }
+  }
+}
+
+.spanNodeEvent {
+  position: absolute;
+  height: var(--row-height);
+  pointer-events: none;
+  z-index: 4;
+
+  & .eventDiamond {
+    --size: 7px;
+    --offset: -4px;
+    position: absolute;
+    left: var(--offset);
+    bottom: calc(var(--offset) + 1px);
+    width: var(--size);
+    height: var(--size);
+    border: 1px solid var(--span-secondary);
+    border-radius: 2px;
+    background: var(--span-background);
+    transform-origin: 50% 50% 0;
+    transform: rotate(45deg);
+  }
+
+  /* Workflow-specific: Use custom event color if provided */
+  &.customEventColor .eventDiamond {
+    border-color: var(--event-color, var(--span-border));
+    background: var(--event-color, var(--span-background));
+    opacity: 0.8;
+  }
+  &.customEventColor .hoverInfo {
+    border-color: var(--span-border);
+    background: var(--span-background);
+  }
+  &.customEventColor .hoverInfo .eventName {
+    color: var(--span-text);
+    font-weight: 500;
+  }
+  &.customEventColor .hoverInfo .eventTimestamp {
+    color: var(--span-secondary);
+  }
+
+  & .hoverInfo {
+    position: absolute;
+    margin-top: -1px;
+    top: 100%;
+    display: none;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    font-size: 12px;
+    line-height: 1;
+    background: var(--span-background);
+    border: 1px solid var(--span-border);
+    border-radius: 6px;
+    box-shadow: var(--ds-shadow-small);
+    transform: translateY(-50%);
+
+    &.alignStart {
+      left: -10px;
+      padding-left: 18px;
+    }
+    &.alignEnd {
+      right: -10px;
+      padding-right: 18px;
+    }
+
+    & .eventName {
+      color: var(--span-text);
+    }
+    & .eventTimestamp {
+      color: var(--span-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+  }
+
+  &[data-hovered='true'] {
+    z-index: 4;
+
+    & .eventDiamond {
+      background: var(--span-text);
+      border-color: var(--span-text);
+    }
+    & .hoverInfo {
+      display: flex;
+    }
+  }
+}
+
+.colorVercel {
+  --span-background: var(--ds-background-100);
+  --span-border: var(--ds-gray-500);
+  --span-line: var(--ds-gray-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-gray-900);
+  --geist-background: var(--ds-gray-100);
+}
+.color0 {
+  --span-background: var(--ds-teal-200);
+  --span-border: var(--ds-teal-500);
+  --span-line: var(--ds-teal-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-teal-900);
+}
+.color1 {
+  --span-background: var(--ds-blue-200);
+  --span-border: var(--ds-blue-500);
+  --span-line: var(--ds-blue-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-blue-900);
+}
+.color2 {
+  --span-background: var(--ds-green-200);
+  --span-border: var(--ds-green-500);
+  --span-line: var(--ds-green-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-green-900);
+}
+.color3 {
+  --span-background: var(--ds-purple-200);
+  --span-border: var(--ds-purple-500);
+  --span-line: var(--ds-purple-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-purple-900);
+}
+.color4 {
+  --span-background: var(--ds-pink-200);
+  --span-border: var(--ds-pink-500);
+  --span-line: var(--ds-pink-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-pink-900);
+}
+.colorHighlight {
+  --span-background: var(--ds-amber-200);
+  --span-border: var(--ds-amber-500);
+  --span-line: var(--ds-amber-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-amber-900);
+}
+
+.unlit {
+  opacity: 0.3;
+}
+
+:global(.dark-theme),
+:global(.dark) {
+  & .mapContainer canvas {
+    filter: invert(1);
+  }
+
+  & .spanNode.small {
+    &.xHover,
+    &:focus-visible {
+      &::before {
+        text-shadow: 0 1px 0 black;
+      }
+    }
+  }
+
+  & .spanNode:hover:not(.selected) {
+    filter: brightness(1.05);
+  }
+
+  & .spanNode.selected:hover {
+    filter: brightness(1.05);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :global(:root:not(.light)) {
+    & .mapContainer canvas {
+      filter: invert(1);
+    }
+
+    & .spanNode.small {
+      &.xHover,
+      &:focus-visible {
+        &::before {
+          text-shadow: 0 1px 0 black;
+        }
+      }
+    }
+
+    & .spanNode:hover:not(.selected) {
+      filter: brightness(1.05);
+    }
+
+    & .spanNode.selected:hover {
+      filter: brightness(1.05);
+    }
+  }
+}
+
+.spanName {
+  flex: 1 1 auto;
+  padding-inline: 6px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spanDuration {
+  flex: 0 0 auto;
+  padding-right: 6px;
+  font-variant-numeric: tabular-nums;
+  color: var(--span-secondary, var(--ds-gray-alpha-700));
+}
+
+/* SPAN DETAIL PANEL */
+.spanDetailPanel {
+  display: flex;
+  flex-direction: column;
+  height: var(--panel-height);
+  align-items: stretch;
+  justify-content: flex-start;
+  flex: 0 1 auto;
+}
+
+.spanDetailPanelResizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 1;
+
+  display: none;
+  @media (hover: hover) {
+    display: block;
+  }
+}
+
+.spanDetailPanelTop {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  flex: 0 1 auto;
+  justify-content: space-between;
+  position: relative;
+}
+
+.spanDetailPanelBody {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 12px;
+  flex: 0 1 100%;
+  padding: 16px 12px 24px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.spanDetailPanelTopInfo {
+  --row-height: 40px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  width: 100%;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border-color);
+  flex: 0 1 auto;
+}
+
+.spanNameDetailPanel {
+  font-size: inherit;
+  color: var(--ds-gray-1000);
+  word-break: break-word;
+}
+
+.spanDetailPanelTruncatedHeading {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  flex: 0 1 100%;
+  overflow: hidden;
+  justify-content: flex-start;
+}
+
+.spanDetailPanelName {
+  flex: 0 1 100%;
+  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spanDetailPanelDuration {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-gray-900);
+}
+
+.spanDetailPanelCorner {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: var(--row-height);
+  justify-content: flex-start;
+}
+
+.spanDetailPanelCornerInner {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: flex-start;
+  flex: 0 1 auto;
+}
+
+.spanDetailPanelCloseVerticalRule {
+  border-left: 1px solid var(--accents-2);
+  height: var(--geist-space-gap);
+}
+
+.spanDetailPanelClose {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    background-color: var(--ds-gray-200);
+  }
+}
+
+.spanDetailPanelAttribute {
+  margin: 0;
+  padding-block: 8px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14px;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--border-color);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.spanDetailPanelAttributeKey {
+  flex: 0 0 auto;
+  margin: 0;
+  padding-left: 8px;
+  font-size: inherit;
+  color: var(--ds-gray-900);
+}
+
+.spanDetailPanelAttributeValue {
+  flex: 0 1 auto;
+  margin: 0;
+  padding-right: 8px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow-x: hidden;
+  text-overflow: ellipsis;
+}
+
+.spanDetailPanelQuickLink {
+  color: inherit;
+  text-decoration: none;
+  &:hover .spanDetailPanelQuickLinkLabel {
+    text-decoration: underline;
+  }
+}
+
+.spanDetailPanelQuickLinkLabel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+}
+
+.detailGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  flex: 0 1 auto;
+  &::after {
+    margin: 12px -12px 0;
+    height: 1px;
+    background: var(--border-color);
+    content: '';
+  }
+}
+
+.expanded,
+.collapsed,
+.ancestorGroup {
+  /* Explicit class tokens used by TS for CSS Modules */
+}
+
+.detailHeading {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  background: none;
+  color: var(--ds-gray-1000);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+
+  &:hover,
+  &:focus-visible {
+    background-color: var(--ds-gray-100);
+  }
+}
+
+/* Local replacements for external UI */
+.buttonLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--ds-gray-1000);
+  text-decoration: none;
+  background-color: var(--ds-background-100);
+  border: 1px solid var(--accents-2);
+  border-radius: 6px;
+}
+
+.buttonLink:hover,
+.buttonLink:focus-visible {
+  background-color: var(--ds-gray-100);
+}
+
+.note {
+  padding: 8px 10px;
+  color: var(--ds-gray-900);
+  background-color: var(--ds-background-100);
+  border: 1px solid var(--ds-gray-300);
+  border-radius: 6px;
+}
+
+.skeleton {
+  display: inline-block;
+  background-color: var(--ds-gray-200);
+  border-radius: 4px;
+}
+
+.skeletonRounded {
+  border-radius: 50%;
+}
+
+.detailGroup.collapsed .detailHeadingIcon {
+  transform: rotate(-90deg);
+}
+
+.infraSpanDescription {
+  padding: 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ds-gray-900);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ancestorNode {
+  padding: 8px 8px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--ds-gray-100);
+  }
+}
+
+.ancestorText {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  gap: 4px;
+  color: var(--ds-gray-900);
+  white-space: nowrap;
+}
+
+.ancestorName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ancestorDuration {
+  /* font-family: var(--font-mono); */
+  font-variant-numeric: tabular-nums;
+}
+
+.ancestorLineContainer {
+  position: relative;
+  margin-top: 6px;
+  display: block;
+  width: 100%;
+  height: 1px;
+  background-color: var(--ds-gray-alpha-400);
+
+  &::before,
+  &::after {
+    position: absolute;
+    top: -2px;
+    width: 1px;
+    height: 5px;
+    background-color: inherit;
+    content: '';
+  }
+
+  &::before {
+    left: 0;
+  }
+
+  &::after {
+    right: 0;
+  }
+}
+
+.ancestorLine {
+  position: absolute;
+  top: -2px;
+  height: 5px;
+  background-color: var(--span-background);
+  border: 1px solid var(--span-line);
+  border-radius: 1px;
+}
+
+.ancestorNode {
+  &:hover,
+  &:focus-visible,
+  &:last-of-type {
+    & .ancestorName {
+      color: var(--ds-gray-1000);
+    }
+
+    & .ancestorLine {
+      background-color: var(--span-line);
+      border-color: var(--span-border);
+    }
+  }
+}
+
+/* ZOOM BUTTON */
+.zoomButtonGroup {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: flex-start;
+  flex: 0 1 auto;
+  background-color: var(--geist-background);
+  border-radius: 10ex;
+  box-shadow: var(--ds-shadow-small);
+  border: 1px solid var(--accents-2);
+  animation: zoom-buttons-fade-in 0.3s ease 0.3s backwards;
+}
+
+@keyframes zoom-buttons-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.zoomButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  height: 32px;
+  width: 38px;
+  background-color: transparent;
+  border: none;
+  color: var(--accents-5);
+  box-shadow: none !important;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--accents-7);
+  }
+}
+
+.zoomButton:hover {
+  background-color: transparent;
+  color: var(--accents-7);
+}
+
+.zoomButton:focus-visible {
+  /* TODO */
+}
+
+.divider {
+  width: 1px;
+  background-color: var(--accents-2);
+  margin: -1px;
+}
+
+/* TRACE */
+.markersContainer {
+  position: absolute;
+  left: -8px;
+  top: -8px;
+  width: 100%;
+  height: calc(100% - var(--scrollbar-width));
+  line-height: 1;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.markers {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: row;
+  gap: calc(var(--marker-width) - 1px);
+  height: var(--marker-height);
+  padding-left: 8px;
+  background: var(--ds-background-200);
+  overflow: hidden;
+  box-shadow: 0 4px 8px 0 var(--ds-background-200);
+  border-bottom: 1px solid var(--marker-color);
+}
+
+.marker {
+  position: relative;
+  flex: 0 0 1px;
+  border-left: 1px solid var(--marker-color);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-gray-900);
+
+  height: var(--marker-height);
+  &.notch {
+    top: calc(var(--marker-height) - var(--marker-notch-height));
+    height: var(--marker-notch-height);
+  }
+}
+
+.markerLabel {
+  position: absolute;
+  left: 2px;
+  bottom: 6px;
+  color: var(--ds-gray-900);
+  user-select: none;
+}
+
+.eventMarkersContainer {
+  position: absolute;
+  top: -8px;
+  width: var(--timeline-scroll-width);
+  height: calc(100% - var(--scrollbar-width));
+  line-height: 1;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.eventMarkers {
+  position: sticky;
+  top: 0;
+  height: calc(100% + 2 * var(--timeline-padding));
+  overflow: hidden;
+}
+
+.eventMarker {
+  position: absolute;
+  border-left: 1px dotted var(--ds-gray-500);
+  height: 100%;
+}
+
+.cursorMarkerStickyParent {
+  position: absolute;
+  left: 0;
+  top: -8px;
+  width: var(--timeline-scroll-width);
+  height: calc(100% + 2 * var(--timeline-padding));
+  pointer-events: none;
+}
+
+.cursorMarkerLabelContainer {
+  position: sticky;
+  top: 0;
+  left: 0;
+  display: none;
+  width: 1px;
+  height: 100%;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.cursorMarkerLabel {
+  position: sticky;
+  top: 4px;
+  width: 1px;
+  height: var(--marker-height);
+  background-color: var(--marker-color);
+
+  &[data-text]::before {
+    margin: 0;
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 0 6px;
+    height: 18px;
+    line-height: 16px;
+    transform: translateX(-50%);
+    font-size: 10px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    background-color: var(--ds-background-100);
+    color: var(--ds-gray-900);
+    border: 1px solid var(--ds-gray-500);
+    border-radius: 10ex;
+    box-shadow: var(--ds-shadow-small);
+    content: attr(data-text);
+  }
+
+  &[data-align='left']::before {
+    left: -6px;
+    transform: unset;
+  }
+
+  &[data-align='right']::before {
+    left: unset;
+    right: -6px;
+    transform: unset;
+  }
+}
+
+.cursorMarkerContainer {
+  position: sticky;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  pointer-events: none;
+}
+
+.cursorMarker {
+  position: sticky;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  display: none;
+  background-color: var(--marker-color);
+  z-index: 1;
+}
+
+.cursorSelection {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: none;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px;
+  background-color: var(--ds-gray-100);
+  border-inline: 1px solid var(--ds-gray-300);
+
+  &::before,
+  &::after {
+    position: sticky;
+    bottom: 8px;
+    padding: 0 6px;
+    height: 18px;
+    line-height: 16px;
+    font-size: 10px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    background-color: var(--ds-background-100);
+    color: var(--ds-gray-900);
+    border: 1px solid var(--ds-gray-500);
+    border-radius: 10ex;
+    box-shadow: var(--ds-shadow-small);
+    white-space: nowrap;
+  }
+
+  &::before {
+    margin-left: 8px;
+    content: attr(data-range);
+  }
+  &::after {
+    margin-right: 8px;
+    content: attr(data-duration);
+  }
+}
+
+@keyframes span-skeleton {
+  from {
+    opacity: 0.6;
+  }
+
+  to {
+    opacity: 0.3;
+  }
+}
+
+.traceViewer {
+  &.skeleton {
+    & * {
+      pointer-events: none !important;
+    }
+
+    & .mapCanvas {
+      display: none;
+    }
+
+    & .markerLabel {
+      display: none;
+    }
+
+    & .spanNode {
+      animation: span-skeleton 1s infinite alternate;
+
+      & * {
+        display: none;
+      }
+    }
+
+    & .zoomButtonTraceViewer {
+      display: none;
+    }
+  }
+
+  & .markers {
+    border-top: 1px solid var(--marker-color);
+    border-bottom: none;
+  }
+
+  & .marker.notch {
+    top: 0;
+  }
+
+  & .markerLabel {
+    bottom: 3px;
+  }
+
+  & .cursorMarkerLabel {
+    top: 8px;
+  }
+}
+
+.timeline:hover {
+  & .cursorMarkerLabelContainer,
+  & .cursorMarker {
+    display: block;
+  }
+}
+
+/* SEARCH BAR */
+.searchBar {
+  position: absolute;
+  left: 0;
+  top: var(--search-gap);
+  display: flex;
+  flex-direction: row;
+  gap: var(--search-gap);
+  width: 100%;
+  padding-inline: var(--search-gap);
+  height: var(--search-height);
+}
+
+.searchInput {
+  flex: 0 1 100%;
+  position: relative;
+  height: var(--search-height);
+  background: var(--ds-background-100);
+}
+
+.searchInputLabel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--border-color, var(--ds-gray-alpha-400));
+
+  & input {
+    margin-left: -16px;
+    padding-inline: 12px;
+    font-family: inherit;
+    font-size: 14px;
+    background: transparent;
+    border: none;
+    outline: none;
+
+    &::-webkit-search-decoration,
+    &::-webkit-search-cancel-button,
+    &::-webkit-search-results-button,
+    &::-webkit-search-results-decoration {
+      display: none;
+    }
+  }
+}
+
+.searchInputPrefix {
+  width: var(--search-height);
+  height: var(--search-height);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ds-gray-800);
+}
+
+/* MINI MAP */
+.mapContainer {
+  position: absolute;
+  left: 0;
+  top: calc(var(--search-height) + 2 * var(--search-gap));
+  /* border-bottom: 1px solid var(--border-color); */
+  cursor: move;
+}
+
+.mapCanvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 1;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+
+:global(.dark-theme) .mapCanvas,
+:global(.dark) .mapCanvas {
+  mix-blend-mode: screen;
+}
+
+@media (prefers-color-scheme: dark) {
+  :global(:root:not(.light)) .mapCanvas {
+    mix-blend-mode: screen;
+  }
+}
+
+.mapThumb {
+  position: absolute;
+  top: 0;
+  height: var(--map-height);
+  background: var(--ds-gray-alpha-200);
+  border: 1px solid var(--ds-gray-alpha-400);
+  border-radius: 3px;
+  box-shadow: var(--ds-shadow-small);
+  transform: translateX(var(--timeline-padding));
+  pointer-events: none;
+}
+
+/* TRACE VIEWER */
+.traceViewer,
+.spanDetailPanelTraceViewer {
+  --border-color: var(--ds-gray-300);
+  --marker-color: var(--ds-gray-300);
+}
+
+.traceViewer {
+  --scrollbar-width: 0;
+  position: relative;
+  display: flex;
+  font-family: var(--font-sans);
+  text-rendering: optimizeLegibility;
+  text-size-adjust: 100%;
+  background-color: var(--ds-background-200);
+
+  & button {
+    font-family: inherit;
+  }
+}
+
+.traceViewerContent {
+  position: absolute;
+  left: 0;
+  top: calc(var(--search-height) + 3 * var(--search-gap) + var(--map-height));
+  width: calc(var(--timeline-width) + 2 * var(--timeline-padding));
+  height: calc(
+    var(--timeline-height) - 2 * var(--timeline-padding) -
+      var(--scrollbar-width) - var(--marker-height) - var(--search-height)
+  );
+
+  &.inert {
+    display: none;
+  }
+}
+
+.timeline {
+  width: calc(var(--timeline-width) + 2 * var(--timeline-padding));
+  height: var(--timeline-height);
+  font-size: 13px;
+  overflow-y: scroll;
+  overflow-x: scroll;
+  -webkit-overflow-scrolling: touch;
+  position: relative;
+}
+
+.zoomButtonTraceViewer {
+  position: absolute;
+  bottom: calc(-12px - var(--search-height) - var(--scrollbar-width));
+  right: calc(var(--scrollbar-width) + 12px);
+  z-index: 10;
+}
+
+.spanDetailPanelTraceViewer {
+  position: absolute;
+  margin-top: -1px;
+  right: 0;
+  top: calc(var(--search-height) + 2 * var(--search-gap) + var(--map-height) + 9px);
+  width: var(--panel-width);
+  height: var(--panel-height);
+  border-top: 1px solid var(--ds-gray-200);
+  border-left: 1px solid var(--ds-gray-200);
+  background-color: var(--geist-background);
+  z-index: 10;
+
+  &.hidden {
+    display: none;
+  }
+
+  &.mobile {
+    --panel-width: calc(var(--timeline-width) + 2 * var(--timeline-padding));
+    --panel-height: var(--height);
+    top: 0;
+    border-left: none;
+  }
+}
+
+/* Workflow-specific styles */
+
+/* Step statuses */
+.spanRunning,
+.spanPending {
+  --span-background: var(--ds-blue-200);
+  --span-border: var(--ds-blue-500);
+  --span-line: var(--ds-blue-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-blue-900);
+}
+
+.spanCompleted {
+  --span-background: var(--ds-green-200);
+  --span-border: var(--ds-green-500);
+  --span-line: var(--ds-green-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-green-900);
+}
+
+.spanCancelled,
+.spanPaused {
+  --span-background: var(--ds-amber-200);
+  --span-border: var(--ds-amber-500);
+  --span-line: var(--ds-amber-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-amber-900);
+}
+
+.spanFailed {
+  --span-background: var(--ds-red-200);
+  --span-border: var(--ds-red-500);
+  --span-line: var(--ds-red-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-red-900);
+}
+
+/* Striped background for pending status */
+.spanPendingStriped {
+  --span-background: repeating-linear-gradient(
+    45deg,
+    var(--ds-blue-200),
+    var(--ds-blue-200) 10px,
+    color-mix(in srgb, var(--ds-blue-200) 70%, white) 10px,
+    color-mix(in srgb, var(--ds-blue-200) 70%, white) 20px
+  );
+  --span-border: var(--ds-blue-500);
+  --span-line: var(--ds-blue-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-blue-900);
+}
+
+/* Sleep step - light yellow/orange */
+.spanSleep {
+  --span-background: var(--ds-amber-200);
+  --span-border: var(--ds-amber-500);
+  --span-line: var(--ds-amber-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-amber-900);
+}
+
+/* Hooks - gray color scheme */
+.spanHook {
+  --span-background: var(--ds-gray-200);
+  --span-border: var(--ds-gray-500);
+  --span-line: var(--ds-gray-400);
+  --span-text: var(--ds-gray-1000);
+  --span-secondary: var(--ds-gray-900);
+}
+
+/* Event markers */
+
+/* Failure events - Red */
+.eventFailed {
+  --event-color: var(--ds-red-600);
+  --span-background: var(--ds-red-100);
+  --span-border: var(--ds-red-500);
+  --span-text: var(--ds-red-900);
+  --span-secondary: var(--ds-red-700);
+}
+
+/* Retry events - Orange/Yellow */
+.eventRetrying {
+  --event-color: var(--ds-amber-600);
+  --span-background: var(--ds-amber-100);
+  --span-border: var(--ds-amber-500);
+  --span-text: var(--ds-amber-900);
+  --span-secondary: var(--ds-amber-700);
+}
+
+/* Webhook-related events - Purple */
+.eventHook {
+  --event-color: var(--ds-purple-600);
+  --span-background: var(--ds-purple-100);
+  --span-border: var(--ds-purple-500);
+  --span-text: var(--ds-purple-900);
+  --span-secondary: var(--ds-purple-700);
+}
+
+/* Default event - Blue */
+.eventDefault {
+  --event-color: var(--ds-blue-600);
+  --span-background: var(--ds-blue-100);
+  --span-border: var(--ds-blue-500);
+  --span-text: var(--ds-blue-900);
+  --span-secondary: var(--ds-blue-700);
+}
+

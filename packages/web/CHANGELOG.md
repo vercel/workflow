@@ -1,5 +1,20 @@
 # @workflow/web
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 8f63385: Add readme section about self-hosting observability UI
+- 20d51f0: Add optional `retryAfter` property to `Step` interface
+- 55e2d0b: Extract reusable web UI code into shared package
+
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- 0f845af: Alias workflow web to workflow inspect runs --web, hide trace viewer search for small runs
+- ffb7af3: Web: make error handling local/inline to where it's used, unify API error responses
+
 ## 4.0.1-beta.4
 
 ### Patch Changes

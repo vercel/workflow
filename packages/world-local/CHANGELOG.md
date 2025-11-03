@@ -1,5 +1,14 @@
 # @workflow/world-local
 
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- 20d51f0: Allow `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY` env var to set max queue visibility timeout
+- Updated dependencies [20d51f0]
+- Updated dependencies [70be894]
+  - @workflow/world@4.0.1-beta.3
+
 ## 4.0.1-beta.2
 
 ### Patch Changes
