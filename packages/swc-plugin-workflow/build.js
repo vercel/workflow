@@ -1,6 +1,5 @@
 import { execSync } from 'node:child_process';
-import { copyFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, existsSync } from 'node:fs';
 
 function runCommand(command) {
   try {
@@ -79,11 +78,23 @@ runCommand(
 );
 
 // Copy the WASM file
-const wasmSource = join(
-  '../../target/wasm32-unknown-unknown/release/swc_plugin_workflow.wasm'
+const wasmSource = new URL(
+  '../../target/wasm32-unknown-unknown/release/swc_plugin_workflow.wasm',
+  import.meta.url
 );
-const wasmDest = 'swc_plugin_workflow.wasm';
-console.log(`Copying ${wasmSource} to ${wasmDest}...`);
+const wasmDest = new URL('swc_plugin_workflow.wasm', import.meta.url);
+console.log(`Source: ${wasmSource}`);
+console.log(`Destination: ${wasmDest}`);
+
+if (!existsSync(wasmSource)) {
+  console.error(`WASM file not found at ${wasmSource}`);
+  console.error(
+    'The cargo build may have failed or produced output at a different location.'
+  );
+  process.exit(1);
+}
+
+console.log('Copying WASM file...');
 copyFileSync(wasmSource, wasmDest);
 
 console.log('Build complete!');
