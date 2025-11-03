@@ -15,7 +15,6 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 const httpAgent = new Agent({
   keepAliveTimeout: 0,
   headersTimeout: 0,
-  connectTimeout: 0,
 });
 
 export function createQueue(port?: number): Queue {
