@@ -223,6 +223,7 @@ export async function runWorkflow(
           this.credentials = 'same-origin';
         }
 
+        // `any` cast here because @types/node v22 does not yet have `cache`
         if ((init as any)?.cache !== undefined) {
           this.cache = (init as any).cache;
         } else if (typeof this.cache !== 'string') {
