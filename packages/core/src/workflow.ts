@@ -223,8 +223,8 @@ export async function runWorkflow(
           this.credentials = 'same-origin';
         }
 
-        if (init?.cache !== undefined) {
-          this.cache = init.cache;
+        if ((init as any)?.cache !== undefined) {
+          this.cache = (init as any).cache;
         } else if (typeof this.cache !== 'string') {
           this.cache = 'default';
         }

@@ -60,21 +60,19 @@ export function createQueue(port?: number): Queue {
       for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
         defaultRetriesLeft--;
 
-        const fetchOptions: any = {
-          method: 'POST',
-          duplex: 'half',
-          dispatcher: httpAgent,
-          headers: {
-            'x-vqs-queue-name': queueName,
-            'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(attempt + 1),
-          },
-          body,
-        };
-
         const response = await fetch(
           `http://localhost:${port}/.well-known/workflow/v1/${pathname}`,
-          fetchOptions
+          {
+            method: 'POST',
+            duplex: 'half',
+            dispatcher: httpAgent,
+            headers: {
+              'x-vqs-queue-name': queueName,
+              'x-vqs-message-id': messageId,
+              'x-vqs-message-attempt': String(attempt + 1),
+            },
+            body,
+          }
         );
 
         if (response.ok) {
