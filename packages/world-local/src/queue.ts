@@ -13,9 +13,9 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 
 // Create a custom agent with unlimited timeout for long-running steps
 const httpAgent = new Agent({
-  keepAliveMaxTimeout: undefined,
-  requestTimeout: undefined, // Disable timeout to allow long-running steps
-  connectTimeout: undefined,
+  keepAliveTimeout: 0,
+  headersTimeout: 0,
+  connectTimeout: 0,
 });
 
 export function createQueue(port?: number): Queue {
