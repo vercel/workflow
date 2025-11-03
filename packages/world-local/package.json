@@ -33,6 +33,7 @@
     "@vercel/queue": "0.0.0-alpha.23",
     "@workflow/world": "workspace:*",
     "ulid": "^3.0.1",
+    "undici": "^6.19.0",
     "zod": "catalog:"
   },
   "devDependencies": {
