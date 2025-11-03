@@ -55,25 +55,24 @@ export default defineNuxtConfig({
 });
 ```
 
+This will also automatically enable the TypeScript plugin, which provides helpful IntelliSense hints in your IDE for workflow and step functions.
+
 <Accordion type="single" collapsible>
-  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
+  <AccordionItem value="typescript-plugin-config" className="[&_h3]:my-0">
     <AccordionTrigger className="[&_p]:my-0 text-lg [&_p]:text-foreground">
-      Setup IntelliSense for TypeScript (Optional)
+      Disable TypeScript Plugin (Optional)
     </AccordionTrigger>
     <AccordionContent className="[&_p]:my-2">
-To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json`:
+The TypeScript plugin is enabled by default. If you need to disable it, you can configure it in your `nuxt.config.ts`:
 
-```json title="tsconfig.json" lineNumbers
-{
-  "compilerOptions": {
-    // ... rest of your TypeScript config
-    "plugins": [
-      {
-        "name": "workflow" // [!code highlight]
-      }
-    ]
-  }
-}
+```typescript title="nuxt.config.ts" lineNumbers
+export default defineNuxtConfig({
+  modules: ["workflow"],
+  workflow: {
+    typescriptPlugin: false, // [!code highlight]
+  },
+  compatibilityDate: "latest",
+});
 ```
 
     </AccordionContent>
