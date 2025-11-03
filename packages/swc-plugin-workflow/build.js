@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { copyFileSync, existsSync } from 'node:fs';
+import { copyFileSync, existsSync, readdirSync } from 'node:fs';
 
 function runCommand(command) {
   try {
@@ -91,6 +91,27 @@ if (!existsSync(wasmSource)) {
   console.error(
     'The cargo build may have failed or produced output at a different location.'
   );
+
+  // TODO: Remove this once we verify what's going on in CI
+  try {
+    const targetDir = new URL('../../target', import.meta.url);
+    console.error('\nDebug: Listing target directory contents...');
+    const files = readdirSync(targetDir, { recursive: true });
+    const wasmFiles = files.filter(
+      (f) => typeof f === 'string' && f.includes('wasm')
+    );
+    console.error(
+      `Found ${files.length} total files, ${wasmFiles.length} WASM-related`
+    );
+    if (wasmFiles.length > 0) {
+      console.error('WASM files:', wasmFiles.slice(0, 10));
+    } else {
+      console.error('Sample files in target:', files.slice(0, 20));
+    }
+  } catch (err) {
+    console.error('Debug: Cannot read target directory:', err.message);
+  }
+
   process.exit(1);
 }
 
