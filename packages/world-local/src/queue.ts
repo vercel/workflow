@@ -11,9 +11,8 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
   Infinity;
 
-// Create a custom agent with unlimited timeout for long-running steps
+// Create a custom agent with unlimited headers timeout for long-running steps
 const httpAgent = new Agent({
-  keepAliveTimeout: 0,
   headersTimeout: 0,
 });
 
