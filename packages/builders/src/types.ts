@@ -27,5 +27,5 @@ export interface WorkflowConfig {
 export function isValidBuildTarget(
   target: string | undefined
 ): target is BuildTarget {
-  return target === 'standalone' || target === 'vercel-build-output-api';
+ return !!target && validBuildTargets.includes(target as BuildTarget);
 }
