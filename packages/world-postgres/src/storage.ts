@@ -333,6 +333,17 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
 
 export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
   const { steps } = Schema;
+  const get = drizzle
+    .select()
+    .from(steps)
+    .where(
+      and(
+        eq(steps.stepId, sql.placeholder('stepId')),
+        eq(steps.runId, sql.placeholder('runId'))
+      )
+    )
+    .limit(1)
+    .prepare('workflow_steps_get');
 
   return {
     async create(runId, data) {
@@ -356,16 +367,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
       return compact(value);
     },
     async get(runId, stepId) {
-      // If runId is not provided, query only by stepId
-      const whereClause = runId
-        ? and(eq(steps.stepId, stepId), eq(steps.runId, runId))
-        : eq(steps.stepId, stepId);
-
-      const [value] = await drizzle
-        .select()
-        .from(steps)
-        .where(whereClause)
-        .limit(1);
+      const [value] = await get.execute({ stepId, runId });
       if (!value) {
         throw new WorkflowAPIError(`Step not found: ${stepId}`, {
           status: 404,
