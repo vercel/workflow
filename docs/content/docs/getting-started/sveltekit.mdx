@@ -188,7 +188,7 @@ We'll dive deeper into workflows, steps, and other ways to suspend or handle eve
 
 To invoke your new workflow, we'll have to add your workflow to a `POST` API route handler, `src/routes/api/signup/+server.ts` with the following code:
 
-```typescript title="src/routes/api/+server.ts"
+```typescript title="src/routes/api/signup/+server.ts"
 import { start } from "workflow/api";
 import { handleUserSignup } from "../../../../workflows/user-signup";
 import { json, type RequestHandler } from "@sveltejs/kit";
