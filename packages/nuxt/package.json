@@ -22,9 +22,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "nuxt-module-build build",
-    "dev": "nuxt-module-build build --stub && nuxt-module-build prepare",
-    "prepare": "nuxt-module-build prepare"
+    "build": "nuxt-module-build prepare && nuxt-module-build build",
+    "dev": "nuxt-module-build build --stub && nuxt-module-build prepare"
   },
   "dependencies": {
     "@nuxt/kit": "^4.2.0",
