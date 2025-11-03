@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- 2ae7426: Clean up loading animation on trace viewer
+- f973954: Update license to Apache 2.0
+- 2ae7426: Export react-jsx transpiled code, not raw jsx
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

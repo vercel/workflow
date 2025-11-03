@@ -1,5 +1,24 @@
 # @workflow/cli
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- a3326a2: Add `workflow inspect sleep` command to list active sleep/wait events
+- Updated dependencies [10309c3]
+- Updated dependencies [2ae7426]
+- Updated dependencies [10309c3]
+- Updated dependencies [f973954]
+- Updated dependencies [2ae7426]
+  - @workflow/core@4.0.1-beta.6
+  - @workflow/web@4.0.1-beta.7
+  - @workflow/world-local@4.0.1-beta.4
+  - @workflow/swc-plugin@4.0.1-beta.2
+  - @workflow/world-vercel@4.0.1-beta.5
+  - @workflow/errors@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.4
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

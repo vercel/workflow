@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.0.1-beta.5",
+  "version": "4.0.1-beta.6",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
