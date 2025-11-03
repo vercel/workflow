@@ -45,7 +45,6 @@
     "@oclif/core": "^4.0.0",
     "@oclif/plugin-help": "^6.0.0",
     "@swc/core": "1.11.24",
-    "@types/watchpack": "2.4.4",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/core": "workspace:*",
