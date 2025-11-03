@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "nitro dev",
     "build": "nitro build",
