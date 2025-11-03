@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { BaseBuilder } from '@workflow/builders';
+import { BaseBuilder } from './base-builder.js';
 
 export class StandaloneBuilder extends BaseBuilder {
   async build(): Promise<void> {
