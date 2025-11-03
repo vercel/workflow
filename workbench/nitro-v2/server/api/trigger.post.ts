@@ -44,7 +44,7 @@ export default defineEventHandler(async (event) => {
     // Args from body
     const body = await readBody(event);
     if (body) {
-      args = hydrateWorkflowArguments(body, globalThis);
+      args = hydrateWorkflowArguments(JSON.parse(body), globalThis);
     } else {
       args = [42];
     }
