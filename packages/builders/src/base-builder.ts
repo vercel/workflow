@@ -269,11 +269,15 @@ export abstract class BaseBuilder {
         const normalizedPath = file.replace(/\\/g, '/');
         // Convert absolute paths to relative paths from the working directory
         const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
-        const relativePath = normalizedPath.startsWith(normalizedWorkingDir)
+        let relativePath = normalizedPath.startsWith(normalizedWorkingDir)
           ? normalizedPath
               .substring(normalizedWorkingDir.length)
               .replace(/^[/\\]/, '')
           : normalizedPath;
+        // Ensure relative paths start with ./ so esbuild resolves them correctly
+        if (!relativePath.startsWith('.') && !relativePath.startsWith('/')) {
+          relativePath = './' + relativePath;
+        }
         return `import '${relativePath}';`;
       })
       .join('\n');
@@ -398,11 +402,15 @@ export abstract class BaseBuilder {
             /\\/g,
             '/'
           );
-          const relativePath = normalizedPath.startsWith(normalizedWorkingDir)
+          let relativePath = normalizedPath.startsWith(normalizedWorkingDir)
             ? normalizedPath
                 .substring(normalizedWorkingDir.length)
                 .replace(/^[/\\]/, '')
             : normalizedPath;
+          // Ensure relative paths start with ./ so esbuild resolves them correctly
+          if (!relativePath.startsWith('.') && !relativePath.startsWith('/')) {
+            relativePath = './' + relativePath;
+          }
           return `import * as workflowFile${workflowFileIdx} from '${relativePath}';
             Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
         })
