@@ -188,6 +188,24 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               .join('/');
           }
 
+          // SAFETY CHECK: Ensure relativeFilepath is never absolute before passing to SWC plugin
+          // The SWC plugin uses the filename to generate workflowId/stepId, so it MUST be relative
+          if (
+            relativeFilepath.includes(':') ||
+            relativeFilepath.startsWith('/')
+          ) {
+            // Path is still absolute - use case-insensitive check to extract relative part
+            const lowerWd = normalizedWorkingDir.toLowerCase();
+            const lowerPath = relativeFilepath.toLowerCase();
+            const lowerWdWithSlash = lowerWd + '/';
+            if (lowerPath.startsWith(lowerWdWithSlash)) {
+              // Found it - manually strip the working dir
+              relativeFilepath = relativeFilepath.substring(
+                normalizedWorkingDir.length + 1
+              );
+            }
+          }
+
           const { code: transformedCode, workflowManifest } =
             await applySwcTransform(
               relativeFilepath,
