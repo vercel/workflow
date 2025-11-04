@@ -4,7 +4,7 @@ import { createTestSuite } from '@workflow/world-testing';
 import { beforeAll, test } from 'vitest';
 
 // Skip these tests on Windows since it relies on a docker container
-if (process.platform !== 'win32') {
+if (process.platform === 'win32') {
   test.skip('skipped on Windows since it relies on a docker container', () => {});
 } else {
   beforeAll(async () => {
