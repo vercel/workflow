@@ -1,5 +1,15 @@
 # @workflow/builders
 
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- 4a821fc: Fix Windows path handling by normalizing backslashes to forward slashes in workflow IDs
+- Updated dependencies [4a821fc]
+- Updated dependencies [4a821fc]
+  - @workflow/swc-plugin@4.0.1-beta.3
+  - @workflow/core@4.0.1-beta.8
+
 ## 4.0.1-beta.4
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 4a821fc: Fix Windows path handling by normalizing backslashes to forward slashes in workflow IDs
+
 ## 4.0.1-beta.7
 
 ### Patch Changes

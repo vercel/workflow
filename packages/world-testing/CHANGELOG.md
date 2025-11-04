@@ -1,5 +1,14 @@
 # @workflow/world-testing
 
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- Updated dependencies [4a821fc]
+- Updated dependencies [8a24093]
+  - @workflow/cli@4.0.1-beta.9
+  - workflow@4.0.1-beta.9
+
 ## 4.0.1-beta.9
 
 ### Patch Changes
