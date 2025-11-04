@@ -4,7 +4,7 @@
     "outDir": "dist",
     "target": "es2022",
     "lib": ["es2022", "dom", "dom.iterable", "webworker"],
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "module": "esnext",
     "moduleResolution": "bundler",
     "types": ["node", "react", "react-dom"]

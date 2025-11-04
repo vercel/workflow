@@ -1,6 +1,6 @@
 {
   "name": "@workflow/next",
-  "version": "4.0.1-beta.6",
+  "version": "4.0.1-beta.7",
   "description": "Next.js integration for Workflow DevKit",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/workflow.git",
@@ -28,15 +28,17 @@
   },
   "dependencies": {
     "@swc/core": "1.11.24",
-    "@workflow/cli": "workspace:*",
+    "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "semver": "7.7.3"
+    "semver": "7.7.3",
+    "watchpack": "2.4.4"
   },
   "devDependencies": {
     "@workflow/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "@types/semver": "7.7.1",
+    "@types/watchpack": "2.4.4",
     "next": "16.0.1"
   },
   "peerDependencies": {

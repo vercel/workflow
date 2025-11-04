@@ -1,5 +1,23 @@
 # workflow
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- fcadd7b: Fix TypeScript LSP plugin for Node.js v20
+- Updated dependencies [10309c3]
+- Updated dependencies [5078925]
+- Updated dependencies [f973954]
+- Updated dependencies [a3326a2]
+- Updated dependencies [fcadd7b]
+  - @workflow/core@4.0.1-beta.6
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.3
+  - @workflow/nitro@4.0.1-beta.7
+  - @workflow/next@4.0.1-beta.7
+  - @workflow/cli@4.0.1-beta.7
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

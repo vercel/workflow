@@ -2,6 +2,7 @@
   "name": "nextjs-turbopack",
   "version": "0.0.2-alpha.5",
   "private": true,
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",

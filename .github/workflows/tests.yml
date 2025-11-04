@@ -65,6 +65,8 @@ jobs:
             project-id: "prj_avRPBF3eWjh6iDNQgmhH4VOg27h0"
           - name: "nitro"
             project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
+          - name: "vite"
+            project-id: "prj_uLIcNZNDmETulAvj5h0IcDHi5432"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -179,7 +181,7 @@ jobs:
         run: cd workbench/${{ matrix.app.name }} && ./resolve-symlinks.sh
 
       - name: Run E2E Tests (Next.js)
-        if: matrix.app.name != 'nitro'
+        if: matrix.app.name != 'nitro' && matrix.app.name != 'vite'
         run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/next-dev.test.ts && pnpm run test:e2e
         env:
           APP_NAME: ${{ matrix.app.name }}
@@ -187,6 +189,12 @@ jobs:
 
       - name: Run E2E Tests (Nitro)
         if: matrix.app.name == 'nitro'
+        run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/e2e.test.ts
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+      - name: Run E2E Tests (Vite)
+        if: matrix.app.name == 'vite'
         run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/e2e.test.ts
         env:
           APP_NAME: ${{ matrix.app.name }}

@@ -218,7 +218,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                         <SelectValue placeholder="Filter by status" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">All</SelectItem>
+                        <SelectItem value="all">Any status</SelectItem>
                         {Object.entries(statusMap).map(
                           ([status, { label, color }]) => (
                             <SelectItem key={status} value={status}>

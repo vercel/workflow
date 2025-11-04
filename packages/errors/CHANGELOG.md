@@ -1,5 +1,11 @@
 # @workflow/errors
 
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+
 ## 4.0.1-beta.2
 
 ### Patch Changes

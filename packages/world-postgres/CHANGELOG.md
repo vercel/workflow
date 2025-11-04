@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.5
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- Updated dependencies [10309c3]
+- Updated dependencies [f973954]
+  - @workflow/world-local@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.4
+
 ## 4.1.0-beta.4
 
 ### Minor Changes
