@@ -140,18 +140,9 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           }
           const source = await readFile(args.path, 'utf8');
 
-          // Convert absolute path to relative path for manifest keys
-          // Use args.path as absolute reference, but pass relative path to SWC
-          const workingDir =
-            build.initialOptions.absWorkingDir || process.cwd();
-          const relativePath = relative(workingDir, args.path).replace(
-            /\\/g,
-            '/'
-          );
-
           const { code: transformedCode, workflowManifest } =
             await applySwcTransform(
-              relativePath,
+              args.path,
               source,
               options.mode,
               // we need to provide the tsconfig/jsconfig
@@ -167,13 +158,31 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             options.workflowManifest = {};
           }
 
+          // Normalize manifest keys to relative paths with forward slashes
+          // This ensures consistent keys across platforms
+          const normalizeManifestKeys = (manifest: any) => {
+            if (!manifest) return manifest;
+            const normalized: any = {};
+            for (const [key, value] of Object.entries(manifest)) {
+              // Convert to relative path from working directory and normalize separators
+              const workingDir =
+                build.initialOptions.absWorkingDir || process.cwd();
+              const relativePath = relative(workingDir, key).replace(
+                /\\/g,
+                '/'
+              );
+              normalized[relativePath] = value;
+            }
+            return normalized;
+          };
+
           options.workflowManifest.workflows = Object.assign(
             options.workflowManifest.workflows || {},
-            workflowManifest.workflows
+            normalizeManifestKeys(workflowManifest.workflows)
           );
           options.workflowManifest.steps = Object.assign(
             options.workflowManifest.steps || {},
-            workflowManifest.steps
+            normalizeManifestKeys(workflowManifest.steps)
           );
 
           return {
