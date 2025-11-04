@@ -267,7 +267,15 @@ export abstract class BaseBuilder {
       .map((file) => {
         // Normalize path separators to forward slashes for cross-platform compatibility
         const normalizedPath = file.replace(/\\/g, '/');
-        return `import '${normalizedPath}';`;
+        // Convert absolute paths to relative paths from the working directory
+        const relativePath = normalizedPath.startsWith('/')
+          ? normalizedPath
+          : normalizedPath.startsWith(this.config.workingDir)
+            ? normalizedPath
+                .substring(this.config.workingDir.length)
+                .replace(/^[/\\]/, '')
+            : normalizedPath;
+        return `import '${relativePath}';`;
       })
       .join('\n');
     const entryContent = `
@@ -386,7 +394,15 @@ export abstract class BaseBuilder {
           // Normalize path separators to forward slashes for cross-platform compatibility
           // This is critical for Windows where paths contain backslashes
           const normalizedPath = file.replace(/\\/g, '/');
-          return `import * as workflowFile${workflowFileIdx} from '${normalizedPath}';
+          // Convert absolute paths to relative paths from the working directory
+          const relativePath = normalizedPath.startsWith('/')
+            ? normalizedPath
+            : normalizedPath.startsWith(this.config.workingDir)
+              ? normalizedPath
+                  .substring(this.config.workingDir.length)
+                  .replace(/^[/\\]/, '')
+              : normalizedPath;
+          return `import * as workflowFile${workflowFileIdx} from '${relativePath}';
             Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
         })
         .join('\n');
