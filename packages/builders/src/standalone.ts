@@ -16,7 +16,7 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.buildWorkflowsBundle(options);
     await this.buildWebhookFunction();
 
-    await this.buildClientLibrary();
+    await this.createClientLibrary();
   }
 
   private async buildStepsBundle({
@@ -28,10 +28,7 @@ export class StandaloneBuilder extends BaseBuilder {
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
   }): Promise<void> {
-    console.log(
-      'Creating Vercel API steps bundle at',
-      this.config.stepsBundlePath
-    );
+    console.log('Creating steps bundle at', this.config.stepsBundlePath);
 
     const stepsBundlePath = resolve(
       this.config.workingDir,
@@ -59,7 +56,7 @@ export class StandaloneBuilder extends BaseBuilder {
     tsPaths?: Record<string, string[]>;
   }): Promise<void> {
     console.log(
-      'Creating vercel API workflows bundle at',
+      'Creating workflows bundle at',
       this.config.workflowsBundlePath
     );
 
@@ -80,10 +77,7 @@ export class StandaloneBuilder extends BaseBuilder {
   }
 
   private async buildWebhookFunction(): Promise<void> {
-    console.log(
-      'Creating vercel API webhook bundle at',
-      this.config.webhookBundlePath
-    );
+    console.log('Creating webhook bundle at', this.config.webhookBundlePath);
 
     const webhookBundlePath = resolve(
       this.config.workingDir,

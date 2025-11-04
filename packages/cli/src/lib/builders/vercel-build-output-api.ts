@@ -28,7 +28,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.buildWebhookFunction(options);
     await this.createBuildOutputConfig(outputDir);
 
-    await this.buildClientLibrary();
+    await this.createClientLibrary();
   }
 
   private async buildStepsFunction({

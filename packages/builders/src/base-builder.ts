@@ -522,7 +522,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     await interimBundleCtx.dispose();
   }
 
-  protected async buildClientLibrary(): Promise<void> {
+  protected async createClientLibrary(): Promise<void> {
     if (!this.config.clientBundlePath) {
       // Silently exit since no client bundle was requested
       return;
