@@ -163,16 +163,28 @@ export abstract class BaseBuilder {
           await readFile(`${outfile}.debug.json`, 'utf8').catch(() => '{}')
         );
       }
+      const finalData = {
+        ...existing,
+        ...debugData,
+      };
+
+      // Sanity check for manifest files
+      if (outfile.includes('manifest')) {
+        const workflowCount = Object.keys(
+          (finalData as any).workflows || {}
+        ).length;
+        const stepCount = Object.keys((finalData as any).steps || {}).length;
+        console.log(
+          `ℹ️  Manifest file: workflows=${workflowCount}, steps=${stepCount}`
+        );
+        if (workflowCount === 0 && stepCount === 0) {
+          console.warn(`⚠️  Warning: manifest is empty!`);
+        }
+      }
+
       await writeFile(
         `${outfile}.debug.json`,
-        JSON.stringify(
-          {
-            ...existing,
-            ...debugData,
-          },
-          null,
-          2
-        )
+        JSON.stringify(finalData, null, 2)
       );
     } catch (error: unknown) {
       console.warn('Failed to write debug file:', error);
