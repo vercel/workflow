@@ -9,9 +9,6 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
     name: 'workflow-node-module-error',
     setup(build) {
       build.onResolve({ filter: nodeModulesRegex }, (args) => {
-        // Ignore if the import is coming from a node_modules folder
-        if (args.importer.includes('node_modules')) return null;
-
         return {
           path: args.path,
           errors: [

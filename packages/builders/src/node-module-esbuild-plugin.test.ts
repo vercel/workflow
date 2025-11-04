@@ -143,4 +143,56 @@ describe('workflow-node-module-error plugin', () => {
       })
     ).resolves.toBeDefined();
   });
+
+  it('should error on Node.js imports from nested npm packages', async () => {
+    // This simulates what happens when a package like @supabase/supabase-js
+    // internally imports Node.js built-ins. The key is that the import path
+    // needs to look like it's coming from node_modules
+    const testCode = `
+      // Simulating a fake npm package that uses Node.js built-ins
+      import { fakePackage } from "./fake-package";
+      export function workflow() {
+        return fakePackage();
+      }
+    `;
+
+    const fakePackageCode = `
+      // This simulates @supabase/node-fetch or similar packages
+      import { Stream } from "stream";
+      export function fakePackage() {
+        return new Stream();
+      }
+    `;
+
+    // Create a virtual plugin to provide the fake package
+    const virtualModulePlugin: esbuild.Plugin = {
+      name: 'virtual-fake-package',
+      setup(build) {
+        build.onResolve({ filter: /^\.\/fake-package$/ }, () => ({
+          path: '/some/path/node_modules/fake-package/index.js', // Make it look like node_modules
+          namespace: 'fake-ns',
+        }));
+        build.onLoad({ filter: /.*/, namespace: 'fake-ns' }, () => ({
+          contents: fakePackageCode,
+          loader: 'ts',
+        }));
+      },
+    };
+
+    await expect(
+      esbuild.build({
+        stdin: {
+          contents: testCode,
+          resolveDir: process.cwd(),
+          sourcefile: 'test-workflow.ts',
+          loader: 'ts',
+        },
+        bundle: true,
+        write: false,
+        platform: 'neutral',
+        plugins: [virtualModulePlugin, createNodeModuleErrorPlugin()],
+        logLevel: 'silent',
+      })
+    ).rejects.toThrow(/Cannot use Node\.js module "stream"/);
+  });
 });
