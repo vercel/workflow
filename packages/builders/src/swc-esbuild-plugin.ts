@@ -92,15 +92,20 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
 
           if (!resolvedPath) return null;
 
+          // Normalize to forward slashes for cross-platform comparison
+          const normalizedResolvedPath = resolvedPath.replace(/\\/g, '/');
+
           for (const entryToBundle of options.entriesToBundle) {
-            if (resolvedPath === entryToBundle) {
+            const normalizedEntry = entryToBundle.replace(/\\/g, '/');
+
+            if (normalizedResolvedPath === normalizedEntry) {
               return null;
             }
 
             // if the current entry imports a child that needs
             // to be bundled then it needs to also be bundled so
             // that the child can have our transform applied
-            if (parentHasChild(resolvedPath, entryToBundle)) {
+            if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
               return null;
             }
           }
@@ -111,7 +116,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           return {
             external: true,
             path: isFilePath
-              ? relative(options.outdir || '', resolvedPath)
+              ? relative(options.outdir || '', resolvedPath).replace(/\\/g, '/')
               : args.path,
           };
         } catch (_) {}
