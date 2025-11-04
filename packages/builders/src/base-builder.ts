@@ -659,6 +659,62 @@ export const OPTIONS = handler;`;
     );
   }
 
+  /**
+   * Creates a package.json file with the specified module type.
+   */
+  protected async createPackageJson(
+    dir: string,
+    type: 'commonjs' | 'module'
+  ): Promise<void> {
+    const packageJson = { type };
+    await writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify(packageJson, null, 2)
+    );
+  }
+
+  /**
+   * Creates a .vc-config.json file for Vercel Build Output API functions.
+   */
+  protected async createVcConfig(
+    dir: string,
+    config: {
+      runtime?: string;
+      handler?: string;
+      launcherType?: string;
+      architecture?: string;
+      shouldAddHelpers?: boolean;
+      shouldAddSourcemapSupport?: boolean;
+      experimentalTriggers?: Array<{
+        type: string;
+        topic: string;
+        consumer: string;
+        maxDeliveries?: number;
+        retryAfterSeconds?: number;
+        initialDelaySeconds?: number;
+      }>;
+    }
+  ): Promise<void> {
+    const vcConfig = {
+      runtime: config.runtime ?? 'nodejs22.x',
+      handler: config.handler ?? 'index.js',
+      launcherType: config.launcherType ?? 'Nodejs',
+      architecture: config.architecture ?? 'arm64',
+      shouldAddHelpers: config.shouldAddHelpers ?? true,
+      ...(config.shouldAddSourcemapSupport !== undefined && {
+        shouldAddSourcemapSupport: config.shouldAddSourcemapSupport,
+      }),
+      ...(config.experimentalTriggers && {
+        experimentalTriggers: config.experimentalTriggers,
+      }),
+    };
+
+    await writeFile(
+      join(dir, '.vc-config.json'),
+      JSON.stringify(vcConfig, null, 2)
+    );
+  }
+
   private async createSwcGitignore(): Promise<void> {
     try {
       await writeFile(
