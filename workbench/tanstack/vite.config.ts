@@ -4,20 +4,16 @@ import viteReact from '@vitejs/plugin-react';
 import { nitro } from 'nitro/vite';
 import { defineConfig } from 'vite';
 import viteTsConfigPaths from 'vite-tsconfig-paths';
-import { workflowRollupPlugin } from 'workflow/rollup-plugin';
+import { workflow } from 'workflow/vite';
 
 const config = defineConfig({
   plugins: [
-    workflowRollupPlugin(),
+    workflow(),
     // this is the plugin that enables path aliases
     viteTsConfigPaths({
       projects: ['./tsconfig.json'],
     }),
-    nitro({
-      config: {
-        modules: ['workflow/nitro'],
-      },
-    }),
+    nitro(),
     tailwindcss(),
     tanstackStart(),
     viteReact(),
