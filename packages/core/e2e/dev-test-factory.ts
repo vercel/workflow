@@ -31,8 +31,6 @@ export function createDevTests(config: DevTestConfig) {
         })
       );
       restoreFiles.length = 0;
-      // Give the file watcher time to detect the restoration
-      await new Promise((res) => setTimeout(res, 500));
     });
 
     test('should rebuild on workflow change', { timeout: 10_000 }, async () => {
