@@ -1,5 +1,7 @@
 ---
 "@workflow/swc-plugin": patch
+"@workflow/builders": patch
+"@workflow/cli": patch
 "@workflow/core": patch
 ---
 
