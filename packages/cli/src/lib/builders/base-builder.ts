@@ -265,7 +265,13 @@ export abstract class BaseBuilder {
 
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
-    const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
+    const imports = stepFiles
+      .map((file) => {
+        // Normalize path separators to forward slashes for cross-platform compatibility
+        const normalizedPath = file.replace(/\\/g, '/');
+        return `import '${normalizedPath}';`;
+      })
+      .join('\n');
     const entryContent = `
     // Built in steps
     import '${builtInSteps}';
@@ -369,15 +375,22 @@ export abstract class BaseBuilder {
     // log the workflow files for debugging
     await this.writeDebugFile(outfile, { workflowFiles });
 
+    console.log(
+      `[DEBUG] Discovered workflow files (${workflowFiles.length}):`,
+      workflowFiles.map((f) => f.replace(this.config.workingDir, '.'))
+    );
+
     // Create a virtual entry that imports all files
     const imports =
       `globalThis.__private_workflows = new Map();\n` +
       workflowFiles
-        .map(
-          (file, workflowFileIdx) =>
-            `import * as workflowFile${workflowFileIdx} from '${file}';
-            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`
-        )
+        .map((file, workflowFileIdx) => {
+          // Normalize path separators to forward slashes for cross-platform compatibility
+          // This is critical for Windows where paths contain backslashes
+          const normalizedPath = file.replace(/\\/g, '/');
+          return `import * as workflowFile${workflowFileIdx} from '${normalizedPath}';
+            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
+        })
         .join('\n');
 
     const bundleStartTime = Date.now();
@@ -425,10 +438,19 @@ export abstract class BaseBuilder {
       'Created intermediate workflow bundle',
       `${Date.now() - bundleStartTime}ms`
     );
+
+    const workflowCount = Object.keys(workflowManifest.workflows || {}).length;
+    console.log(
+      `[DEBUG] Manifest has ${workflowCount} workflow entries from ${Object.keys(workflowManifest.workflows || {}).length} files`
+    );
+    console.log(
+      `[DEBUG] Workflow files in manifest:`,
+      Object.keys(workflowManifest.workflows || {})
+    );
+
     const partialWorkflowManifest = {
       workflows: workflowManifest.workflows,
     };
-    const workflowCount = Object.keys(workflowManifest.workflows || {}).length;
     console.log(
       `DEBUG: Writing workflow manifest with ${workflowCount} workflows`
     );
@@ -439,6 +461,8 @@ export abstract class BaseBuilder {
       const debugInfo = {
         timestamp: new Date().toISOString(),
         workflowCount,
+        discoveredWorkflowFiles: workflowFiles,
+        manifestWorkflowFiles: Object.keys(workflowManifest.workflows || {}),
         workflows: Object.keys(workflowManifest.workflows || {}),
         manifestFile: join(dirname(outfile), 'manifest.debug.json'),
         outfile,
