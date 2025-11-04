@@ -56,13 +56,3 @@ export async function streams() {
     preview: result.slice(0, 100),
   };
 }
-
-export async function myNewWorkflow() {
-  'use workflow';
-  return 'hello world';
-}
-
-export async function myNewStep() {
-  'use step';
-  return 'hello world';
-}
