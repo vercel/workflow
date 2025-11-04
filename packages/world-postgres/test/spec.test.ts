@@ -19,4 +19,8 @@ beforeAll(async () => {
 }, 120_000);
 
 test('smoke', () => {});
-createTestSuite('./dist/index.js');
+
+// Skip these tests on Windows since it relies on a docker container
+if (process.platform !== 'win32') {
+  createTestSuite('./dist/index.js');
+}
