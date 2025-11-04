@@ -32,7 +32,7 @@ export const setupCliWorld = async (
     'green',
     `        Workflow CLI v${version}        `,
     `        Docs at ${docsUrl}          `,
-    chalk.yellow('This is an alpha release - commands might change')
+    chalk.yellow('This is a beta release - commands might change')
   );
 
   logger.debug('Inferring env vars, backend:', flags.backend);
