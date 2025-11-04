@@ -73,26 +73,36 @@ export abstract class BaseBuilder {
   }
 
   protected async getInputFiles(): Promise<string[]> {
-    const result = await glob(
-      this.config.dirs.map(
-        (dir) =>
-          `${resolve(
-            this.config.workingDir,
-            dir
-          )}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`
-      ),
-      {
-        ignore: [
-          '**/node_modules/**',
-          '**/.git/**',
-          '**/.next/**',
-          '**/.vercel/**',
-          '**/.workflow-data/**',
-          '**/.well-known/workflow/**',
-        ],
-        absolute: true,
-      }
-    );
+    console.log('[DEBUG] Config dirs:', this.config.dirs);
+    console.log('[DEBUG] Working dir:', this.config.workingDir);
+
+    const patterns = this.config.dirs.map((dir) => {
+      const resolvedDir = resolve(this.config.workingDir, dir);
+      // Normalize path separators to forward slashes for glob compatibility
+      const normalizedDir = resolvedDir.replace(/\\/g, '/');
+      console.log(`[DEBUG] Dir "${dir}" resolved to: ${normalizedDir}`);
+      return `${normalizedDir}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`;
+    });
+
+    console.log('[DEBUG] Glob patterns:', patterns);
+
+    const result = await glob(patterns, {
+      ignore: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/.next/**',
+        '**/.vercel/**',
+        '**/.workflow-data/**',
+        '**/.well-known/workflow/**',
+      ],
+      absolute: true,
+    });
+
+    console.log(`[DEBUG] Glob matched ${result.length} files`);
+    if (result.length > 0) {
+      console.log('[DEBUG] First few matches:', result.slice(0, 3));
+    }
+
     return result;
   }
 
