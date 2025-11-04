@@ -474,26 +474,6 @@ export abstract class BaseBuilder {
     const partialWorkflowManifest = {
       workflows: workflowManifest.workflows,
     };
-    console.log(
-      `DEBUG: Writing workflow manifest with ${workflowCount} workflows`
-    );
-    // Write additional debug info to a dedicated file for easier debugging
-    const debugDir = dirname(outfile);
-    const debugFileName = join(debugDir, '.workflow-manifest-debug.json');
-    try {
-      const debugInfo = {
-        timestamp: new Date().toISOString(),
-        workflowCount,
-        discoveredWorkflowFiles: workflowFiles,
-        manifestWorkflowFiles: Object.keys(workflowManifest.workflows || {}),
-        workflows: Object.keys(workflowManifest.workflows || {}),
-        manifestFile: join(dirname(outfile), 'manifest.debug.json'),
-        outfile,
-      };
-      await writeFile(debugFileName, JSON.stringify(debugInfo, null, 2));
-    } catch (error) {
-      console.warn('Failed to write workflow manifest debug file:', error);
-    }
 
     await this.writeDebugFile(
       join(dirname(outfile), 'manifest'),

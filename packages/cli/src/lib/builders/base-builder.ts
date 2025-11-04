@@ -73,18 +73,12 @@ export abstract class BaseBuilder {
   }
 
   protected async getInputFiles(): Promise<string[]> {
-    console.log('[DEBUG] Config dirs:', this.config.dirs);
-    console.log('[DEBUG] Working dir:', this.config.workingDir);
-
     const patterns = this.config.dirs.map((dir) => {
       const resolvedDir = resolve(this.config.workingDir, dir);
       // Normalize path separators to forward slashes for glob compatibility
       const normalizedDir = resolvedDir.replace(/\\/g, '/');
-      console.log(`[DEBUG] Dir "${dir}" resolved to: ${normalizedDir}`);
       return `${normalizedDir}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`;
     });
-
-    console.log('[DEBUG] Glob patterns:', patterns);
 
     const result = await glob(patterns, {
       ignore: [
@@ -97,11 +91,6 @@ export abstract class BaseBuilder {
       ],
       absolute: true,
     });
-
-    console.log(`[DEBUG] Glob matched ${result.length} files`);
-    if (result.length > 0) {
-      console.log('[DEBUG] First few matches:', result.slice(0, 3));
-    }
 
     return result;
   }
@@ -396,11 +385,6 @@ export abstract class BaseBuilder {
     // log the workflow files for debugging
     await this.writeDebugFile(outfile, { workflowFiles });
 
-    console.log(
-      `[DEBUG] Discovered workflow files (${workflowFiles.length}):`,
-      workflowFiles.map((f) => f.replace(this.config.workingDir, '.'))
-    );
-
     // Create a virtual entry that imports all files
     const imports =
       `globalThis.__private_workflows = new Map();\n` +
@@ -473,38 +457,9 @@ export abstract class BaseBuilder {
       `${Date.now() - bundleStartTime}ms`
     );
 
-    const workflowCount = Object.keys(workflowManifest.workflows || {}).length;
-    console.log(
-      `[DEBUG] Manifest has ${workflowCount} workflow entries from ${Object.keys(workflowManifest.workflows || {}).length} files`
-    );
-    console.log(
-      `[DEBUG] Workflow files in manifest:`,
-      Object.keys(workflowManifest.workflows || {})
-    );
-
     const partialWorkflowManifest = {
       workflows: workflowManifest.workflows,
     };
-    console.log(
-      `DEBUG: Writing workflow manifest with ${workflowCount} workflows`
-    );
-    // Write additional debug info to a dedicated file for easier debugging
-    const debugDir = dirname(outfile);
-    const debugFileName = join(debugDir, '.workflow-manifest-debug.json');
-    try {
-      const debugInfo = {
-        timestamp: new Date().toISOString(),
-        workflowCount,
-        discoveredWorkflowFiles: workflowFiles,
-        manifestWorkflowFiles: Object.keys(workflowManifest.workflows || {}),
-        workflows: Object.keys(workflowManifest.workflows || {}),
-        manifestFile: join(dirname(outfile), 'manifest.debug.json'),
-        outfile,
-      };
-      await writeFile(debugFileName, JSON.stringify(debugInfo, null, 2));
-    } catch (error) {
-      console.warn('Failed to write workflow manifest debug file:', error);
-    }
 
     await this.writeDebugFile(
       join(dirname(outfile), 'manifest'),
