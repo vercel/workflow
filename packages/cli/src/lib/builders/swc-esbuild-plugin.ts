@@ -140,9 +140,30 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           }
           const source = await readFile(args.path, 'utf8');
 
+          // Calculate relative path for SWC plugin
+          // The filename parameter is used to generate workflowId/stepId, so it must be relative
+          const workingDir =
+            build.initialOptions.absWorkingDir || process.cwd();
+          const normalizedWorkingDir = workingDir.replace(/\\/g, '/');
+          const normalizedPath = args.path.replace(/\\/g, '/');
+
+          let relativeFilepath = relative(
+            normalizedWorkingDir,
+            normalizedPath
+          ).replace(/\\/g, '/');
+
+          // If the file is outside the working directory (path starts with ../),
+          // strip the ../ parts to use just the file segments
+          if (relativeFilepath.startsWith('../')) {
+            relativeFilepath = relativeFilepath
+              .split('/')
+              .filter((part) => part !== '..')
+              .join('/');
+          }
+
           const { code: transformedCode, workflowManifest } =
             await applySwcTransform(
-              args.path,
+              relativeFilepath,
               source,
               options.mode,
               // we need to provide the tsconfig/jsconfig
@@ -158,44 +179,13 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             options.workflowManifest = {};
           }
 
-          // Normalize manifest keys to relative paths with forward slashes
-          // This ensures consistent keys across platforms
-          const normalizeManifestKeys = (manifest: any) => {
-            if (!manifest) return manifest;
-            const normalized: any = {};
-            for (const [key, value] of Object.entries(manifest)) {
-              // Convert to relative path from working directory and normalize separators
-              const workingDir =
-                build.initialOptions.absWorkingDir || process.cwd();
-              const normalizedWorkingDir = workingDir.replace(/\\/g, '/');
-              const normalizedKey = key.replace(/\\/g, '/');
-
-              let relativePath = relative(
-                normalizedWorkingDir,
-                normalizedKey
-              ).replace(/\\/g, '/');
-
-              // If the path starts with ../, it means the file is outside the working directory
-              // In that case, strip the ../ parts and use just the file path
-              if (relativePath.startsWith('../')) {
-                relativePath = relativePath
-                  .split('/')
-                  .filter((part) => part !== '..')
-                  .join('/');
-              }
-
-              normalized[relativePath] = value;
-            }
-            return normalized;
-          };
-
           options.workflowManifest.workflows = Object.assign(
             options.workflowManifest.workflows || {},
-            normalizeManifestKeys(workflowManifest.workflows)
+            workflowManifest.workflows
           );
           options.workflowManifest.steps = Object.assign(
             options.workflowManifest.steps || {},
-            normalizeManifestKeys(workflowManifest.steps)
+            workflowManifest.steps
           );
 
           return {
