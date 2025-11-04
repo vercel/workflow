@@ -8,16 +8,37 @@ export interface DevTestConfig {
   generatedWorkflowPath: string;
   apiFilePath: string;
   apiFileImportPath: string;
-  /** The workflow file to modify for testing HMR. Defaults to 'streams.ts' */
+  /** The workflow file to modify for testing HMR. Defaults to '3_streams.ts' */
   testWorkflowFile?: string;
 }
 
-export function createDevTests(config: DevTestConfig) {
+function getConfigFromEnv(): DevTestConfig | null {
+  const envConfig = process.env.DEV_TEST_CONFIG;
+  if (envConfig) {
+    try {
+      return JSON.parse(envConfig);
+    } catch (e) {
+      console.error('Failed to parse DEV_TEST_CONFIG:', e);
+    }
+  }
+  return null;
+}
+
+export function createDevTests(config?: DevTestConfig) {
+  const finalConfig = config || getConfigFromEnv();
+  if (!finalConfig) {
+    throw new Error(
+      'No dev test config provided via parameter or DEV_TEST_CONFIG env var'
+    );
+  }
   describe('dev e2e', () => {
     const appPath = getWorkbenchAppPath();
-    const generatedStep = path.join(appPath, config.generatedStepPath);
-    const generatedWorkflow = path.join(appPath, config.generatedWorkflowPath);
-    const testWorkflowFile = config.testWorkflowFile ?? '3_streams.ts';
+    const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
+    const generatedWorkflow = path.join(
+      appPath,
+      finalConfig.generatedWorkflowPath
+    );
+    const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     afterEach(async () => {
@@ -104,14 +125,14 @@ export async function myNewStep() {
 `
         );
         restoreFiles.push({ path: workflowFile, content: '' });
-        const apiFile = path.join(appPath, config.apiFilePath);
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
 
         const apiFileContent = await fs.readFile(apiFile, 'utf8');
         restoreFiles.push({ path: apiFile, content: apiFileContent });
 
         await fs.writeFile(
           apiFile,
-          `import '${config.apiFileImportPath}/workflows/new-workflow';
+          `import '${finalConfig.apiFileImportPath}/workflows/new-workflow';
 ${apiFileContent}`
         );
 
@@ -130,4 +151,9 @@ ${apiFileContent}`
       }
     );
   });
+}
+
+// Run tests with environment-based config if this file is executed directly
+if (process.env.DEV_TEST_CONFIG) {
+  createDevTests();
 }
