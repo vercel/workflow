@@ -9,6 +9,7 @@ export function workflowPlugin(): Plugin {
   return {
     name: 'workflow:sveltekit',
 
+    // TODO: Move this to @workflow/vite or something since this is vite specific
     // Transform workflow files with SWC
     async transform(code: string, id: string) {
       // Only apply the transform if file needs it
@@ -55,6 +56,7 @@ export function workflowPlugin(): Plugin {
       await builder.build();
     },
 
+    // TODO: Move this to @workflow/vite or something since this is vite specific
     async handleHotUpdate(ctx: HmrContext) {
       const { file, server, read } = ctx;
 
