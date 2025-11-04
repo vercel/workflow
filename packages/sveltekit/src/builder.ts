@@ -160,13 +160,54 @@ export const POST = async ({request}) => {
     // Post-process the generated file to wrap with SvelteKit request converter
     let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
 
+    // For local dev (node), need this since context isn't available to waitUntil()
+    // Add SYMBOL_FOR_REQ_CONTEXT at the top after imports
+    webhookRouteContent = webhookRouteContent.replace(
+      /(import.*?;)/,
+      `$1\n\nconst SYMBOL_FOR_REQ_CONTEXT = Symbol.for('@vercel/request-context');`
+    );
+
+    // Update handler signature to accept token as parameter
+    webhookRouteContent = webhookRouteContent.replace(
+      /async function handler\(request\) \{[\s\S]*?const token = decodeURIComponent\(pathParts\[pathParts\.length - 1\]\);/,
+      `async function handler(request, token) {`
+    );
+
+    // Remove the URL parsing code since we get token from params
+    webhookRouteContent = webhookRouteContent.replace(
+      /const url = new URL\(request\.url\);[\s\S]*?const pathParts = url\.pathname\.split\('\/'\);[\s\S]*?\n/,
+      ''
+    );
+
     // Replace all HTTP method exports with SvelteKit-compatible handlers
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
       `${SVELTEKIT_REQUEST_CONVERTER}
-const createSvelteKitHandler = (method) => async ({ request }) => {
+const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
+  // Track background promises for local dev
+  const backgroundPromises = [];
+  
+  // Set up context for @vercel/functions waitUntil
+  const context = {
+    waitUntil: platform?.waitUntil || ((promise) => {
+      // Fallback for local dev/tests: collect promises to await them
+      backgroundPromises.push(promise.catch(err => console.error('Background task error:', err)));
+    })
+  };
+  
+  globalThis[SYMBOL_FOR_REQ_CONTEXT] = {
+    get: () => context
+  };
+  
   const normalRequest = await convertSvelteKitRequest(request);
-  return handler(normalRequest);
+  const response = await handler(normalRequest, params.token);
+  
+  // In local dev (no platform.waitUntil), await background tasks before returning
+  if (!platform?.waitUntil && backgroundPromises.length > 0) {
+    await Promise.all(backgroundPromises);
+  }
+  
+  return response;
 };
 
 export const GET = createSvelteKitHandler('GET');
