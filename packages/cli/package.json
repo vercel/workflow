@@ -24,7 +24,6 @@
     "build": "tsc && chmod +x bin/run.js",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "dev": "tsc --watch",
-    "test": "vitest run src",
     "typecheck": "tsc --noEmit"
   },
   "oclif": {
