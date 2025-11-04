@@ -145,10 +145,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           const workingDir =
             build.initialOptions.absWorkingDir || process.cwd();
           // Normalize paths: convert backslashes to forward slashes and remove trailing slashes
-          let normalizedWorkingDir = workingDir
+          const normalizedWorkingDir = workingDir
             .replace(/\\/g, '/')
             .replace(/\/$/, '');
-          let normalizedPath = args.path.replace(/\\/g, '/');
+          const normalizedPath = args.path.replace(/\\/g, '/');
 
           let relativeFilepath = relative(
             normalizedWorkingDir,
