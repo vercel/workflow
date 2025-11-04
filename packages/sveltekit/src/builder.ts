@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { BaseBuilder, type WorkflowConfig } from '@workflow/builders';
+import { BaseBuilder, type SvelteKitConfig } from '@workflow/builders';
 
 // Helper function code for converting SvelteKit requests to standard Request objects
 const SVELTEKIT_REQUEST_CONVERTER = `
@@ -18,7 +18,7 @@ async function convertSvelteKitRequest(request) {
 `;
 
 export class SvelteKitBuilder extends BaseBuilder {
-  constructor(config?: Partial<WorkflowConfig>) {
+  constructor(config?: Partial<SvelteKitConfig>) {
     super({
       ...config,
       dirs: ['workflows'],

@@ -7,6 +7,7 @@ export type {
   StandaloneConfig,
   VercelBuildOutputConfig,
   NextConfig,
+  SvelteKitConfig,
 } from './types.js';
 export { validBuildTargets, isValidBuildTarget } from './types.js';
 export type { WorkflowManifest } from './apply-swc-transform.js';

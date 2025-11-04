@@ -56,12 +56,24 @@ export interface NextConfig extends BaseWorkflowConfig {
 }
 
 /**
+ * Configuration for SvelteKit builds.
+ */
+export interface SvelteKitConfig extends BaseWorkflowConfig {
+  buildTarget: 'sveltekit';
+  // SvelteKit builder computes paths dynamically, so these are not used
+  stepsBundlePath: string;
+  workflowsBundlePath: string;
+  webhookBundlePath: string;
+}
+
+/**
  * Discriminated union of all builder configuration types.
  */
 export type WorkflowConfig =
   | StandaloneConfig
   | VercelBuildOutputConfig
-  | NextConfig;
+  | NextConfig
+  | SvelteKitConfig;
 
 export function isValidBuildTarget(
   target: string | undefined
