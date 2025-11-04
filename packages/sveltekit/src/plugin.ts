@@ -56,10 +56,20 @@ export function workflowPlugin(): Plugin {
     },
 
     async handleHotUpdate(ctx: HmrContext) {
-      const { file, server } = ctx;
+      const { file, server, read } = ctx;
 
-      // Only care about workflow directory changes
-      if (!file.includes('/workflows/')) {
+      // Check if this is a TS/JS file that might contain workflow directives
+      const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+      if (!jsTsRegex.test(file)) {
+        return;
+      }
+
+      // Read the file to check for workflow/step directives
+      const content = await read();
+      const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
+      const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
+
+      if (!useWorkflowPattern.test(content) && !useStepPattern.test(content)) {
         return;
       }
 
