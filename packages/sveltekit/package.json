@@ -1,7 +1,7 @@
 {
-  "name": "@workflow/nitro",
-  "version": "4.0.1-beta.7",
-  "description": "Nitro integration for Workflow DevKit",
+  "name": "@workflow/sveltekit",
+  "version": "4.0.0-beta.1",
+  "description": "SvelteKit integration for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -10,16 +10,14 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "Apache-2.0",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/workflow.git",
-    "directory": "packages/nitro"
+    "directory": "packages/sveltekit"
   },
   "exports": {
-    ".": "./dist/index.js",
-    "./rollup-plugin": "./dist/rollup-plugin.js",
-    "./vite": "./dist/vite.js"
+    ".": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -28,16 +26,17 @@
   },
   "dependencies": {
     "@swc/core": "1.11.24",
-    "@workflow/swc-plugin": "workspace:*",
+    "@sveltejs/kit": "^2.48.2",
     "@workflow/builders": "workspace:*",
-    "@workflow/core": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
+    "fs-extra": "^11.3.2",
     "exsolve": "^1.0.7",
     "pathe": "^2.0.3"
   },
   "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "nitro": "catalog:",
-    "vite": "^7.1.12"
+    "vite": "^7.1.11"
   }
 }

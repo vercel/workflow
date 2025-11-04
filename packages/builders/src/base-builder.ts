@@ -7,11 +7,11 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
-import type { WorkflowConfig } from './types.js';
 import type { WorkflowManifest } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import type { WorkflowConfig } from './types.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
@@ -254,6 +254,7 @@ export abstract class BaseBuilder {
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
     const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
+
     const entryContent = `
     // Built in steps
     import '${builtInSteps}';
@@ -455,7 +456,6 @@ export abstract class BaseBuilder {
     const bundleFinal = async (interimBundle: string) => {
       const workflowBundleCode = interimBundle;
 
-      // Create the workflow function handler with proper linter suppressions
       const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
@@ -613,8 +613,7 @@ export const PUT = handler;
 export const PATCH = handler;
 export const DELETE = handler;
 export const HEAD = handler;
-export const OPTIONS = handler;
-`;
+export const OPTIONS = handler;`;
 
     if (!bundle) {
       // For Next.js, just write the unbundled file

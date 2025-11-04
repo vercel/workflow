@@ -517,11 +517,18 @@ export const Frameworks = () => {
           </Badge>
         </div>
 
-        <Link href="/docs/getting-started/next">
-          <Next className="size-[56px]" />
+        <Link href="/docs/getting-started/next" className="relative">
+          <Next className="size-[56px] relative" />
+          <Next className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
         </Link>
-        <Link href="/docs/getting-started/nitro">
+        <Link href="/docs/getting-started/nitro" className="relative">
           <Nitro className="size-[56px]" />
+          <Nitro className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
+        </Link>
+
+        <Link href="/docs/getting-started/sveltekit" className="relative">
+          <SvelteKit className="size-[56px]" />
+          <SvelteKit className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
         </Link>
 
         <div className="col-span-4 w-full pt-6">
@@ -546,13 +553,6 @@ export const Frameworks = () => {
         >
           <NestGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <Nest className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[48px]"
-          onClick={() => handleRequest('SvelteKit')}
-        >
-          <SvelteKitGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
-          <SvelteKit className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
         </div>
         <div
           className="group relative cursor-pointer size-[60px]"
