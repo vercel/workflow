@@ -176,7 +176,7 @@ export abstract class BaseBuilder {
 
   /**
    * Writes debug information to a JSON file for troubleshooting build issues.
-   * Only active when WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1 is set.
+   * Executes whenever called, regardless of environment variables.
    */
   private async writeDebugFile(
     outfile: string,
