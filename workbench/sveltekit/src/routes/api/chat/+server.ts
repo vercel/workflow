@@ -2,7 +2,7 @@
 // TO IMPORT THE WORKFLOWS TO DISCOVER THEM AND WATCH
 
 import { json, type RequestHandler } from '@sveltejs/kit';
-import * as workflows from '../../../../workflows/streams';
+import * as workflows from '../../../../workflows/3_streams';
 
 export const POST: RequestHandler = async ({
   request,
