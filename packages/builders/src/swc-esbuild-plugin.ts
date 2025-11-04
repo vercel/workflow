@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
+import { relative } from 'node:path';
+import { promisify } from 'node:util';
 import enhancedResolveOrig from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
-import { relative } from 'path';
-import { promisify } from 'util';
 import {
   applySwcTransform,
   type WorkflowManifest,
@@ -161,9 +161,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               .join('/');
           }
 
-          // On Windows, handle case differences in drive letters.
-          // relative() might return an absolute path if the working dir and file path
-          // have different drive letter casing (e.g., 'D:' vs 'd:').
+          // On Windows, relative() might still return absolute paths due to drive letter case differences.
+          // Detect and fix this with case-insensitive comparison and manual stripping.
           if (
             (relativeFilepath.includes(':') ||
               relativeFilepath.startsWith('/')) &&
@@ -171,11 +170,11 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           ) {
             const lowerWd = normalizedWorkingDir.toLowerCase();
             const lowerPath = normalizedPath.toLowerCase();
-            if (lowerPath.startsWith(lowerWd + '/')) {
-              // Manually strip the working directory
+            if (lowerPath.startsWith(lowerWd)) {
+              // Manually strip the working directory using case-insensitive matching
               const stripped = normalizedPath
                 .substring(normalizedWorkingDir.length)
-                .replace(/^\//, '');
+                .replace(/^\/+/, '');
               if (stripped) {
                 relativeFilepath = stripped;
               }
