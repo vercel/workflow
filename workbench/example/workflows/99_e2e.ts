@@ -435,13 +435,3 @@ export async function retryableAndFatalErrorWorkflow() {
 
   return { retryableResult, gotFatalError };
 }
-
-export async function myNewWorkflow() {
-  'use workflow';
-  return 'hello world';
-}
-
-export async function myNewStep() {
-  'use step';
-  return 'hello world';
-}
