@@ -167,10 +167,23 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               // Convert to relative path from working directory and normalize separators
               const workingDir =
                 build.initialOptions.absWorkingDir || process.cwd();
-              const relativePath = relative(workingDir, key).replace(
-                /\\/g,
-                '/'
-              );
+              const normalizedWorkingDir = workingDir.replace(/\\/g, '/');
+              const normalizedKey = key.replace(/\\/g, '/');
+
+              let relativePath = relative(
+                normalizedWorkingDir,
+                normalizedKey
+              ).replace(/\\/g, '/');
+
+              // If the path starts with ../, it means the file is outside the working directory
+              // In that case, strip the ../ parts and use just the file path
+              if (relativePath.startsWith('../')) {
+                relativePath = relativePath
+                  .split('/')
+                  .filter((part) => part !== '..')
+                  .join('/');
+              }
+
               normalized[relativePath] = value;
             }
             return normalized;
