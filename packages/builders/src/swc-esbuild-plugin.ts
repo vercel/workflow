@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
+import { relative } from 'node:path';
+import { promisify } from 'node:util';
 import enhancedResolveOrig from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
-import { relative } from 'path';
-import { promisify } from 'util';
 import {
   applySwcTransform,
   type WorkflowManifest,
@@ -92,15 +92,20 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
 
           if (!resolvedPath) return null;
 
+          // Normalize to forward slashes for cross-platform comparison
+          const normalizedResolvedPath = resolvedPath.replace(/\\/g, '/');
+
           for (const entryToBundle of options.entriesToBundle) {
-            if (resolvedPath === entryToBundle) {
+            const normalizedEntry = entryToBundle.replace(/\\/g, '/');
+
+            if (normalizedResolvedPath === normalizedEntry) {
               return null;
             }
 
             // if the current entry imports a child that needs
             // to be bundled then it needs to also be bundled so
             // that the child can have our transform applied
-            if (parentHasChild(resolvedPath, entryToBundle)) {
+            if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
               return null;
             }
           }
@@ -111,7 +116,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           return {
             external: true,
             path: isFilePath
-              ? relative(options.outdir || '', resolvedPath)
+              ? relative(options.outdir || process.cwd(), resolvedPath).replace(
+                  /\\/g,
+                  '/'
+                )
               : args.path,
           };
         } catch (_) {}
@@ -131,9 +139,65 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             loader = 'jsx';
           }
           const source = await readFile(args.path, 'utf8');
+
+          // Calculate relative path for SWC plugin
+          // The filename parameter is used to generate workflowId/stepId, so it must be relative
+          const workingDir =
+            build.initialOptions.absWorkingDir || process.cwd();
+          // Normalize paths: convert backslashes to forward slashes and remove trailing slashes
+          const normalizedWorkingDir = workingDir
+            .replace(/\\/g, '/')
+            .replace(/\/$/, '');
+          const normalizedPath = args.path.replace(/\\/g, '/');
+
+          // Windows fix: Always do case-insensitive path comparison as the PRIMARY logic
+          // to work around node:path.relative() not recognizing paths with different drive
+          // letter casing (e.g., D: vs d:) as being in the same tree
+          const lowerWd = normalizedWorkingDir.toLowerCase();
+          const lowerPath = normalizedPath.toLowerCase();
+
+          let relativeFilepath: string;
+          if (lowerPath.startsWith(lowerWd + '/')) {
+            // File is under working directory - manually calculate relative path
+            // This ensures we get a relative path even with drive letter casing issues
+            relativeFilepath = normalizedPath.substring(
+              normalizedWorkingDir.length + 1
+            );
+          } else if (lowerPath === lowerWd) {
+            // File IS the working directory
+            relativeFilepath = '.';
+          } else {
+            // File is outside working directory - use relative() and strip ../ prefixes if needed
+            relativeFilepath = relative(
+              normalizedWorkingDir,
+              normalizedPath
+            ).replace(/\\/g, '/');
+
+            // Handle files discovered outside the working directory
+            // These come back as ../path/to/file, but we want just path/to/file
+            if (relativeFilepath.startsWith('../')) {
+              relativeFilepath = relativeFilepath
+                .split('/')
+                .filter((part) => part !== '..')
+                .join('/');
+            }
+          }
+
+          // Final safety check - ensure we never pass an absolute path to SWC
+          if (
+            relativeFilepath.includes(':') ||
+            relativeFilepath.startsWith('/')
+          ) {
+            // This should never happen, but if it does, use just the filename as last resort
+            console.error(
+              `[ERROR] relativeFilepath is still absolute: ${relativeFilepath}`
+            );
+            relativeFilepath = normalizedPath.split('/').pop() || 'unknown.ts';
+          }
+
           const { code: transformedCode, workflowManifest } =
             await applySwcTransform(
-              args.path,
+              relativeFilepath,
               source,
               options.mode,
               // we need to provide the tsconfig/jsconfig
@@ -148,6 +212,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           if (!options.workflowManifest) {
             options.workflowManifest = {};
           }
+
           options.workflowManifest.workflows = Object.assign(
             options.workflowManifest.workflows || {},
             workflowManifest.workflows

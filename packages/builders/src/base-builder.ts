@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import chalk from 'chalk';
 import { parse } from 'comment-json';
@@ -92,26 +92,25 @@ export abstract class BaseBuilder {
    * and dependency directories.
    */
   protected async getInputFiles(): Promise<string[]> {
-    const result = await glob(
-      this.config.dirs.map(
-        (dir) =>
-          `${resolve(
-            this.config.workingDir,
-            dir
-          )}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`
-      ),
-      {
-        ignore: [
-          '**/node_modules/**',
-          '**/.git/**',
-          '**/.next/**',
-          '**/.vercel/**',
-          '**/.workflow-data/**',
-          '**/.well-known/workflow/**',
-        ],
-        absolute: true,
-      }
-    );
+    const patterns = this.config.dirs.map((dir) => {
+      const resolvedDir = resolve(this.config.workingDir, dir);
+      // Normalize path separators to forward slashes for glob compatibility
+      const normalizedDir = resolvedDir.replace(/\\/g, '/');
+      return `${normalizedDir}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`;
+    });
+
+    const result = await glob(patterns, {
+      ignore: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/.next/**',
+        '**/.vercel/**',
+        '**/.workflow-data/**',
+        '**/.well-known/workflow/**',
+      ],
+      absolute: true,
+    });
+
     return result;
   }
 
@@ -299,7 +298,24 @@ export abstract class BaseBuilder {
 
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
-    const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
+    const imports = stepFiles
+      .map((file) => {
+        // Normalize both paths to forward slashes before calling relative()
+        // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        const normalizedFile = file.replace(/\\/g, '/');
+        // Calculate relative path from working directory to the file
+        let relativePath = relative(
+          normalizedWorkingDir,
+          normalizedFile
+        ).replace(/\\/g, '/');
+        // Ensure relative paths start with ./ so esbuild resolves them correctly
+        if (!relativePath.startsWith('.')) {
+          relativePath = `./${relativePath}`;
+        }
+        return `import '${relativePath}';`;
+      })
+      .join('\n');
 
     const entryContent = `
     // Built in steps
@@ -414,11 +430,26 @@ export abstract class BaseBuilder {
     const imports =
       `globalThis.__private_workflows = new Map();\n` +
       workflowFiles
-        .map(
-          (file, workflowFileIdx) =>
-            `import * as workflowFile${workflowFileIdx} from '${file}';
-            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`
-        )
+        .map((file, workflowFileIdx) => {
+          // Normalize both paths to forward slashes before calling relative()
+          // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+          const normalizedWorkingDir = this.config.workingDir.replace(
+            /\\/g,
+            '/'
+          );
+          const normalizedFile = file.replace(/\\/g, '/');
+          // Calculate relative path from working directory to the file
+          let relativePath = relative(
+            normalizedWorkingDir,
+            normalizedFile
+          ).replace(/\\/g, '/');
+          // Ensure relative paths start with ./ so esbuild resolves them correctly
+          if (!relativePath.startsWith('.')) {
+            relativePath = `./${relativePath}`;
+          }
+          return `import * as workflowFile${workflowFileIdx} from '${relativePath}';
+            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
+        })
         .join('\n');
 
     const bundleStartTime = Date.now();
@@ -466,9 +497,11 @@ export abstract class BaseBuilder {
       'Created intermediate workflow bundle',
       `${Date.now() - bundleStartTime}ms`
     );
+
     const partialWorkflowManifest = {
       workflows: workflowManifest.workflows,
     };
+
     await this.writeDebugFile(
       join(dirname(outfile), 'manifest'),
       partialWorkflowManifest,
