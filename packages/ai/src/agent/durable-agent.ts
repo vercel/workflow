@@ -131,15 +131,7 @@ export class DurableAgent {
       );
       result = await iterator.next(toolResults);
     }
-
-    await closeStream(writable);
   }
-}
-
-async function closeStream(writable: WritableStream<UIMessageChunk>) {
-  'use step';
-
-  await writable.close();
 }
 
 async function executeTool(
