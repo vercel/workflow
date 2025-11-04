@@ -623,7 +623,7 @@ export const OPTIONS = handler;`;
 
     // For Build Output API, bundle with esbuild to resolve imports
 
-    // const webhookBundleStart = Date.now();
+    const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
         js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
@@ -653,7 +653,10 @@ export const OPTIONS = handler;`;
     });
 
     this.logEsbuildMessages(result, 'webhook bundle creation');
-    console.log('Created webhook bundle', `$Date.now() - webhookBundleStartms`);
+    console.log(
+      'Created webhook bundle',
+      `${Date.now() - webhookBundleStart}ms`
+    );
   }
 
   private async createSwcGitignore(): Promise<void> {
