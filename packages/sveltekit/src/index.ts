@@ -1,13 +1,14 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { SvelteKitBuilder } from './builder.js';
 
-const builder = new SvelteKitBuilder();
+// import { SvelteKitBuilder } from './builder.js';
 
-// This needs to be in the top-level as we need to create these
-// entries before svelte plugin is started or the entries are
-// a race to be created before svelte discovers entries
-await builder.build();
+// const builder = new SvelteKitBuilder();
+
+// // This needs to be in the top-level as we need to create these
+// // entries before svelte plugin is started or the entries are
+// // a race to be created before svelte discovers entries
+// await builder.build();
 
 process.on('beforeExit', () => {
   // Don't patch functions output if not in Vercel adapter
@@ -75,4 +76,4 @@ process.on('beforeExit', () => {
   }
 });
 
-export { workflowRollupPlugin as workflowPlugin } from '@workflow/nitro/rollup-plugin';
+export { workflowPlugin } from './plugin.js';
