@@ -401,11 +401,7 @@ export function workflowEntrypoint(workflowCode: string) {
                       input: dehydratedArgs as Serializable[],
                     });
 
-                    waitUntil(
-                      Promise.all(ops).catch((err) => {
-                        console.error('Error waiting for ops', err);
-                      })
-                    );
+                    waitUntil(Promise.all(ops));
 
                     await world.queue(
                       `__wkf_step_${queueItem.stepName}`,
@@ -684,11 +680,7 @@ export const stepEntrypoint =
 
             result = dehydrateStepReturnValue(result, ops);
 
-            waitUntil(
-              Promise.all(ops).catch((err) => {
-                console.error('Error waiting for ops', err);
-              })
-            );
+            waitUntil(Promise.all(ops));
 
             // Update the event log with the step result
             await world.events.create(workflowRunId, {
