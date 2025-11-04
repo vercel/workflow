@@ -144,6 +144,34 @@ describe('workflow-node-module-error plugin', () => {
     ).resolves.toBeDefined();
   });
 
+  it('should allow packages with subpaths that contain built-in module names', async () => {
+    // This is the false positive case from the real issue:
+    // "eventsource-parser/stream" should NOT be flagged as the built-in "stream" module
+    const testCode = `
+      import { EventSourceParserStream } from "eventsource-parser/stream";
+      export function workflow() {
+        return "ok";
+      }
+    `;
+
+    await expect(
+      esbuild.build({
+        stdin: {
+          contents: testCode,
+          resolveDir: process.cwd(),
+          sourcefile: 'test-workflow.ts',
+          loader: 'ts',
+        },
+        bundle: true,
+        write: false,
+        platform: 'neutral',
+        plugins: [createNodeModuleErrorPlugin()],
+        logLevel: 'silent',
+        external: ['eventsource-parser'], // Mark as external so it doesn't fail resolution
+      })
+    ).resolves.toBeDefined();
+  });
+
   it('should error on Node.js imports from nested npm packages', async () => {
     // This simulates what happens when a package like @supabase/supabase-js
     // internally imports Node.js built-ins. The key is that the import path

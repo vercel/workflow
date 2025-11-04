@@ -2,7 +2,11 @@ import { ERROR_SLUGS } from '@workflow/errors';
 import builtinModules from 'builtin-modules';
 import type * as esbuild from 'esbuild';
 
-const nodeModulesRegex = new RegExp(`^(${builtinModules.join('|')})`);
+// Match exact Node.js built-in module names:
+// - "fs", "path", "stream" etc. (exact match)
+// - "node:fs", "node:path" etc. (with node: prefix)
+// But NOT "some-package/stream" or "eventsource-parser/stream"
+const nodeModulesRegex = new RegExp(`^(${builtinModules.join('|')})$`);
 
 export function createNodeModuleErrorPlugin(): esbuild.Plugin {
   return {
