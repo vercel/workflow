@@ -296,11 +296,12 @@ jobs:
       - name: Run E2E Tests (Next.js)
         run: |
           cd workbench/nextjs-turbopack
-          Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
           Start-Sleep -Seconds 15
           cd ../..
           pnpm vitest run packages/core/e2e/next-dev.test.ts
           pnpm run test:e2e
+          Stop-Job $job
         shell: powershell
         env:
           APP_NAME: "nextjs-turbopack"
