@@ -18,7 +18,7 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./rollup-plugin": "./dist/rollup-plugin.js",
+    "./rollup": "./dist/rollup.js",
     "./vite": "./dist/vite.js"
   },
   "scripts": {
