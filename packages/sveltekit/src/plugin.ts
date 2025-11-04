@@ -1,6 +1,6 @@
 import { transform } from '@swc/core';
 import { resolveModulePath } from 'exsolve';
-import type { HmrContext, Plugin } from 'vite';
+import type { HotUpdateOptions, Plugin } from 'vite';
 import { SvelteKitBuilder } from './builder.js';
 
 export function workflowPlugin(): Plugin {
@@ -52,13 +52,9 @@ export function workflowPlugin(): Plugin {
       builder = new SvelteKitBuilder();
     },
 
-    async buildStart() {
-      await builder.build();
-    },
-
     // TODO: Move this to @workflow/vite or something since this is vite specific
-    async handleHotUpdate(ctx: HmrContext) {
-      const { file, server, read } = ctx;
+    async hotUpdate(options: HotUpdateOptions) {
+      const { file, server, read } = options;
 
       // Check if this is a TS/JS file that might contain workflow directives
       const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
