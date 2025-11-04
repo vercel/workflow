@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 7db9e94: Fix hook events not displaying on trace viewer if there's multiple hook_received events
+
 ## 4.0.1-beta.7
 
 ### Patch Changes

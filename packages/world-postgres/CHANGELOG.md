@@ -1,5 +1,12 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.6
+
+### Patch Changes
+
+- Updated dependencies [05714f7]
+  - @workflow/world-local@4.0.1-beta.5
+
 ## 4.1.0-beta.5
 
 ### Patch Changes

@@ -1,5 +1,27 @@
 # workflow
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 05714f7: Add sveltekit workflow integration
+- f563585: Export WorkflowReadableStreamOptions from workflow/api
+- Updated dependencies [a09a3ea]
+- Updated dependencies [ebee7f5]
+- Updated dependencies [652485a]
+- Updated dependencies [4585222]
+- Updated dependencies [10bfd4a]
+- Updated dependencies [5dfa4eb]
+- Updated dependencies [05714f7]
+- Updated dependencies [2363e47]
+- Updated dependencies [bf54a7b]
+  - @workflow/cli@4.0.1-beta.8
+  - @workflow/nitro@4.0.1-beta.8
+  - @workflow/next@4.0.1-beta.8
+  - @workflow/sveltekit@4.0.0-beta.2
+  - @workflow/core@4.0.1-beta.7
+  - @workflow/typescript-plugin@4.0.1-beta.4
+
 ## 4.0.1-beta.7
 
 ### Patch Changes
