@@ -195,9 +195,12 @@ const createSvelteKitHandler = (method) => async ({ request, params, platform })
     })
   };
   
-  globalThis[SYMBOL_FOR_REQ_CONTEXT] = {
-    get: () => context
-  };
+  // Only set context if it doesn't already exist (Vercel sets it and makes it read-only)
+  if (!globalThis[SYMBOL_FOR_REQ_CONTEXT]) {
+    globalThis[SYMBOL_FOR_REQ_CONTEXT] = {
+      get: () => context
+    };
+  }
   
   const normalRequest = await convertSvelteKitRequest(request);
   const response = await handler(normalRequest, params.token);
