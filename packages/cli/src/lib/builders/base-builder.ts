@@ -277,12 +277,15 @@ export abstract class BaseBuilder {
     // will get registered thanks to the swc transform.
     const imports = stepFiles
       .map((file) => {
+        // Normalize both paths to forward slashes before calling relative()
+        // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        const normalizedFile = file.replace(/\\/g, '/');
         // Calculate relative path from working directory to the file
-        // The relative() function handles both relative and absolute paths correctly
-        let relativePath = relative(this.config.workingDir, file).replace(
-          /\\/g,
-          '/'
-        );
+        let relativePath = relative(
+          normalizedWorkingDir,
+          normalizedFile
+        ).replace(/\\/g, '/');
         // Ensure relative paths start with ./ so esbuild resolves them correctly
         if (!relativePath.startsWith('.')) {
           relativePath = './' + relativePath;
@@ -403,12 +406,18 @@ export abstract class BaseBuilder {
       `globalThis.__private_workflows = new Map();\n` +
       workflowFiles
         .map((file, workflowFileIdx) => {
-          // Calculate relative path from working directory to the file
-          // The relative() function handles both relative and absolute paths correctly
-          let relativePath = relative(this.config.workingDir, file).replace(
+          // Normalize both paths to forward slashes before calling relative()
+          // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+          const normalizedWorkingDir = this.config.workingDir.replace(
             /\\/g,
             '/'
           );
+          const normalizedFile = file.replace(/\\/g, '/');
+          // Calculate relative path from working directory to the file
+          let relativePath = relative(
+            normalizedWorkingDir,
+            normalizedFile
+          ).replace(/\\/g, '/');
           // Ensure relative paths start with ./ so esbuild resolves them correctly
           if (!relativePath.startsWith('.')) {
             relativePath = './' + relativePath;
