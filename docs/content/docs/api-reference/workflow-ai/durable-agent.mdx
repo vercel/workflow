@@ -14,7 +14,7 @@ The `DurableAgent` class enables you to create AI-powered agents that can mainta
 Tool calls can be implemented as workflow steps for automatic retries, or as regular workflow-level logic utilizing core library features such as [`sleep()`](/docs/api-reference/workflow/sleep) and [Hooks](/docs/foundations/hooks).
 
 ```typescript lineNumbers
-import { DurableAgent } from '@workflow/ai/agent';
+import { DurableAgent } from '@workflow/ai';
 import { z } from 'zod';
 
 async function getWeather({ city }: { city: string }) {
@@ -51,7 +51,7 @@ async function myAgent() {
 <TSDoc
 definition={generateDefinition({
   code: `
-import { DurableAgent } from "@workflow/ai/agent";
+import { DurableAgent } from "@workflow/ai";
 export default DurableAgent;`
 })}
 />
@@ -61,7 +61,7 @@ export default DurableAgent;`
 <TSDoc
 definition={generateDefinition({
   code: `
-import type { DurableAgentOptions } from "@workflow/ai/agent";
+import type { DurableAgentOptions } from "@workflow/ai";
 export default DurableAgentOptions;`
 })}
 />
@@ -71,7 +71,7 @@ export default DurableAgentOptions;`
 <TSDoc
 definition={generateDefinition({
   code: `
-import type { DurableAgentStreamOptions } from "@workflow/ai/agent";
+import type { DurableAgentStreamOptions } from "@workflow/ai";
 export default DurableAgentStreamOptions;`
 })}
 />
@@ -95,7 +95,7 @@ export default DurableAgentStreamOptions;`
 ### Basic Agent with Tools
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
+import { DurableAgent } from '@workflow/ai';
 import { z } from 'zod';
 
 async function getWeather({ location }: { location: string }) {
@@ -134,7 +134,7 @@ async function weatherAgentWorkflow(userQuery: string) {
 ### Multiple Tools
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
+import { DurableAgent } from '@workflow/ai';
 import { z } from 'zod';
 
 async function getWeather({ location }: { location: string }) {
@@ -180,7 +180,7 @@ async function multiToolAgentWorkflow(userQuery: string) {
 ### Tools with Workflow Library Features
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
+import { DurableAgent } from '@workflow/ai';
 import { sleep, defineHook } from 'workflow';
 import { z } from 'zod';
 
