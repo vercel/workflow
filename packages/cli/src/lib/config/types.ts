@@ -4,8 +4,8 @@ export type {
   WorkflowConfig,
 } from '@workflow/builders';
 export {
-  validBuildTargets,
   isValidBuildTarget,
+  validBuildTargets,
 } from '@workflow/builders';
 
 export type InspectCLIOptions = {

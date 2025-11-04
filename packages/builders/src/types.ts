@@ -2,6 +2,7 @@ export const validBuildTargets = [
   'standalone',
   'vercel-build-output-api',
   'next',
+  'sveltekit',
 ] as const;
 export type BuildTarget = (typeof validBuildTargets)[number];
 
@@ -27,5 +28,5 @@ export interface WorkflowConfig {
 export function isValidBuildTarget(
   target: string | undefined
 ): target is BuildTarget {
- return !!target && validBuildTargets.includes(target as BuildTarget);
+  return !!target && validBuildTargets.includes(target as BuildTarget);
 }

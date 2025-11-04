@@ -1,0 +1,39 @@
+{
+  "name": "@workflow/example-sveltekit",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --port 3000",
+    "build": "vite build",
+    "start": "vite preview --port 3000",
+    "prepare": "svelte-kit sync || echo ''",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@sveltejs/kit": "^2.43.2",
+    "@sveltejs/vite-plugin-svelte": "^6.2.0",
+    "@types/lodash.chunk": "^4.2.9",
+    "svelte": "^5.39.5",
+    "svelte-check": "^4.3.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7",
+    "vite-plugin-devtools-json": "^1.0.0"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "2.0.76",
+    "@node-rs/xxhash": "1.7.6",
+    "@opentelemetry/api": "^1.9.0",
+    "@sveltejs/adapter-node": "^5.4.0",
+    "@sveltejs/adapter-vercel": "^6.1.1",
+    "@swc/core": "1.11.24",
+    "@vercel/otel": "^1.13.0",
+    "@workflow/ai": "workspace:*",
+    "ai": "catalog:",
+    "exsolve": "^1.0.7",
+    "lodash.chunk": "^4.2.0",
+    "workflow": "workspace:*",
+    "zod": "catalog:"
+  }
+}

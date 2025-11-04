@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import chalk from 'chalk';
 import { parse } from 'comment-json';
@@ -7,11 +7,11 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
-import type { WorkflowConfig } from './types.js';
 import type { WorkflowManifest } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import type { WorkflowConfig } from './types.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
@@ -276,11 +276,12 @@ export abstract class BaseBuilder {
         ).replace(/\\/g, '/');
         // Ensure relative paths start with ./ so esbuild resolves them correctly
         if (!relativePath.startsWith('.')) {
-          relativePath = './' + relativePath;
+          relativePath = `./${relativePath}`;
         }
         return `import '${relativePath}';`;
       })
       .join('\n');
+
     const entryContent = `
     // Built in steps
     import '${builtInSteps}';
@@ -408,7 +409,7 @@ export abstract class BaseBuilder {
           ).replace(/\\/g, '/');
           // Ensure relative paths start with ./ so esbuild resolves them correctly
           if (!relativePath.startsWith('.')) {
-            relativePath = './' + relativePath;
+            relativePath = `./${relativePath}`;
           }
           return `import * as workflowFile${workflowFileIdx} from '${relativePath}';
             Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
@@ -533,7 +534,6 @@ export abstract class BaseBuilder {
     const bundleFinal = async (interimBundle: string) => {
       const workflowBundleCode = interimBundle;
 
-      // Create the workflow function handler with proper linter suppressions
       const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
@@ -691,8 +691,7 @@ export const PUT = handler;
 export const PATCH = handler;
 export const DELETE = handler;
 export const HEAD = handler;
-export const OPTIONS = handler;
-`;
+export const OPTIONS = handler;`;
 
     if (!bundle) {
       // For Next.js, just write the unbundled file
