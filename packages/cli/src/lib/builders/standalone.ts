@@ -1,6 +1,4 @@
-import { mkdir } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
-import { BaseBuilder } from './base-builder.js';
+import { BaseBuilder } from '@workflow/builders';
 
 export class StandaloneBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -16,7 +14,7 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.buildWorkflowsBundle(options);
     await this.buildWebhookFunction();
 
-    await this.buildClientLibrary();
+    await this.createClientLibrary();
   }
 
   private async buildStepsBundle({
@@ -28,18 +26,10 @@ export class StandaloneBuilder extends BaseBuilder {
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
   }): Promise<void> {
-    console.log(
-      'Creating Vercel API steps bundle at',
-      this.config.stepsBundlePath
-    );
+    console.log('Creating steps bundle at', this.config.stepsBundlePath);
 
-    const stepsBundlePath = resolve(
-      this.config.workingDir,
-      this.config.stepsBundlePath
-    );
-
-    // Ensure directory exists
-    await mkdir(dirname(stepsBundlePath), { recursive: true });
+    const stepsBundlePath = this.resolvePath(this.config.stepsBundlePath);
+    await this.ensureDirectory(stepsBundlePath);
 
     await this.createStepsBundle({
       outfile: stepsBundlePath,
@@ -59,17 +49,14 @@ export class StandaloneBuilder extends BaseBuilder {
     tsPaths?: Record<string, string[]>;
   }): Promise<void> {
     console.log(
-      'Creating vercel API workflows bundle at',
+      'Creating workflows bundle at',
       this.config.workflowsBundlePath
     );
 
-    const workflowBundlePath = resolve(
-      this.config.workingDir,
+    const workflowBundlePath = this.resolvePath(
       this.config.workflowsBundlePath
     );
-
-    // Ensure directory exists
-    await mkdir(dirname(workflowBundlePath), { recursive: true });
+    await this.ensureDirectory(workflowBundlePath);
 
     await this.createWorkflowsBundle({
       outfile: workflowBundlePath,
@@ -80,18 +67,10 @@ export class StandaloneBuilder extends BaseBuilder {
   }
 
   private async buildWebhookFunction(): Promise<void> {
-    console.log(
-      'Creating vercel API webhook bundle at',
-      this.config.webhookBundlePath
-    );
+    console.log('Creating webhook bundle at', this.config.webhookBundlePath);
 
-    const webhookBundlePath = resolve(
-      this.config.workingDir,
-      this.config.webhookBundlePath
-    );
-
-    // Ensure directory exists
-    await mkdir(dirname(webhookBundlePath), { recursive: true });
+    const webhookBundlePath = this.resolvePath(this.config.webhookBundlePath);
+    await this.ensureDirectory(webhookBundlePath);
 
     await this.createWebhookBundle({
       outfile: webhookBundlePath,

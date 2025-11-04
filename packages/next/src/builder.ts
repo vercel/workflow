@@ -2,7 +2,11 @@ import { constants } from 'node:fs';
 import { access, mkdir, stat, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import Watchpack from 'watchpack';
-import { BaseBuilder } from './base-builder.js';
+import {
+  BaseBuilder,
+  STEP_QUEUE_TRIGGER,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 
 export class NextBuilder extends BaseBuilder {
   async build() {
@@ -333,28 +337,10 @@ export class NextBuilder extends BaseBuilder {
     const generatedConfig = {
       version: '0',
       steps: {
-        experimentalTriggers: [
-          {
-            type: 'queue/v1beta',
-            topic: '__wkf_step_*',
-            consumer: 'default',
-            maxDeliveries: 64,
-            retryAfterSeconds: 5,
-            initialDelaySeconds: 0,
-          },
-        ],
+        experimentalTriggers: [STEP_QUEUE_TRIGGER],
       },
       workflows: {
-        experimentalTriggers: [
-          {
-            type: 'queue/v1beta',
-            topic: '__wkf_workflow_*',
-            consumer: 'default',
-            maxDeliveries: 64,
-            retryAfterSeconds: 5,
-            initialDelaySeconds: 0,
-          },
-        ],
+        experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       },
     };
 

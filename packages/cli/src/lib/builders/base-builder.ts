@@ -615,7 +615,6 @@ export const DELETE = handler;
 export const HEAD = handler;
 export const OPTIONS = handler;
 `;
-
     if (!bundle) {
       // For Next.js, just write the unbundled file
       await writeFile(outfile, routeContent);

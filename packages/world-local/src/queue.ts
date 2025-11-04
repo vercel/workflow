@@ -2,6 +2,7 @@ import { setTimeout } from 'node:timers/promises';
 import { JsonTransport } from '@vercel/queue';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { Agent } from 'undici';
 import z from 'zod';
 
 // For local queue, there is no technical limit on the message visibility lifespan,
@@ -9,6 +10,11 @@ import z from 'zod';
 const LOCAL_QUEUE_MAX_VISIBILITY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
   Infinity;
+
+// Create a custom agent with unlimited headers timeout for long-running steps
+const httpAgent = new Agent({
+  headersTimeout: 0,
+});
 
 export function createQueue(port?: number): Queue {
   const transport = new JsonTransport();
@@ -53,12 +59,15 @@ export function createQueue(port?: number): Queue {
       let defaultRetriesLeft = 3;
       for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
         defaultRetriesLeft--;
+
         const response = await fetch(
           `http://localhost:${port}/.well-known/workflow/v1/${pathname}`,
           {
             method: 'POST',
             duplex: 'half',
+            dispatcher: httpAgent,
             headers: {
+              'content-type': 'application/json',
               'x-vqs-queue-name': queueName,
               'x-vqs-message-id': messageId,
               'x-vqs-message-attempt': String(attempt + 1),
@@ -115,7 +124,11 @@ export function createQueue(port?: number): Queue {
 
       if (!headers.success || !req.body) {
         return Response.json(
-          { error: 'Missing required headers' },
+          {
+            error: !req.body
+              ? 'Missing request body'
+              : 'Missing required headers',
+          },
           { status: 400 }
         );
       }

@@ -26,4 +26,9 @@ matrix.app.push({
   project: 'workbench-nitro-workflow',
 });
 
+matrix.app.push({
+  name: 'sveltekit',
+  project: 'workbench-sveltekit-workflow',
+});
+
 console.log(JSON.stringify(matrix));

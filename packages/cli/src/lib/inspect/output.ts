@@ -71,6 +71,23 @@ const HOOK_LISTED_PROPS: (keyof Hook | 'hasResponse')[] = [
   // ...HOOK_DATA_PROPS,
 ];
 
+interface Sleep {
+  correlationId: string;
+  runId: string;
+  eventId: string;
+  createdAt: Date;
+  resumeAt: Date | undefined;
+  completedAt: Date | undefined;
+}
+
+const WAIT_LISTED_PROPS: (keyof Sleep)[] = [
+  'correlationId',
+  'eventId',
+  'createdAt',
+  'resumeAt',
+  'completedAt',
+];
+
 const STATUS_COLORS: Record<
   WorkflowRun['status'] | Step['status'],
   (value: string) => string
@@ -401,11 +418,13 @@ const formatTableTimestamp = (
   // - Display settings allow it (based on terminal width)
   // - withData is disabled (more space available)
   // - Not in JSON mode
+  // - disableRelativeDates is not set
   const shouldShowRelative =
     !isCI() &&
     displaySettings?.showRelativeDates !== false &&
     !opts.withData &&
-    !opts.json;
+    !opts.json &&
+    !opts.disableRelativeDates;
 
   if (shouldShowRelative) {
     const relative = formatDistance(value, new Date(), { addSuffix: true });
@@ -1088,6 +1107,135 @@ export const showHook = async (
     } else {
       logger.log(hydratedHook);
     }
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
+};
+
+export const listSleeps = async (
+  world: World,
+  opts: InspectCLIOptions = {}
+) => {
+  if (!opts.runId) {
+    logger.error(
+      'run-id is required for listing sleeps. Usage: `workflow inspect sleeps --runId=<id>`'
+    );
+    process.exit(1);
+  }
+
+  if (opts.stepId) {
+    logger.warn(
+      'Filtering by step-id is not supported for sleeps, ignoring filter.'
+    );
+  }
+  if (opts.workflowName) {
+    logger.warn(
+      'Filtering by workflow-name is not supported for sleeps, ignoring filter.'
+    );
+  }
+  if (opts.withData) {
+    logger.warn('`withData` flag is ignored when listing sleeps');
+  }
+
+  try {
+    // Fetch all events for the run with resolveData=false
+    const events = await world.events.list({
+      runId: opts.runId,
+      pagination: {
+        sortOrder: opts.sort || 'desc',
+        limit: 1000,
+      },
+      resolveData: 'none',
+    });
+
+    // Show info message if there might be more sleeps
+    if (events.hasMore) {
+      logger.info(
+        'Warning: This run has more than 1000 events. Some sleeps might not be shown. Please use the web UI to ensure getting a complete list.'
+      );
+    }
+
+    // Filter locally by correlationId starting with 'wait_'
+    const waitCorrelationIds = new Set<string>();
+    for (const event of events.data) {
+      if (event.correlationId?.startsWith('wait_')) {
+        waitCorrelationIds.add(event.correlationId);
+      }
+    }
+
+    if (waitCorrelationIds.size === 0) {
+      logger.warn('No sleeps found for this run.');
+      if (opts.json) {
+        showJson([]);
+      } else {
+        logger.log(
+          showTable([] as Record<string, unknown>[], WAIT_LISTED_PROPS, {
+            ...opts,
+            disableRelativeDates: true,
+          })
+        );
+      }
+      return;
+    }
+
+    // For each unique correlationId, fetch events by correlationId with resolveData=true
+    const sleeps: Sleep[] = [];
+    for (const correlationId of waitCorrelationIds) {
+      const correlationEvents = await world.events.listByCorrelationId({
+        correlationId,
+        pagination: {
+          sortOrder: 'asc',
+          limit: 10,
+        },
+        resolveData: 'all',
+      });
+
+      // Stitch up wait_created and wait_completed events
+      const waitCreated = correlationEvents.data.find(
+        (e) => e.eventType === 'wait_created'
+      );
+      const waitCompleted = correlationEvents.data.find(
+        (e) => e.eventType === 'wait_completed'
+      );
+
+      if (waitCreated) {
+        const sleep: Sleep = {
+          correlationId,
+          runId: waitCreated.runId,
+          eventId: waitCreated.eventId,
+          createdAt: waitCreated.createdAt,
+          resumeAt:
+            waitCreated.eventType === 'wait_created'
+              ? waitCreated.eventData.resumeAt
+              : undefined,
+          completedAt: waitCompleted?.createdAt,
+        };
+        sleeps.push(sleep);
+      }
+    }
+
+    // Sort sleeps by createdAt
+    sleeps.sort((a, b) => {
+      const timeA = a.createdAt.getTime();
+      const timeB = b.createdAt.getTime();
+      return opts.sort === 'asc' ? timeA - timeB : timeB - timeA;
+    });
+
+    if (opts.json) {
+      showJson(sleeps);
+      return;
+    }
+
+    logger.log(
+      showTable(
+        sleeps as unknown as Record<string, unknown>[],
+        WAIT_LISTED_PROPS,
+        { ...opts, disableRelativeDates: true }
+      )
+    );
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
       process.exit(1);

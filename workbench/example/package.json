@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "version": "0.0.2-alpha.18",
+  "license": "Apache-2.0",
   "scripts": {
     "workflow": "workflow",
     "wf": "wf",

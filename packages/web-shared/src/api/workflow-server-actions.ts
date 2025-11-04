@@ -176,7 +176,6 @@ export async function fetchRun(
     const world = getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData });
     const hydratedRun = hydrate(run as WorkflowRun);
-    console.log('hydratedRun', hydratedRun.input);
     return createResponse(hydratedRun);
   } catch (error) {
     console.error('Failed to fetch run:', error);

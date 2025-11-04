@@ -2,7 +2,6 @@ import { CodeBlock } from '@/components/code-block';
 import { IntroTabs } from './intro-tabs';
 import { NonWorkflowExample } from './non-workflow';
 import { WorkflowExample } from './workflow';
-import { WorkflowLogs } from './workflow-logs';
 
 const workflowCode = `export async function welcome(userId: string) {
   "use workflow";
@@ -129,7 +128,9 @@ export const Intro = async () => {
     <CodeBlock
       code={workflowCode}
       lang="ts"
-      codeblock={{ className: codeBlockClassname }}
+      codeblock={{
+        className: `shadow-none !bg-background ${codeBlockClassname}`,
+      }}
     />
   );
   const nonWorkflowCodeBlock = (
@@ -137,7 +138,7 @@ export const Intro = async () => {
       code={nonWorkflowCode}
       lang="ts"
       codeblock={{
-        className: `${codeBlockClassname} max-h-[310px] overflow-y-auto`,
+        className: `shadow-none !bg-background ${codeBlockClassname} max-h-[310px] overflow-y-auto`,
       }}
     />
   );

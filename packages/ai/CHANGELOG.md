@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- Updated dependencies [f973954]
+- Updated dependencies [fcadd7b]
+  - workflow@4.0.1-beta.7
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

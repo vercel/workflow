@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.2
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+
 ## 4.0.1-beta.1
 
 ### Patch Changes
