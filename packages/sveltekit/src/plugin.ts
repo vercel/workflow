@@ -49,6 +49,13 @@ export function workflowPlugin(): Plugin {
       } else {
         // Use relative() for files outside working directory
         relativeFilename = relative(workingDir, id).replace(/\\/g, '/');
+
+        if (relativeFilename.startsWith('../')) {
+          relativeFilename = relativeFilename
+            .split('/')
+            .filter((part) => part !== '..')
+            .join('/');
+        }
       }
 
       // Final safety check - ensure we never pass an absolute path to SWC

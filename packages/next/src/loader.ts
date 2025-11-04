@@ -45,6 +45,13 @@ export default async function workflowLoader(
   } else {
     // Use relative() for files outside working directory
     relativeFilename = relative(workingDir, filename).replace(/\\/g, '/');
+
+    if (relativeFilename.startsWith('../')) {
+      relativeFilename = relativeFilename
+        .split('/')
+        .filter((part) => part !== '..')
+        .join('/');
+    }
   }
 
   // Final safety check - ensure we never pass an absolute path to SWC
