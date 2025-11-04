@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import chalk from 'chalk';
 import { parse } from 'comment-json';
@@ -277,17 +277,14 @@ export abstract class BaseBuilder {
     // will get registered thanks to the swc transform.
     const imports = stepFiles
       .map((file) => {
-        // Normalize path separators to forward slashes for cross-platform compatibility
-        const normalizedPath = file.replace(/\\/g, '/');
-        // Convert absolute paths to relative paths from the working directory
-        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
-        let relativePath = normalizedPath.startsWith(normalizedWorkingDir)
-          ? normalizedPath
-              .substring(normalizedWorkingDir.length)
-              .replace(/^[/\\]/, '')
-          : normalizedPath;
+        // Calculate relative path from working directory to the file
+        // The relative() function handles both relative and absolute paths correctly
+        let relativePath = relative(this.config.workingDir, file).replace(
+          /\\/g,
+          '/'
+        );
         // Ensure relative paths start with ./ so esbuild resolves them correctly
-        if (!relativePath.startsWith('.') && !relativePath.startsWith('/')) {
+        if (!relativePath.startsWith('.')) {
           relativePath = './' + relativePath;
         }
         return `import '${relativePath}';`;
@@ -406,21 +403,14 @@ export abstract class BaseBuilder {
       `globalThis.__private_workflows = new Map();\n` +
       workflowFiles
         .map((file, workflowFileIdx) => {
-          // Normalize path separators to forward slashes for cross-platform compatibility
-          // This is critical for Windows where paths contain backslashes
-          const normalizedPath = file.replace(/\\/g, '/');
-          // Convert absolute paths to relative paths from the working directory
-          const normalizedWorkingDir = this.config.workingDir.replace(
+          // Calculate relative path from working directory to the file
+          // The relative() function handles both relative and absolute paths correctly
+          let relativePath = relative(this.config.workingDir, file).replace(
             /\\/g,
             '/'
           );
-          let relativePath = normalizedPath.startsWith(normalizedWorkingDir)
-            ? normalizedPath
-                .substring(normalizedWorkingDir.length)
-                .replace(/^[/\\]/, '')
-            : normalizedPath;
           // Ensure relative paths start with ./ so esbuild resolves them correctly
-          if (!relativePath.startsWith('.') && !relativePath.startsWith('/')) {
+          if (!relativePath.startsWith('.')) {
             relativePath = './' + relativePath;
           }
           return `import * as workflowFile${workflowFileIdx} from '${relativePath}';
