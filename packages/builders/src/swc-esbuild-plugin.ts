@@ -153,13 +153,30 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           if (!options.workflowManifest) {
             options.workflowManifest = {};
           }
+
+          // Normalize manifest keys to relative paths with forward slashes
+          // This ensures consistent keys across platforms
+          const normalizeManifestKeys = (manifest: any) => {
+            if (!manifest) return manifest;
+            const normalized: any = {};
+            for (const [key, value] of Object.entries(manifest)) {
+              // Convert to relative path from working directory and normalize separators
+              const relativePath = relative(
+                build.initialOptions.absWorkingDir || process.cwd(),
+                key
+              ).replace(/\\/g, '/');
+              normalized[relativePath] = value;
+            }
+            return normalized;
+          };
+
           options.workflowManifest.workflows = Object.assign(
             options.workflowManifest.workflows || {},
-            workflowManifest.workflows
+            normalizeManifestKeys(workflowManifest.workflows)
           );
           options.workflowManifest.steps = Object.assign(
             options.workflowManifest.steps || {},
-            workflowManifest.steps
+            normalizeManifestKeys(workflowManifest.steps)
           );
 
           return {
