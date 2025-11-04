@@ -268,13 +268,12 @@ export abstract class BaseBuilder {
         // Normalize path separators to forward slashes for cross-platform compatibility
         const normalizedPath = file.replace(/\\/g, '/');
         // Convert absolute paths to relative paths from the working directory
-        const relativePath = normalizedPath.startsWith('/')
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        const relativePath = normalizedPath.startsWith(normalizedWorkingDir)
           ? normalizedPath
-          : normalizedPath.startsWith(this.config.workingDir)
-            ? normalizedPath
-                .substring(this.config.workingDir.length)
-                .replace(/^[/\\]/, '')
-            : normalizedPath;
+              .substring(normalizedWorkingDir.length)
+              .replace(/^[/\\]/, '')
+          : normalizedPath;
         return `import '${relativePath}';`;
       })
       .join('\n');
@@ -395,13 +394,15 @@ export abstract class BaseBuilder {
           // This is critical for Windows where paths contain backslashes
           const normalizedPath = file.replace(/\\/g, '/');
           // Convert absolute paths to relative paths from the working directory
-          const relativePath = normalizedPath.startsWith('/')
+          const normalizedWorkingDir = this.config.workingDir.replace(
+            /\\/g,
+            '/'
+          );
+          const relativePath = normalizedPath.startsWith(normalizedWorkingDir)
             ? normalizedPath
-            : normalizedPath.startsWith(this.config.workingDir)
-              ? normalizedPath
-                  .substring(this.config.workingDir.length)
-                  .replace(/^[/\\]/, '')
-              : normalizedPath;
+                .substring(normalizedWorkingDir.length)
+                .replace(/^[/\\]/, '')
+            : normalizedPath;
           return `import * as workflowFile${workflowFileIdx} from '${relativePath}';
             Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
         })
