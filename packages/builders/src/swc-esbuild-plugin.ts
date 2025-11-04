@@ -150,60 +150,49 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             .replace(/\/$/, '');
           const normalizedPath = args.path.replace(/\\/g, '/');
 
-          let relativeFilepath = relative(
-            normalizedWorkingDir,
-            normalizedPath
-          ).replace(/\\/g, '/');
+          // Windows fix: Always do case-insensitive path comparison as the PRIMARY logic
+          // to work around node:path.relative() not recognizing paths with different drive
+          // letter casing (e.g., D: vs d:) as being in the same tree
+          const lowerWd = normalizedWorkingDir.toLowerCase();
+          const lowerPath = normalizedPath.toLowerCase();
 
-          // CRITICAL FIX for Windows: On Windows, node:path.relative() can return absolute paths
-          // when drive letters have different casing (e.g., D: vs d:). Check if we got an absolute path.
-          if (
-            (relativeFilepath.includes(':') ||
-              relativeFilepath.startsWith('/')) &&
-            !relativeFilepath.startsWith('../')
-          ) {
-            // Try case-insensitive comparison
-            const lowerWd = normalizedWorkingDir.toLowerCase();
-            const lowerPath = normalizedPath.toLowerCase();
+          let relativeFilepath: string;
+          if (lowerPath.startsWith(lowerWd + '/')) {
+            // File is under working directory - manually calculate relative path
+            // This ensures we get a relative path even with drive letter casing issues
+            relativeFilepath = normalizedPath.substring(
+              normalizedWorkingDir.length + 1
+            );
+          } else if (lowerPath === lowerWd) {
+            // File IS the working directory
+            relativeFilepath = '.';
+          } else {
+            // File is outside working directory - use relative() and strip ../ prefixes if needed
+            relativeFilepath = relative(
+              normalizedWorkingDir,
+              normalizedPath
+            ).replace(/\\/g, '/');
 
-            // Check if the file path starts with the working directory (case-insensitive)
-            if (lowerPath.startsWith(lowerWd + '/')) {
-              // Manually extract the relative part by removing the working directory
-              // Working dir length + 1 to skip the separator
-              relativeFilepath = normalizedPath.substring(
-                normalizedWorkingDir.length + 1
-              );
-            } else if (lowerPath === lowerWd) {
-              // File IS the working directory (shouldn't happen, but be safe)
-              relativeFilepath = '.';
+            // Handle files discovered outside the working directory
+            // These come back as ../path/to/file, but we want just path/to/file
+            if (relativeFilepath.startsWith('../')) {
+              relativeFilepath = relativeFilepath
+                .split('/')
+                .filter((part) => part !== '..')
+                .join('/');
             }
           }
 
-          // Handle files discovered outside the working directory
-          // These come back as ../path/to/file, but we want just path/to/file
-          if (relativeFilepath.startsWith('../')) {
-            relativeFilepath = relativeFilepath
-              .split('/')
-              .filter((part) => part !== '..')
-              .join('/');
-          }
-
-          // SAFETY CHECK: Ensure relativeFilepath is never absolute before passing to SWC plugin
-          // The SWC plugin uses the filename to generate workflowId/stepId, so it MUST be relative
+          // Final safety check - ensure we never pass an absolute path to SWC
           if (
             relativeFilepath.includes(':') ||
             relativeFilepath.startsWith('/')
           ) {
-            // Path is still absolute - use case-insensitive check to extract relative part
-            const lowerWd = normalizedWorkingDir.toLowerCase();
-            const lowerPath = relativeFilepath.toLowerCase();
-            const lowerWdWithSlash = lowerWd + '/';
-            if (lowerPath.startsWith(lowerWdWithSlash)) {
-              // Found it - manually strip the working dir
-              relativeFilepath = relativeFilepath.substring(
-                normalizedWorkingDir.length + 1
-              );
-            }
+            // This should never happen, but if it does, use just the filename as last resort
+            console.error(
+              `[ERROR] relativeFilepath is still absolute: ${relativeFilepath}`
+            );
+            relativeFilepath = normalizedPath.split('/').pop() || 'unknown.ts';
           }
 
           const { code: transformedCode, workflowManifest } =
