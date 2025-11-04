@@ -27,6 +27,11 @@ matrix.app.push({
 });
 
 matrix.app.push({
+  name: 'sveltekit',
+  project: 'workbench-sveltekit-workflow',
+});
+
+matrix.app.push({
   name: 'nuxt',
   project: 'workbench-nuxt-workflow',
 });

@@ -15,14 +15,23 @@ concurrency:
 
 jobs:
   unit:
-    name: Unit Tests
-    runs-on: ubuntu-latest
+    name: Unit Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -36,10 +45,10 @@ jobs:
           cache: "pnpm"
 
       - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run Unit Tests
-        run: pnpm test
+        run: pnpm test --filter='!./docs'
 
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
@@ -60,6 +69,8 @@ jobs:
             project-id: "prj_uLIcNZNDmETulAvj5h0IcDHi5432"
           - name: "nuxt"
             project-id: "prj_oTgiz3SGX2fpZuM6E0P38Ts8de6d"
+          - name: "sveltekit"
+            project-id: "prj_MqnBLm71ceXGSnm3Fs8i8gBnI23G"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -174,7 +185,7 @@ jobs:
         run: cd workbench/${{ matrix.app.name }} && ./resolve-symlinks.sh
 
       - name: Run E2E Tests (Next.js)
-        if: matrix.app.name != 'nitro' && matrix.app.name != 'vite' && matrix.app.name != 'nuxt'
+        if: matrix.app.name != 'nitro' && matrix.app.name != 'vite' && matrix.app.name != 'nuxt' && matrix.app.name != 'sveltekit'
         run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/next-dev.test.ts && pnpm run test:e2e
         env:
           APP_NAME: ${{ matrix.app.name }}
@@ -194,6 +205,12 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
       - name: Run E2E Tests (Nuxt)
         if: matrix.app.name == 'nuxt'
+        run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/e2e.test.ts
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+      - name: Run E2E Tests (SvelteKit)
+        if: matrix.app.name == 'sveltekit'
         run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/e2e.test.ts
         env:
           APP_NAME: ${{ matrix.app.name }}
@@ -248,4 +265,52 @@ jobs:
         run: cd workbench/${{ matrix.app.name }} && pnpm start & echo "starting tests in 10 seconds" && sleep 10 && pnpm run test:e2e
         env:
           APP_NAME: ${{ matrix.app.name }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+
+  e2e-windows:
+    name: E2E Windows Tests
+    runs-on: windows-latest
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Run Initial Build
+        run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
+
+      - name: Run E2E Tests (Next.js)
+        run: |
+          cd workbench/nextjs-turbopack
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
+          Start-Sleep -Seconds 15
+          cd ../..
+          pnpm vitest run packages/core/e2e/next-dev.test.ts
+          pnpm run test:e2e
+          Stop-Job $job
+        shell: powershell
+        env:
+          APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"

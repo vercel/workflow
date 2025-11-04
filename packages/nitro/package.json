@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nitro",
-  "version": "4.0.1-beta.7",
+  "version": "4.0.1-beta.9",
   "description": "Nitro integration for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -18,7 +18,7 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./rollup-plugin": "./dist/rollup-plugin.js",
+    "./rollup": "./dist/rollup.js",
     "./vite": "./dist/vite.js"
   },
   "scripts": {
@@ -31,7 +31,6 @@
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
     "exsolve": "^1.0.7",
     "pathe": "^2.0.3"
   },

@@ -53,6 +53,12 @@ export interface DurableAgentStreamOptions {
    * Optional custom writable stream for handling message chunks. If not provided, a default writable stream will be created using getWritable().
    */
   writable?: WritableStream<UIMessageChunk>;
+
+  /**
+   * If true, prevents the writable stream from being closed after streaming completes.
+   * Defaults to false (stream will be closed).
+   */
+  preventClose?: boolean;
 }
 
 /**
@@ -132,7 +138,9 @@ export class DurableAgent {
       result = await iterator.next(toolResults);
     }
 
-    await closeStream(writable);
+    if (!options.preventClose) {
+      await closeStream(writable);
+    }
   }
 }
 

@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import chalk from 'chalk';
 import { parse } from 'comment-json';
@@ -7,17 +7,23 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
-import type { WorkflowConfig } from './types.js';
 import type { WorkflowManifest } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import type { WorkflowConfig } from './types.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
+/**
+ * Base class for workflow builders. Provides common build logic for transforming
+ * workflow source files into deployable bundles using esbuild and SWC.
+ *
+ * Subclasses must implement the build() method to define builder-specific logic.
+ */
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
 
@@ -25,8 +31,16 @@ export abstract class BaseBuilder {
     this.config = config;
   }
 
+  /**
+   * Performs the complete build process for workflows.
+   * Subclasses must implement this to define their specific build steps.
+   */
   abstract build(): Promise<void>;
 
+  /**
+   * Extracts TypeScript path mappings and baseUrl from tsconfig.json/jsconfig.json.
+   * Used to properly resolve module imports during bundling.
+   */
   protected async getTsConfigOptions(): Promise<{
     baseUrl?: string;
     paths?: Record<string, string[]>;
@@ -72,30 +86,40 @@ export abstract class BaseBuilder {
     return options;
   }
 
+  /**
+   * Discovers all source files in the configured directories.
+   * Searches for TypeScript and JavaScript files while excluding common build
+   * and dependency directories.
+   */
   protected async getInputFiles(): Promise<string[]> {
-    const result = await glob(
-      this.config.dirs.map(
-        (dir) =>
-          `${resolve(
-            this.config.workingDir,
-            dir
-          )}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`
-      ),
-      {
-        ignore: [
-          '**/node_modules/**',
-          '**/.git/**',
-          '**/.next/**',
-          '**/.vercel/**',
-          '**/.workflow-data/**',
-          '**/.well-known/workflow/**',
-        ],
-        absolute: true,
-      }
-    );
+    const patterns = this.config.dirs.map((dir) => {
+      const resolvedDir = resolve(this.config.workingDir, dir);
+      // Normalize path separators to forward slashes for glob compatibility
+      const normalizedDir = resolvedDir.replace(/\\/g, '/');
+      return `${normalizedDir}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`;
+    });
+
+    const result = await glob(patterns, {
+      ignore: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/.next/**',
+        '**/.vercel/**',
+        '**/.workflow-data/**',
+        '**/.well-known/workflow/**',
+      ],
+      absolute: true,
+    });
+
     return result;
   }
 
+  /**
+   * Caches discovered workflow entries by input array reference.
+   * Uses WeakMap to allow garbage collection when input arrays are no longer referenced.
+   * This cache is invalidated automatically when the inputs array reference changes
+   * (e.g., when files are added/removed during watch mode).
+   */
   private discoveredEntries: WeakMap<
     string[],
     {
@@ -149,8 +173,10 @@ export abstract class BaseBuilder {
     return state;
   }
 
-  // write debug information to JSON file (maybe move to diagnostics folder)
-  // if on Vercel
+  /**
+   * Writes debug information to a JSON file for troubleshooting build issues.
+   * Executes whenever called, regardless of environment variables.
+   */
   private async writeDebugFile(
     outfile: string,
     debugData: object,
@@ -179,19 +205,32 @@ export abstract class BaseBuilder {
     }
   }
 
+  /**
+   * Logs and optionally throws on esbuild errors and warnings.
+   * @param throwOnError - If true, throws an error when esbuild errors are present
+   */
   private logEsbuildMessages(
     result: { errors?: any[]; warnings?: any[] },
-    phase: string
+    phase: string,
+    throwOnError = true
   ): void {
     if (result.errors && result.errors.length > 0) {
       console.error(`❌ esbuild errors in ${phase}:`);
+      const errorMessages: string[] = [];
       for (const error of result.errors) {
         console.error(`  ${error.text}`);
+        errorMessages.push(error.text);
         if (error.location) {
-          console.error(
-            `    at ${error.location.file}:${error.location.line}:${error.location.column}`
-          );
+          const location = `    at ${error.location.file}:${error.location.line}:${error.location.column}`;
+          console.error(location);
+          errorMessages.push(location);
         }
+      }
+
+      if (throwOnError) {
+        throw new Error(
+          `Build failed during ${phase}:\n${errorMessages.join('\n')}`
+        );
       }
     }
 
@@ -208,6 +247,12 @@ export abstract class BaseBuilder {
     }
   }
 
+  /**
+   * Creates a bundle for workflow step functions.
+   * Steps have full Node.js runtime access and handle side effects, API calls, etc.
+   *
+   * @param externalizeNonSteps - If true, only bundles step entry points and externalizes other code
+   */
   protected async createStepsBundle({
     inputFiles,
     format = 'cjs',
@@ -253,7 +298,25 @@ export abstract class BaseBuilder {
 
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
-    const imports = stepFiles.map((file) => `import '${file}';`).join('\n');
+    const imports = stepFiles
+      .map((file) => {
+        // Normalize both paths to forward slashes before calling relative()
+        // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        const normalizedFile = file.replace(/\\/g, '/');
+        // Calculate relative path from working directory to the file
+        let relativePath = relative(
+          normalizedWorkingDir,
+          normalizedFile
+        ).replace(/\\/g, '/');
+        // Ensure relative paths start with ./ so esbuild resolves them correctly
+        if (!relativePath.startsWith('.')) {
+          relativePath = `./${relativePath}`;
+        }
+        return `import '${relativePath}';`;
+      })
+      .join('\n');
+
     const entryContent = `
     // Built in steps
     import '${builtInSteps}';
@@ -331,6 +394,12 @@ export abstract class BaseBuilder {
     await esbuildCtx.dispose();
   }
 
+  /**
+   * Creates a bundle for workflow orchestration functions.
+   * Workflows run in a sandboxed VM and coordinate step execution.
+   *
+   * @param bundleFinalOutput - If false, skips the final bundling step (used by Next.js)
+   */
   protected async createWorkflowsBundle({
     inputFiles,
     format = 'cjs',
@@ -361,11 +430,26 @@ export abstract class BaseBuilder {
     const imports =
       `globalThis.__private_workflows = new Map();\n` +
       workflowFiles
-        .map(
-          (file, workflowFileIdx) =>
-            `import * as workflowFile${workflowFileIdx} from '${file}';
-            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`
-        )
+        .map((file, workflowFileIdx) => {
+          // Normalize both paths to forward slashes before calling relative()
+          // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+          const normalizedWorkingDir = this.config.workingDir.replace(
+            /\\/g,
+            '/'
+          );
+          const normalizedFile = file.replace(/\\/g, '/');
+          // Calculate relative path from working directory to the file
+          let relativePath = relative(
+            normalizedWorkingDir,
+            normalizedFile
+          ).replace(/\\/g, '/');
+          // Ensure relative paths start with ./ so esbuild resolves them correctly
+          if (!relativePath.startsWith('.')) {
+            relativePath = `./${relativePath}`;
+          }
+          return `import * as workflowFile${workflowFileIdx} from '${relativePath}';
+            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
+        })
         .join('\n');
 
     const bundleStartTime = Date.now();
@@ -413,9 +497,11 @@ export abstract class BaseBuilder {
       'Created intermediate workflow bundle',
       `${Date.now() - bundleStartTime}ms`
     );
+
     const partialWorkflowManifest = {
       workflows: workflowManifest.workflows,
     };
+
     await this.writeDebugFile(
       join(dirname(outfile), 'manifest'),
       partialWorkflowManifest,
@@ -455,7 +541,6 @@ export abstract class BaseBuilder {
     const bundleFinal = async (interimBundle: string) => {
       const workflowBundleCode = interimBundle;
 
-      // Create the workflow function handler with proper linter suppressions
       const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
@@ -522,7 +607,12 @@ export const POST = workflowEntrypoint(workflowCode);`;
     await interimBundleCtx.dispose();
   }
 
-  protected async buildClientLibrary(): Promise<void> {
+  /**
+   * Creates a client library bundle for workflow execution.
+   * The client library allows importing and calling workflows from application code.
+   * Only generated if clientBundlePath is specified in config.
+   */
+  protected async createClientLibrary(): Promise<void> {
     if (!this.config.clientBundlePath) {
       // Silently exit since no client bundle was requested
       return;
@@ -573,6 +663,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
     await this.createSwcGitignore();
   }
 
+  /**
+   * Creates a webhook handler bundle for resuming workflows via HTTP callbacks.
+   *
+   * @param bundle - If true, bundles dependencies (needed for Build Output API)
+   */
   protected async createWebhookBundle({
     outfile,
     bundle = false,
@@ -613,8 +708,7 @@ export const PUT = handler;
 export const PATCH = handler;
 export const DELETE = handler;
 export const HEAD = handler;
-export const OPTIONS = handler;
-`;
+export const OPTIONS = handler;`;
 
     if (!bundle) {
       // For Next.js, just write the unbundled file
@@ -658,6 +752,76 @@ export const OPTIONS = handler;
       'Created webhook bundle',
       `${Date.now() - webhookBundleStart}ms`
     );
+  }
+
+  /**
+   * Creates a package.json file with the specified module type.
+   */
+  protected async createPackageJson(
+    dir: string,
+    type: 'commonjs' | 'module'
+  ): Promise<void> {
+    const packageJson = { type };
+    await writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify(packageJson, null, 2)
+    );
+  }
+
+  /**
+   * Creates a .vc-config.json file for Vercel Build Output API functions.
+   */
+  protected async createVcConfig(
+    dir: string,
+    config: {
+      runtime?: string;
+      handler?: string;
+      launcherType?: string;
+      architecture?: string;
+      shouldAddHelpers?: boolean;
+      shouldAddSourcemapSupport?: boolean;
+      experimentalTriggers?: Array<{
+        type: string;
+        topic: string;
+        consumer: string;
+        maxDeliveries?: number;
+        retryAfterSeconds?: number;
+        initialDelaySeconds?: number;
+      }>;
+    }
+  ): Promise<void> {
+    const vcConfig = {
+      runtime: config.runtime ?? 'nodejs22.x',
+      handler: config.handler ?? 'index.js',
+      launcherType: config.launcherType ?? 'Nodejs',
+      architecture: config.architecture ?? 'arm64',
+      shouldAddHelpers: config.shouldAddHelpers ?? true,
+      ...(config.shouldAddSourcemapSupport !== undefined && {
+        shouldAddSourcemapSupport: config.shouldAddSourcemapSupport,
+      }),
+      ...(config.experimentalTriggers && {
+        experimentalTriggers: config.experimentalTriggers,
+      }),
+    };
+
+    await writeFile(
+      join(dir, '.vc-config.json'),
+      JSON.stringify(vcConfig, null, 2)
+    );
+  }
+
+  /**
+   * Resolves a path relative to the working directory.
+   */
+  protected resolvePath(path: string): string {
+    return resolve(this.config.workingDir, path);
+  }
+
+  /**
+   * Ensures the directory for a file path exists, creating it if necessary.
+   */
+  protected async ensureDirectory(filePath: string): Promise<void> {
+    await mkdir(dirname(filePath), { recursive: true });
   }
 
   private async createSwcGitignore(): Promise<void> {

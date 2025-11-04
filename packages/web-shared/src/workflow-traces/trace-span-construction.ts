@@ -142,18 +142,14 @@ export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
     data: hook,
   };
 
-  // TODO: Determine proper end time for hooks
-  // If there are hook_received events, use the createdAt of the last hook_received event.
-  // Otherwise, set the end time to 1 second after the hook was created.
-  const lastHookReceivedEvent = hookEvents.find(
-    (event) => event.eventType === 'hook_received'
-  );
+  const lastHookReceivedEvent = hookEvents
+    .slice()
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .find((event) => event.eventType === 'hook_received');
 
   const endTime = lastHookReceivedEvent
-    ? dateToOtelTime(lastHookReceivedEvent.createdAt)
-    : dateToOtelTime(
-        new Date(Math.max(hook.createdAt.getTime() + 10_000, Date.now()))
-      );
+    ? lastHookReceivedEvent.createdAt
+    : new Date(Math.max(hook.createdAt.getTime() + 10_000, Date.now()));
 
   // Convert hook-related events to span events
   const events = convertEventsToSpanEvents(hookEvents);

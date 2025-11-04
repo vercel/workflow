@@ -1,6 +1,6 @@
 {
   "name": "@workflow/cli",
-  "version": "4.0.1-beta.7",
+  "version": "4.0.1-beta.9",
   "description": "Command-line interface for Workflow DevKit",
   "type": "module",
   "bin": {
@@ -24,7 +24,6 @@
     "build": "tsc && chmod +x bin/run.js",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "dev": "tsc --watch",
-    "test": "vitest run src",
     "typecheck": "tsc --noEmit"
   },
   "oclif": {
@@ -38,7 +37,6 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@types/watchpack": "2.4.4",
     "@workflow/tsconfig": "workspace:*"
   },
   "dependencies": {
@@ -68,7 +66,6 @@
     "ora": "^8.2.0",
     "terminal-link": "^5.0.0",
     "tinyglobby": "^0.2.14",
-    "watchpack": "2.4.4",
     "xdg-app-paths": "^5.1.0",
     "zod": "catalog:"
   }

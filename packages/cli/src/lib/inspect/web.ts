@@ -152,6 +152,7 @@ async function startWebServer(): Promise<boolean> {
     // Start the Next.js server WITHOUT detaching
     // This keeps it attached to the CLI process
     serverProcess = spawn(command, args, {
+      shell: true,
       cwd: packagePath,
       detached: false, // Keep attached so Ctrl+C works
       stdio: ['ignore', 'pipe', 'pipe'], // Pipe output so we can log it if needed

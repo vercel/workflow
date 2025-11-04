@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 4a821fc: Fix Windows path handling by normalizing backslashes to forward slashes in workflow IDs
+
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- 05714f7: Add sveltekit workflow integration
+- Updated dependencies [05714f7]
+  - @workflow/world-local@4.0.1-beta.5
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

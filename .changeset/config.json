@@ -16,6 +16,7 @@
     "@workflow/example-nitro-v3",
     "@workflow/example-nitro-v2",
     "@workflow/example-nuxt",
-    "@workflow/example-vite"
+    "@workflow/example-vite",
+    "@workflow/example-sveltekit"
   ]
 }
