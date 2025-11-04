@@ -8,6 +8,8 @@ export interface DevTestConfig {
   generatedWorkflowPath: string;
   apiFilePath: string;
   apiFileImportPath: string;
+  /** The workflow file to modify for testing HMR. Defaults to 'streams.ts' */
+  testWorkflowFile?: string;
 }
 
 export function createDevTests(config: DevTestConfig) {
@@ -15,7 +17,7 @@ export function createDevTests(config: DevTestConfig) {
     const appPath = getWorkbenchAppPath();
     const generatedStep = path.join(appPath, config.generatedStepPath);
     const generatedWorkflow = path.join(appPath, config.generatedWorkflowPath);
-
+    const testWorkflowFile = config.testWorkflowFile ?? '3_streams.ts';
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     afterEach(async () => {
@@ -29,10 +31,12 @@ export function createDevTests(config: DevTestConfig) {
         })
       );
       restoreFiles.length = 0;
+      // Give the file watcher time to detect the restoration
+      await new Promise((res) => setTimeout(res, 500));
     });
 
     test('should rebuild on workflow change', { timeout: 10_000 }, async () => {
-      const workflowFile = path.join(appPath, 'workflows', 'streams.ts');
+      const workflowFile = path.join(appPath, 'workflows', testWorkflowFile);
 
       const content = await fs.readFile(workflowFile, 'utf8');
 
@@ -60,7 +64,7 @@ export async function myNewWorkflow() {
     });
 
     test('should rebuild on step change', { timeout: 10_000 }, async () => {
-      const stepFile = path.join(appPath, 'workflows', 'streams.ts');
+      const stepFile = path.join(appPath, 'workflows', testWorkflowFile);
 
       const content = await fs.readFile(stepFile, 'utf8');
 
