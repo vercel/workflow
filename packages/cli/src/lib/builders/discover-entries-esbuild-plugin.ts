@@ -74,12 +74,16 @@ export function createDiscoverEntriesPlugin(state: {
           const hasUseWorkflow = useWorkflowPattern.test(source);
           const hasUseStep = useStepPattern.test(source);
 
+          // Normalize path separators to forward slashes for cross-platform compatibility
+          // This is critical for Windows where paths contain backslashes
+          const normalizedPath = args.path.replace(/\\/g, '/');
+
           if (hasUseWorkflow) {
-            state.discoveredWorkflows.push(args.path);
+            state.discoveredWorkflows.push(normalizedPath);
           }
 
           if (hasUseStep) {
-            state.discoveredSteps.push(args.path);
+            state.discoveredSteps.push(normalizedPath);
           }
 
           const { code: transformedCode } = await applySwcTransform(
