@@ -1,14 +1,26 @@
 import { execSync } from 'node:child_process';
 import postgres from 'postgres';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createClient } from './drizzle/index.js';
 import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  test,
+} from 'vitest';
+import { createClient } from '../src/drizzle/index.js';
+import {
+  createEventsStorage,
   createRunsStorage,
   createStepsStorage,
-  createEventsStorage,
-} from './storage.js';
+} from '../src/storage.js';
 
 describe('Storage (Postgres integration)', () => {
+  if (process.platform === 'win32') {
+    test.skip('skipped on Windows since it relies on a docker container', () => {});
+    return;
+  }
   const connectionString =
     process.env.WORKFLOW_POSTGRES_URL ||
     'postgres://world:world@localhost:5432/world';
@@ -112,7 +124,9 @@ describe('Storage (Postgres integration)', () => {
           input: [],
         });
 
-        const updated = await runs.update(created.runId, { status: 'running' });
+        const updated = await runs.update(created.runId, {
+          status: 'running',
+        });
         expect(updated.status).toBe('running');
         expect(updated.startedAt).toBeInstanceOf(Date);
       });
