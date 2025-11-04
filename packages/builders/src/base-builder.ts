@@ -18,6 +18,12 @@ const enhancedResolve = promisify(enhancedResolveOriginal);
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
+/**
+ * Base class for workflow builders. Provides common build logic for transforming
+ * workflow source files into deployable bundles using esbuild and SWC.
+ *
+ * Subclasses must implement the build() method to define builder-specific logic.
+ */
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
 
@@ -25,8 +31,16 @@ export abstract class BaseBuilder {
     this.config = config;
   }
 
+  /**
+   * Performs the complete build process for workflows.
+   * Subclasses must implement this to define their specific build steps.
+   */
   abstract build(): Promise<void>;
 
+  /**
+   * Extracts TypeScript path mappings and baseUrl from tsconfig.json/jsconfig.json.
+   * Used to properly resolve module imports during bundling.
+   */
   protected async getTsConfigOptions(): Promise<{
     baseUrl?: string;
     paths?: Record<string, string[]>;
@@ -72,6 +86,11 @@ export abstract class BaseBuilder {
     return options;
   }
 
+  /**
+   * Discovers all source files in the configured directories.
+   * Searches for TypeScript and JavaScript files while excluding common build
+   * and dependency directories.
+   */
   protected async getInputFiles(): Promise<string[]> {
     const result = await glob(
       this.config.dirs.map(
@@ -96,6 +115,12 @@ export abstract class BaseBuilder {
     return result;
   }
 
+  /**
+   * Caches discovered workflow entries by input array reference.
+   * Uses WeakMap to allow garbage collection when input arrays are no longer referenced.
+   * This cache is invalidated automatically when the inputs array reference changes
+   * (e.g., when files are added/removed during watch mode).
+   */
   private discoveredEntries: WeakMap<
     string[],
     {
@@ -149,8 +174,10 @@ export abstract class BaseBuilder {
     return state;
   }
 
-  // write debug information to JSON file (maybe move to diagnostics folder)
-  // if on Vercel
+  /**
+   * Writes debug information to a JSON file for troubleshooting build issues.
+   * Executes whenever called, regardless of environment variables.
+   */
   private async writeDebugFile(
     outfile: string,
     debugData: object,
@@ -221,6 +248,12 @@ export abstract class BaseBuilder {
     }
   }
 
+  /**
+   * Creates a bundle for workflow step functions.
+   * Steps have full Node.js runtime access and handle side effects, API calls, etc.
+   *
+   * @param externalizeNonSteps - If true, only bundles step entry points and externalizes other code
+   */
   protected async createStepsBundle({
     inputFiles,
     format = 'cjs',
@@ -345,6 +378,12 @@ export abstract class BaseBuilder {
     await esbuildCtx.dispose();
   }
 
+  /**
+   * Creates a bundle for workflow orchestration functions.
+   * Workflows run in a sandboxed VM and coordinate step execution.
+   *
+   * @param bundleFinalOutput - If false, skips the final bundling step (used by Next.js)
+   */
   protected async createWorkflowsBundle({
     inputFiles,
     format = 'cjs',
@@ -535,6 +574,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
     await interimBundleCtx.dispose();
   }
 
+  /**
+   * Creates a client library bundle for workflow execution.
+   * The client library allows importing and calling workflows from application code.
+   * Only generated if clientBundlePath is specified in config.
+   */
   protected async createClientLibrary(): Promise<void> {
     if (!this.config.clientBundlePath) {
       // Silently exit since no client bundle was requested
@@ -586,6 +630,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
     await this.createSwcGitignore();
   }
 
+  /**
+   * Creates a webhook handler bundle for resuming workflows via HTTP callbacks.
+   *
+   * @param bundle - If true, bundles dependencies (needed for Build Output API)
+   */
   protected async createWebhookBundle({
     outfile,
     bundle = false,
