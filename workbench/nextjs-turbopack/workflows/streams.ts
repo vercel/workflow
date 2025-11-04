@@ -38,3 +38,13 @@ export async function write(
     writer.close();
   }
 }
+
+export async function myNewStep() {
+  'use step';
+  return 'hello world';
+}
+
+export async function myNewWorkflow() {
+  'use workflow';
+  return 'hello world';
+}
