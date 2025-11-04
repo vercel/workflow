@@ -32,20 +32,19 @@ export function createDevTests(config: DevTestConfig) {
     });
 
     test('should rebuild on workflow change', { timeout: 10_000 }, async () => {
-      const workflowFile = path.join(appPath, 'workflows', '99_e2e.ts');
+      const workflowFile = path.join(appPath, 'workflows', 'streams.ts');
 
       const content = await fs.readFile(workflowFile, 'utf8');
 
       await fs.writeFile(
         workflowFile,
-        `
-      ${content}
-      
-      export async function myNewWorkflow() {
-        'use workflow'
-        return 'hello world'
-      }
-    `
+        `${content}
+
+export async function myNewWorkflow() {
+  'use workflow'
+  return 'hello world'
+}
+`
       );
       restoreFiles.push({ path: workflowFile, content });
 
@@ -61,20 +60,19 @@ export function createDevTests(config: DevTestConfig) {
     });
 
     test('should rebuild on step change', { timeout: 10_000 }, async () => {
-      const stepFile = path.join(appPath, 'workflows', '99_e2e.ts');
+      const stepFile = path.join(appPath, 'workflows', 'streams.ts');
 
       const content = await fs.readFile(stepFile, 'utf8');
 
       await fs.writeFile(
         stepFile,
-        `
-      ${content}
-      
-      export async function myNewStep() {
-        'use step'
-        return 'hello world'
-      }
-    `
+        `${content}
+
+export async function myNewStep() {
+  'use step'
+  return 'hello world'
+}
+`
       );
       restoreFiles.push({ path: stepFile, content });
 
@@ -97,12 +95,11 @@ export function createDevTests(config: DevTestConfig) {
 
         await fs.writeFile(
           workflowFile,
-          `
-      export async function newWorkflowFile() {
-        'use workflow'
-        return 'hello world'
-      }
-    `
+          `export async function newWorkflowFile() {
+  'use workflow'
+  return 'hello world'
+}
+`
         );
         restoreFiles.push({ path: workflowFile, content: '' });
         const apiFile = path.join(appPath, config.apiFilePath);
@@ -112,10 +109,8 @@ export function createDevTests(config: DevTestConfig) {
 
         await fs.writeFile(
           apiFile,
-          `
-      import '${config.apiFileImportPath}/workflows/new-workflow';
-      ${apiFileContent}
-      `
+          `import '${config.apiFileImportPath}/workflows/new-workflow';
+${apiFileContent}`
         );
 
         while (true) {

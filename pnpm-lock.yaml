@@ -1219,6 +1219,10 @@ importers:
         version: 4.1.11
 
   workbench/nitro-v3:
+    dependencies:
+      '@node-rs/xxhash':
+        specifier: 1.7.6
+        version: 1.7.6
     devDependencies:
       ai:
         specifier: 'catalog:'
