@@ -1,3 +1,8 @@
+// Skip these tests on Windows since it relies on a docker container
+if (process.platform !== 'win32') {
+  process.exit(0);
+}
+
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { createTestSuite } from '@workflow/world-testing';
@@ -19,8 +24,4 @@ beforeAll(async () => {
 }, 120_000);
 
 test('smoke', () => {});
-
-// Skip these tests on Windows since it relies on a docker container
-if (process.platform !== 'win32') {
-  createTestSuite('./dist/index.js');
-}
+createTestSuite('./dist/index.js');
