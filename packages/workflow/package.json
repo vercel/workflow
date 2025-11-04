@@ -36,7 +36,7 @@
     "./next": "./dist/next.js",
     "./nitro": "./dist/nitro.js",
     "./sveltekit": "./dist/sveltekit.js",
-    "./rollup-plugin": "./dist/rollup-plugin.js",
+    "./rollup": "./dist/rollup.js",
     "./vite": "./dist/vite.js",
     "./runtime": "./dist/runtime.js"
   },
