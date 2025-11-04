@@ -1,4 +1,7 @@
 export interface ModuleOptions {
+  /** @internal */
+  _vite?: boolean;
+
   /**
    * Directories to scan for workflows and steps.
    *

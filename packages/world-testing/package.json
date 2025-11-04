@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-testing",
-  "version": "4.0.1-beta.7",
+  "version": "4.0.1-beta.8",
   "description": "Testing utilities and World implementation for Workflow DevKit",
   "main": "dist/src/index.mjs",
   "files": [
@@ -9,7 +9,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/workflow.git",

@@ -1,5 +1,17 @@
 # @workflow/world-testing
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- Updated dependencies [f973954]
+- Updated dependencies [a3326a2]
+- Updated dependencies [fcadd7b]
+  - workflow@4.0.1-beta.7
+  - @workflow/world@4.0.1-beta.4
+  - @workflow/cli@4.0.1-beta.7
+
 ## 4.0.1-beta.7
 
 ### Patch Changes

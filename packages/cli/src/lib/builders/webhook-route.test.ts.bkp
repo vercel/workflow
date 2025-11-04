@@ -2,7 +2,7 @@ import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WorkflowConfig } from '../config/types.js';
-import { NextBuilder } from './next-build.js';
+import { NextBuilder } from '@workflow/next/builder';
 import { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 
 describe('Webhook route generation', () => {

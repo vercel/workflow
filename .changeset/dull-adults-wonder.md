@@ -5,7 +5,6 @@
 "@workflow/world-testing": patch
 "@workflow/world-vercel": patch
 "@workflow/world-local": patch
-"@workflow/tsconfig": patch
 "workflow": patch
 "@workflow/errors": patch
 "@workflow/world": patch

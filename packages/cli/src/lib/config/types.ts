@@ -1,9 +1,12 @@
-export const validBuildTargets = [
-  'standalone',
-  'vercel-build-output-api',
-  'next',
-] as const;
-export type BuildTarget = (typeof validBuildTargets)[number];
+// Re-export builder types for backwards compatibility
+export type {
+  BuildTarget,
+  WorkflowConfig,
+} from '@workflow/builders';
+export {
+  isValidBuildTarget,
+  validBuildTargets,
+} from '@workflow/builders';
 
 export type InspectCLIOptions = {
   json?: boolean;
@@ -17,29 +20,5 @@ export type InspectCLIOptions = {
   workflowName?: string;
   withData?: boolean;
   backend?: string;
+  disableRelativeDates?: boolean;
 };
-
-export interface WorkflowConfig {
-  watch?: boolean;
-  dirs: string[];
-  workingDir: string;
-  buildTarget: BuildTarget;
-  stepsBundlePath: string;
-  workflowsBundlePath: string;
-  webhookBundlePath: string;
-
-  // Optionally generate a client library for workflow execution. The preferred
-  // method of using workflow is to use a loader within a framework (like
-  // NextJS) that resolves client bindings on the fly.
-  clientBundlePath?: string;
-
-  externalPackages?: string[];
-
-  workflowManifestPath?: string;
-}
-
-export function isValidBuildTarget(
-  target: string | undefined
-): target is BuildTarget {
-  return target === 'standalone' || target === 'vercel-build-output-api';
-}

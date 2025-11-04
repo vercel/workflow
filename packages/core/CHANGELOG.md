@@ -1,5 +1,18 @@
 # @workflow/core
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 10309c3: Downgrade `@types/node` to v22.19.0
+- f973954: Update license to Apache 2.0
+- Updated dependencies [10309c3]
+- Updated dependencies [f973954]
+  - @workflow/world-local@4.0.1-beta.4
+  - @workflow/world-vercel@4.0.1-beta.5
+  - @workflow/errors@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.4
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

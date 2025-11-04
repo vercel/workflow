@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world",
-  "version": "4.0.1-beta.3",
+  "version": "4.0.1-beta.4",
   "description": "The Workflows World interface",
   "type": "module",
   "main": "dist/index.js",
@@ -11,7 +11,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/workflow.git",

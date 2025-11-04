@@ -1,6 +1,7 @@
 {
   "name": "workflow-workspace",
   "private": true,
+  "license": "Apache-2.0",
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@changesets/cli": "^2.29.5",

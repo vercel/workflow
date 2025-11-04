@@ -1,9 +1,8 @@
 {
   "name": "@workflow/swc-plugin",
-  "version": "4.0.1-beta.1",
+  "version": "4.0.1-beta.2",
   "description": "SWC plugin for transforming Workflow DevKit code",
-  "author": "",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "swc_plugin_workflow.wasm",
   "files": [
