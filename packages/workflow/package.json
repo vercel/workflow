@@ -1,6 +1,6 @@
 {
   "name": "workflow",
-  "version": "4.0.1-beta.7",
+  "version": "4.0.1-beta.8",
   "description": "Workflow DevKit - Build durable, resilient, and observable workflows",
   "main": "dist/typescript-plugin.cjs",
   "type": "module",
@@ -36,7 +36,7 @@
     "./next": "./dist/next.js",
     "./nitro": "./dist/nitro.js",
     "./sveltekit": "./dist/sveltekit.js",
-    "./rollup-plugin": "./dist/rollup-plugin.js",
+    "./rollup": "./dist/rollup.js",
     "./vite": "./dist/vite.js",
     "./runtime": "./dist/runtime.js"
   },

@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 9e1ab0a: Add `preventClose` option to prevent closing writable after agent.stream
+- Updated dependencies [05714f7]
+- Updated dependencies [f563585]
+  - workflow@4.0.1-beta.8
+
 ## 4.0.1-beta.7
 
 ### Patch Changes
