@@ -161,6 +161,27 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               .join('/');
           }
 
+          // On Windows, handle case differences in drive letters.
+          // relative() might return an absolute path if the working dir and file path
+          // have different drive letter casing (e.g., 'D:' vs 'd:').
+          if (
+            (relativeFilepath.includes(':') ||
+              relativeFilepath.startsWith('/')) &&
+            !relativeFilepath.startsWith('../')
+          ) {
+            const lowerWd = normalizedWorkingDir.toLowerCase();
+            const lowerPath = normalizedPath.toLowerCase();
+            if (lowerPath.startsWith(lowerWd + '/')) {
+              // Manually strip the working directory
+              const stripped = normalizedPath
+                .substring(normalizedWorkingDir.length)
+                .replace(/^\//, '');
+              if (stripped) {
+                relativeFilepath = stripped;
+              }
+            }
+          }
+
           const { code: transformedCode, workflowManifest } =
             await applySwcTransform(
               relativeFilepath,
