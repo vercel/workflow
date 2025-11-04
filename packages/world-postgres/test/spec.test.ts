@@ -1,12 +1,12 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { createTestSuite } from '@workflow/world-testing';
-import { beforeAll, test, describe } from 'vitest';
+import { beforeAll, test } from 'vitest';
 
-// Skip postgres tests on Windows due to Docker socket issues with testcontainers
-const skipOnWindows = process.platform === 'win32' ? 'skip' : undefined;
-
-describe('postgres', { skip: skipOnWindows }, () => {
+// Skip these tests on Windows since it relies on a docker container
+if (process.platform !== 'win32') {
+  test.skip('skipped on Windows since it relies on a docker container', () => {});
+} else {
   beforeAll(async () => {
     const container = await new PostgreSqlContainer(
       'postgres:15-alpine'
@@ -26,4 +26,4 @@ describe('postgres', { skip: skipOnWindows }, () => {
 
   test('smoke', () => {});
   createTestSuite('./dist/index.js');
-});
+}
