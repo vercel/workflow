@@ -55,9 +55,29 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       return compact(value);
     },
     async resume(id) {
+      // Fetch current run to check if startedAt is already set
+      const [currentRun] = await drizzle
+        .select()
+        .from(runs)
+        .where(eq(runs.runId, id))
+        .limit(1);
+
+      if (!currentRun) {
+        throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
+      }
+
+      const updates: Partial<typeof runs._.inferInsert> = {
+        status: 'running',
+      };
+
+      // Only set startedAt the first time the run transitions to 'running'
+      if (!currentRun.startedAt) {
+        updates.startedAt = new Date();
+      }
+
       const [value] = await drizzle
         .update(Schema.runs)
-        .set({ status: 'running' })
+        .set(updates)
         .where(and(eq(runs.runId, id), eq(runs.status, 'paused')))
         .returning();
       if (!value) {
