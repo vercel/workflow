@@ -1,4 +1,5 @@
 import { defineNuxtModule } from '@nuxt/kit';
+import type { ModuleOptions as NitroModuleOptions } from '@workflow/nitro';
 
 // Module options TypeScript interface definition
 export interface ModuleOptions {
@@ -24,19 +25,9 @@ export default defineNuxtModule<ModuleOptions>({
     nuxt.options.nitro.modules ||= [];
 
     if (!nuxt.options.nitro.modules.includes('@workflow/nitro')) {
+      nuxt.options.nitro.workflow ||= {} as NitroModuleOptions;
+      nuxt.options.nitro.workflow.typescriptPlugin = options.typescriptPlugin;
       nuxt.options.nitro.modules.push('@workflow/nitro');
-    }
-
-    if (options.typescriptPlugin) {
-      nuxt.hook('nitro:config', (config) => {
-        config.typescript ||= {};
-        config.typescript.tsConfig ||= {};
-        config.typescript.tsConfig.compilerOptions ||= {};
-        config.typescript.tsConfig.compilerOptions.plugins ||= [];
-        config.typescript.tsConfig.compilerOptions.plugins.push({
-          name: 'workflow',
-        });
-      });
     }
   },
 });

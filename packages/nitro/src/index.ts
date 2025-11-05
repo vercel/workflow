@@ -22,6 +22,16 @@ export default {
       nitro.options.alias['debug'] ??= 'debug';
     }
 
+    // Add tsConfig plugin
+    if (nitro.options.workflow?.typescriptPlugin) {
+      nitro.options.typescript.tsConfig ||= {};
+      nitro.options.typescript.tsConfig.compilerOptions ||= {};
+      nitro.options.typescript.tsConfig.compilerOptions.plugins ||= [];
+      nitro.options.typescript.tsConfig.compilerOptions.plugins.push({
+        name: 'workflow',
+      });
+    }
+
     // Generate functions for vercel build
     if (isVercelDeploy) {
       nitro.hooks.hook('compiled', async () => {
