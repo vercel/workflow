@@ -2,7 +2,8 @@ import { defineEventHandler, readBody } from 'h3';
 import { getHookByToken, resumeHook } from 'workflow/api';
 
 export default defineEventHandler(async (event) => {
-  const { token, data } = await readBody(event);
+  const body = await readRawBody(event);
+  const { token, data } = JSON.parse(body as string);
 
   let hook: Awaited<ReturnType<typeof getHookByToken>>;
   try {
