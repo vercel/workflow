@@ -39,6 +39,7 @@ import { serializeTraceCarrier, trace, withTraceContext } from './telemetry.js';
 import { getErrorName, getErrorStack } from './types.js';
 import {
   buildWorkflowSuspensionMessage,
+  getPort,
   getWorkflowRunStreamId,
 } from './util.js';
 import { runWorkflow } from './workflow.js';
@@ -658,6 +659,8 @@ export const stepEntrypoint =
               ...Attribute.StepArgumentsCount(args.length),
             });
 
+            const port = getPort();
+
             result = await contextStorage.run(
               {
                 stepMetadata: {
@@ -672,7 +675,7 @@ export const stepEntrypoint =
                   // solution only works for vercel + embedded worlds.
                   url: process.env.VERCEL_URL
                     ? `https://${process.env.VERCEL_URL}`
-                    : `http://localhost:${process.env.PORT || 3000}`,
+                    : `http://localhost:${port}`,
                 },
                 ops,
               },

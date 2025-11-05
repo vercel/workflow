@@ -3,6 +3,7 @@ import Path from 'node:path';
 import type { World } from '@workflow/world';
 import { createEmbeddedWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
+import { getPort } from '../util.js';
 
 const require = createRequire(Path.join(process.cwd(), 'index.js'));
 
@@ -37,10 +38,12 @@ export const createWorld = (): World => {
     });
   }
 
+  const port = getPort() ?? undefined;
+
   if (targetWorld === 'embedded') {
     return createEmbeddedWorld({
       dataDir: process.env.WORKFLOW_EMBEDDED_DATA_DIR,
-      port: process.env.PORT ? Number(process.env.PORT) : undefined,
+      port,
     });
   }
 
