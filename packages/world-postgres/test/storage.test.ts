@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
 import {
   afterAll,
@@ -37,13 +38,19 @@ describe('Storage (Postgres integration)', () => {
 
   beforeAll(async () => {
     // Ensure schema is applied
-    process.env.DATABASE_URL = connectionString;
-    process.env.WORKFLOW_POSTGRES_URL = connectionString;
+    const container = await new PostgreSqlContainer(
+      'postgres:15-alpine'
+    ).start();
+    const dbUrl = container.getConnectionUri();
+    process.env.DATABASE_URL = dbUrl;
+    process.env.WORKFLOW_POSTGRES_URL = dbUrl;
     execSync('pnpm db:push', {
       stdio: 'inherit',
       cwd: process.cwd(),
       env: process.env,
     });
+
+    return () => container.stop();
   }, 120_000);
 
   beforeEach(async () => {
