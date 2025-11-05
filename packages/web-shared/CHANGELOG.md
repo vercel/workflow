@@ -1,5 +1,13 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- 9755566: Increase compatibility for node16 moduleResolution when used for direct imports
+- Updated dependencies [9f56434]
+  - @workflow/core@4.0.1-beta.9
+
 ## 4.0.1-beta.9
 
 ### Patch Changes

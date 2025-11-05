@@ -1,5 +1,12 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.5
+
+### Patch Changes
+
+- 355cede: Replace setting global symbol with catching unhandled rejection in SvelteKit integration
+  - @workflow/builders@4.0.1-beta.7
+
 ## 4.0.0-beta.4
 
 ### Patch Changes
