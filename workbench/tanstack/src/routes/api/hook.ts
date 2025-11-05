@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
+import { json } from '@tanstack/react-start';
 import { getHookByToken, resumeHook } from 'workflow/api';
 
 export const Route = createFileRoute('/api/hook')({
@@ -14,8 +15,8 @@ export const Route = createFileRoute('/api/hook')({
         } catch (error) {
           console.log('error during getHookByToken', error);
           // TODO: `WorkflowAPIError` is not exported, so for now
-          // we'll return 404 assuming it's the "invalid" token test case
-          return Response.json(null, { status: 404 });
+          // we'll return 400 assuming it's the "invalid" token test case
+          return json(null, { status: 400 });
         }
 
         await resumeHook(hook.token, {
@@ -24,7 +25,7 @@ export const Route = createFileRoute('/api/hook')({
           customData: hook.metadata?.customData,
         });
 
-        return Response.json(hook);
+        return json(hook);
       },
     },
   },
