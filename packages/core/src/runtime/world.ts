@@ -41,6 +41,7 @@ export const createWorld = (): World => {
     return createEmbeddedWorld({
       dataDir: process.env.WORKFLOW_EMBEDDED_DATA_DIR,
       port: process.env.PORT ? Number(process.env.PORT) : undefined,
+      baseUrl: process.env.WORKFLOW_BASE_URL,
     });
   }
 

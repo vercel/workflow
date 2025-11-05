@@ -16,9 +16,14 @@ const httpAgent = new Agent({
   headersTimeout: 0,
 });
 
-export function createQueue(port?: number): Queue {
+export function createQueue(portOrBaseUrl?: number | string): Queue {
   const transport = new JsonTransport();
   const generateId = monotonicFactory();
+
+  const baseUrl =
+    typeof portOrBaseUrl === 'string'
+      ? portOrBaseUrl
+      : `http://localhost:${portOrBaseUrl ?? 3000}`; // NOTE: nullish coalescing keeps port 0 working for ephemeral bindings.
 
   /**
    * holds inflight messages by idempotency key to ensure
@@ -61,7 +66,7 @@ export function createQueue(port?: number): Queue {
         defaultRetriesLeft--;
 
         const response = await fetch(
-          `http://localhost:${port}/.well-known/workflow/v1/${pathname}`,
+          `${baseUrl}/.well-known/workflow/v1/${pathname}`,
           {
             method: 'POST',
             duplex: 'half',
