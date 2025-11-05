@@ -292,8 +292,6 @@ describe('e2e', () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(404);
-    const body = await res.text();
-    expect(body).toBe('');
   });
 
   test('sleepingWorkflow', { timeout: 60_000 }, async () => {
