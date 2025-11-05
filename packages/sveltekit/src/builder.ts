@@ -160,12 +160,8 @@ export const POST = async ({request}) => {
     // Post-process the generated file to wrap with SvelteKit request converter
     let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
 
-    // For local dev (node), need this since context isn't available to waitUntil()
-    // Add SYMBOL_FOR_REQ_CONTEXT at the top after imports
-    webhookRouteContent = webhookRouteContent.replace(
-      /(import.*?;)/,
-      `$1\n\nconst SYMBOL_FOR_REQ_CONTEXT = Symbol.for('@vercel/request-context');`
-    );
+    webhookRouteContent = `process.on('unhandledRejection', (reason) => { if (reason !== undefined) console.error('Unhandled rejection detected', reason); });
+${webhookRouteContent}`;
 
     // Update handler signature to accept token as parameter
     webhookRouteContent = webhookRouteContent.replace(
@@ -184,32 +180,8 @@ export const POST = async ({request}) => {
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
       `${SVELTEKIT_REQUEST_CONVERTER}
 const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
-  // Track background promises for local dev
-  const backgroundPromises = [];
-  
-  // Set up context for @vercel/functions waitUntil
-  const context = {
-    waitUntil: platform?.waitUntil || ((promise) => {
-      // Fallback for local dev/tests: collect promises to await them
-      backgroundPromises.push(promise.catch(err => console.error('Background task error:', err)));
-    })
-  };
-  
-  // Only set context if it doesn't already exist (Vercel sets it and makes it read-only)
-  if (!globalThis[SYMBOL_FOR_REQ_CONTEXT]) {
-    globalThis[SYMBOL_FOR_REQ_CONTEXT] = {
-      get: () => context
-    };
-  }
-  
   const normalRequest = await convertSvelteKitRequest(request);
   const response = await handler(normalRequest, params.token);
-  
-  // In local dev (no platform.waitUntil), await background tasks before returning
-  if (!platform?.waitUntil && backgroundPromises.length > 0) {
-    await Promise.all(backgroundPromises);
-  }
-  
   return response;
 };
 
