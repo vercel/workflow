@@ -1,37 +1,59 @@
 import { execSync } from 'node:child_process';
+import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import postgres from 'postgres';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createClient } from './drizzle/index.js';
 import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  test,
+} from 'vitest';
+import { createClient } from '../src/drizzle/index.js';
+import {
+  createEventsStorage,
   createRunsStorage,
   createStepsStorage,
-  createEventsStorage,
-} from './storage.js';
+} from '../src/storage.js';
 
 describe('Storage (Postgres integration)', () => {
-  const connectionString =
-    process.env.WORKFLOW_POSTGRES_URL ||
-    'postgres://world:world@localhost:5432/world';
+  if (process.platform === 'win32') {
+    test.skip('skipped on Windows since it relies on a docker container', () => {});
+    return;
+  }
 
-  const sql = postgres(connectionString, { max: 1 });
-  const drizzle = createClient(sql);
-  const runs = createRunsStorage(drizzle);
-  const steps = createStepsStorage(drizzle);
-  const events = createEventsStorage(drizzle);
+  let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
+  let sql: ReturnType<typeof postgres>;
+  let drizzle: ReturnType<typeof createClient>;
+  let runs: ReturnType<typeof createRunsStorage>;
+  let steps: ReturnType<typeof createStepsStorage>;
+  let events: ReturnType<typeof createEventsStorage>;
 
   async function truncateTables() {
     await sql`TRUNCATE TABLE workflow_events, workflow_steps, workflow_hooks, workflow_runs RESTART IDENTITY CASCADE`;
   }
 
   beforeAll(async () => {
-    // Ensure schema is applied
-    process.env.DATABASE_URL = connectionString;
-    process.env.WORKFLOW_POSTGRES_URL = connectionString;
+    // Start PostgreSQL container
+    container = await new PostgreSqlContainer('postgres:15-alpine').start();
+    const dbUrl = container.getConnectionUri();
+    process.env.DATABASE_URL = dbUrl;
+    process.env.WORKFLOW_POSTGRES_URL = dbUrl;
+
+    // Apply schema
     execSync('pnpm db:push', {
       stdio: 'inherit',
       cwd: process.cwd(),
       env: process.env,
     });
+
+    // Initialize database clients and storage
+    sql = postgres(dbUrl, { max: 1 });
+    drizzle = createClient(sql);
+    runs = createRunsStorage(drizzle);
+    steps = createStepsStorage(drizzle);
+    events = createEventsStorage(drizzle);
   }, 120_000);
 
   beforeEach(async () => {
@@ -40,6 +62,7 @@ describe('Storage (Postgres integration)', () => {
 
   afterAll(async () => {
     await sql.end();
+    await container.stop();
   });
 
   describe('runs', () => {
@@ -112,7 +135,9 @@ describe('Storage (Postgres integration)', () => {
           input: [],
         });
 
-        const updated = await runs.update(created.runId, { status: 'running' });
+        const updated = await runs.update(created.runId, {
+          status: 'running',
+        });
         expect(updated.status).toBe('running');
         expect(updated.startedAt).toBeInstanceOf(Date);
       });
