@@ -31,6 +31,7 @@ export const WorkflowTraceViewer = ({
   env,
   isLoading,
   error,
+  height = 800,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -39,6 +40,7 @@ export const WorkflowTraceViewer = ({
   env: EnvMap;
   isLoading?: boolean;
   error?: Error | null;
+  height?: number;
 }) => {
   const [now, setNow] = useState(() => new Date());
 
@@ -176,7 +178,7 @@ export const WorkflowTraceViewer = ({
         customSpanEventClassNameFunc={getCustomSpanEventClassName}
         customPanelComponent={<WorkflowDetailPanel env={env} />}
       >
-        <TraceViewerTimeline height={800} trace={trace} withPanel />
+        <TraceViewerTimeline height={height} trace={trace} withPanel />
       </TraceViewerContextProvider>
     </div>
   );
