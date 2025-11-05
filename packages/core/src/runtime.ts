@@ -177,7 +177,7 @@ export class Run<TResult> {
   ): ReadableStream<R> {
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    return getExternalRevivers(global, ops).ReadableStream({
+    return getExternalRevivers(global, ops, this.runId).ReadableStream({
       name,
       startIndex,
     }) as ReadableStream<R>;
@@ -194,7 +194,13 @@ export class Run<TResult> {
         const run = await this.world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          return hydrateWorkflowReturnValue(run.output, [], globalThis);
+          return hydrateWorkflowReturnValue(
+            run.output,
+            [],
+            globalThis,
+            {},
+            this.runId
+          );
         }
 
         if (run.status === 'cancelled') {
@@ -652,7 +658,13 @@ export const stepEntrypoint =
             }
             // Hydrate the step input arguments
             const ops: Promise<void>[] = [];
-            const args = hydrateStepArguments(step.input, ops);
+            const args = hydrateStepArguments(
+              step.input,
+              ops,
+              globalThis,
+              {},
+              workflowRunId
+            );
 
             span?.setAttributes({
               ...Attribute.StepArgumentsCount(args.length),
@@ -679,7 +691,12 @@ export const stepEntrypoint =
               () => stepFn(...args)
             );
 
-            result = dehydrateStepReturnValue(result, ops);
+            result = dehydrateStepReturnValue(
+              result,
+              ops,
+              globalThis,
+              workflowRunId
+            );
 
             waitUntil(Promise.all(ops));
 

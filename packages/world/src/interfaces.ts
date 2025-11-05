@@ -32,9 +32,14 @@ import type {
 } from './steps.js';
 
 export interface Streamer {
-  writeToStream(name: string, chunk: string | Uint8Array): Promise<void>;
-  closeStream(name: string): Promise<void>;
+  writeToStream(
+    runId: string,
+    name: string,
+    chunk: string | Uint8Array
+  ): Promise<void>;
+  closeStream(runId: string, name: string): Promise<void>;
   readFromStream(
+    runId: string,
     name: string,
     startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;

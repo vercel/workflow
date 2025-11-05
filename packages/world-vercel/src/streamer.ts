@@ -7,7 +7,11 @@ function getStreamUrl(name: string, httpConfig: HttpConfig) {
 
 export function createStreamer(config?: APIConfig): Streamer {
   return {
-    async writeToStream(name, chunk) {
+    async writeToStream(
+      _runId: string,
+      name: string,
+      chunk: string | Uint8Array
+    ) {
       const httpConfig = await getHttpConfig(config);
       await fetch(getStreamUrl(name, httpConfig), {
         method: 'PUT',
@@ -17,7 +21,7 @@ export function createStreamer(config?: APIConfig): Streamer {
       });
     },
 
-    async closeStream(name) {
+    async closeStream(_runId: string, name: string) {
       const httpConfig = await getHttpConfig(config);
       httpConfig.headers.set('X-Stream-Done', 'true');
       await fetch(getStreamUrl(name, httpConfig), {
@@ -26,7 +30,7 @@ export function createStreamer(config?: APIConfig): Streamer {
       });
     },
 
-    async readFromStream(name, startIndex) {
+    async readFromStream(_runId: string, name: string, startIndex?: number) {
       const httpConfig = await getHttpConfig(config);
       const url = getStreamUrl(name, httpConfig);
       if (typeof startIndex === 'number') {

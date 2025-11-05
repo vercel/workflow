@@ -129,10 +129,11 @@ describe('streamer', () => {
     describe('writeToStream', () => {
       it('should write string chunks to a stream', async () => {
         const { testDir, streamer } = await setupStreamer();
+        const runId = 'wrun_test123';
         const streamName = 'test-stream';
 
-        await streamer.writeToStream(streamName, 'hello');
-        await streamer.writeToStream(streamName, ' world');
+        await streamer.writeToStream(runId, streamName, 'hello');
+        await streamer.writeToStream(runId, streamName, ' world');
 
         // Verify chunks directory was created
         const chunksDir = path.join(testDir, 'streams', 'chunks');
@@ -145,12 +146,13 @@ describe('streamer', () => {
 
       it('should write Buffer chunks to a stream', async () => {
         const { testDir, streamer } = await setupStreamer();
+        const runId = 'wrun_test123';
         const streamName = 'buffer-stream';
         const buffer1 = Buffer.from('chunk1');
         const buffer2 = Buffer.from('chunk2');
 
-        await streamer.writeToStream(streamName, buffer1);
-        await streamer.writeToStream(streamName, buffer2);
+        await streamer.writeToStream(runId, streamName, buffer1);
+        await streamer.writeToStream(runId, streamName, buffer2);
 
         const chunksDir = path.join(testDir, 'streams', 'chunks');
         const files = await fs.readdir(chunksDir);
@@ -161,10 +163,11 @@ describe('streamer', () => {
 
       it('should write Uint8Array chunks to a stream', async () => {
         const { testDir, streamer } = await setupStreamer();
+        const runId = 'wrun_test123';
         const streamName = 'uint8-stream';
         const uint8Array = new Uint8Array([1, 2, 3, 4]);
 
-        await streamer.writeToStream(streamName, uint8Array);
+        await streamer.writeToStream(runId, streamName, uint8Array);
 
         const chunksDir = path.join(testDir, 'streams', 'chunks');
         const files = await fs.readdir(chunksDir);
@@ -175,10 +178,11 @@ describe('streamer', () => {
 
       it('should handle multiple streams independently', async () => {
         const { testDir, streamer } = await setupStreamer();
+        const runId = 'wrun_test123';
 
-        await streamer.writeToStream('stream1', 'data1');
-        await streamer.writeToStream('stream2', 'data2');
-        await streamer.writeToStream('stream1', 'data3');
+        await streamer.writeToStream(runId, 'stream1', 'data1');
+        await streamer.writeToStream(runId, 'stream2', 'data2');
+        await streamer.writeToStream(runId, 'stream1', 'data3');
 
         const chunksDir = path.join(testDir, 'streams', 'chunks');
         const files = await fs.readdir(chunksDir);
@@ -194,10 +198,10 @@ describe('streamer', () => {
     describe('closeStream', () => {
       it('should close an empty stream', async () => {
         const { testDir, streamer } = await setupStreamer();
-
+        const runId = 'wrun_test123';
         const streamName = 'empty-stream';
 
-        await streamer.closeStream(streamName);
+        await streamer.closeStream(runId, streamName);
 
         const chunksDir = path.join(testDir, 'streams', 'chunks');
         const files = await fs.readdir(chunksDir);
@@ -208,12 +212,12 @@ describe('streamer', () => {
 
       it('should close a stream with existing chunks', async () => {
         const { testDir, streamer } = await setupStreamer();
-
+        const runId = 'wrun_test123';
         const streamName = 'existing-stream';
 
-        await streamer.writeToStream(streamName, 'chunk1');
-        await streamer.writeToStream(streamName, 'chunk2');
-        await streamer.closeStream(streamName);
+        await streamer.writeToStream(runId, streamName, 'chunk1');
+        await streamer.writeToStream(runId, streamName, 'chunk2');
+        await streamer.closeStream(runId, streamName);
 
         const chunksDir = path.join(testDir, 'streams', 'chunks');
         const files = await fs.readdir(chunksDir);
@@ -225,18 +229,18 @@ describe('streamer', () => {
     describe('readFromStream', () => {
       it('should read chunks from a completed stream', async () => {
         const { streamer } = await setupStreamer();
-
+        const runId = 'wrun_test123';
         const streamName = 'read-stream';
         const chunk1 = 'hello ';
         const chunk2 = 'world';
 
-        await streamer.writeToStream(streamName, chunk1);
+        await streamer.writeToStream(runId, streamName, chunk1);
         // Add a small delay to ensure different ULID timestamps
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(streamName, chunk2);
-        await streamer.closeStream(streamName);
+        await streamer.writeToStream(runId, streamName, chunk2);
+        await streamer.closeStream(runId, streamName);
 
-        const stream = await streamer.readFromStream(streamName);
+        const stream = await streamer.readFromStream(runId, streamName);
         const reader = stream.getReader();
 
         const chunks: Uint8Array[] = [];
@@ -256,18 +260,18 @@ describe('streamer', () => {
 
       it('should read binary data correctly', async () => {
         const { streamer } = await setupStreamer();
-
+        const runId = 'wrun_test123';
         const streamName = 'binary-stream';
         const binaryData1 = new Uint8Array([1, 2, 3]);
         const binaryData2 = new Uint8Array([4, 5, 6]);
 
-        await streamer.writeToStream(streamName, binaryData1);
+        await streamer.writeToStream(runId, streamName, binaryData1);
         // Add delay to ensure different ULID timestamps
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(streamName, binaryData2);
-        await streamer.closeStream(streamName);
+        await streamer.writeToStream(runId, streamName, binaryData2);
+        await streamer.closeStream(runId, streamName);
 
-        const stream = await streamer.readFromStream(streamName);
+        const stream = await streamer.readFromStream(runId, streamName);
         const reader = stream.getReader();
 
         const chunks: Uint8Array[] = [];
@@ -295,18 +299,18 @@ describe('streamer', () => {
 
       it('should preserve chunk order based on ULID timestamps', async () => {
         const { streamer } = await setupStreamer();
-
+        const runId = 'wrun_test123';
         const streamName = 'ordered-stream';
 
         // Write chunks with small delays to ensure different ULID timestamps
-        await streamer.writeToStream(streamName, '1');
+        await streamer.writeToStream(runId, streamName, '1');
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(streamName, '2');
+        await streamer.writeToStream(runId, streamName, '2');
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(streamName, '3');
-        await streamer.closeStream(streamName);
+        await streamer.writeToStream(runId, streamName, '3');
+        await streamer.closeStream(runId, streamName);
 
-        const stream = await streamer.readFromStream(streamName);
+        const stream = await streamer.readFromStream(runId, streamName);
         const reader = stream.getReader();
 
         const chunks: string[] = [];
@@ -327,21 +331,21 @@ describe('streamer', () => {
     describe('integration scenarios', () => {
       it('should handle complete write-close-read cycle', async () => {
         const { streamer } = await setupStreamer();
-
+        const runId = 'wrun_test123';
         const streamName = 'integration-stream';
 
         // Write chunks with proper timing
-        await streamer.writeToStream(streamName, 'start ');
+        await streamer.writeToStream(runId, streamName, 'start ');
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(streamName, 'middle ');
+        await streamer.writeToStream(runId, streamName, 'middle ');
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(streamName, 'end');
+        await streamer.writeToStream(runId, streamName, 'end');
 
         // Close the stream
-        await streamer.closeStream(streamName);
+        await streamer.closeStream(runId, streamName);
 
         // Read complete stream
-        const completeStream = await streamer.readFromStream(streamName);
+        const completeStream = await streamer.readFromStream(runId, streamName);
         const completeReader = completeStream.getReader();
         const completeChunks: Uint8Array[] = [];
         let completeDone = false;
@@ -362,25 +366,26 @@ describe('streamer', () => {
         // Run multiple iterations to increase probability of catching race conditions
         for (let iteration = 0; iteration < 10; iteration++) {
           const { streamer } = await setupStreamer();
+          const runId = 'wrun_test123';
           const streamName = `race-${iteration}`;
 
           // Write a few chunks to disk first
-          await streamer.writeToStream(streamName, '0\n');
-          await streamer.writeToStream(streamName, '1\n');
+          await streamer.writeToStream(runId, streamName, '0\n');
+          await streamer.writeToStream(runId, streamName, '1\n');
 
           // Start writing chunks in background IMMEDIATELY before reading
           const writeTask = (async () => {
             for (let i = 2; i < 10; i++) {
-              await streamer.writeToStream(streamName, `${i}\n`);
+              await streamer.writeToStream(runId, streamName, `${i}\n`);
               // No delay - fire them off as fast as possible to hit the race window
             }
-            await streamer.closeStream(streamName);
+            await streamer.closeStream(runId, streamName);
           })();
 
           // Start reading - this triggers start() which should set up listeners
           // BEFORE listing files to avoid missing chunks, and track delivered
           // chunk IDs to avoid duplicates
-          const stream = await streamer.readFromStream(streamName);
+          const stream = await streamer.readFromStream(runId, streamName);
           const reader = stream.getReader();
           const chunks: string[] = [];
 
@@ -426,16 +431,17 @@ describe('streamer', () => {
 
       it('should maintain chronological order when chunks arrive during disk reading', async () => {
         const { streamer } = await setupStreamer();
+        const runId = 'wrun_test123';
         const streamName = 'ordering-test';
 
         // Write chunks 0-4 to disk
         for (let i = 0; i < 5; i++) {
-          await streamer.writeToStream(streamName, `${i}\n`);
+          await streamer.writeToStream(runId, streamName, `${i}\n`);
           await new Promise((resolve) => setTimeout(resolve, 2));
         }
 
         // Start reading
-        const stream = await streamer.readFromStream(streamName);
+        const stream = await streamer.readFromStream(runId, streamName);
         const reader = stream.getReader();
         const chunks: string[] = [];
 
@@ -452,10 +458,10 @@ describe('streamer', () => {
 
         // Immediately write more chunks (5-9) while disk reading might be in progress
         for (let i = 5; i < 10; i++) {
-          await streamer.writeToStream(streamName, `${i}\n`);
+          await streamer.writeToStream(runId, streamName, `${i}\n`);
         }
 
-        await streamer.closeStream(streamName);
+        await streamer.closeStream(runId, streamName);
         await readPromise;
 
         // Verify chunks are in exact chronological order (not just all present)
