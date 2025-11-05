@@ -414,6 +414,9 @@ importers:
       '@aws-sdk/credential-provider-web-identity':
         specifier: 3.609.0
         version: 3.609.0(@aws-sdk/client-sts@3.844.0)
+      '@standard-schema/spec':
+        specifier: ^1.0.0
+        version: 1.0.0
       '@types/ms':
         specifier: ^2.1.0
         version: 2.1.0
@@ -460,9 +463,6 @@ importers:
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.0
-      '@standard-schema/spec':
-        specifier: ^1.0.0
-        version: 1.0.0
       '@types/debug':
         specifier: ^4.1.12
         version: 4.1.12

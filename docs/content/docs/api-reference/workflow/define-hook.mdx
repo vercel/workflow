@@ -116,20 +116,21 @@ export async function POST(request: Request) {
 ```
 
 ### Validate and Transform with Schema
-The optional `schema` accepts any validator that implements the [Standard Schema v1](https://standardschema.dev/) contract.
+
+The optional `schema` accepts any validator that conforms to [Standard Schema v1](https://standardschema.dev).
+
 Zod is shown below as one example, but libraries like Valibot, ArkType, Effect Schema, or your own custom validator work as well.
+
 ```typescript lineNumbers
 import { defineHook } from "workflow";
 import { z } from "zod";
 
-const approvalSchema = z.object({
-  approved: z.boolean(),
-  comment: z.string().min(1).transform((value) => value.trim()),
-});
-
 export const approvalHook = defineHook({
   // Provide a schema to validate/transform payloads.
-  schema: approvalSchema, // [!code highlight]
+  schema: z.object({ // [!code highlight]
+    approved: z.boolean(), // [!code highlight]
+    comment: z.string().min(1).transform((value) => value.trim()), // [!code highlight]
+  }), // [!code highlight]
 });
 
 export async function approvalWorkflow(approvalId: string) {
