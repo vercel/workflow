@@ -1,19 +1,21 @@
 import type { Streamer } from '@workflow/world';
 import { type APIConfig, getHttpConfig, type HttpConfig } from './utils.js';
 
-function getStreamUrl(name: string, httpConfig: HttpConfig) {
-  return new URL(`${httpConfig.baseUrl}/v1/stream/${encodeURIComponent(name)}`);
+function getStreamUrl(runId: string, name: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v1/run/${runId}/stream/${encodeURIComponent(name)}`
+  );
 }
 
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     async writeToStream(
-      _runId: string,
+      runId: string,
       name: string,
       chunk: string | Uint8Array
     ) {
       const httpConfig = await getHttpConfig(config);
-      await fetch(getStreamUrl(name, httpConfig), {
+      await fetch(getStreamUrl(runId, name, httpConfig), {
         method: 'PUT',
         body: chunk,
         headers: httpConfig.headers,
@@ -21,18 +23,18 @@ export function createStreamer(config?: APIConfig): Streamer {
       });
     },
 
-    async closeStream(_runId: string, name: string) {
+    async closeStream(runId: string, name: string) {
       const httpConfig = await getHttpConfig(config);
       httpConfig.headers.set('X-Stream-Done', 'true');
-      await fetch(getStreamUrl(name, httpConfig), {
+      await fetch(getStreamUrl(runId, name, httpConfig), {
         method: 'PUT',
         headers: httpConfig.headers,
       });
     },
 
-    async readFromStream(_runId: string, name: string, startIndex?: number) {
+    async readFromStream(runId: string, name: string, startIndex?: number) {
       const httpConfig = await getHttpConfig(config);
-      const url = getStreamUrl(name, httpConfig);
+      const url = getStreamUrl(runId, name, httpConfig);
       if (typeof startIndex === 'number') {
         url.searchParams.set('startIndex', String(startIndex));
       }
