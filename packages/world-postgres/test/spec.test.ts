@@ -23,7 +23,9 @@ if (process.platform === 'win32') {
   }, 120_000);
 
   afterAll(async () => {
-    await container.stop();
+    if (container) {
+      await container.stop();
+    }
   });
 
   test('smoke', () => {});
