@@ -1,3 +1,5 @@
+'use client';
+
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import { Loader2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
