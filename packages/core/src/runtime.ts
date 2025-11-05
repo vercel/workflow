@@ -674,6 +674,7 @@ export const stepEntrypoint =
                     ? `https://${process.env.VERCEL_URL}`
                     : `http://localhost:${process.env.PORT || 3000}`,
                 },
+                ops,
               },
               () => stepFn(...args)
             );

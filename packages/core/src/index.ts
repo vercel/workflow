@@ -34,4 +34,7 @@ export {
   type WorkflowMetadata,
 } from './step/get-workflow-metadata.js';
 export { sleep } from './sleep.js';
-export { getWritable } from './writable-stream.js';
+export {
+  getWritable,
+  type WorkflowWritableStreamOptions,
+} from './step/writable-stream.js';
