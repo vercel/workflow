@@ -5,13 +5,13 @@ import { createHook } from './create-hook.js';
 /**
  * NOTE: This is the implementation of `defineHook()` that is used in workflow contexts.
  */
-export function defineHook<T>() {
+export function defineHook<TInput, TOutput = TInput>() {
   return {
-    create(options?: HookOptions): Hook<T> {
-      return createHook<T>(options);
+    create(options?: HookOptions): Hook<TOutput> {
+      return createHook<TOutput>(options);
     },
 
-    resume(_token: string, _payload: T): Promise<HookEntity | null> {
+    resume(_token: string, _payload: TInput): Promise<HookEntity | null> {
       throw new Error(
         '`defineHook().resume()` can only be called from external contexts (e.g. API routes).'
       );
