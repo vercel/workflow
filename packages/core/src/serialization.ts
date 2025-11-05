@@ -326,12 +326,16 @@ export function getExternalReducers(
         throw new Error('ReadableStream is locked');
       }
 
+      if (!runId) {
+        throw new Error(
+          'ReadableStream cannot be passed as a workflow argument. Streams are only supported within workflow or step functions, not as initial arguments.'
+        );
+      }
+
       const name = global.crypto.randomUUID();
       const type = getStreamType(value);
 
-      // Use a placeholder runId if not available (e.g., when initially starting workflow)
-      const streamRunId = runId || 'pending';
-      const writable = new WorkflowServerWritableStream(streamRunId, name);
+      const writable = new WorkflowServerWritableStream(runId, name);
       if (type === 'bytes') {
         ops.push(value.pipeTo(writable));
       } else {
@@ -351,11 +355,16 @@ export function getExternalReducers(
 
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
+
+      if (!runId) {
+        throw new Error(
+          'WritableStream cannot be passed as a workflow argument. Streams are only supported within workflow or step functions, not as initial arguments.'
+        );
+      }
+
       const name = global.crypto.randomUUID();
-      // Use a placeholder runId if not available
-      const streamRunId = runId || 'pending';
       ops.push(
-        new WorkflowServerReadableStream(streamRunId, name)
+        new WorkflowServerReadableStream(runId, name)
           .pipeThrough(
             getDeserializeStream(getExternalRevivers(global, ops, runId))
           )
@@ -444,12 +453,16 @@ function getStepReducers(
       let type = value[STREAM_TYPE_SYMBOL];
 
       if (!name) {
+        if (!runId) {
+          throw new Error(
+            'ReadableStream cannot be serialized without a valid runId'
+          );
+        }
+
         name = global.crypto.randomUUID();
         type = getStreamType(value);
 
-        // Use a placeholder runId if not available
-        const streamRunId = runId || 'pending';
-        const writable = new WorkflowServerWritableStream(streamRunId, name);
+        const writable = new WorkflowServerWritableStream(runId, name);
         if (type === 'bytes') {
           ops.push(value.pipeTo(writable));
         } else {
@@ -473,11 +486,15 @@ function getStepReducers(
 
       let name = value[STREAM_NAME_SYMBOL];
       if (!name) {
+        if (!runId) {
+          throw new Error(
+            'WritableStream cannot be serialized without a valid runId'
+          );
+        }
+
         name = global.crypto.randomUUID();
-        // Use a placeholder runId if not available
-        const streamRunId = runId || 'pending';
         ops.push(
-          new WorkflowServerReadableStream(streamRunId, name)
+          new WorkflowServerReadableStream(runId, name)
             .pipeThrough(
               getDeserializeStream(getStepRevivers(global, ops, runId))
             )
@@ -607,10 +624,14 @@ export function getExternalRevivers(
         return response.body;
       }
 
-      // Use a placeholder runId if not available
-      const streamRunId = runId || 'pending';
+      if (!runId) {
+        throw new Error(
+          'ReadableStream cannot be revived without a valid runId'
+        );
+      }
+
       const readable = new WorkflowServerReadableStream(
-        streamRunId,
+        runId,
         value.name,
         value.startIndex
       );
@@ -625,14 +646,18 @@ export function getExternalRevivers(
       }
     },
     WritableStream: (value) => {
+      if (!runId) {
+        throw new Error(
+          'WritableStream cannot be revived without a valid runId'
+        );
+      }
+
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, runId)
       );
-      // Use a placeholder runId if not available
-      const streamRunId = runId || 'pending';
       ops.push(
         serialize.readable.pipeTo(
-          new WorkflowServerWritableStream(streamRunId, value.name)
+          new WorkflowServerWritableStream(runId, value.name)
         )
       );
       return serialize.writable;
@@ -759,10 +784,14 @@ function getStepRevivers(
         return response.body;
       }
 
-      // Use a placeholder runId if not available
-      const streamRunId = runId || 'pending';
+      if (!runId) {
+        throw new Error(
+          'ReadableStream cannot be revived without a valid runId'
+        );
+      }
+
       const readable = new WorkflowServerReadableStream(
-        streamRunId,
+        runId,
         value.name
       );
       if (value.type === 'bytes') {
@@ -776,12 +805,16 @@ function getStepRevivers(
       }
     },
     WritableStream: (value) => {
+      if (!runId) {
+        throw new Error(
+          'WritableStream cannot be revived without a valid runId'
+        );
+      }
+
       const serialize = getSerializeStream(getStepReducers(global, ops, runId));
-      // Use a placeholder runId if not available
-      const streamRunId = runId || 'pending';
       ops.push(
         serialize.readable.pipeTo(
-          new WorkflowServerWritableStream(streamRunId, value.name)
+          new WorkflowServerWritableStream(runId, value.name)
         )
       );
       return serialize.writable;
