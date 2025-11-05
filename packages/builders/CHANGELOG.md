@@ -1,5 +1,11 @@
 # @workflow/builders
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- c2fa9df: Fix node module esbuild plugin file regex filter
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

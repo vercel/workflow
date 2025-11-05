@@ -1,5 +1,11 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.7
+
+### Patch Changes
+
+- 8a82ec5: Bug fixes and test coverage for Storage.ts in Postgres World
+
 ## 4.1.0-beta.6
 
 ### Patch Changes
