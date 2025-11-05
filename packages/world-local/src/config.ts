@@ -6,20 +6,31 @@ const getDataDirFromEnv = () => {
 
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
 
+export const normalizeBaseUrl = (
+  value: string,
+  sourceLabel = 'baseUrl' // NOTE: Should I keep this? This helps us throw errors like Invalid baseUrl: … or WORKFLOW_BASE_URL cannot be empty
+) => {
+  const candidate = value.trim();
+  if (candidate.length === 0) {
+    throw new Error(`${sourceLabel} cannot be empty`);
+  }
+
+  try {
+    const url = new URL(candidate);
+    // Preserve any path segments (for reverse proxies) but trim trailing slashes to avoid duplicates.
+    return url.href.replace(/\/+$/, '');
+  } catch {
+    throw new Error(`Invalid ${sourceLabel}: ${value}`);
+  }
+};
+
 const getBaseUrlFromEnv = () => {
   const baseUrl = process.env.WORKFLOW_BASE_URL;
   if (!baseUrl) {
     return null;
   }
 
-  try {
-    const url = new URL(baseUrl);
-    // NOTE: Preserve any path segments so deployments behind a proxy keep working,
-    // while trimming the trailing slash to avoid accidental double slashes.
-    return url.href.replace(/\/$/, '');
-  } catch {
-    throw new Error(`Invalid WORKFLOW_BASE_URL: ${baseUrl}`);
-  }
+  return normalizeBaseUrl(baseUrl, 'WORKFLOW_BASE_URL');
 };
 
 const getPortFromEnv = () => {

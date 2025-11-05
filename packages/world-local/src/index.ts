@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { config } from './config.js';
+import { config, normalizeBaseUrl } from './config.js';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
@@ -22,9 +22,12 @@ export function createEmbeddedWorld({
 }): World {
   const dir = dataDir ?? config.value.dataDir;
 
+  const overrideBaseUrl =
+    typeof baseUrl === 'string' ? normalizeBaseUrl(baseUrl, 'baseUrl') : null;
+
   // TODO: confirm with Gal on priority. Current Priority - baseUrl parameter > config baseUrl > port parameter > config port > default 3000
   const queueBaseUrl =
-    baseUrl ?? config.value.baseUrl ?? port ?? config.value.port;
+    overrideBaseUrl ?? config.value.baseUrl ?? port ?? config.value.port;
 
   const finalUrl =
     typeof queueBaseUrl === 'string'
