@@ -1,4 +1,4 @@
-import { defineEventHandler, getRequestURL, readBody } from 'h3';
+import { defineEventHandler, getRequestURL, readRawBody } from 'h3';
 import { start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from '../_workflows.js';
@@ -42,9 +42,9 @@ export default defineEventHandler(async (event) => {
     });
   } else {
     // Args from body
-    const body = await readBody(event);
+    const body = await readRawBody(event);
     if (body) {
-      args = hydrateWorkflowArguments(body, globalThis);
+      args = hydrateWorkflowArguments(JSON.parse(body), globalThis);
     } else {
       args = [42];
     }
