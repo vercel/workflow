@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.0.1-beta.9
+
+### Patch Changes
+
+- 9f56434: Add support for getWritable directly in step functions
+
 ## 4.0.1-beta.8
 
 ### Patch Changes
