@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
+import { json } from '@tanstack/react-start';
 import { allWorkflows } from '_workflows.js';
 import { getRun, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
@@ -49,7 +50,7 @@ export const Route = createFileRoute('/api/trigger')({
                   'Content-Type': 'application/octet-stream',
                 },
               })
-            : Response.json(returnValue);
+            : json(returnValue);
         } catch (error) {
           if (error instanceof Error) {
             if (error.name === 'WorkflowRunNotCompletedError') {
