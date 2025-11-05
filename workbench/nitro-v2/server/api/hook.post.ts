@@ -1,4 +1,4 @@
-import { defineEventHandler, readBody } from 'h3';
+import { defineEventHandler, readRawBody } from 'h3';
 import { getHookByToken, resumeHook } from 'workflow/api';
 
 export default defineEventHandler(async (event) => {
