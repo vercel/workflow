@@ -1,5 +1,29 @@
 # @workflow/world-local
 
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- 05714f7: Add sveltekit workflow integration
+
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- 10309c3: Fix long-running steps to not time out after 5 minutes
+- f973954: Update license to Apache 2.0
+- Updated dependencies [f973954]
+  - @workflow/world@4.0.1-beta.4
+
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- 20d51f0: Allow `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY` env var to set max queue visibility timeout
+- Updated dependencies [20d51f0]
+- Updated dependencies [70be894]
+  - @workflow/world@4.0.1-beta.3
+
 ## 4.0.1-beta.2
 
 ### Patch Changes

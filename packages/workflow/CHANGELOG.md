@@ -1,5 +1,75 @@
 # workflow
 
+## 4.0.1-beta.9
+
+### Patch Changes
+
+- 8a24093: Change rollup export path
+- Updated dependencies [4a821fc]
+- Updated dependencies [8a24093]
+  - @workflow/cli@4.0.1-beta.9
+  - @workflow/core@4.0.1-beta.8
+  - @workflow/next@4.0.1-beta.9
+  - @workflow/nitro@4.0.1-beta.9
+  - @workflow/sveltekit@4.0.0-beta.3
+  - @workflow/typescript-plugin@4.0.1-beta.4
+
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 05714f7: Add sveltekit workflow integration
+- f563585: Export WorkflowReadableStreamOptions from workflow/api
+- Updated dependencies [a09a3ea]
+- Updated dependencies [ebee7f5]
+- Updated dependencies [652485a]
+- Updated dependencies [4585222]
+- Updated dependencies [10bfd4a]
+- Updated dependencies [5dfa4eb]
+- Updated dependencies [05714f7]
+- Updated dependencies [2363e47]
+- Updated dependencies [bf54a7b]
+  - @workflow/cli@4.0.1-beta.8
+  - @workflow/nitro@4.0.1-beta.8
+  - @workflow/next@4.0.1-beta.8
+  - @workflow/sveltekit@4.0.0-beta.2
+  - @workflow/core@4.0.1-beta.7
+  - @workflow/typescript-plugin@4.0.1-beta.4
+
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- fcadd7b: Fix TypeScript LSP plugin for Node.js v20
+- Updated dependencies [10309c3]
+- Updated dependencies [5078925]
+- Updated dependencies [f973954]
+- Updated dependencies [a3326a2]
+- Updated dependencies [fcadd7b]
+  - @workflow/core@4.0.1-beta.6
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.3
+  - @workflow/nitro@4.0.1-beta.7
+  - @workflow/next@4.0.1-beta.7
+  - @workflow/cli@4.0.1-beta.7
+
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 70be894: Implement `sleep()` natively into the workflow runtime
+- Updated dependencies [796fafd]
+- Updated dependencies [796fafd]
+- Updated dependencies [70be894]
+- Updated dependencies [20d51f0]
+  - @workflow/core@4.0.1-beta.5
+  - @workflow/errors@4.0.1-beta.2
+  - @workflow/cli@4.0.1-beta.6
+  - @workflow/next@4.0.1-beta.6
+  - @workflow/nitro@4.0.1-beta.6
+  - @workflow/typescript-plugin@4.0.1-beta.3
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

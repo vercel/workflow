@@ -1,5 +1,18 @@
 # @workflow/world
 
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- 20d51f0: Add optional `retryAfter` property to `Step` interface
+- 70be894: Implement `sleep()` natively into the workflow runtime
+
 ## 4.0.1-beta.2
 
 ### Patch Changes

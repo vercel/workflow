@@ -1,4 +1,4 @@
-import { NextBuilder } from '@workflow/cli/dist/lib/builders/next-build';
+import { NextBuilder } from './builder.js';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 

@@ -1,0 +1,54 @@
+{
+  "name": "@workflow/builders",
+  "version": "4.0.1-beta.5",
+  "description": "Shared builder infrastructure for Workflow DevKit",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./base-builder": {
+      "types": "./dist/base-builder.d.ts",
+      "default": "./dist/base-builder.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/builders"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "tsc --build --clean && rm -r dist ||:",
+    "dev": "tsc --watch",
+    "test": "vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*"
+  },
+  "dependencies": {
+    "@swc/core": "1.11.24",
+    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "@workflow/core": "workspace:*",
+    "builtin-modules": "^5.0.0",
+    "chalk": "^5.6.2",
+    "comment-json": "4.2.5",
+    "enhanced-resolve": "5.18.2",
+    "esbuild": "catalog:",
+    "find-up": "7.0.0",
+    "tinyglobby": "^0.2.14"
+  }
+}

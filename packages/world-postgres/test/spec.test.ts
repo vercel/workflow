@@ -1,22 +1,33 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { createTestSuite } from '@workflow/world-testing';
-import { beforeAll, test } from 'vitest';
+import { afterAll, beforeAll, test } from 'vitest';
 
-beforeAll(async () => {
-  const container = await new PostgreSqlContainer('postgres:15-alpine').start();
-  const dbUrl = container.getConnectionUri();
-  process.env.WORKFLOW_POSTGRES_URL = dbUrl;
-  process.env.DATABASE_URL = dbUrl;
+// Skip these tests on Windows since it relies on a docker container
+if (process.platform === 'win32') {
+  test.skip('skipped on Windows since it relies on a docker container', () => {});
+} else {
+  let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
 
-  execSync('pnpm db:push', {
-    stdio: 'inherit',
-    cwd: process.cwd(),
-    env: process.env,
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer('postgres:15-alpine').start();
+    const dbUrl = container.getConnectionUri();
+    process.env.WORKFLOW_POSTGRES_URL = dbUrl;
+    process.env.DATABASE_URL = dbUrl;
+
+    execSync('pnpm db:push', {
+      stdio: 'inherit',
+      cwd: process.cwd(),
+      env: process.env,
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    if (container) {
+      await container.stop();
+    }
   });
 
-  return () => container.stop();
-}, 120_000);
-
-test('smoke', () => {});
-createTestSuite('./dist/index.js');
+  test('smoke', () => {});
+  createTestSuite('./dist/index.js');
+}

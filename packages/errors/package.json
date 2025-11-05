@@ -1,7 +1,7 @@
 {
   "name": "@workflow/errors",
   "description": "A package for standardizing errors in Workflow DevKit",
-  "version": "4.0.1-beta.1",
+  "version": "4.0.1-beta.3",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -10,7 +10,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/workflow.git",

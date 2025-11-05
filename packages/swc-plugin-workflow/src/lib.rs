@@ -63,7 +63,10 @@ pub fn process_transform(
         filename
     };
     
-    let mut visitor = StepTransform::new(plugin_config.mode, relative_filename);
+    // Normalize path separators to forward slashes for consistent workflow IDs across platforms
+    let normalized_filename = relative_filename.replace('\\', "/");
+    
+    let mut visitor = StepTransform::new(plugin_config.mode, normalized_filename);
     program.visit_mut_with(&mut visitor);
     program
 }

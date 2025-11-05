@@ -50,3 +50,7 @@ export function createWorld(
     },
   };
 }
+
+// Re-export schema for users who want to extend or inspect the database schema
+export type { PostgresWorldConfig } from './config.js';
+export * from './drizzle/schema.js';

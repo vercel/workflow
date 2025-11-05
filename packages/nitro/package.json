@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nitro",
-  "version": "4.0.1-beta.5",
+  "version": "4.0.1-beta.9",
   "description": "Nitro integration for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/workflow.git",
@@ -18,7 +18,8 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./rollup-plugin": "./dist/rollup-plugin.js"
+    "./rollup": "./dist/rollup.js",
+    "./vite": "./dist/vite.js"
   },
   "scripts": {
     "build": "tsc",
@@ -27,15 +28,16 @@
   },
   "dependencies": {
     "@swc/core": "1.11.24",
-    "@workflow/cli": "workspace:*",
-    "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
+    "@workflow/builders": "workspace:*",
+    "@workflow/core": "workspace:*",
     "exsolve": "^1.0.7",
     "pathe": "^2.0.3"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "nitro": "latest"
+    "nitro": "catalog:",
+    "vite": "^7.1.12"
   }
 }

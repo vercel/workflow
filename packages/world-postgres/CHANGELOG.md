@@ -1,5 +1,40 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.6
+
+### Patch Changes
+
+- Updated dependencies [05714f7]
+  - @workflow/world-local@4.0.1-beta.5
+
+## 4.1.0-beta.5
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- Updated dependencies [10309c3]
+- Updated dependencies [f973954]
+  - @workflow/world-local@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.4
+
+## 4.1.0-beta.4
+
+### Minor Changes
+
+- 3dd25de: Exported the database schema and added a script for initializing the database with all the required tables for the setup.
+
+### Patch Changes
+
+- 20d51f0: Add optional `retryAfter` property to `Step` interface
+- Updated dependencies [796fafd]
+- Updated dependencies [20d51f0]
+- Updated dependencies [20d51f0]
+- Updated dependencies [70be894]
+  - @workflow/errors@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.3
+
 ## 4.0.1-beta.3
 
 ### Patch Changes

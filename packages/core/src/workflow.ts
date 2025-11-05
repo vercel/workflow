@@ -15,6 +15,7 @@ import {
   BODY_INIT_SYMBOL,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
 } from './symbols.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -24,6 +25,7 @@ import { createContext } from './vm/index.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
+import { createSleep } from './workflow/sleep.js';
 
 export async function runWorkflow(
   workflowCode: string,
@@ -82,11 +84,14 @@ export async function runWorkflow(
 
     const useStep = createUseStep(workflowContext);
     const createHook = createCreateHook(workflowContext);
+    const sleep = createSleep(workflowContext);
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_USE_STEP] = useStep;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[WORKFLOW_SLEEP] = sleep;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
@@ -218,8 +223,9 @@ export async function runWorkflow(
           this.credentials = 'same-origin';
         }
 
-        if (init?.cache !== undefined) {
-          this.cache = init.cache;
+        // `any` cast here because @types/node v22 does not yet have `cache`
+        if ((init as any)?.cache !== undefined) {
+          this.cache = (init as any).cache;
         } else if (typeof this.cache !== 'string') {
           this.cache = 'default';
         }

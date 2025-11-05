@@ -1,5 +1,27 @@
 # @workflow/web
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 7db9e94: Fix hook events not displaying on trace viewer if there's multiple hook_received events
+
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- 2ae7426: Clean up loading animation on trace viewer
+- f973954: Update license to Apache 2.0
+- 2ae7426: Export react-jsx transpiled code, not raw jsx
+
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 8f63385: Add readme section about self-hosting observability UI
+- 20d51f0: Add optional `retryAfter` property to `Step` interface
+- 55e2d0b: Extract reusable web UI code into shared package
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

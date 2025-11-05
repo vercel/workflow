@@ -1,5 +1,25 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- Updated dependencies [f973954]
+  - @workflow/errors@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.4
+
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- 20d51f0: Enforce the Vercel Queue max visibility limit
+- Updated dependencies [796fafd]
+- Updated dependencies [20d51f0]
+- Updated dependencies [70be894]
+  - @workflow/errors@4.0.1-beta.2
+  - @workflow/world@4.0.1-beta.3
+
 ## 4.0.1-beta.3
 
 ### Patch Changes

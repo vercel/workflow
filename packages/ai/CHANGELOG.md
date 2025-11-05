@@ -1,5 +1,38 @@
 # @workflow/ai
 
+## 4.0.1-beta.9
+
+### Patch Changes
+
+- Updated dependencies [8a24093]
+  - workflow@4.0.1-beta.9
+
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 9e1ab0a: Add `preventClose` option to prevent closing writable after agent.stream
+- Updated dependencies [05714f7]
+- Updated dependencies [f563585]
+  - workflow@4.0.1-beta.8
+
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+- Updated dependencies [f973954]
+- Updated dependencies [fcadd7b]
+  - workflow@4.0.1-beta.7
+
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 577d212: Use instance API endpoint in WorkflowChatTransport
+- Updated dependencies [70be894]
+  - workflow@4.0.1-beta.6
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

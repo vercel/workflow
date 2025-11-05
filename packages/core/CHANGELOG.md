@@ -1,5 +1,49 @@
 # @workflow/core
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 4a821fc: Fix Windows path handling by normalizing backslashes to forward slashes in workflow IDs
+
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- 05714f7: Add sveltekit workflow integration
+- Updated dependencies [05714f7]
+  - @workflow/world-local@4.0.1-beta.5
+
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 10309c3: Downgrade `@types/node` to v22.19.0
+- f973954: Update license to Apache 2.0
+- Updated dependencies [10309c3]
+- Updated dependencies [f973954]
+  - @workflow/world-local@4.0.1-beta.4
+  - @workflow/world-vercel@4.0.1-beta.5
+  - @workflow/errors@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.4
+
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- 796fafd: Remove `isInstanceOf()` function and utilize `is()` method on Error subclasses instead
+- 70be894: Implement `sleep()` natively into the workflow runtime
+- 20d51f0: Respect the `retryAfter` property in the step function callback handler
+- Updated dependencies [20d51f0]
+- Updated dependencies [796fafd]
+- Updated dependencies [20d51f0]
+- Updated dependencies [20d51f0]
+- Updated dependencies [70be894]
+  - @workflow/world-vercel@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.3
+
 ## 4.0.1-beta.4
 
 ### Patch Changes

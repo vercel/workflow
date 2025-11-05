@@ -27,7 +27,8 @@ type AttributeKey =
   | keyof WorkflowRun
   | keyof Hook
   | keyof Event
-  | 'eventData';
+  | 'eventData'
+  | 'resumeAt';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -50,12 +51,14 @@ const attributeOrder: AttributeKey[] = [
   'startedAt',
   'updatedAt',
   'completedAt',
+  'retryAfter',
   'error',
   'errorCode',
   'metadata',
   'eventData',
   'input',
   'output',
+  'resumeAt',
 ];
 
 const sortByAttributeOrder = (a: string, b: string): number => {
@@ -98,6 +101,8 @@ const attributeToDisplayFn: Record<
   startedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   updatedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   completedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
+  retryAfter: (value: unknown) => new Date(String(value)).toLocaleString(),
+  resumeAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   // Resolved attributes, won't actually use this function
   metadata: JsonBlock,
   input: (value: unknown) => {

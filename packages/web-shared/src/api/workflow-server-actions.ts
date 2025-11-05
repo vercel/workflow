@@ -65,12 +65,13 @@ function createServerActionError(
     err.message?.includes('HTTP') ||
     err.message?.includes('network');
 
-  return {
+  const actionError: ServerActionError = {
     message: getUserFacingMessage(err),
     layer: isAPIError ? 'API' : 'server',
     cause: err.stack || err.message,
     request: params ? { operation, params } : undefined,
   };
+  return actionError;
 }
 
 /**
@@ -175,7 +176,6 @@ export async function fetchRun(
     const world = getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData });
     const hydratedRun = hydrate(run as WorkflowRun);
-    console.log('hydratedRun', hydratedRun.input);
     return createResponse(hydratedRun);
   } catch (error) {
     console.error('Failed to fetch run:', error);

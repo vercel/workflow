@@ -1,5 +1,6 @@
 import cp from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { WorkflowRunSchema } from '@workflow/world';
 import chalk, { type ChalkInstance } from 'chalk';
 import jsonlines from 'jsonlines';
@@ -24,13 +25,13 @@ export const Worlds = {
 };
 
 export async function startServer(opts: { world: string }) {
-  let serverPath = new URL('./server.mts', import.meta.url).pathname;
+  let serverPath = new URL('./server.mts', import.meta.url);
 
   if (!existsSync(serverPath)) {
-    serverPath = new URL('./server.mjs', import.meta.url).pathname;
+    serverPath = new URL('./server.mjs', import.meta.url);
   }
 
-  const proc = cp.spawn('node', [serverPath], {
+  const proc = cp.spawn('node', [fileURLToPath(serverPath)], {
     stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,

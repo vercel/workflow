@@ -1,5 +1,18 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- 4a821fc: Fix Windows path handling by normalizing backslashes to forward slashes in workflow IDs
+- 4a821fc: Fix building SWC plugin on Windows
+
+## 4.0.1-beta.2
+
+### Patch Changes
+
+- f973954: Update license to Apache 2.0
+
 ## 4.0.1-beta.1
 
 ### Patch Changes

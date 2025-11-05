@@ -23,6 +23,8 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'step_retrying',
   'step_failed',
   'workflow_failed',
+  'wait_created',
+  'wait_completed',
 ]);
 
 /**
@@ -48,6 +50,44 @@ export function convertEventsToSpanEvents(
       // Control whether to show vertical line in timeline
       showVerticalLine: shouldShowVerticalLine(event.eventType),
     }));
+}
+
+/**
+ * Converts a workflow Wait to an OpenTelemetry Span
+ */
+export function waitToSpan(
+  correlationId: string,
+  events: Event[],
+  nowTime?: Date
+): Span {
+  const startEvent = events.find((event) => event.eventType === 'wait_created');
+  const endEvent = events.find((event) => event.eventType === 'wait_completed');
+  const startTime = startEvent?.createdAt ?? nowTime;
+  const endTime = endEvent?.createdAt ?? nowTime;
+  const start = dateToOtelTime(startTime);
+  const end = dateToOtelTime(endTime);
+  const duration = calculateDuration(startTime, endTime);
+  const spanEvents = convertEventsToSpanEvents(events);
+  return {
+    spanId: correlationId,
+    name: 'sleep',
+    kind: 1, // INTERNAL span kind
+    resource: 'sleep',
+    library: WORKFLOW_LIBRARY,
+    status: { code: 0 },
+    traceFlags: 1,
+    attributes: {
+      resource: 'sleep' as const,
+      data: {
+        correlationId,
+      },
+    },
+    links: [],
+    events: spanEvents,
+    duration,
+    startTime: start,
+    endTime: end,
+  };
 }
 
 /**
@@ -102,18 +142,14 @@ export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
     data: hook,
   };
 
-  // TODO: Determine proper end time for hooks
-  // If there are hook_received events, use the createdAt of the last hook_received event.
-  // Otherwise, set the end time to 1 second after the hook was created.
-  const lastHookReceivedEvent = hookEvents.find(
-    (event) => event.eventType === 'hook_received'
-  );
+  const lastHookReceivedEvent = hookEvents
+    .slice()
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .find((event) => event.eventType === 'hook_received');
 
   const endTime = lastHookReceivedEvent
-    ? dateToOtelTime(lastHookReceivedEvent.createdAt)
-    : dateToOtelTime(
-        new Date(Math.max(hook.createdAt.getTime() + 10_000, Date.now()))
-      );
+    ? lastHookReceivedEvent.createdAt
+    : new Date(Math.max(hook.createdAt.getTime() + 10_000, Date.now()));
 
   // Convert hook-related events to span events
   const events = convertEventsToSpanEvents(hookEvents);
