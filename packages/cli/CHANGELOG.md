@@ -1,5 +1,15 @@
 # @workflow/cli
 
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- 03faac1: Fix CLI `--web` flag on Windows
+- d71da4a: Update "alpha" text in CLI help to "beta"
+- Updated dependencies [c2fa9df]
+  - @workflow/builders@4.0.1-beta.6
+  - @workflow/web@4.0.1-beta.8
+
 ## 4.0.1-beta.9
 
 ### Patch Changes
