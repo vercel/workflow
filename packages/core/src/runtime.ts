@@ -8,6 +8,7 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { getPort } from '@workflow/utils';
 import type {
   Event,
   WorkflowRun,
@@ -39,7 +40,6 @@ import { serializeTraceCarrier, trace, withTraceContext } from './telemetry.js';
 import { getErrorName, getErrorStack } from './types.js';
 import {
   buildWorkflowSuspensionMessage,
-  getPort,
   getWorkflowRunStreamId,
 } from './util.js';
 import { runWorkflow } from './workflow.js';
