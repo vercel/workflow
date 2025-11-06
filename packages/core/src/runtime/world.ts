@@ -3,7 +3,6 @@ import Path from 'node:path';
 import type { World } from '@workflow/world';
 import { createEmbeddedWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
-import { getPort } from '../util.js';
 
 const require = createRequire(Path.join(process.cwd(), 'index.js'));
 
