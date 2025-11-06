@@ -43,7 +43,7 @@ async function callAPI(endpoint) {
   if (response.status === 429) {
     // Customize retry delay - accepts duration strings, milliseconds, or Date instances
     throw new RetryableError("Too many requests. Retrying...", {
-      retryAfter: "30s"  // Can also use: 30000 (milliseconds) or new Date(Date.now() + 30000)
+      retryAfter: "30s"
     });
   }
 
