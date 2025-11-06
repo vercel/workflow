@@ -8,7 +8,7 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { getPort } from '@workflow/utils';
+import { getPort } from './util.js';
 import type {
   Event,
   WorkflowRun,

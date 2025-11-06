@@ -1,6 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import { JsonTransport } from '@vercel/queue';
-import { getPort } from '@workflow/utils';
+import { pidToPorts } from 'pid-port';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
@@ -171,4 +171,20 @@ export function createQueue(port?: number): Queue {
   };
 
   return { queue, createQueueHandler, getDeploymentId };
+}
+
+/**
+ * Gets the port number that the process is listening on.
+ * @returns The port number that the process is listening on, or undefined if the process is not listening on any port.
+ * NOTE: Can't move this to @workflow/utils because it's being imported into @workflow/errors for RetryableError (inside workflow runtime)
+ */
+export async function getPort(): Promise<number | undefined> {
+  const pid = process.pid;
+  const ports = await pidToPorts(pid);
+  if (!ports || ports.size === 0) {
+    return undefined;
+  }
+
+  const smallest = Math.min(...ports);
+  return smallest;
 }
