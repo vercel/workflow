@@ -58,12 +58,12 @@ export function createQueue(port?: number): Queue {
 
     (async () => {
       let defaultRetriesLeft = 3;
-      const port = await getPort();
+      const portToUse = port ?? (await getPort());
       for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
         defaultRetriesLeft--;
 
         const response = await fetch(
-          `http://localhost:${port}/.well-known/workflow/v1/${pathname}`,
+          `http://localhost:${portToUse}/.well-known/workflow/v1/${pathname}`,
           {
             method: 'POST',
             duplex: 'half',
