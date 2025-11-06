@@ -80,10 +80,7 @@ export function getDeserializeStream(
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
 
-  constructor(runId: string, name: string, startIndex?: number) {
-    if (typeof runId !== 'string' || runId.length === 0) {
-      throw new Error(`"runId" is required, got "${runId}"`);
-    }
+  constructor(name: string, startIndex?: number) {
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`"name" is required, got "${name}"`);
     }
@@ -326,26 +323,23 @@ export function getExternalReducers(
         throw new Error('ReadableStream is locked');
       }
 
-      if (!runId) {
-        throw new Error(
-          'ReadableStream cannot be passed as a workflow argument. Streams are only supported within workflow or step functions, not as initial arguments.'
-        );
-      }
-
       const name = global.crypto.randomUUID();
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(runId, name);
-      if (type === 'bytes') {
-        ops.push(value.pipeTo(writable));
-      } else {
-        ops.push(
-          value
-            .pipeThrough(
-              getSerializeStream(getExternalReducers(global, ops, runId))
-            )
-            .pipeTo(writable)
-        );
+      // Only pipe stream data if we have a runId
+      if (runId) {
+        const writable = new WorkflowServerWritableStream(runId, name);
+        if (type === 'bytes') {
+          ops.push(value.pipeTo(writable));
+        } else {
+          ops.push(
+            value
+              .pipeThrough(
+                getSerializeStream(getExternalReducers(global, ops, runId))
+              )
+              .pipeTo(writable)
+          );
+        }
       }
 
       const s: SerializableSpecial['ReadableStream'] = { name };
@@ -356,20 +350,19 @@ export function getExternalReducers(
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
-      if (!runId) {
-        throw new Error(
-          'WritableStream cannot be passed as a workflow argument. Streams are only supported within workflow or step functions, not as initial arguments.'
+      const name = global.crypto.randomUUID();
+
+      // Only pipe stream data if we have a runId
+      if (runId) {
+        ops.push(
+          new WorkflowServerReadableStream(name)
+            .pipeThrough(
+              getDeserializeStream(getExternalRevivers(global, ops, runId))
+            )
+            .pipeTo(value)
         );
       }
 
-      const name = global.crypto.randomUUID();
-      ops.push(
-        new WorkflowServerReadableStream(runId, name)
-          .pipeThrough(
-            getDeserializeStream(getExternalRevivers(global, ops, runId))
-          )
-          .pipeTo(value)
-      );
       return { name };
     },
   };
@@ -494,7 +487,7 @@ function getStepReducers(
 
         name = global.crypto.randomUUID();
         ops.push(
-          new WorkflowServerReadableStream(runId, name)
+          new WorkflowServerReadableStream(name)
             .pipeThrough(
               getDeserializeStream(getStepRevivers(global, ops, runId))
             )
@@ -624,14 +617,7 @@ export function getExternalRevivers(
         return response.body;
       }
 
-      if (!runId) {
-        throw new Error(
-          'ReadableStream cannot be revived without a valid runId'
-        );
-      }
-
       const readable = new WorkflowServerReadableStream(
-        runId,
         value.name,
         value.startIndex
       );
@@ -784,13 +770,7 @@ function getStepRevivers(
         return response.body;
       }
 
-      if (!runId) {
-        throw new Error(
-          'ReadableStream cannot be revived without a valid runId'
-        );
-      }
-
-      const readable = new WorkflowServerReadableStream(runId, value.name);
+      const readable = new WorkflowServerReadableStream(value.name);
       if (value.type === 'bytes') {
         return readable;
       } else {
