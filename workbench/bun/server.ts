@@ -1,4 +1,3 @@
-import type { Serve } from 'bun';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { createWorkflowRoutes } from 'workflow/bun';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
