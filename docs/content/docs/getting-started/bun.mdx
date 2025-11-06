@@ -247,7 +247,7 @@ Workflows can be triggered from API routes, Server Actions, or any server-side c
 
 ## Run in development
 
-To start your development server, run the following command in your terminal in the Next.js root directory:
+To start your development server, run the following command in your terminal in the Bun root directory:
 
 ```bash
 bun index.ts
@@ -259,7 +259,7 @@ Once your development server is running, you can trigger your workflow by runnin
 curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/signup
 ```
 
-Check the Next.js development server logs to see your workflow execute as well as the steps that are being processed.
+Check the Bun development server logs to see your workflow execute as well as the steps that are being processed.
 
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
