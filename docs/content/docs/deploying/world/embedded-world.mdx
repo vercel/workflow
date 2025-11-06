@@ -72,7 +72,7 @@ export WORKFLOW_EMBEDDED_DATA_DIR=./custom-workflow-data
 ```typescript
 import { createEmbeddedWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld('./custom-workflow-data');
+const world = createEmbeddedWorld({ dataDir: './custom-workflow-data' });
 ```
 
 ### Port
@@ -90,7 +90,25 @@ You can also specify it explicitly when creating the world programmatically:
 ```typescript
 import { createEmbeddedWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld(undefined, 3000);
+const world = createEmbeddedWorld({ port: 3000 });
+```
+
+### Base URL
+
+By default, the local world constructs the base URL from the detected port (e.g., `http://localhost:3000`). You can override this with the `WORKFLOW_EMBEDDED_BASE_URL` environment variable or programmatically:
+
+**Environment variable:**
+
+```bash
+export WORKFLOW_EMBEDDED_BASE_URL=http://localhost:8080
+```
+
+**Programmatically:**
+
+```typescript
+import { createEmbeddedWorld } from '@workflow/world-local';
+
+const world = createEmbeddedWorld({ baseUrl: 'http://localhost:8080' });
 ```
 
 ## Usage
@@ -172,26 +190,41 @@ Creates a local world instance:
 
 ```typescript
 function createEmbeddedWorld(
-  dataDir?: string,
-  port?: number
+  args?: Partial<Config>
 ): World
 ```
 
 **Parameters:**
 
-- `dataDir` - Directory for storing workflow data (default: `.workflow-data/`)
-- `port` - Server port for queue transport (default: from `PORT` env var)
+- `args` - Optional configuration object:
+  - `dataDir` - Directory for storing workflow data (default: `.workflow-data/` or `WORKFLOW_EMBEDDED_DATA_DIR` env var)
+  - `port` - Server port for queue transport (default: `3000` or `PORT` env var)
+  - `baseUrl` - Base URL for queue transport (default: `http://localhost:{port}` or `WORKFLOW_EMBEDDED_BASE_URL` env var)
 
 **Returns:**
 
 - `World` - A world instance implementing the World interface
 
-**Example:**
+**Examples:**
 
 ```typescript
 import { createEmbeddedWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld('./my-data', 3000);
+// Use all defaults
+const world = createEmbeddedWorld();
+
+// Customize data directory
+const world = createEmbeddedWorld({ dataDir: './my-data' });
+
+// Customize port
+const world = createEmbeddedWorld({ port: 3000 });
+
+// Customize multiple options
+const world = createEmbeddedWorld({
+  dataDir: './my-data',
+  port: 3000,
+  baseUrl: 'http://localhost:8080',
+});
 ```
 
 ## Learn More
