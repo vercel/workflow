@@ -11,7 +11,7 @@ import { createStreamer } from './streamer.js';
  * @param {Partial<Config>} args - The configuration to use for the embedded world.
  */
 export function createEmbeddedWorld(args: Partial<Config>): World {
-  const mergedConfig = { ...config.value, ...args };
+  const mergedConfig = { ...config.value, ...(args ?? {}) };
   return {
     ...createQueue(mergedConfig),
     ...createStorage(mergedConfig.dataDir),
