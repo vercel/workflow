@@ -36,6 +36,7 @@
     "vitest": "catalog:"
   },
   "dependencies": {
-    "ms": "2.1.3"
+    "ms": "2.1.3",
+    "pid-port": "^2.0.0"
   }
 }

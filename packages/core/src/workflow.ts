@@ -1,6 +1,6 @@
 import { runInContext } from 'node:vm';
 import { ERROR_SLUGS } from '@workflow/errors';
-import { withResolvers } from '@workflow/utils';
+import { getPort, withResolvers } from '@workflow/utils';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
