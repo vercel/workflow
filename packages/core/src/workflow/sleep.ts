@@ -1,8 +1,8 @@
+import { parseDurationToDate, withResolvers } from '@workflow/utils';
 import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
-import { parseDurationToDate, withResolvers } from '../util.js';
 
 export function createSleep(ctx: WorkflowOrchestratorContext) {
   return async function sleepImpl(
