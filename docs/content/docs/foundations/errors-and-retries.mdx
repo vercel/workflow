@@ -87,7 +87,7 @@ async function callApi(endpoint: string) {
     const retryAfter = response.headers.get("Retry-After");
     // Delay the retry until after a timeout
     throw new RetryableError("Too many requests. Retrying...", { // [!code highlight]
-      retryAfter: parseInt(retryAfter) * 1000, // Convert seconds to milliseconds // [!code highlight]
+      retryAfter: `${retryAfter}s`, // [!code highlight]
     }); // [!code highlight]
   }
 
@@ -110,7 +110,6 @@ async function callApi(endpoint: string) {
   const response = await fetch(endpoint);
 
   if (response.status >= 500) {
-    // Exponential backoffs (in milliseconds)
     throw new RetryableError("Backing off...", {
       retryAfter: (metadata.attempt ** 2) * 1000,  // [!code highlight]
     });
@@ -124,7 +123,7 @@ async function callApi(endpoint: string) {
     const retryAfter = response.headers.get("Retry-After");
     // Delay the retry until after a timeout
     throw new RetryableError("Too many requests. Retrying...", {
-      retryAfter: parseInt(retryAfter) * 1000, // Convert seconds to milliseconds
+      retryAfter: `${retryAfter}s`,
     });
   }
 

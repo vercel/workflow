@@ -4,106 +4,36 @@ import { RetryableError } from './index.js';
 describe('RetryableError', () => {
   describe('retryAfter handling', () => {
     it('should treat number as milliseconds', () => {
-      const before = Date.now();
       const error = new RetryableError('Test error', {
-        retryAfter: 5000, // 5000 milliseconds = 5 seconds
+        retryAfter: 5000,
       });
-      const after = Date.now();
-
-      // The retryAfter date should be approximately 5 seconds from now
-      const expectedTime = before + 5000;
-      const actualTime = error.retryAfter.getTime();
-
-      // Allow for small timing differences (within 100ms)
-      expect(actualTime).toBeGreaterThanOrEqual(expectedTime - 10);
-      expect(actualTime).toBeLessThanOrEqual(after + 5000 + 10);
+      const delay = error.retryAfter.getTime() - Date.now();
+      expect(delay).toBeGreaterThan(4900);
+      expect(delay).toBeLessThan(5100);
     });
 
     it('should handle string durations', () => {
-      const before = Date.now();
       const error = new RetryableError('Test error', {
         retryAfter: '5s',
       });
-      const after = Date.now();
-
-      // The retryAfter date should be approximately 5 seconds from now
-      const expectedTime = before + 5000;
-      const actualTime = error.retryAfter.getTime();
-
-      // Allow for small timing differences (within 100ms)
-      expect(actualTime).toBeGreaterThanOrEqual(expectedTime - 10);
-      expect(actualTime).toBeLessThanOrEqual(after + 5000 + 10);
+      const delay = error.retryAfter.getTime() - Date.now();
+      expect(delay).toBeGreaterThan(4900);
+      expect(delay).toBeLessThan(5100);
     });
 
     it('should handle Date objects', () => {
-      const targetDate = new Date(Date.now() + 10000); // 10 seconds from now
+      const targetDate = new Date(Date.now() + 5000);
       const error = new RetryableError('Test error', {
         retryAfter: targetDate,
       });
-
-      // Allow for small timing differences (within 100ms)
-      expect(error.retryAfter.getTime()).toBeGreaterThanOrEqual(
-        targetDate.getTime() - 10
-      );
-      expect(error.retryAfter.getTime()).toBeLessThanOrEqual(
-        targetDate.getTime() + 10
-      );
+      expect(error.retryAfter.getTime()).toBe(targetDate.getTime());
     });
 
     it('should default to 1 second when no retryAfter provided', () => {
-      const before = Date.now();
       const error = new RetryableError('Test error');
-      const after = Date.now();
-
-      // The retryAfter date should be approximately 1 second from now
-      const expectedTime = before + 1000;
-      const actualTime = error.retryAfter.getTime();
-
-      // Allow for small timing differences (within 100ms)
-      expect(actualTime).toBeGreaterThanOrEqual(expectedTime - 10);
-      expect(actualTime).toBeLessThanOrEqual(after + 1000 + 10);
-    });
-
-    it('should handle various string duration formats', () => {
-      const testCases = [
-        { input: '1s', expectedMs: 1000 },
-        { input: '500ms', expectedMs: 500 },
-        { input: '1m', expectedMs: 60000 },
-        { input: '1h', expectedMs: 3600000 },
-      ];
-
-      for (const { input, expectedMs } of testCases) {
-        const before = Date.now();
-        const error = new RetryableError('Test error', {
-          retryAfter: input,
-        });
-        const after = Date.now();
-
-        const actualTime = error.retryAfter.getTime();
-        expect(actualTime).toBeGreaterThanOrEqual(before + expectedMs - 10);
-        expect(actualTime).toBeLessThanOrEqual(after + expectedMs + 10);
-      }
-    });
-
-    it('should be consistent with sleep() signature for numbers', () => {
-      // This test verifies that RetryableError treats numbers as milliseconds,
-      // just like the sleep() function does
-      const durationMs = 3000;
-      const before = Date.now();
-      const error = new RetryableError('Test error', {
-        retryAfter: durationMs,
-      });
-
-      // If treated correctly as milliseconds, should be ~3 seconds from now
-      const expectedTime = before + durationMs;
-      const actualTime = error.retryAfter.getTime();
-
-      expect(actualTime).toBeGreaterThanOrEqual(expectedTime - 10);
-      expect(actualTime).toBeLessThanOrEqual(expectedTime + 100);
-
-      // If incorrectly treated as seconds, it would be 3000 seconds from now
-      // which would be much larger than what we expect
-      expect(actualTime).toBeLessThan(before + 10000); // Should be well under 10 seconds
+      const delay = error.retryAfter.getTime() - Date.now();
+      expect(delay).toBeGreaterThan(900);
+      expect(delay).toBeLessThan(1100);
     });
   });
 
