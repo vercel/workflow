@@ -108,7 +108,7 @@ async function callApi(endpoint: string) {
   const response = await fetch(endpoint);
 
   if (response.status >= 500) {
-    // Exponential backoffs (in milliseconds)
+    // Exponential backoffs
     throw new RetryableError("Backing off...", {
       retryAfter: (metadata.attempt ** 2) * 1000,  // [!code highlight]
     });
