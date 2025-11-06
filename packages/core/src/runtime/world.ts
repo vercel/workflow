@@ -38,12 +38,10 @@ export const createWorld = (): World => {
     });
   }
 
-  const port = getPort() ?? undefined;
-
   if (targetWorld === 'embedded') {
     return createEmbeddedWorld({
       dataDir: process.env.WORKFLOW_EMBEDDED_DATA_DIR,
-      port,
+      port: getPort(),
     });
   }
 
