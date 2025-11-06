@@ -1,11 +1,18 @@
 import { join } from 'node:path';
-import { serve } from 'bun';
+import { semver, serve } from 'bun';
 import { LocalBuilder } from './builders';
 import { workflowTransformPlugin } from './plugin';
 
 // Routes are only supported in Bun 1.2.3+
-if (Bun.version < '1.2.3') {
-  throw new Error('@workflow/bun requires Bun version 1.2.3+');
+const REQUIRED_BUN_VERSION = '1.2.3';
+
+const validVersion = semver.satisfies(Bun.version, `>=${REQUIRED_BUN_VERSION}`);
+
+// Verify if the Bun version is supported
+if (!validVersion) {
+  throw new Error(
+    `@workflow/bun requires Bun version >=${REQUIRED_BUN_VERSION}.`
+  );
 }
 
 // Build and register the generated workflow routes from builder

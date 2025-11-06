@@ -168,7 +168,9 @@ const server = Bun.serve({
         }
       },
     },
-    '/': Bun.file('./index.html'),
+    '/': {
+      GET: async () => Response.json(await Bun.file('./index.html').text()),
+    },
   },
   async fetch(_) {
     return new Response('Not Found', { status: 404 });
