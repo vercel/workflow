@@ -1,0 +1,147 @@
+import { describe, expect, it } from 'vitest';
+import { RetryableError } from './index.js';
+
+describe('RetryableError', () => {
+  describe('retryAfter handling', () => {
+    it('should treat number as milliseconds', () => {
+      const before = Date.now();
+      const error = new RetryableError('Test error', {
+        retryAfter: 5000, // 5000 milliseconds = 5 seconds
+      });
+      const after = Date.now();
+
+      // The retryAfter date should be approximately 5 seconds from now
+      const expectedTime = before + 5000;
+      const actualTime = error.retryAfter.getTime();
+
+      // Allow for small timing differences (within 100ms)
+      expect(actualTime).toBeGreaterThanOrEqual(expectedTime - 10);
+      expect(actualTime).toBeLessThanOrEqual(after + 5000 + 10);
+    });
+
+    it('should handle string durations', () => {
+      const before = Date.now();
+      const error = new RetryableError('Test error', {
+        retryAfter: '5s',
+      });
+      const after = Date.now();
+
+      // The retryAfter date should be approximately 5 seconds from now
+      const expectedTime = before + 5000;
+      const actualTime = error.retryAfter.getTime();
+
+      // Allow for small timing differences (within 100ms)
+      expect(actualTime).toBeGreaterThanOrEqual(expectedTime - 10);
+      expect(actualTime).toBeLessThanOrEqual(after + 5000 + 10);
+    });
+
+    it('should handle Date objects', () => {
+      const targetDate = new Date(Date.now() + 10000); // 10 seconds from now
+      const error = new RetryableError('Test error', {
+        retryAfter: targetDate,
+      });
+
+      // Allow for small timing differences (within 100ms)
+      expect(error.retryAfter.getTime()).toBeGreaterThanOrEqual(
+        targetDate.getTime() - 10
+      );
+      expect(error.retryAfter.getTime()).toBeLessThanOrEqual(
+        targetDate.getTime() + 10
+      );
+    });
+
+    it('should default to 1 second when no retryAfter provided', () => {
+      const before = Date.now();
+      const error = new RetryableError('Test error');
+      const after = Date.now();
+
+      // The retryAfter date should be approximately 1 second from now
+      const expectedTime = before + 1000;
+      const actualTime = error.retryAfter.getTime();
+
+      // Allow for small timing differences (within 100ms)
+      expect(actualTime).toBeGreaterThanOrEqual(expectedTime - 10);
+      expect(actualTime).toBeLessThanOrEqual(after + 1000 + 10);
+    });
+
+    it('should handle various string duration formats', () => {
+      const testCases = [
+        { input: '1s', expectedMs: 1000 },
+        { input: '500ms', expectedMs: 500 },
+        { input: '1m', expectedMs: 60000 },
+        { input: '1h', expectedMs: 3600000 },
+      ];
+
+      for (const { input, expectedMs } of testCases) {
+        const before = Date.now();
+        const error = new RetryableError('Test error', {
+          retryAfter: input,
+        });
+        const after = Date.now();
+
+        const actualTime = error.retryAfter.getTime();
+        expect(actualTime).toBeGreaterThanOrEqual(before + expectedMs - 10);
+        expect(actualTime).toBeLessThanOrEqual(after + expectedMs + 10);
+      }
+    });
+
+    it('should be consistent with sleep() signature for numbers', () => {
+      // This test verifies that RetryableError treats numbers as milliseconds,
+      // just like the sleep() function does
+      const durationMs = 3000;
+      const before = Date.now();
+      const error = new RetryableError('Test error', {
+        retryAfter: durationMs,
+      });
+
+      // If treated correctly as milliseconds, should be ~3 seconds from now
+      const expectedTime = before + durationMs;
+      const actualTime = error.retryAfter.getTime();
+
+      expect(actualTime).toBeGreaterThanOrEqual(expectedTime - 10);
+      expect(actualTime).toBeLessThanOrEqual(expectedTime + 100);
+
+      // If incorrectly treated as seconds, it would be 3000 seconds from now
+      // which would be much larger than what we expect
+      expect(actualTime).toBeLessThan(before + 10000); // Should be well under 10 seconds
+    });
+  });
+
+  describe('error properties', () => {
+    it('should have correct name property', () => {
+      const error = new RetryableError('Test error');
+      expect(error.name).toBe('RetryableError');
+    });
+
+    it('should have correct message property', () => {
+      const message = 'This is a test error';
+      const error = new RetryableError(message);
+      expect(error.message).toBe(message);
+    });
+
+    it('should be an instance of Error', () => {
+      const error = new RetryableError('Test error');
+      expect(error).toBeInstanceOf(Error);
+    });
+  });
+
+  describe('RetryableError.is()', () => {
+    it('should return true for RetryableError instances', () => {
+      const error = new RetryableError('Test error');
+      expect(RetryableError.is(error)).toBe(true);
+    });
+
+    it('should return false for regular errors', () => {
+      const error = new Error('Regular error');
+      expect(RetryableError.is(error)).toBe(false);
+    });
+
+    it('should return false for non-error values', () => {
+      expect(RetryableError.is(null)).toBe(false);
+      expect(RetryableError.is(undefined)).toBe(false);
+      expect(RetryableError.is('string')).toBe(false);
+      expect(RetryableError.is(123)).toBe(false);
+      expect(RetryableError.is({})).toBe(false);
+    });
+  });
+});

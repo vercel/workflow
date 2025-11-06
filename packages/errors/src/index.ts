@@ -237,7 +237,11 @@ export class FatalError extends Error {
 
 export interface RetryableErrorOptions {
   /**
-   * The number of seconds to wait before retrying the step.
+   * The duration to wait before retrying the step.
+   * - When a number: duration in milliseconds (same as `sleep()`)
+   * - When a string: duration string like "1s", "5m", etc. (same as `sleep()`)
+   * - When a Date: the specific date/time to retry at (same as `sleep()`)
+   *
    * If not provided, the step will be retried after 1 second.
    */
   retryAfter?: number | StringValue | Date;
@@ -257,17 +261,17 @@ export class RetryableError extends Error {
     super(message);
     this.name = 'RetryableError';
 
-    let retryAfterSeconds: number;
+    let retryAfterMs: number;
     if (typeof options.retryAfter === 'string') {
-      retryAfterSeconds = ms(options.retryAfter as StringValue) / 1000;
+      retryAfterMs = ms(options.retryAfter as StringValue);
     } else if (typeof options.retryAfter === 'number') {
-      retryAfterSeconds = options.retryAfter;
+      retryAfterMs = options.retryAfter;
     } else if (options.retryAfter instanceof Date) {
-      retryAfterSeconds = (options.retryAfter.getTime() - Date.now()) / 1000;
+      retryAfterMs = options.retryAfter.getTime() - Date.now();
     } else {
-      retryAfterSeconds = 1;
+      retryAfterMs = 1000; // Default: 1 second in milliseconds
     }
-    this.retryAfter = new Date(Date.now() + retryAfterSeconds * 1000);
+    this.retryAfter = new Date(Date.now() + retryAfterMs);
   }
 
   static is(value: unknown): value is RetryableError {
