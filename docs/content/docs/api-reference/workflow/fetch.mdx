@@ -111,7 +111,7 @@ export async function customFetch(
             // Use `RetryableError` to customize the retry
             throw new RetryableError( // [!code highlight]
                 `Rate limited by ${url}`, // [!code highlight]
-                { retryAfter: `${retryAfter} seconds` } // [!code highlight]
+                { retryAfter: new Date(retryAfter) } // [!code highlight]
             ) // [!code highlight]
         }
 
