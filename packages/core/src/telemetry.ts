@@ -1,5 +1,5 @@
 import type { Span, SpanOptions } from '@opentelemetry/api';
-import { once } from './util.js';
+import { once } from '@workflow/utils';
 
 // ============================================================
 // Trace Context Propagation Utilities
