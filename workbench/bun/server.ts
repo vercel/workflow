@@ -6,6 +6,7 @@ import * as flow from './.workflows/workflows.js';
 import { allWorkflows } from './_workflows.js';
 
 const server = Bun.serve({
+  idleTimeout: 30, // Just for local dev e2e tests
   port: 3000,
   // `routes` requires Bun v1.2.3+
   routes: {
