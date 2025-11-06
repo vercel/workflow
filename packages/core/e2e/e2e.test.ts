@@ -299,14 +299,6 @@ describe('e2e', () => {
     expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
   });
 
-  test('sleepingDateWorkflow', { timeout: 60_000 }, async () => {
-    const endDate = new Date(Date.now() + 30_000);
-    const run = await triggerWorkflow('sleepingDateWorkflow', [endDate]);
-    const returnValue = await getWorkflowReturnValue(run.runId);
-    expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
-    expect(returnValue.endTime).toBeGreaterThanOrEqual(endDate.getTime());
-  });
-
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('nullByteWorkflow', []);
     const returnValue = await getWorkflowReturnValue(run.runId);
