@@ -659,8 +659,6 @@ export const stepEntrypoint =
               ...Attribute.StepArgumentsCount(args.length),
             });
 
-            const port = getPort();
-
             result = await contextStorage.run(
               {
                 stepMetadata: {
@@ -675,7 +673,7 @@ export const stepEntrypoint =
                   // solution only works for vercel + embedded worlds.
                   url: process.env.VERCEL_URL
                     ? `https://${process.env.VERCEL_URL}`
-                    : `http://localhost:${port}`,
+                    : `http://localhost:${getPort()}`,
                 },
                 ops,
               },

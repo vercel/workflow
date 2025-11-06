@@ -97,13 +97,11 @@ export async function runWorkflow(
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
 
-    const port = getPort();
-
     // TODO: there should be a getUrl method on the world interface itself. This
     // solution only works for vercel + embedded worlds.
     const url = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${port}`;
+      : `http://localhost:${getPort()}`;
 
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {
