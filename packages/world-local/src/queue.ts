@@ -1,7 +1,7 @@
 import { setTimeout } from 'node:timers/promises';
 import { JsonTransport } from '@vercel/queue';
+import { getPort } from '@workflow/utils';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
-import { pidToPorts } from 'pid-port';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
 import z from 'zod';
@@ -171,19 +171,4 @@ export function createQueue(port?: number): Queue {
   };
 
   return { queue, createQueueHandler, getDeploymentId };
-}
-
-/**
- * Gets the port number that the process is listening on.
- * @returns The port number that the process is listening on, or undefined if the process is not listening on any port.
- */
-async function getPort(): Promise<number | undefined> {
-  const pid = process.pid;
-  const ports = await pidToPorts(pid);
-  if (!ports || ports.size === 0) {
-    return undefined;
-  }
-
-  const smallest = Math.min(...ports);
-  return smallest;
 }

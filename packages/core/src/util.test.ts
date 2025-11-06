@@ -1,10 +1,3 @@
-<<<<<<< HEAD
-=======
-
-import http from 'node:http';
-
->>>>>>> 456d8ef6 (fix: use pid-port)
-
 import { describe, expect, it } from 'vitest';
 import { buildWorkflowSuspensionMessage, getWorkflowRunStreamId } from './util';
 

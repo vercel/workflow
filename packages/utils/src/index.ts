@@ -1,6 +1,6 @@
 import type { StringValue } from 'ms';
 import ms from 'ms';
-import pidToPorts from 'pid-port';
+import { pidToPorts } from 'pid-port';
 
 export interface PromiseWithResolvers<T> {
   promise: Promise<T>;
@@ -87,6 +87,10 @@ export function parseDurationToDate(param: StringValue | Date | number): Date {
   }
 }
 
+/**
+ * Gets the port number that the process is listening on.
+ * @returns The port number that the process is listening on, or undefined if the process is not listening on any port.
+ */
 export async function getPort(): Promise<number | undefined> {
   const pid = process.pid;
   const ports = await pidToPorts(pid);
