@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@swc/core": "1.11.24",
-    "@workflow/cli": "workspace:*",
+    "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "exsolve": "^1.0.7",

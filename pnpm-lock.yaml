@@ -320,9 +320,9 @@ importers:
       '@swc/core':
         specifier: 1.11.24
         version: 1.11.24
-      '@workflow/cli':
+      '@workflow/builders':
         specifier: workspace:*
-        version: link:../cli
+        version: link:../builders
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
@@ -347,7 +347,7 @@ importers:
         version: link:../tsconfig
       vitest:
         specifier: 'catalog:'
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.0)
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.0)
 
   packages/cli:
     dependencies:

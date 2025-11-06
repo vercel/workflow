@@ -1,8 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder';
-import type { WorkflowConfig } from '@workflow/cli/dist/lib/config/types';
+import { BaseBuilder, type WorkflowConfig } from '@workflow/builders';
 
 /**
  * Workflow builder for Bun.
