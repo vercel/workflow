@@ -31,8 +31,9 @@
   },
   "dependencies": {
     "@vercel/queue": "0.0.0-alpha.23",
-    "@workflow/world": "workspace:*",
     "@workflow/utils": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "pid-port": "^2.0.0",
     "ulid": "^3.0.1",
     "undici": "^6.19.0",
     "zod": "catalog:"

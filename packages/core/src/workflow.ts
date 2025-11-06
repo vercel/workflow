@@ -1,6 +1,6 @@
 import { runInContext } from 'node:vm';
 import { ERROR_SLUGS } from '@workflow/errors';
-import { getPort, withResolvers } from '@workflow/utils';
+import { withResolvers } from '@workflow/utils';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -21,7 +21,7 @@ import {
 } from './symbols.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
-import { getWorkflowRunStreamId } from './util.js';
+import { getPort, getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';

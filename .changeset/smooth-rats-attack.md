@@ -1,6 +1,5 @@
 ---
 "@workflow/core": patch
-"@workflow/utils": patch
 "@workflow/world-local": patch
 ---
 
