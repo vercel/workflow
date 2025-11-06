@@ -481,6 +481,9 @@ importers:
 
   packages/errors:
     dependencies:
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       ms:
         specifier: 2.1.3
         version: 2.1.3
