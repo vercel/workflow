@@ -4,7 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun run --watch server.ts"
+    "dev": "bun run --watch server.ts",
+    "build": "bun build --target=bun --production --outdir=dist index.ts",
+    "start": "bun run dist/index.js"
   },
   "dependencies": {
     "workflow": "workspace:*"
