@@ -1,3 +1,4 @@
+import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import type { HookReceivedEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
@@ -5,7 +6,6 @@ import { WorkflowSuspension } from '../global.js';
 import { webhookLogger } from '../logger.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
-import { type PromiseWithResolvers, withResolvers } from '../util.js';
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
