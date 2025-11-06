@@ -1,10 +1,10 @@
 {
-  "name": "bun",
+  "name": "@workflow/example-bun",
   "module": "index.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun server.ts"
+    "dev": "bun run --hot server.ts"
   },
   "dependencies": {
     "workflow": "workspace:*"

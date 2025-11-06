@@ -192,4 +192,4 @@ const server = Bun.serve({
   },
 });
 
-export default server;
+console.log(`Server is running on ${server.url}`);
