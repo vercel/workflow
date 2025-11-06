@@ -95,7 +95,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         let reader = this.#reader;
         if (!reader) {
           const world = getWorld();
-          const stream = await world.readFromStream(runId, name, startIndex);
+          const stream = await world.readFromStream(name, startIndex);
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -126,10 +126,10 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     const world = getWorld();
     super({
       async write(chunk) {
-        await world.writeToStream(runId, name, chunk);
+        await world.writeToStream(name, runId, chunk);
       },
       async close() {
-        await world.closeStream(runId, name);
+        await world.closeStream(name);
       },
     });
   }
@@ -790,10 +790,7 @@ function getStepRevivers(
         );
       }
 
-      const readable = new WorkflowServerReadableStream(
-        runId,
-        value.name
-      );
+      const readable = new WorkflowServerReadableStream(runId, value.name);
       if (value.type === 'bytes') {
         return readable;
       } else {

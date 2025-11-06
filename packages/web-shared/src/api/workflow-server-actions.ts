@@ -444,9 +444,7 @@ export async function readStreamServerAction(
 ): Promise<ServerActionResult<ReadableStream<Uint8Array>>> {
   try {
     const world = getWorldFromEnv(env);
-    // Extract runId from streamId (strm_{ULID}_user... -> wrun_{ULID})
-    const runId = streamId.replace(/^strm_([^_]+)_user.*$/, 'wrun_$1');
-    const stream = await world.readFromStream(runId, streamId, startIndex);
+    const stream = await world.readFromStream(streamId, startIndex);
     return createResponse(stream);
   } catch (error) {
     console.error('Failed to read stream:', error);

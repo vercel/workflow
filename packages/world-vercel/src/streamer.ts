@@ -1,21 +1,28 @@
 import type { Streamer } from '@workflow/world';
 import { type APIConfig, getHttpConfig, type HttpConfig } from './utils.js';
 
-function getStreamUrl(runId: string, name: string, httpConfig: HttpConfig) {
-  return new URL(
-    `${httpConfig.baseUrl}/v1/run/${runId}/stream/${encodeURIComponent(name)}`
-  );
+function getStreamUrl(
+  name: string,
+  runId: string | undefined,
+  httpConfig: HttpConfig
+) {
+  if (runId) {
+    return new URL(
+      `${httpConfig.baseUrl}/v1/run/${runId}/stream/${encodeURIComponent(name)}`
+    );
+  }
+  return new URL(`${httpConfig.baseUrl}/v1/stream/${encodeURIComponent(name)}`);
 }
 
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     async writeToStream(
-      runId: string,
       name: string,
+      runId: string,
       chunk: string | Uint8Array
     ) {
       const httpConfig = await getHttpConfig(config);
-      await fetch(getStreamUrl(runId, name, httpConfig), {
+      await fetch(getStreamUrl(name, runId, httpConfig), {
         method: 'PUT',
         body: chunk,
         headers: httpConfig.headers,
@@ -23,18 +30,18 @@ export function createStreamer(config?: APIConfig): Streamer {
       });
     },
 
-    async closeStream(runId: string, name: string) {
+    async closeStream(name: string) {
       const httpConfig = await getHttpConfig(config);
       httpConfig.headers.set('X-Stream-Done', 'true');
-      await fetch(getStreamUrl(runId, name, httpConfig), {
+      await fetch(getStreamUrl(name, undefined, httpConfig), {
         method: 'PUT',
         headers: httpConfig.headers,
       });
     },
 
-    async readFromStream(runId: string, name: string, startIndex?: number) {
+    async readFromStream(name: string, startIndex?: number) {
       const httpConfig = await getHttpConfig(config);
-      const url = getStreamUrl(runId, name, httpConfig);
+      const url = getStreamUrl(name, undefined, httpConfig);
       if (typeof startIndex === 'number') {
         url.searchParams.set('startIndex', String(startIndex));
       }

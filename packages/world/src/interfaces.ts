@@ -33,13 +33,12 @@ import type {
 
 export interface Streamer {
   writeToStream(
-    runId: string,
     name: string,
+    runId: string,
     chunk: string | Uint8Array
   ): Promise<void>;
-  closeStream(runId: string, name: string): Promise<void>;
+  closeStream(name: string): Promise<void>;
   readFromStream(
-    runId: string,
     name: string,
     startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;

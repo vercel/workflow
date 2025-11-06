@@ -89,8 +89,8 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
 
   return {
     async writeToStream(
-      _runId: string,
       name: string,
+      _runId: string,
       chunk: string | Uint8Array
     ) {
       const chunkId = genChunkId();
@@ -110,7 +110,7 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
         )
       );
     },
-    async closeStream(_runId: string, name: string): Promise<void> {
+    async closeStream(name: string): Promise<void> {
       const chunkId = genChunkId();
       await drizzle.insert(streams).values({
         chunkId,
@@ -129,7 +129,6 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
       );
     },
     async readFromStream(
-      _runId: string,
       name: string,
       startIndex?: number
     ): Promise<ReadableStream<Uint8Array>> {
