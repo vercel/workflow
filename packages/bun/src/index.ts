@@ -3,6 +3,11 @@ import { serve } from 'bun';
 import { LocalBuilder } from './builders';
 import { workflowTransformPlugin } from './plugin';
 
+// Routes are only supported in Bun 1.2.3+
+if (Bun.version < '1.2.3') {
+  throw new Error('@workflow/bun requires Bun version 1.2.3+');
+}
+
 // Build the workflow bundles/routes
 await new LocalBuilder().build();
 
