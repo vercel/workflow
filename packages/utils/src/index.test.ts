@@ -1,3 +1,4 @@
+import http from 'node:http';
 import { describe, expect, it } from 'vitest';
 import { getPort, once, parseDurationToDate, withResolvers } from './index';
 
