@@ -101,7 +101,7 @@ export async function runWorkflow(
     // solution only works for vercel + embedded worlds.
     const url = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${getPort()}`;
+      : `http://localhost:${await getPort()}`;
 
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {

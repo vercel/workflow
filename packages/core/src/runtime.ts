@@ -673,7 +673,7 @@ export const stepEntrypoint =
                   // solution only works for vercel + embedded worlds.
                   url: process.env.VERCEL_URL
                     ? `https://${process.env.VERCEL_URL}`
-                    : `http://localhost:${getPort()}`,
+                    : `http://localhost:${await getPort()}`,
                 },
                 ops,
               },
