@@ -15,9 +15,25 @@ const getPortFromEnv = () => {
   return 3000;
 };
 
-export const config = once(() => {
+const getBaseUrlFromEnv = () => {
+  const baseUrl = process.env.WORKFLOW_EMBEDDED_BASE_URL;
+  if (baseUrl) {
+    return baseUrl;
+  }
+  const port = getPortFromEnv();
+  return `http://localhost:${port}`;
+};
+
+export type Config = {
+  dataDir: string;
+  port: number;
+  baseUrl: string;
+};
+
+export const config = once<Config>(() => {
   const dataDir = getDataDirFromEnv();
   const port = getPortFromEnv();
+  const baseUrl = getBaseUrlFromEnv();
 
-  return { dataDir, port };
+  return { dataDir, port, baseUrl };
 });
