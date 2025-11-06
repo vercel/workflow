@@ -4,6 +4,10 @@ import { join } from 'node:path';
 import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder';
 import type { WorkflowConfig } from '@workflow/cli/dist/lib/config/types';
 
+/**
+ * Workflow builder for Bun.
+ * Creates the workflow, step and webhook bundles
+ */
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
   constructor(config?: Partial<WorkflowConfig>) {

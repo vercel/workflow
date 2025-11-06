@@ -1,10 +1,13 @@
 import { transform } from '@swc/core';
 import type { BunPlugin } from 'bun';
 
-// Plugin to build workflows at runtime and do client mode transform
-export function workflowPlugin(): BunPlugin {
+/**
+ * Bun plugin to transform workflow files with SWC.
+ * Automatically works with Bun HMR.
+ */
+export function workflowTransformPlugin(): BunPlugin {
   return {
-    name: 'workflow-plugin',
+    name: 'workflow-transform-plugin',
     async setup(build) {
       // Client transform plugin - only transform TypeScript files
       build.onLoad({ filter: /\.(ts|tsx)$/ }, async (args) => {

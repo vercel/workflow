@@ -1,9 +1,5 @@
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { createWorkflowRoutes } from 'workflow/bun';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import * as step from './.workflows/steps.js';
-import * as webhook from './.workflows/webhook.js';
-import * as flow from './.workflows/workflows.js';
 import { allWorkflows } from './_workflows.js';
 
 const server = Bun.serve({
@@ -11,9 +7,6 @@ const server = Bun.serve({
   port: 3000,
   // `routes` requires Bun v1.2.3+
   routes: {
-    // Register Workflow DevKit protocol endpoints
-    ...createWorkflowRoutes({ flow, step, webhook }),
-
     // Custom endpoints for triggering workflows and handling webhooks
     '/api/hook': {
       POST: async (req) => {
