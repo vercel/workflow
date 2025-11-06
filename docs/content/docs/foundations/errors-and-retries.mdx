@@ -84,10 +84,8 @@ async function callApi(endpoint: string) {
   }
 
   if (response.status === 429) {
-    const retryAfter = response.headers.get("Retry-After");
-    // Delay the retry until after a timeout (assume "Retry-After" is an ISO string)
-    throw new RetryableError("Too many requests. Retrying...", { // [!code highlight]
-      retryAfter: new Date(retryAfter), // [!code highlight]
+    throw new RetryableError("Rate limited. Retrying...", { // [!code highlight]
+      retryAfter: "1m", // Duration string // [!code highlight]
     }); // [!code highlight]
   }
 
@@ -121,10 +119,8 @@ async function callApi(endpoint: string) {
   }
 
   if (response.status === 429) {
-    const retryAfter = response.headers.get("Retry-After");
-    // Delay the retry until after a timeout (assume "Retry-After" is an ISO string)
-    throw new RetryableError("Too many requests. Retrying...", {
-      retryAfter: new Date(retryAfter),  // [!code highlight]
+    throw new RetryableError("Rate limited. Retrying...", {
+      retryAfter: new Date(Date.now() + 60000),  // Date instance // [!code highlight]
     });
   }
 
