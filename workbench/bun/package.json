@@ -1,0 +1,20 @@
+{
+  "name": "@workflow/example-bun",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run --watch server.ts",
+    "build": "bun build --target=bun --production --outdir=dist server.ts",
+    "start": "bun run dist/server.js"
+  },
+  "dependencies": {
+    "workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

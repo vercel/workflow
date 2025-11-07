@@ -531,6 +531,11 @@ export const Frameworks = () => {
           <SvelteKit className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
         </Link>
 
+        <Link href="/docs/getting-started/bun" className="relative">
+          <Bun className="size-[56px]" />
+          <Bun className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
+        </Link>
+
         <div className="col-span-4 w-full pt-6">
           <div className="flex flex-row items-center gap-2">
             <Badge
@@ -567,13 +572,6 @@ export const Frameworks = () => {
         >
           <HonoGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <Hono className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[52px]"
-          onClick={() => handleRequest('Bun')}
-        >
-          <BunGray className="size-[52px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
-          <Bun className="size-[52px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
         </div>
       </div>
     </div>
