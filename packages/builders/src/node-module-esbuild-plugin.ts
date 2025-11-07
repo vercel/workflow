@@ -193,7 +193,7 @@ export function getViolationLocation(
   }
 }
 
-/*
+/**
  * Create a plugin to detect violations of the Node.js module usage rule.
  */
 export function createNodeModuleErrorPlugin(): esbuild.Plugin {
