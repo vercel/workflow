@@ -100,9 +100,8 @@ describe('streamer', () => {
             const chunk = deserializeChunk(
               await fs.readFile(`${testDir}/streams/chunks/${file}`)
             );
-            const time = decodeTime(
-              String(file.split('-').at(-1)).split('.')[0]
-            );
+            const stream_id = String(file.split('-').at(-1)).split('.')[0];
+            const time = decodeTime(stream_id);
             const timeDiff = time - lastTime;
             lastTime = time;
 
@@ -233,10 +232,10 @@ describe('streamer', () => {
         const chunk1 = 'hello ';
         const chunk2 = 'world';
 
-        await streamer.writeToStream(runId, streamName, chunk1);
+        await streamer.writeToStream(streamName, runId, chunk1);
         // Add a small delay to ensure different ULID timestamps
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(runId, streamName, chunk2);
+        await streamer.writeToStream(streamName, runId, chunk2);
         await streamer.closeStream(streamName);
 
         const stream = await streamer.readFromStream(streamName);
@@ -334,11 +333,11 @@ describe('streamer', () => {
         const streamName = 'integration-stream';
 
         // Write chunks with proper timing
-        await streamer.writeToStream(runId, streamName, 'start ');
+        await streamer.writeToStream(streamName, runId, 'start ');
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(runId, streamName, 'middle ');
+        await streamer.writeToStream(streamName, runId, 'middle ');
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.writeToStream(runId, streamName, 'end');
+        await streamer.writeToStream(streamName, runId, 'end');
 
         // Close the stream
         await streamer.closeStream(streamName);
@@ -435,7 +434,7 @@ describe('streamer', () => {
 
         // Write chunks 0-4 to disk
         for (let i = 0; i < 5; i++) {
-          await streamer.writeToStream(runId, streamName, `${i}\n`);
+          await streamer.writeToStream(streamName, runId, `${i}\n`);
           await new Promise((resolve) => setTimeout(resolve, 2));
         }
 
