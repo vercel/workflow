@@ -8,7 +8,6 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { getPort } from '@workflow/utils/get-port';
 import type {
   Event,
   WorkflowRun,
@@ -562,9 +561,6 @@ export const stepEntrypoint =
         // Extract the step name from the topic name
         const stepName = metadata.queueName.slice('__wkf_step_'.length);
         const world = getWorld();
-
-        // Get the port early to avoid async operations during step execution
-        const port = await getPort();
 
         return trace(`STEP ${stepName}`, async (span) => {
           span?.setAttributes({

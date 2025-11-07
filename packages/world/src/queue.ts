@@ -45,7 +45,6 @@ export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
 export interface Queue {
   getDeploymentId(): Promise<string>;
-  getUrl(): string;
 
   /**
    * Enqueues a message to the specified queue.

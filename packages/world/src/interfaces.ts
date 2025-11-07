@@ -102,4 +102,9 @@ export interface World extends Queue, Storage, Streamer {
    * For example, in the case of a queue backed World, this would start the queue processing.
    */
   start?(): Promise<void>;
+
+  /**
+   * A function that returns the URL of the World.
+   */
+  getUrl(): string;
 }

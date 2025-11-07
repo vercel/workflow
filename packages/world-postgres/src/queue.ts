@@ -113,13 +113,7 @@ export function createQueue(
     }
   }
 
-  // TODO: Stub for now, need to implement url.
-  const getUrl: Queue['getUrl'] = () => {
-    return embeddedWorld.getUrl();
-  };
-
   return {
-    getUrl,
     createQueueHandler,
     getDeploymentId,
     queue,
