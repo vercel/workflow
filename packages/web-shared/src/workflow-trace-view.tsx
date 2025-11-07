@@ -31,7 +31,6 @@ export const WorkflowTraceViewer = ({
   env,
   isLoading,
   error,
-  height = 800,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -40,7 +39,6 @@ export const WorkflowTraceViewer = ({
   env: EnvMap;
   isLoading?: boolean;
   error?: Error | null;
-  height?: number;
 }) => {
   const [now, setNow] = useState(() => new Date());
 
