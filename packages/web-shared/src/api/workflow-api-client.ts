@@ -684,6 +684,7 @@ export function useWorkflowTraceViewerData(
       const runServerResult = await fetchRun(env, runId);
       const runData = unwrapServerActionResult(runServerResult);
       setRun(runData);
+      setLoading(false);
 
       // TODO: Do these in parallel
       // Fetch steps exhaustively

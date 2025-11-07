@@ -201,81 +201,88 @@ export function RunDetailView({
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="space-y-6">
-        <BackLink href={buildUrlWithConfig('/', config)} />
+      <div
+        className="flex flex-col overflow-hidden"
+        style={{ height: 'calc(100vh - 10rem)' }}
+      >
+        <div className="flex-none space-y-6">
+          <BackLink href={buildUrlWithConfig('/', config)} />
 
-        {/* Run Overview Header */}
-        <div className="space-y-4 pb-6 border-b">
-          {/* Title Row */}
-          <div className="flex items-start justify-between">
-            <div className="mb-6">
-              <h1 className="text-2xl font-semibold">{workflowName}</h1>
-            </div>
+          {/* Run Overview Header */}
+          <div className="space-y-4 pb-6 border-b">
+            {/* Title Row */}
+            <div className="flex items-start justify-between">
+              <div className="mb-6">
+                <h1 className="text-2xl font-semibold">{workflowName}</h1>
+              </div>
 
-            <div className="flex items-center justify-between gap-2">
-              {/* Right side controls */}
-              <LiveStatus hasError={hasError} errorMessage={errorMessage} />
-              <RerunButton
-                canRerun={canRerun}
-                rerunning={rerunning}
-                rerunDisabledReason={rerunDisabledReason}
-                onRerun={handleRerunClick}
-              />
-              <CancelButton
-                canCancel={canCancel}
-                cancelling={cancelling}
-                cancelDisabledReason={cancelDisabledReason}
-                onCancel={handleCancelClick}
-              />
-            </div>
-          </div>
-
-          {/* Status and Timeline Row */}
-          <div className="flex items-start gap-8">
-            <div className="flex flex-col gap-1">
-              <div className="text-xs text-muted-foreground">Status</div>
-              <StatusBadge status={run.status || '...'} context={run} />
-            </div>
-            <div className="flex flex-col gap-1">
-              <div className="text-xs text-muted-foreground">Run ID</div>
-              <CopyableText text={run.runId}>
-                <div className="text-sm mt-0.5 font-mono">{run.runId}</div>
-              </CopyableText>
-            </div>
-            <div className="flex flex-col gap-1">
-              <div className="text-xs text-muted-foreground">Queued</div>
-              <div className="text-sm">
-                {run.createdAt ? <RelativeTime date={run.createdAt} /> : '-'}
+              <div className="flex items-center justify-between gap-2">
+                {/* Right side controls */}
+                <LiveStatus hasError={hasError} errorMessage={errorMessage} />
+                <RerunButton
+                  canRerun={canRerun}
+                  rerunning={rerunning}
+                  rerunDisabledReason={rerunDisabledReason}
+                  onRerun={handleRerunClick}
+                />
+                <CancelButton
+                  canCancel={canCancel}
+                  cancelling={cancelling}
+                  cancelDisabledReason={cancelDisabledReason}
+                  onCancel={handleCancelClick}
+                />
               </div>
             </div>
-            <div className="flex flex-col gap-1">
-              <div className="text-xs text-muted-foreground">Started</div>
-              <div className="text-sm">
-                {run.startedAt ? <RelativeTime date={run.startedAt} /> : '-'}
+
+            {/* Status and Timeline Row */}
+            <div className="flex items-start gap-8">
+              <div className="flex flex-col gap-1">
+                <div className="text-xs text-muted-foreground">Status</div>
+                <StatusBadge status={run.status || '...'} context={run} />
               </div>
-            </div>
-            <div className="flex flex-col gap-1">
-              <div className="text-xs text-muted-foreground">Completed</div>
-              <div className="text-sm">
-                {run.completedAt ? (
-                  <RelativeTime date={run.completedAt} />
-                ) : (
-                  '-'
-                )}
+              <div className="flex flex-col gap-1">
+                <div className="text-xs text-muted-foreground">Run ID</div>
+                <CopyableText text={run.runId}>
+                  <div className="text-sm mt-0.5 font-mono">{run.runId}</div>
+                </CopyableText>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="text-xs text-muted-foreground">Queued</div>
+                <div className="text-sm">
+                  {run.createdAt ? <RelativeTime date={run.createdAt} /> : '-'}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="text-xs text-muted-foreground">Started</div>
+                <div className="text-sm">
+                  {run.startedAt ? <RelativeTime date={run.startedAt} /> : '-'}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <div className="text-xs text-muted-foreground">Completed</div>
+                <div className="text-sm">
+                  {run.completedAt ? (
+                    <RelativeTime date={run.completedAt} />
+                  ) : (
+                    '-'
+                  )}
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <WorkflowTraceViewer
-          error={error}
-          steps={allSteps}
-          events={allEvents}
-          hooks={allHooks}
-          env={env}
-          run={run}
-          isLoading={loading}
-        />
+        <div className="flex-1 min-h-0">
+          <WorkflowTraceViewer
+            error={error}
+            steps={allSteps}
+            events={allEvents}
+            hooks={allHooks}
+            env={env}
+            run={run}
+            isLoading={loading}
+          />
+        </div>
       </div>
     </>
   );
