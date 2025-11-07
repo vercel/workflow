@@ -1,5 +1,5 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { getHookByToken, resumeHook } from 'workflow/api';
+import { getHookByToken, resumeHook, WorkflowAPIError } from 'workflow/api';
 
 export const POST: RequestHandler = async ({
   request,
@@ -14,9 +14,10 @@ export const POST: RequestHandler = async ({
     console.log('hook', hook);
   } catch (error) {
     console.log('error during getHookByToken', error);
-    // TODO: `WorkflowAPIError` is not exported, so for now
-    // we'll return 404 assuming it's the "invalid" token test case
-    return json(null, { status: 404 });
+    if (error instanceof WorkflowAPIError && error.status === 404) {
+      return json(null, { status: 404 });
+    }
+    throw error;
   }
 
   await resumeHook(hook.token, {

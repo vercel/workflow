@@ -8,6 +8,7 @@ export {
   runStep,
   type StartOptions,
   start,
+  WorkflowAPIError,
   type WorkflowReadableStreamOptions,
   type WorkflowRun,
 } from '@workflow/core/runtime';
