@@ -216,13 +216,9 @@ export async function webhookWithStaticResponse() {
   "use workflow";
 
   const webhook = createWebhook({
-    respondWith: new Response(
-      JSON.stringify({ success: true, message: "Webhook received" }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      }
-    )
+    respondWith: Response.json({
+      success: true, message: "Webhook received"
+    }),
   });
 
   const request = await webhook;
