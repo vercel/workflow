@@ -13,11 +13,27 @@ export async function* streamTextIterator({
   tools = {},
   writable,
   model,
+  temperature,
+  maxOutputTokens,
+  topP,
+  topK,
+  presencePenalty,
+  frequencyPenalty,
+  stopSequences,
+  seed,
 }: {
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
   writable: WritableStream<UIMessageChunk>;
   model: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+  topP?: number;
+  topK?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+  stopSequences?: string[];
+  seed?: number;
 }): AsyncGenerator<
   LanguageModelV2ToolCall[],
   void,
@@ -31,7 +47,17 @@ export async function* streamTextIterator({
       conversationPrompt,
       model,
       writable,
-      toolsToModelTools(tools)
+      toolsToModelTools(tools),
+      {
+        temperature,
+        maxOutputTokens,
+        topP,
+        topK,
+        presencePenalty,
+        frequencyPenalty,
+        stopSequences,
+        seed,
+      }
     );
 
     if (finish?.finishReason === 'tool-calls') {
