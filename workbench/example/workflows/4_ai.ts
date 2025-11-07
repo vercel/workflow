@@ -66,3 +66,35 @@ export async function agent(prompt: string) {
 
   return text;
 }
+
+// Example using DurableAgent with stopWhen
+export async function durableAgent(
+  messages: Array<{ role: string; content: string }>
+) {
+  'use workflow';
+
+  console.log('DurableAgent workflow started');
+
+  // Import DurableAgent from @workflow/ai/agent
+  const { DurableAgent } = await import('@workflow/ai/agent');
+
+  // Create an agent with stopWhen configured in the constructor
+  const agent = new DurableAgent({
+    model: 'anthropic/claude-4-opus-20250514',
+    tools: {
+      getWeatherInformation: {
+        description: 'show the weather in a given city to the user',
+        inputSchema: z.object({ city: z.string() }),
+        execute: getWeatherInformation,
+      },
+    },
+    // Stop after 10 steps to prevent infinite loops
+    stopWhen: stepCountIs(10),
+  });
+
+  await agent.stream({
+    messages,
+  });
+
+  console.log('DurableAgent workflow completed');
+}
