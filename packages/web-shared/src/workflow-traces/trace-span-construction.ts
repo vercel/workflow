@@ -135,7 +135,11 @@ export function stepToSpan(
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
+export function hookToSpan(
+  hook: Hook,
+  hookEvents: Event[],
+  nowTime: Date
+): Span {
   // Simplified attributes: only store resource type and full data
   const attributes = {
     resource: 'hook' as const,
@@ -144,12 +148,17 @@ export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
 
   const lastHookReceivedEvent = hookEvents
     .slice()
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    )
     .find((event) => event.eventType === 'hook_received');
 
   const endTime = lastHookReceivedEvent
     ? lastHookReceivedEvent.createdAt
-    : new Date(Math.max(hook.createdAt.getTime() + 10_000, Date.now()));
+    : new Date(
+        Math.max(new Date(hook.createdAt).getTime() + 10_000, nowTime.getTime())
+      );
 
   // Convert hook-related events to span events
   const events = convertEventsToSpanEvents(hookEvents);

@@ -11,10 +11,54 @@ if [ -z "$CI" ]; then
   exit 1
 fi
 
-echo "Resolving all symlinks in current directory..."
+echo "Resolving symlinked files in workflows directory..."
 
-# Find all symlinks in current directory (including nested ones), excluding gitignored files
+# Special handling for workflows directory if it's a symlink
+if [ -L "workflows" ]; then
+  workflows_target=$(readlink "workflows")
+  # Resolve relative path
+  if [[ "$workflows_target" != /* ]]; then
+    workflows_target="$PWD/$workflows_target"
+  fi
+
+  echo "Workflows directory is a symlink to: $workflows_target"
+
+  # Remove the workflows symlink
+  rm "workflows"
+
+  # Create workflows as a real directory
+  mkdir -p "workflows"
+
+  # Copy all files from the target, resolving any symlinks in the process
+  if [ -d "$workflows_target" ]; then
+    for file in "$workflows_target"/*; do
+      filename=$(basename "$file")
+      if [ -L "$file" ]; then
+        # If it's a symlink, resolve it
+        file_target=$(readlink "$file")
+        if [[ "$file_target" != /* ]]; then
+          file_target="$(dirname "$file")/$file_target"
+        fi
+        echo "  Copying and resolving: $filename -> $file_target"
+        cp "$file_target" "workflows/$filename"
+      else
+        # If it's a regular file, just copy it
+        echo "  Copying: $filename"
+        cp "$file" "workflows/$filename"
+      fi
+    done
+  fi
+fi
+
+echo "Resolving other symlinks..."
+
+# Find all other symlinks (excluding workflows which we already handled)
 git ls-files -z --cached --others --exclude-standard | xargs -0 -I {} sh -c 'test -L "{}" && echo "{}"' | while read -r symlink; do
+  # Skip workflows directory as we already handled it
+  if [ "$symlink" = "workflows" ]; then
+    continue
+  fi
+
   # Get the target of the symlink
   target=$(readlink "$symlink")
 
