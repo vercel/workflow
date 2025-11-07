@@ -135,7 +135,11 @@ export function stepToSpan(
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
+export function hookToSpan(
+  hook: Hook,
+  hookEvents: Event[],
+  nowTime: Date
+): Span {
   // Simplified attributes: only store resource type and full data
   const attributes = {
     resource: 'hook' as const,
