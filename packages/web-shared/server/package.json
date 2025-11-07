@@ -1,0 +1,4 @@
+{
+  "main": "../dist/api/workflow-server-actions.js",
+  "types": "../dist/api/workflow-server-actions.d.ts"
+}
