@@ -5,7 +5,12 @@
 /**
  * Converts a Date to OpenTelemetry time format [seconds, nanoseconds]
  */
-export function dateToOtelTime(date: Date | unknown): [number, number] {
+export function dateToOtelTime(
+  date: Date | string | unknown
+): [number, number] {
+  if (typeof date === 'string') {
+    date = new Date(date);
+  }
   if (!date || !(date instanceof Date)) {
     return [0, 0];
   }
@@ -25,9 +30,15 @@ export function otelTimeToMs(time: [number, number]): number {
  * Calculates duration in [seconds, nanoseconds] format
  */
 export function calculateDuration(
-  start: Date | unknown,
-  end: Date | unknown
+  start: Date | string | unknown,
+  end: Date | string | unknown
 ): [number, number] {
+  if (typeof start === 'string') {
+    start = new Date(start);
+  }
+  if (typeof end === 'string') {
+    end = new Date(end);
+  }
   if (!start || !(start instanceof Date)) {
     return [0, 0];
   }
