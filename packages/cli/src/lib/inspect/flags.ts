@@ -98,7 +98,7 @@ export const cliFlags = {
     default: false,
     env: 'WORKFLOW_DISABLE_BROWSER_OPEN',
     helpGroup: 'Output',
-    helpLabel: '--no-browser',
+    helpLabel: '--noBrowser',
   }),
   sort: Flags.string({
     description: 'sort order for list commands',
