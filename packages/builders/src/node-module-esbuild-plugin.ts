@@ -203,6 +203,7 @@ export function getViolationLocation(
   }
 }
 
+<<<<<<< HEAD
 /*
  * Get the module type label for error messages.
  * @param modulePath - The module path to check.
@@ -216,6 +217,9 @@ function getModuleTypeLabel(modulePath: string): string {
 }
 
 /*
+=======
+/**
+>>>>>>> a8fd6306 (Update packages/builders/src/node-module-esbuild-plugin.ts)
  * Create a plugin to detect violations of the Node.js module usage rule.
  */
 export function createNodeModuleErrorPlugin(): esbuild.Plugin {
