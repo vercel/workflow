@@ -14,12 +14,7 @@ describe('getPort', () => {
   it('should return a port number when a server is listening', async () => {
     const server = http.createServer();
 
-    await new Promise<void>((resolve) => {
-      server.listen(0, () => resolve());
-    });
-
-    // Give system time to register the port
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    server.listen(0);
 
     try {
       const port = await getPort();
@@ -48,16 +43,8 @@ describe('getPort', () => {
     const server1 = http.createServer();
     const server2 = http.createServer();
 
-    await new Promise<void>((resolve) => {
-      server1.listen(0, () => resolve());
-    });
-
-    await new Promise<void>((resolve) => {
-      server2.listen(0, () => resolve());
-    });
-
-    // Give system time to register the ports
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    server1.listen(0);
+    server2.listen(0);
 
     try {
       const port = await getPort();
