@@ -8,7 +8,7 @@ import {
   type WorkflowRun,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -304,7 +304,7 @@ export function RunDetailView({
           </div>
         </div>
 
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 relative">
           <WorkflowTraceViewer
             error={error}
             steps={allSteps}
@@ -314,6 +314,12 @@ export function RunDetailView({
             run={run}
             isLoading={loading}
           />
+          {auxiliaryDataLoading && (
+            <div className="absolute flex items-center justify-center left-4 bottom-4">
+              <Loader2 className="size-4 animate-spin" />
+              <span className="ml-4">Fetching data...</span>
+            </div>
+          )}
         </div>
       </div>
     </>
