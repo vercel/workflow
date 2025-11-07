@@ -16,5 +16,8 @@
     "openai": "^6.1.0",
     "workflow": "workspace:*",
     "zod": "catalog:"
+  },
+  "dependencies": {
+    "@node-rs/xxhash": "1.7.6"
   }
 }
