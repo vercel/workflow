@@ -1,8 +1,3 @@
-:root {
-  --transition-duration: 0.5s;
-  --transition-ease: ease-out;
-}
-
 .traceNode {
   position: relative;
   transition: width var(--transition-duration) var(--transition-ease);
@@ -33,8 +28,10 @@
   user-select: none;
   z-index: 2;
   /* Animate size/position changes and color changes */
-  transition: width var(--transition-duration) var(--transition-ease), right var(--transition-duration) var(--transition-ease),
-              background-color 0.3s ease-out, border-color 0.3s ease-out, color 0.3s ease-out;
+  transition: width var(--transition-duration) var(--transition-ease),
+    right var(--transition-duration) var(--transition-ease),
+    background-color 0.3s ease-out, border-color 0.3s ease-out,
+    color 0.3s ease-out;
 
   &.huge {
     overflow: visible;
@@ -64,7 +61,7 @@
     top: -1px;
     width: var(--span-width);
     height: var(--row-height);
-    content: '';
+    content: "";
   }
 
   &.small:not(.xHover)::after {
@@ -86,9 +83,10 @@
       var(--geist-background) calc(var(--span-width) + 1px)
     );
     /* Disable transitions on hover for instant expansion */
-    transition: width var(--transition-duration) var(--transition-ease), right var(--transition-duration) var(--transition-ease);
+    transition: width var(--transition-duration) var(--transition-ease),
+      right var(--transition-duration) var(--transition-ease);
 
-    &[data-right-side='true'] {
+    &[data-right-side="true"] {
       background: linear-gradient(
         270deg,
         var(--span-background) calc(var(--span-width) - 1px),
@@ -130,7 +128,9 @@
   height: var(--row-height);
   pointer-events: none;
   z-index: 4;
-  transition: left var(--transition-duration) var(--transition-ease), background-color var(--transition-duration) var(--transition-ease), border-color var(--transition-duration) var(--transition-ease);
+  transition: left var(--transition-duration) var(--transition-ease),
+    background-color var(--transition-duration) var(--transition-ease),
+    border-color var(--transition-duration) var(--transition-ease);
 
   & .eventDiamond {
     --size: 7px;
@@ -145,7 +145,8 @@
     background: var(--span-background);
     transform-origin: 50% 50% 0;
     transform: rotate(45deg);
-    transition: background var(--transition-duration) var(--transition-ease), border-color var(--transition-duration) var(--transition-ease);
+    transition: background var(--transition-duration) var(--transition-ease),
+      border-color var(--transition-duration) var(--transition-ease);
   }
 
   /* Workflow-specific: Use custom event color if provided */
@@ -201,7 +202,7 @@
     }
   }
 
-  &[data-hovered='true'] {
+  &[data-hovered="true"] {
     z-index: 4;
 
     & .eventDiamond {
@@ -527,7 +528,7 @@
     margin: 12px -12px 0;
     height: 1px;
     background: var(--border-color);
-    content: '';
+    content: "";
   }
 }
 
@@ -662,7 +663,7 @@
     width: 1px;
     height: 5px;
     background-color: inherit;
-    content: '';
+    content: "";
   }
 
   &::before {
@@ -878,12 +879,12 @@
     content: attr(data-text);
   }
 
-  &[data-align='left']::before {
+  &[data-align="left"]::before {
     left: -6px;
     transform: unset;
   }
 
-  &[data-align='right']::before {
+  &[data-align="right"]::before {
     left: unset;
     right: -6px;
     transform: unset;
@@ -919,7 +920,8 @@
   gap: 8px;
   background-color: var(--ds-gray-100);
   border-inline: 1px solid var(--ds-gray-300);
-  transition: left var(--transition-duration) var(--transition-ease), width var(--transition-duration) var(--transition-ease);
+  transition: left var(--transition-duration) var(--transition-ease),
+    width var(--transition-duration) var(--transition-ease);
 
   &::before,
   &::after {
@@ -1068,7 +1070,8 @@
   box-shadow: var(--ds-shadow-small);
   transform: translateX(var(--timeline-padding));
   pointer-events: none;
-  transition: width var(--transition-duration) var(--transition-ease), left var(--transition-duration) var(--transition-ease);
+  transition: width var(--transition-duration) var(--transition-ease),
+    left var(--transition-duration) var(--transition-ease);
 }
 
 /* TRACE VIEWER */
@@ -1128,7 +1131,9 @@
   position: absolute;
   margin-top: -1px;
   right: 0;
-  top: calc(var(--search-height) + 2 * var(--search-gap) + var(--map-height) + 9px);
+  top: calc(
+    var(--search-height) + 2 * var(--search-gap) + var(--map-height) + 9px
+  );
   width: var(--panel-width);
   height: var(--panel-height);
   border-top: 1px solid var(--ds-gray-200);
@@ -1255,4 +1260,3 @@
   --span-text: var(--ds-blue-900);
   --span-secondary: var(--ds-blue-700);
 }
-
