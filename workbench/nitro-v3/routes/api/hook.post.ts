@@ -1,4 +1,4 @@
-import { getHookByToken, resumeHook } from 'workflow/api';
+import { getHookByToken, resumeHook, WorkflowAPIError } from 'workflow/api';
 
 export default async ({ req }: { req: Request }) => {
   const { token, data } = await req.json();
@@ -9,9 +9,10 @@ export default async ({ req }: { req: Request }) => {
     console.log('hook', hook);
   } catch (error) {
     console.log('error during getHookByToken', error);
-    // TODO: `WorkflowAPIError` is not exported, so for now
-    // we'll return 404 assuming it's the "invalid" token test case
-    return Response.json(null, { status: 404 });
+    if (error instanceof WorkflowAPIError && error.status === 404) {
+      return Response.json(null, { status: 404 });
+    }
+    throw error;
   }
 
   await resumeHook(hook.token, {

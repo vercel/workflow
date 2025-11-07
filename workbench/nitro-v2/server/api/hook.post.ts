@@ -1,5 +1,5 @@
 import { defineEventHandler, readBody } from 'h3';
-import { getHookByToken, resumeHook } from 'workflow/api';
+import { getHookByToken, resumeHook, WorkflowAPIError } from 'workflow/api';
 
 export default defineEventHandler(async (event) => {
   const { token, data } = await readBody(event);
@@ -10,9 +10,10 @@ export default defineEventHandler(async (event) => {
     console.log('hook', hook);
   } catch (error) {
     console.log('error during getHookByToken', error);
-    // TODO: `WorkflowAPIError` is not exported, so for now
-    // we'll return 404 assuming it's the "invalid" token test case
-    return Response.json(null, { status: 404 });
+    if (error instanceof WorkflowAPIError && error.status === 404) {
+      return Response.json(null, { status: 404 });
+    }
+    throw error;
   }
 
   await resumeHook(hook.token, {

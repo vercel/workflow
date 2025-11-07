@@ -45,6 +45,7 @@ import { runWorkflow } from './workflow.js';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
+export { WorkflowAPIError } from '@workflow/errors';
 export {
   getHookByToken,
   resumeHook,
