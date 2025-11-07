@@ -70,6 +70,89 @@ For example, one step function may produce a `ReadableStream` while a different
 step consumes the stream. The workflow function does not interact directly with
 the stream but is able to pass it on to the next step:
 
+```typescript lineNumbers
+async function generateStream() {
+  "use step";
+
+  return new ReadableStream({
+    async start(controller) {
+      controller.enqueue(1);
+      controller.enqueue(2);
+      controller.enqueue(3);
+      controller.close();
+    }
+  });
+}
+
+async function consumeStream(readable: ReadableStream<number>) {
+  "use step";
+
+  const values: number[] = [];
+  for await (const value of readable) {
+    values.push(value);
+  }
+
+  console.log(values);
+  // Logs: [1, 2, 3]
+}
+
+export async function passingStreamWorkflow() {
+  "use workflow";
+
+  // ✅ Stream is received as a return value and passed // [!code highlight]
+  // into a step, but NOT directly used in the workflow // [!code highlight]
+  const readable = await generateStream();  // [!code highlight]
+  await consumeStream(readable);  // [!code highlight]
+}
+```
+
+**What NOT to do:** Do not attempt to read from or write to a stream directly within
+the workflow function context, as this will not work as expected and an error will be thrown at runtime:
+
+```typescript
+export async function incorrectStreamUsage() {
+  "use workflow";
+
+  const readable = await generateStream();
+
+  // ❌ This will fail - cannot read stream in workflow context // [!code highlight]
+  const reader = readable.getReader(); // [!code highlight]
+}
+```
+
+Always delegate stream operations to step functions.
+
+
+## Request & Response
+
+The Web API `Request` and `Response` APIs are supported by the serialization system,
+and can be passed around between workflow and step functions similarly to other data types.
+
+As a convenience, these two APIs are treated slightly differently when used
+within a workflow function: calling the `text()` / `json()` / `arrayBuffer()` instance
+methods is automatically treated as a step function invocation. This allows you to consume
+the body directly in the workflow context while maintaining proper serialization and caching.
+
+For example, consider how receiving a webhook request provides the entire `Request`
+instance into the workflow context. You may consume the body of that request directly
+in the workflow, which will be cached as a step result for future resumptions of the workflow:
+
+```typescript lineNumbers
+import { createWebhook } from 'workflow';
+
+export async function handleWebhookWorkflow() {
+  "use workflow";
+
+  const webhook = createWebhook();
+  const request = await webhook;
+
+  // The body of the request will only be consumed once // [!code highlight]
+  const body = await request.json(); // [!code highlight]
+
+  // …
+}
+```
+
 ## Pass-by-Value Semantics
 
 An important consequence of serialization is that **all parameters are passed by value, not by reference**. When you pass an object or array to a step function, the step receives a deserialized copy of that data. Any mutations to the arguments inside the step function will **not** be reflected in the workflow's context.
@@ -169,86 +252,3 @@ async function addItemStep(items: string[]) {
 ```
 
 Remember: **Only return values are persisted to the event log and visible in the workflow context.** Mutations to parameters are lost because each step receives a fresh deserialized copy of the data.
-
-```typescript lineNumbers
-async function generateStream() {
-  "use step";
-
-  return new ReadableStream({
-    async start(controller) {
-      controller.enqueue(1);
-      controller.enqueue(2);
-      controller.enqueue(3);
-      controller.close();
-    }
-  });
-}
-
-async function consumeStream(readable: ReadableStream<number>) {
-  "use step";
-
-  const values: number[] = [];
-  for await (const value of readable) {
-    values.push(value);
-  }
-
-  console.log(values);
-  // Logs: [1, 2, 3]
-}
-
-export async function passingStreamWorkflow() {
-  "use workflow";
-
-  // ✅ Stream is received as a return value and passed // [!code highlight]
-  // into a step, but NOT directly used in the workflow // [!code highlight]
-  const readable = await generateStream();  // [!code highlight]
-  await consumeStream(readable);  // [!code highlight]
-}
-```
-
-**What NOT to do:** Do not attempt to read from or write to a stream directly within
-the workflow function context, as this will not work as expected and an error will be thrown at runtime:
-
-```typescript
-export async function incorrectStreamUsage() {
-  "use workflow";
-
-  const readable = await generateStream();
-
-  // ❌ This will fail - cannot read stream in workflow context // [!code highlight]
-  const reader = readable.getReader(); // [!code highlight]
-}
-```
-
-Always delegate stream operations to step functions.
-
-
-## Request & Response
-
-The Web API `Request` and `Response` APIs are supported by the serialization system,
-and can be passed around between workflow and step functions similarly to other data types.
-
-As a convenience, these two APIs are treated slightly differently when used
-within a workflow function: calling the `text()` / `json()` / `arrayBuffer()` instance
-methods is automatically treated as a step function invocation. This allows you to consume
-the body directly in the workflow context while maintaining proper serialization and caching.
-
-For example, consider how receiving a webhook request provides the entire `Request`
-instance into the workflow context. You may consume the body of that request directly
-in the workflow, which will be cached as a step result for future resumptions of the workflow:
-
-```typescript lineNumbers
-import { createWebhook } from 'workflow';
-
-export async function handleWebhookWorkflow() {
-  "use workflow";
-
-  const webhook = createWebhook();
-  const request = await webhook;
-
-  // The body of the request will only be consumed once // [!code highlight]
-  const body = await request.json(); // [!code highlight]
-
-  // …
-}
-```
