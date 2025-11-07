@@ -5,5 +5,5 @@ export default defineNuxtConfig({
   compatibilityDate: 'latest',
   nitro: {
     modules: ['workflow/nitro'],
-  }
+  },
 });

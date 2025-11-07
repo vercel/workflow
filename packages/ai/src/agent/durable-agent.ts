@@ -5,6 +5,8 @@ import type {
 import {
   asSchema,
   type ModelMessage,
+  type StepResult,
+  type StopCondition,
   type ToolSet,
   type UIMessageChunk,
 } from 'ai';
@@ -33,6 +35,14 @@ export interface DurableAgentOptions {
    * Optional system prompt to guide the agent's behavior.
    */
   system?: string;
+
+  /**
+   * Condition for stopping the generation when there are tool results in the last step.
+   * When the condition is an array, any of the conditions can be met to stop the generation.
+   *
+   * @default stepCountIs(1)
+   */
+  stopWhen?: StopCondition<ToolSet> | Array<StopCondition<ToolSet>>;
 }
 
 /**
@@ -59,6 +69,15 @@ export interface DurableAgentStreamOptions {
    * Defaults to false (stream will be closed).
    */
   preventClose?: boolean;
+
+  /**
+   * Condition for stopping the generation when there are tool results in the last step.
+   * When the condition is an array, any of the conditions can be met to stop the generation.
+   * If provided, overrides the stopWhen from the constructor.
+   *
+   * @default stepCountIs(1)
+   */
+  stopWhen?: StopCondition<ToolSet> | Array<StopCondition<ToolSet>>;
 }
 
 /**
@@ -92,11 +111,13 @@ export class DurableAgent {
   private model: string;
   private tools: ToolSet;
   private system?: string;
+  private stopWhen?: StopCondition<ToolSet> | Array<StopCondition<ToolSet>>;
 
   constructor(options: DurableAgentOptions) {
     this.model = options.model;
     this.tools = options.tools;
     this.system = options.system;
+    this.stopWhen = options.stopWhen;
   }
 
   generate() {
@@ -126,6 +147,10 @@ export class DurableAgent {
       prompt: modelPrompt,
     });
 
+    // Use the stopWhen from options if provided, otherwise use the one from constructor
+    const stopWhen = options.stopWhen ?? this.stopWhen;
+    const steps: Array<StepResult<ToolSet>> = [];
+
     let result = await iterator.next();
     while (!result.done) {
       const toolCalls = result.value;
@@ -135,6 +160,19 @@ export class DurableAgent {
             executeTool(toolCall, this.tools)
         )
       );
+
+      // Build a step result to track progress
+      const stepResult = buildStepResult(toolCalls, toolResults);
+      steps.push(stepResult);
+
+      // Check stop conditions if defined
+      if (stopWhen) {
+        const shouldStop = await evaluateStopConditions(stopWhen, steps);
+        if (shouldStop) {
+          break;
+        }
+      }
+
       result = await iterator.next(toolResults);
     }
 
@@ -182,4 +220,95 @@ async function executeTool(
       value: JSON.stringify(toolResult) ?? '',
     },
   };
+}
+
+/**
+ * Evaluates stop conditions and returns true if any condition is met
+ */
+async function evaluateStopConditions(
+  stopWhen: StopCondition<ToolSet> | Array<StopCondition<ToolSet>>,
+  steps: Array<StepResult<ToolSet>>
+): Promise<boolean> {
+  const conditions = Array.isArray(stopWhen) ? stopWhen : [stopWhen];
+
+  for (const condition of conditions) {
+    const result = await condition({ steps });
+    if (result) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Safely parse JSON with fallback to empty object
+ */
+function safeJsonParse(jsonString: string): any {
+  try {
+    return JSON.parse(jsonString || '{}');
+  } catch {
+    // If parsing fails, return empty object
+    return {};
+  }
+}
+
+/**
+ * Builds a StepResult from tool calls and results
+ */
+function buildStepResult(
+  toolCalls: LanguageModelV2ToolCall[],
+  toolResults: LanguageModelV2ToolResultPart[]
+): StepResult<ToolSet> {
+  // Build a minimal StepResult that contains the essential information
+  // The AI SDK's StepResult type has many fields, but for stopWhen evaluation,
+  // the most important ones are toolCalls and toolResults
+
+  // Create a map of toolCallId to toolCall for easier lookup
+  const toolCallMap = new Map(toolCalls.map((tc) => [tc.toolCallId, tc]));
+
+  return {
+    content: [],
+    text: '',
+    reasoning: [],
+    reasoningText: undefined,
+    files: [],
+    sources: [],
+    toolCalls: toolCalls.map((tc) => ({
+      type: 'tool-call' as const,
+      toolCallId: tc.toolCallId,
+      toolName: tc.toolName,
+      input: safeJsonParse(tc.input || '{}'),
+    })),
+    staticToolCalls: [],
+    dynamicToolCalls: [],
+    toolResults: toolResults.map((tr) => {
+      const toolCall = toolCallMap.get(tr.toolCallId);
+      return {
+        type: 'tool-result' as const,
+        toolCallId: tr.toolCallId,
+        toolName: tr.toolName,
+        input: toolCall ? safeJsonParse(toolCall.input || '{}') : {},
+        output:
+          tr.output.type === 'text'
+            ? safeJsonParse(tr.output.value)
+            : tr.output.value,
+      };
+    }),
+    staticToolResults: [],
+    dynamicToolResults: [],
+    finishReason: 'tool-calls' as const,
+    warnings: undefined,
+    request: {} as any,
+    response: {} as any,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    },
+    rawResponse: undefined,
+    logprobs: undefined,
+    experimental_providerMetadata: undefined,
+    providerMetadata: undefined,
+  } as StepResult<ToolSet>;
 }
