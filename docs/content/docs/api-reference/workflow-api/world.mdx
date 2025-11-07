@@ -1,0 +1,149 @@
+---
+title: World helpers
+---
+
+# Accessing the World singleton
+
+> “Is there any public API to access the active default World? I'd like to be able to list active runs in my app, like I can via the CLI. I could store them myself, but if there is an API for this that works across testing and deployment, that'd be even better!”
+
+Yes. Import `getWorld` or any of the helper functions below directly from `workflow/api`. They proxy to the same singleton that powers the CLI, whether you're running locally with the embedded world, in tests (via `setWorld`), or on Vercel.
+
+```typescript
+import {
+  getWorld,
+  listRuns,
+  listSteps,
+  cancelRun,
+  queue,
+} from 'workflow/api';
+
+const runs = await listRuns({ status: 'running', pagination: { limit: 10 } });
+await cancelRun(runs.data[0].runId);
+
+// You still have full access to the underlying World instance when needed.
+const world = getWorld();
+await world.start?.();
+```
+
+## Example: List and cancel runs in a Next.js route
+
+```typescript filename="app/api/workflows/route.ts"
+import { listRuns, cancelRun } from 'workflow/api';
+
+export async function GET() {
+  const runs = await listRuns({ status: 'running', pagination: { limit: 20 } });
+  return Response.json({ runs: runs.data });
+}
+
+export async function POST(request: Request) {
+  const { runId } = await request.json();
+  await cancelRun(runId);
+  return Response.json({ ok: true });
+}
+```
+
+This works the same way in development and production—just make sure the usual `WORKFLOW_*` environment variables are present so the correct world implementation can be chosen.
+
+## Helper catalog
+
+### Run helpers
+
+| Function | Description |
+| --- | --- |
+| `createRun(data)` | Calls `world.runs.create` directly. Useful for advanced tooling/tests. |
+| `getWorkflowRun(id, params?)` | Fetches a workflow run record without wrapping it in the `Run` class. |
+| `updateRun(id, data)` | Partially updates a run record. |
+| `listRuns(params?)` | Lists runs with optional filters/pagination. |
+| `cancelRun(id, params?)` | Cancels a run. |
+| `pauseRun(id, params?)` / `resumeRun(id, params?)` | Pause/resume administrative helpers. |
+
+### Step helpers
+
+| Function | Description |
+| --- | --- |
+| `createStep(runId, data)` | Inserts a step record. |
+| `getStep(runId, stepId, params?)` | Retrieves a single step. |
+| `updateStep(runId, stepId, data)` | Updates status/attempt metadata. |
+| `listSteps(params)` | Lists steps for a run (with pagination + `resolveData`). |
+
+### Events & hooks
+
+| Function | Description |
+| --- | --- |
+| `createEvent(runId, data, params?)` | Writes workflow/step events. |
+| `listEvents(params)` | Lists events for a run. |
+| `listEventsByCorrelationId(params)` | Lists events for a correlation ID across runs. |
+| `createHook(runId, data, params?)` | Creates a hook. |
+| `getHook(id, params?)` | Fetches hook metadata. |
+| `listHooks(params)` | Lists hooks. |
+| `disposeHook(id, params?)` | Disposes a hook. |
+| `getHookByToken(token, params?)` | Continues to be exported for convenience. |
+
+### Queue, streams, and lifecycle helpers
+
+| Function | Description |
+| --- | --- |
+| `getDeploymentId()` | Returns the deployment ID that queue operations will use. |
+| `queue(name, payload, opts?)` | Enqueue workflow/step invocations manually. |
+| `createQueueHandler(prefix, handler)` | Builds queue HTTP handlers (the same API the runtime uses). |
+| `writeToStream(name, chunk)` / `closeStream(name)` / `readFromStream(name, startIndex?)` | Direct streaming helpers. |
+| `startWorld()` | Invokes `world.start?.()` if provided by your world implementation. |
+
+## Testing tips
+
+Use `setWorld` to stub custom worlds in tests so that the helpers continue to work without hitting real infrastructure:
+
+```typescript
+import { setWorld } from 'workflow/runtime';
+import { listRuns } from 'workflow/api';
+import type { World } from '@workflow/world';
+
+beforeEach(() => {
+  const mockWorld: World = {
+    // Provide a minimal mock World
+    runs: {
+      list: async () => ({ data: [], cursor: null, hasMore: false }),
+      create: async () => { throw new Error('not implemented'); },
+      get: async () => { throw new Error('not implemented'); },
+      update: async () => { throw new Error('not implemented'); },
+      cancel: async () => { throw new Error('not implemented'); },
+      pause: async () => { throw new Error('not implemented'); },
+      resume: async () => { throw new Error('not implemented'); },
+    },
+    steps: {
+      create: async () => { throw new Error('not implemented'); },
+      get: async () => { throw new Error('not implemented'); },
+      update: async () => { throw new Error('not implemented'); },
+      list: async () => ({ data: [], cursor: null, hasMore: false }),
+    },
+    events: {
+      create: async () => { throw new Error('not implemented'); },
+      list: async () => ({ data: [], cursor: null, hasMore: false }),
+      listByCorrelationId: async () => ({ data: [], cursor: null, hasMore: false }),
+    },
+    hooks: {
+      create: async () => { throw new Error('not implemented'); },
+      get: async () => { throw new Error('not implemented'); },
+      getByToken: async () => { throw new Error('not implemented'); },
+      list: async () => ({ data: [], cursor: null, hasMore: false }),
+      dispose: async () => { throw new Error('not implemented'); },
+    },
+    getDeploymentId: async () => 'test',
+    queue: async () => ({ messageId: 'msg_test' }),
+    createQueueHandler: () => async () => new Response(),
+    writeToStream: async () => {},
+    closeStream: async () => {},
+    readFromStream: async () => new ReadableStream(),
+  };
+  setWorld(mockWorld);
+});
+
+afterEach(() => setWorld(undefined));
+
+it('lists runs without contacting real services', async () => {
+  const runs = await listRuns();
+  expect(runs.data).toHaveLength(0);
+});
+```
+
+This mirrors how the new automated tests stub the world singleton.

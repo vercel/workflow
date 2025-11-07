@@ -52,6 +52,7 @@
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/typescript-plugin": "workspace:*",
+    "@workflow/world": "workspace:*",
     "ms": "2.1.3",
     "@workflow/next": "workspace:*",
     "@workflow/nitro": "workspace:*",
