@@ -6,12 +6,12 @@ import { generateDefinition } from "@/lib/tsdoc"
 
 # `getWritable()`
 
-Retrieves the current workflow run's default writable stream. The writable stream is intended to be passed as an argument to steps which can write to it. Chunks written to this stream can be read outside the workflow by using the `readable` property of the [`Run` object](/docs/api-reference/workflow-api/get-run).
+Retrieves the current workflow run's default writable stream. The writable stream can be used in both workflow and step functions to write data that can be read outside the workflow by using the `readable` property of the [`Run` object](/docs/api-reference/workflow-api/get-run).
 
-Use this function in your workflows to produce streaming output that can be consumed by clients in real-time.
+Use this function in your workflows and steps to produce streaming output that can be consumed by clients in real-time.
 
 <Callout type="warn">
-This function can only be called inside a workflow function (functions with `"use workflow"` directive)
+This function can only be called inside a workflow or step function (functions with `"use workflow"` or `"use step"` directive)
 </Callout>
 
 ```typescript lineNumbers
@@ -56,7 +56,9 @@ Returns a `WritableStream<W>` where `W` is the type of data you plan to write to
 
 ## Good to Know
 
-- The stream should typically be passed to step functions for writing.
+- The stream can be obtained from either workflow or step functions using the same `getWritable()` call.
+- When called from a workflow, the stream can be passed as an argument to steps.
+- When called from a step, it retrieves the same workflow-scoped stream directly.
 - Always release the writer lock after writing to prevent resource leaks.
 - The stream can write binary data (using `TextEncoder`) or structured objects.
 - Remember to close the stream when finished to signal completion.
@@ -97,6 +99,89 @@ async function stepCloseOutputStream(writable: WritableStream) {
 
   // Close the stream to signal completion
   await writable.close();
+}
+```
+
+### Calling `getWritable()` Inside Steps
+
+You can also call `getWritable()` directly inside step functions without passing it as a parameter:
+
+```typescript lineNumbers
+import { sleep, getWritable } from 'workflow';
+
+export async function outputStreamFromStepWorkflow() {
+  "use workflow";
+
+  // No need to create or pass the stream - steps can get it themselves
+  await sleep("1s");
+  await stepWithOutputStreamInside();
+  await sleep("1s");
+  await stepCloseOutputStreamInside();
+
+  return 'done';
+}
+
+async function stepWithOutputStreamInside() {
+  "use step";
+
+  // Call getWritable() directly inside the step // [!code highlight]
+  const writable = getWritable(); // [!code highlight]
+  const writer = writable.getWriter();
+
+  await writer.write(new TextEncoder().encode('Hello from step!'));
+  writer.releaseLock();
+}
+
+async function stepCloseOutputStreamInside() {
+  "use step";
+
+  // Call getWritable() to get the same stream // [!code highlight]
+  const writable = getWritable(); // [!code highlight]
+  await writable.close();
+}
+```
+
+### Using Namespaced Streams in Steps
+
+You can also use namespaced streams when calling `getWritable()` from steps:
+
+```typescript lineNumbers
+import { getWritable } from 'workflow';
+
+export async function multiStreamWorkflow() {
+  "use workflow";
+
+  // Steps will access both streams by namespace
+  await writeToDefaultStream();
+  await writeToNamedStream();
+  await closeStreams();
+
+  return 'done';
+}
+
+async function writeToDefaultStream() {
+  "use step";
+
+  const writable = getWritable(); // Default stream
+  const writer = writable.getWriter();
+  await writer.write({ message: 'Default stream data' });
+  writer.releaseLock();
+}
+
+async function writeToNamedStream() {
+  "use step";
+
+  const writable = getWritable({ namespace: 'logs' }); // [!code highlight]
+  const writer = writable.getWriter();
+  await writer.write({ log: 'Named stream data' });
+  writer.releaseLock();
+}
+
+async function closeStreams() {
+  "use step";
+
+  await getWritable().close(); // Close default stream
+  await getWritable({ namespace: 'logs' }).close(); // Close named stream
 }
 ```
 

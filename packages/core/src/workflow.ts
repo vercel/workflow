@@ -1,5 +1,7 @@
 import { runInContext } from 'node:vm';
 import { ERROR_SLUGS } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
+import { getPort } from '@workflow/utils/get-port';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -20,7 +22,7 @@ import {
 } from './symbols.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import { trace } from './telemetry.js';
-import { getWorkflowRunStreamId, withResolvers } from './util.js';
+import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
@@ -46,6 +48,10 @@ export async function runWorkflow(
         `Workflow run "${workflowRun.runId}" has no "startedAt" timestamp (should not happen)`
       );
     }
+
+    // Get the port before creating VM context to avoid async operations
+    // affecting the deterministic timestamp
+    const port = await getPort();
 
     const {
       context,
@@ -100,7 +106,7 @@ export async function runWorkflow(
     // solution only works for vercel + embedded worlds.
     const url = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${process.env.PORT || 3000}`;
+      : `http://localhost:${port ?? 3000}`;
 
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {

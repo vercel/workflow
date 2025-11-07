@@ -10,6 +10,10 @@ import { getWorld } from './world.js';
 export interface StartOptions {
   /**
    * The deployment ID to use for the workflow run.
+   *
+   * @deprecated This property should not be set in user code under normal circumstances.
+   * It is automatically inferred from environment variables when deploying to Vercel.
+   * Only set this if you are doing something advanced and know what you are doing.
    */
   deploymentId?: string;
 }

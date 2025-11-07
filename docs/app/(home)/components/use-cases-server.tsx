@@ -41,10 +41,9 @@ async function callAPI(endpoint) {
   }
 
   if (response.status === 429) {
-    const retryAfter = response.headers.get('Retry-After');
-    // Customize the duration before retrying
+    // Customize retry delay - accepts duration strings, milliseconds, or Date instances
     throw new RetryableError("Too many requests. Retrying...", {
-      retryAfter: parseInt(retryAfter)
+      retryAfter: "30s"
     });
   }
 

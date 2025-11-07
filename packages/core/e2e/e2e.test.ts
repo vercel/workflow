@@ -27,7 +27,9 @@ async function triggerWorkflow(
   });
   if (!res.ok) {
     throw new Error(
-      `Failed to trigger workflow: ${res.url} ${res.status}: ${await res.text()}`
+      `Failed to trigger workflow: ${res.url} ${
+        res.status
+      }: ${await res.text()}`
     );
   }
   const run = await res.json();
@@ -297,14 +299,6 @@ describe('e2e', () => {
     expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
   });
 
-  test('sleepingDateWorkflow', { timeout: 60_000 }, async () => {
-    const endDate = new Date(Date.now() + 30_000);
-    const run = await triggerWorkflow('sleepingDateWorkflow', [endDate]);
-    const returnValue = await getWorkflowReturnValue(run.runId);
-    expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
-    expect(returnValue.endTime).toBeGreaterThanOrEqual(endDate.getTime());
-  });
-
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('nullByteWorkflow', []);
     const returnValue = await getWorkflowReturnValue(run.runId);
@@ -411,6 +405,65 @@ describe('e2e', () => {
     const returnValue = await getWorkflowReturnValue(run.runId);
     expect(returnValue).toEqual('done');
   });
+
+  test(
+    'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
+    { timeout: 60_000 },
+    async () => {
+      const run = await triggerWorkflow('outputStreamInsideStepWorkflow', []);
+      const stream = await fetch(
+        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`
+      );
+      const namedStream = await fetch(
+        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=step-ns`
+      );
+      const textDecoderStream = new TextDecoderStream();
+      stream.body?.pipeThrough(textDecoderStream);
+      const reader = textDecoderStream.readable.getReader();
+
+      const namedTextDecoderStream = new TextDecoderStream();
+      namedStream.body?.pipeThrough(namedTextDecoderStream);
+      const namedReader = namedTextDecoderStream.readable.getReader();
+
+      // First message from default stream
+      const r1 = await reader.read();
+      assert(r1.value);
+      const chunk1 = JSON.parse(r1.value);
+      const binaryData1 = Buffer.from(chunk1.data, 'base64');
+      expect(binaryData1.toString()).toEqual('Hello from step!');
+
+      // First message from named stream
+      const r1Named = await namedReader.read();
+      assert(r1Named.value);
+      const chunk1Named = JSON.parse(r1Named.value);
+      expect(chunk1Named).toEqual({
+        message: 'Hello from named stream in step!',
+      });
+
+      // Second message from default stream
+      const r2 = await reader.read();
+      assert(r2.value);
+      const chunk2 = JSON.parse(r2.value);
+      const binaryData2 = Buffer.from(chunk2.data, 'base64');
+      expect(binaryData2.toString()).toEqual('Second message');
+
+      // Second message from named stream
+      const r2Named = await namedReader.read();
+      assert(r2Named.value);
+      const chunk2Named = JSON.parse(r2Named.value);
+      expect(chunk2Named).toEqual({ counter: 42 });
+
+      // Verify streams are closed
+      const r3 = await reader.read();
+      expect(r3.done).toBe(true);
+
+      const r3Named = await namedReader.read();
+      expect(r3Named.done).toBe(true);
+
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue).toEqual('done');
+    }
+  );
 
   test('fetchWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('fetchWorkflow', []);

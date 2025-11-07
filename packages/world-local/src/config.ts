@@ -11,8 +11,7 @@ const getPortFromEnv = () => {
   if (port) {
     return Number(port);
   }
-  //
-  return 3000;
+  return undefined;
 };
 
 export const config = once(() => {

@@ -1,0 +1,46 @@
+{
+  "name": "@workflow/utils",
+  "description": "Utility functions for Workflow DevKit",
+  "version": "4.0.1-beta.1",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/utils"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./get-port": {
+      "types": "./dist/get-port.d.ts",
+      "default": "./dist/get-port.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/ms": "^2.1.0",
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "vitest": "catalog:"
+  },
+  "dependencies": {
+    "ms": "2.1.3",
+    "pid-port": "^2.0.0"
+  }
+}

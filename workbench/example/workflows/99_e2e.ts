@@ -197,14 +197,6 @@ export async function sleepingWorkflow() {
   return { startTime, endTime };
 }
 
-export async function sleepingDateWorkflow(endDate: Date) {
-  'use workflow';
-  const startTime = Date.now();
-  await sleep(endDate);
-  const endTime = Date.now();
-  return { startTime, endTime };
-}
-
 //////////////////////////////////////////////////////////
 
 async function nullByteStep() {
@@ -284,6 +276,54 @@ export async function outputStreamWorkflow() {
   await sleep('1s');
   await stepCloseOutputStream(writable);
   await stepCloseOutputStream(namedWritable);
+  return 'done';
+}
+
+//////////////////////////////////////////////////////////
+
+async function stepWithOutputStreamInsideStep(text: string) {
+  'use step';
+  // Call getWritable directly inside the step function
+  const writable = getWritable();
+  const writer = writable.getWriter();
+  await writer.write(new TextEncoder().encode(text));
+  writer.releaseLock();
+}
+
+async function stepWithNamedOutputStreamInsideStep(
+  namespace: string,
+  obj: any
+) {
+  'use step';
+  // Call getWritable with namespace directly inside the step function
+  const writable = getWritable({ namespace });
+  const writer = writable.getWriter();
+  await writer.write(obj);
+  writer.releaseLock();
+}
+
+async function stepCloseOutputStreamInsideStep(namespace?: string) {
+  'use step';
+  // Call getWritable directly inside the step function and close it
+  const writable = getWritable({ namespace });
+  await writable.close();
+}
+
+export async function outputStreamInsideStepWorkflow() {
+  'use workflow';
+  await sleep('1s');
+  await stepWithOutputStreamInsideStep('Hello from step!');
+  await sleep('1s');
+  await stepWithNamedOutputStreamInsideStep('step-ns', {
+    message: 'Hello from named stream in step!',
+  });
+  await sleep('1s');
+  await stepWithOutputStreamInsideStep('Second message');
+  await sleep('1s');
+  await stepWithNamedOutputStreamInsideStep('step-ns', { counter: 42 });
+  await sleep('1s');
+  await stepCloseOutputStreamInsideStep();
+  await stepCloseOutputStreamInsideStep('step-ns');
   return 'done';
 }
 

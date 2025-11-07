@@ -48,7 +48,7 @@ showSections={['parameters']}
 <TSDoc
 definition={generateDefinition({
   code: `
-interface DefineHook {
+interface DefineHook<T> {
   /**
 
 * Creates a new hook with the defined payload type.
@@ -112,6 +112,54 @@ export async function POST(request: Request) {
   }
 
   return Response.json({ success: true, runId: result.runId });
+}
+```
+
+### Validate and Transform with Schema
+
+The optional `schema` accepts any validator that conforms to [Standard Schema v1](https://standardschema.dev).
+
+Zod is shown below as one example, but libraries like Valibot, ArkType, Effect Schema, or your own custom validator work as well.
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+import { z } from "zod";
+
+export const approvalHook = defineHook({
+  // Provide a schema to validate/transform payloads.
+  schema: z.object({ // [!code highlight]
+    approved: z.boolean(), // [!code highlight]
+    comment: z.string().min(1).transform((value) => value.trim()), // [!code highlight]
+  }), // [!code highlight]
+});
+
+export async function approvalWorkflow(approvalId: string) {
+  "use workflow";
+
+  const hook = approvalHook.create({
+    token: `approval:${approvalId}`,
+  });
+
+  const { approved, comment } = await hook;
+  console.log('Approved:', approved);
+  console.log('Comment:', comment);
+}
+```
+
+In your route handler, resume the hook with the same definition; the schema validates and transforms the payload before the workflow continues.
+
+```typescript lineNumbers
+export async function POST(request: Request) {
+  // comment is "   Ready!   " here
+  const { token, approved, comment } = await request.json();
+
+  // If validation fails, Zod throws and the hook is not resumed.
+  await approvalHook.resume(token, { // [!code highlight]
+    approved, // [!code highlight]
+    comment, // transformed to "Ready!" [!code highlight]
+  }); // [!code highlight]
+
+  return Response.json({ success: true });
 }
 ```
 

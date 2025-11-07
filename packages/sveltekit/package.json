@@ -1,6 +1,6 @@
 {
   "name": "@workflow/sveltekit",
-  "version": "4.0.0-beta.3",
+  "version": "4.0.0-beta.5",
   "description": "SvelteKit integration for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/workflow.git",
@@ -26,7 +26,6 @@
   },
   "dependencies": {
     "@swc/core": "1.11.24",
-    "@sveltejs/kit": "^2.48.2",
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "fs-extra": "^11.3.2",

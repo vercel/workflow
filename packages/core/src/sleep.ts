@@ -24,7 +24,18 @@ export async function sleep(duration: StringValue): Promise<void>;
  */
 export async function sleep(date: Date): Promise<void>;
 
-export async function sleep(param: StringValue | Date): Promise<void> {
+/**
+ * Sleep within a workflow for a given duration in milliseconds.
+ *
+ * This is a built-in runtime function that uses timer events in the event log.
+ *
+ * @param durationMs - The duration to sleep for in milliseconds.
+ * @overload
+ * @returns A promise that resolves when the sleep is complete.
+ */
+export async function sleep(durationMs: number): Promise<void>;
+
+export async function sleep(param: StringValue | Date | number): Promise<void> {
   // Inside the workflow VM, the sleep function is stored in the globalThis object behind a symbol
   const sleepFn = (globalThis as any)[WORKFLOW_SLEEP];
   if (!sleepFn) {

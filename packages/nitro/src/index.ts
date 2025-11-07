@@ -41,9 +41,17 @@ export default {
 
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
+      const builder = new LocalBuilder(nitro);
       nitro.hooks.hook('build:before', async () => {
-        await new LocalBuilder(nitro).build();
+        await builder.build();
       });
+
+      // Allows for HMR
+      if (nitro.options.dev) {
+        nitro.hooks.hook('dev:reload', async () => {
+          await builder.build();
+        });
+      }
 
       addVirtualHandler(
         nitro,

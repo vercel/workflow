@@ -1,11 +1,11 @@
 import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import { stepLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import type { Serializable } from './schemas.js';
 import { hydrateStepReturnValue } from './serialization.js';
-import { withResolvers } from './util.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
