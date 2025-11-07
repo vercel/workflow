@@ -1,9 +1,11 @@
+import { readFileSync } from 'node:fs';
 import fetch from 'node-fetch';
 import { createWebhook, sleep } from 'workflow';
 
 export async function handleUserSignup(email: string) {
   'use workflow';
 
+  readFileSync('test.txt');
   fetch('https://api.github.com');
   const user = await createUser(email);
   await sendWelcomeEmail(user);

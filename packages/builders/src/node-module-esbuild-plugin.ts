@@ -1,100 +1,247 @@
-// @ts-nocheck
-
-import { readFileSync } from 'node:fs';
-import { normalize, relative, resolve } from 'node:path';
-import { promisify } from 'node:util';
-import { ERROR_SLUGS } from '@workflow/errors';
-import builtinModules from 'builtin-modules';
-import enhancedResolveOriginal from 'enhanced-resolve';
-import type * as esbuild from 'esbuild';
+import { readFileSync } from "node:fs";
+import { normalize, relative, resolve } from "node:path";
+import { promisify } from "node:util";
+import { ERROR_SLUGS } from "@workflow/errors";
+import builtinModules from "builtin-modules";
+import enhancedResolveOriginal from "enhanced-resolve";
+import type * as esbuild from "esbuild";
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
 // Match exact Node.js built-in module names:
 // - "fs", "path", "stream" etc. (exact match)
 // - "node:fs", "node:path" etc. (with node: prefix)
+// But NOT "some-package/stream" or "eventsource-parser/stream"
+const nodeModulesPattern = `(${builtinModules.join("|")})`;
+
+// Match Bun modules:
 // - "bun" (exact match)
 // - "bun:sqlite", "bun:ffi" etc. (with bun: prefix)
-// But NOT "some-package/stream" or "eventsource-parser/stream"
-const nodeModulesPattern = `(${builtinModules.join('|')})`;
-const nodeModulesRegex = new RegExp(`^${nodeModulesPattern}$`);
 const bunModulesRegex = /^bun(:|$)/;
-const regex = new RegExp(`^(${nodeModulesPattern}|bun(:.*)?)$`);
+
+// Combined regex for both Node.js and Bun modules
+const runtimeModulesRegex = new RegExp(
+  `^((node:)?${nodeModulesPattern}|bun(:.*)?)$`,
+);
 
 type PackageViolation = {
+  packageName: string;
   importer: string;
   path: string;
-  packageName: string;
-  packageRoot: string;
+  location: Partial<esbuild.Location>;
 };
 
-function getPackageName(filePath: string) {
-  const normalized = filePath.replace(/\\/g, '/');
-  const marker = '/node_modules/';
+/*
+ * Get the package name from a file path.
+ * @param filePath - The file path to get the package name from.
+ * @returns The package name.
+ */
+export function getPackageName(filePath: string) {
+  const normalized = filePath.replace(/\\/g, "/");
+  const marker = "/node_modules/";
   const idx = normalized.lastIndexOf(marker);
   if (idx === -1) return null;
 
   const after = normalized.slice(idx + marker.length); // e.g. ".pnpm/node-fetch@3.3.2/node_modules/node-fetch/src/index.js"
-  const segments = after.split('/');
+  const segments = after.split("/");
   if (!segments.length) return null;
 
   let packageName = segments[0];
 
   // pnpm nests: ".pnpm/<pkg>@<version>/node_modules/<pkg>/..."
-  if (packageName === '.pnpm' && segments.length >= 3) {
+  if (packageName === ".pnpm" && segments.length >= 3) {
     packageName = segments[2];
-    packageSegments = 3;
-  } else if (packageName.startsWith('@') && segments.length >= 2) {
+  } else if (packageName.startsWith("@") && segments.length >= 2) {
     packageName = `${segments[0]}/${segments[1]}`;
-    packageSegments = 2;
   }
 
   return packageName;
 }
 
+/*
+ * Escape a regular expression string.
+ * @param value - The string to escape.
+ * @returns The escaped string.
+ */
+export function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/*
+ * Get the imported identifier from a specifier.
+ * @param specifier - The specifier to get the imported identifier from.
+ * @returns The imported identifier.
+ */
+export function getImportedIdentifier(specifier: string) {
+  const namespaceMatch = specifier.match(/\*\s+as\s+([A-Za-z0-9_$]+)/);
+  if (namespaceMatch) {
+    return namespaceMatch[1];
+  }
+
+  if (specifier.includes("{")) {
+    const inside = specifier.replace(/^[^{]*\{/, "").replace(/\}.*$/, "");
+    const firstNamed = inside
+      .split(",")
+      .map((token) => token.trim())
+      .find(Boolean);
+
+    if (firstNamed) {
+      const aliasMatch = firstNamed.match(
+        /([A-Za-z0-9_$]+)\s+as\s+([A-Za-z0-9_$]+)/,
+      );
+      if (aliasMatch) {
+        return aliasMatch[2];
+      }
+      return firstNamed;
+    }
+  }
+
+  const defaultPart = specifier.split(",")[0]?.trim();
+  if (defaultPart && defaultPart !== "*") {
+    return defaultPart;
+  }
+}
+
+/*
+ * Find the usage of an identifier in a list of lines.
+ * @param lines - The list of lines to search in.
+ * @param startIndex - The index to start searching from.
+ * @param identifier - The identifier to search for.
+ * @returns The usage of the identifier.
+ */
+function findIdentifierUsage(
+  lines: string[],
+  startIndex: number,
+  identifier: string,
+) {
+  const usageRegex = new RegExp(`\\b${escapeRegExp(identifier)}\\b`);
+
+  for (let i = startIndex; i < lines.length; i += 1) {
+    const line = lines[i];
+
+    // Skip comments (both // and /* */ style)
+    const withoutComments = line
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/, "");
+
+    // Remove (replace with spaces) string literals to avoid matching inside paths
+    const withoutStrings = withoutComments
+      .replace(/'[^']*'/g, (segment) => " ".repeat(segment.length))
+      .replace(/"[^"]*"/g, (segment) => " ".repeat(segment.length))
+      .replace(/`[^`]*`/g, (segment) => " ".repeat(segment.length));
+
+    const match = withoutStrings.match(usageRegex);
+    if (match && match.index !== undefined) {
+      return {
+        line: i,
+        column: match.index,
+        lineText: line,
+      };
+    }
+  }
+}
+
+/*
+ * Get the location of a violation.
+ * @param cwd - The current working directory.
+ * @param relativePath - The relative path to the file.
+ * @param packageName - The name of the package.
+ * @returns The location of the violation.
+ */
+export function getViolationLocation(
+  cwd: string,
+  relativePath: string,
+  packageName: string,
+) {
+  try {
+    const absolutePath = resolve(cwd, relativePath);
+    const contents = readFileSync(absolutePath, "utf8");
+    const lines = contents.split(/\r?\n/);
+
+    const importRegex = new RegExp(
+      `import\\s+(.+?)\\s+from\\s+['"]${escapeRegExp(packageName)}(?:/[^'"]*)?['"]`,
+    );
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const importMatch = line.match(importRegex);
+
+      if (importMatch && importMatch.index !== undefined) {
+        const specifier = importMatch[1].trim();
+        const identifier = getImportedIdentifier(specifier);
+        if (identifier) {
+          const usage = findIdentifierUsage(lines, i + 1, identifier);
+          if (usage) {
+            return {
+              file: relativePath,
+              line: usage.line + 1,
+              column: usage.column,
+              lineText: usage.lineText,
+              length: identifier.length,
+            };
+          }
+
+          // Identifier exists but is never referenced; surface no location
+          return undefined;
+        }
+
+        // Fallback: if we can't extract identifier, point to package name
+        const columnIndex = line.indexOf(packageName);
+        if (columnIndex !== -1) {
+          return {
+            file: relativePath,
+            line: i + 1,
+            column: columnIndex,
+            lineText: line,
+            length: packageName.length,
+          };
+        }
+      }
+    }
+  } catch {
+    // ignore file read failures, fallback to no location info
+  }
+}
+
+/*
+ * Get the module type label for error messages.
+ * @param modulePath - The module path to check.
+ * @returns The module type label.
+ */
+function getModuleTypeLabel(modulePath: string): string {
+  if (bunModulesRegex.test(modulePath)) {
+    return "Bun";
+  }
+  return "Node.js";
+}
+
+/*
+ * Create a plugin to detect violations of the Node.js module usage rule.
+ */
 export function createNodeModuleErrorPlugin(): esbuild.Plugin {
   return {
-    name: 'workflow-node-module-error',
+    name: "workflow-node-module-error",
     setup(build) {
-<<<<<<< HEAD
-      build.onResolve({ filter: regex }, (args) => {
-        const isNodeModule = nodeModulesRegex.test(args.path);
-        const isBunModule = bunModulesRegex.test(args.path);
-        const moduleType = isNodeModule
-          ? 'Node.js '
-          : isBunModule
-            ? 'Bun '
-            : '';
-
-        return {
-          path: args.path,
-          errors: [
-            {
-              text: `Cannot use ${moduleType}module "${args.path}" in workflow functions. Move this module to a step function.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`,
-            },
-          ],
-=======
       const cwd = process.cwd();
       const importParents = new Map<string, string>();
       const packageViolations: PackageViolation[] = [];
-      const seenPackages = new Set<string>();
+      const seenViolations = new Set<string>();
+
+      // Track import relationships for dependency tracing
       build.onResolve({ filter: /.*/ }, async (args) => {
-        if (!args.importer) return null;
+        if (!args.importer || args.importer.includes("node_modules"))
+          return null;
 
         try {
           const resolvedChild = await enhancedResolve(
             args.resolveDir,
-            args.path
+            args.path,
           );
-          // {
-          //   resolvedChild: '/Users/adrianlam/GitHub/workflow/node_modules/.pnpm/node-fetch@3.3.2/node_modules/node-fetch/src/index.js',
-          //   importer: '/Users/adrianlam/GitHub/workflow/workbench/sveltekit/workflows/user-signup.ts'
-          // }
 
           if (resolvedChild) {
             importParents.set(
               normalize(resolvedChild),
-              normalize(args.importer)
+              normalize(args.importer),
             );
           }
         } catch {
@@ -102,64 +249,75 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
         }
         return null;
       });
-      build.onResolve({ filter: nodeModulesRegex }, async (args) => {
-        // console.log(relative(cwd, importParents.get(normalize(args.importer))));
-        // console.log(args.path);
+
+      // Detect Node.js and Bun module imports
+      build.onResolve({ filter: runtimeModulesRegex }, async (args) => {
         const importerPath = resolve(cwd, args.importer);
         let current = importerPath;
         const chain: string[] = [];
         while (current) {
           chain.push(current);
-          current = importParents.get(current);
+          current = importParents.get(current) ?? "";
         }
         const filteredChain = chain.filter(
-          (path) => !path.includes('node_modules')
+          (path) => !path.includes("node_modules"),
         );
 
-        // Only track violations from the FIRST package level (direct dependencies)
-        // Skip if this is a nested dependency (parent is also in node_modules)
-        const parent = importParents.get(importerPath);
-        const isDirectDependency = parent && !parent.includes('node_modules');
+        const workflowFile = filteredChain[0] ?? importerPath;
 
-        if (isDirectDependency) {
-          const packageName = getPackageName(importerPath);
-          if (packageName && !seenPackages.has(packageName)) {
-            seenPackages.add(packageName);
+        if (!workflowFile) {
+          return {
+            path: args.path,
+            external: true,
+          };
+        }
+
+        const packageName = importerPath.includes("node_modules")
+          ? (getPackageName(importerPath) ?? args.path)
+          : args.path;
+
+        const relativeWorkflowFile = relative(cwd, workflowFile);
+        const violationKey = `${packageName}:${relativeWorkflowFile}`;
+
+        if (!seenViolations.has(violationKey)) {
+          seenViolations.add(violationKey);
+          const location = getViolationLocation(
+            cwd,
+            relativeWorkflowFile,
+            packageName,
+          );
+          if (location) {
             packageViolations.push({
               path: args.path,
-              importer: relative(cwd, filteredChain[0]),
+              importer: relativeWorkflowFile,
               packageName,
+              location,
             });
           }
         }
 
-        console.log(packageViolations);
-
         return {
           path: args.path,
           external: true,
-          // errors: [
-          //   {
-          //     text: `Cannot use Node.js module "${args.path}" in workflow functions. Move this module to a step function.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`,
-          //   },
-          // ],
->>>>>>> 5916bda8 (feat: add file dependency tracing for node module plugin)
         };
       });
+
+      // Report all violations at the end of the build
       build.onEnd(() => {
         if (packageViolations.length > 0) {
           return {
-            errors: packageViolations.map((violation) => ({
-              text: `You are attempting to use a function from "${violation.packageName}" which is incompatible with workflow since it uses Node.js modules.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`,
-              location: {
-                file: violation.importer,
-                line: 1,
-                column: 18,
-                suggestion: 'Move this module to a step function.',
-                lineText: `import fetch from 'node-fetch';`,
-                length: 12,
-              },
-            })),
+            errors: packageViolations.map((violation) => {
+              const moduleType = getModuleTypeLabel(violation.path);
+              return {
+                text: `You are attempting to use a function from "${violation.packageName}" which is incompatible with workflow functions since it uses ${moduleType} modules.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`,
+                location: violation.location
+                  ? {
+                      ...violation.location,
+                      suggestion: "Move this function into a step function.",
+                    }
+                  : undefined,
+              };
+            }),
           };
         }
       });
