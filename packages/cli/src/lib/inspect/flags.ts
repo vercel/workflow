@@ -92,6 +92,15 @@ export const cliFlags = {
     helpGroup: 'Output',
     helpLabel: '-w, --web',
   }),
+  webPort: Flags.integer({
+    description: 'Port to use when launching the web UI (default: 3456)',
+    required: false,
+    default: 3456,
+    helpGroup: 'Output',
+    helpLabel: '--webPort',
+    helpValue: 'WEB_PORT',
+    env: 'WORKFLOW_WEB_PORT',
+  }),
   noBrowser: Flags.boolean({
     description: 'Disable automatic browser opening when launching web UI',
     required: false,
