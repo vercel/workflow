@@ -59,20 +59,6 @@ export default defineConfig({
 });
 ```
 
-### Update `package.json`
-
-Update your `package.json` to include port `3000` for the development server:
-
-```json title="package.json" lineNumbers
-{
-  // ...
-  "scripts": {
-    "dev": "vite dev --port 3000"
-    // ...
-  },
-}
-```
-
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="text-sm">
@@ -229,7 +215,7 @@ npm run dev
 Once your development server is running, you can trigger your workflow by running this command in the terminal:
 
 ```bash
-curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/signup
+curl -X POST --json '{"email":"hello@example.com"}' http://localhost:5173/api/signup
 ```
 
 Check the SvelteKit development server logs to see your workflow execute as well as the steps that are being processed.
