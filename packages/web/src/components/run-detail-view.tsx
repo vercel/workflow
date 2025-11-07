@@ -8,7 +8,7 @@ import {
   type WorkflowRun,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -32,7 +32,6 @@ import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { RerunButton } from './display-utils/rerun-button';
 import { StatusBadge } from './display-utils/status-badge';
-import { Skeleton } from './ui/skeleton';
 
 interface RunDetailViewProps {
   config: WorldConfig;
@@ -60,7 +59,6 @@ export function RunDetailView({
     hooks: allHooks,
     events: allEvents,
     loading,
-    auxiliaryDataLoading,
     error,
     update,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
@@ -130,7 +128,7 @@ export function RunDetailView({
     );
   }
 
-  const workflowName = parseWorkflowName(run.workflowName)?.shortName;
+  const workflowName = parseWorkflowName(run.workflowName)?.shortName || '?';
 
   // At this point, we've already returned if there was an error
   // So hasError is always false here
@@ -203,124 +201,81 @@ export function RunDetailView({
         </AlertDialogContent>
       </AlertDialog>
 
-      <div
-        className="flex flex-col overflow-hidden"
-        style={{ height: 'calc(100vh - 7rem)' }}
-      >
-        <div className="flex-none space-y-6">
-          <BackLink href={buildUrlWithConfig('/', config)} />
+      <div className="space-y-6">
+        <BackLink href={buildUrlWithConfig('/', config)} />
 
-          {/* Run Overview Header */}
-          <div className="space-y-4 pb-6 border-b">
-            {/* Title Row */}
-            <div className="flex items-start justify-between">
-              <div className="mb-6">
-                <h1 className="text-2xl font-semibold">
-                  {workflowName ? (
-                    workflowName
-                  ) : (
-                    <Skeleton className="w-[260px] h-[32px]" />
-                  )}
-                </h1>
-              </div>
-
-              <div className="flex items-center justify-between gap-2">
-                {/* Right side controls */}
-                <LiveStatus hasError={hasError} errorMessage={errorMessage} />
-                <RerunButton
-                  canRerun={canRerun}
-                  rerunning={rerunning}
-                  rerunDisabledReason={rerunDisabledReason}
-                  onRerun={handleRerunClick}
-                />
-                <CancelButton
-                  canCancel={canCancel}
-                  cancelling={cancelling}
-                  cancelDisabledReason={cancelDisabledReason}
-                  onCancel={handleCancelClick}
-                />
-              </div>
+        {/* Run Overview Header */}
+        <div className="space-y-4 pb-6 border-b">
+          {/* Title Row */}
+          <div className="flex items-start justify-between">
+            <div className="mb-6">
+              <h1 className="text-2xl font-semibold">{workflowName}</h1>
             </div>
 
-            {/* Status and Timeline Row */}
-            <div className="flex items-start gap-8">
-              <div className="flex flex-col gap-1">
-                <div className="text-xs text-muted-foreground">Status</div>
-                {run.status ? (
-                  <StatusBadge status={run.status} context={run} />
+            <div className="flex items-center justify-between gap-2">
+              {/* Right side controls */}
+              <LiveStatus hasError={hasError} errorMessage={errorMessage} />
+              <RerunButton
+                canRerun={canRerun}
+                rerunning={rerunning}
+                rerunDisabledReason={rerunDisabledReason}
+                onRerun={handleRerunClick}
+              />
+              <CancelButton
+                canCancel={canCancel}
+                cancelling={cancelling}
+                cancelDisabledReason={cancelDisabledReason}
+                onCancel={handleCancelClick}
+              />
+            </div>
+          </div>
+
+          {/* Status and Timeline Row */}
+          <div className="flex items-start gap-8">
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-muted-foreground">Status</div>
+              <StatusBadge status={run.status || '...'} context={run} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-muted-foreground">Run ID</div>
+              <CopyableText text={run.runId}>
+                <div className="text-sm mt-0.5 font-mono">{run.runId}</div>
+              </CopyableText>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-muted-foreground">Queued</div>
+              <div className="text-sm">
+                {run.createdAt ? <RelativeTime date={run.createdAt} /> : '-'}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-muted-foreground">Started</div>
+              <div className="text-sm">
+                {run.startedAt ? <RelativeTime date={run.startedAt} /> : '-'}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-muted-foreground">Completed</div>
+              <div className="text-sm">
+                {run.completedAt ? (
+                  <RelativeTime date={run.completedAt} />
                 ) : (
-                  <Skeleton className="w-[55px] h-[24px]" />
+                  '-'
                 )}
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="text-xs text-muted-foreground">Run ID</div>
-                {run.runId ? (
-                  <CopyableText text={run.runId}>
-                    <div className="text-sm mt-0.5 font-mono">{run.runId}</div>
-                  </CopyableText>
-                ) : (
-                  <Skeleton className="w-[280px] h-[20px]" />
-                )}
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="text-xs text-muted-foreground">Queued</div>
-                {run.createdAt ? (
-                  <div className="text-sm">
-                    <RelativeTime date={run.createdAt} />
-                  </div>
-                ) : (
-                  <Skeleton className="w-[110px] h-[20px]" />
-                )}
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="text-xs text-muted-foreground">Started</div>
-                <div className="text-sm">
-                  {run.runId ? (
-                    run.startedAt ? (
-                      <RelativeTime date={run.startedAt} />
-                    ) : (
-                      '-'
-                    )
-                  ) : (
-                    <Skeleton className="w-[110px] h-[20px]" />
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="text-xs text-muted-foreground">Completed</div>
-                <div className="text-sm">
-                  {run.runId ? (
-                    run.completedAt ? (
-                      <RelativeTime date={run.completedAt} />
-                    ) : (
-                      '-'
-                    )
-                  ) : (
-                    <Skeleton className="w-[110px] h-[20px]" />
-                  )}
-                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 relative">
-          <WorkflowTraceViewer
-            error={error}
-            steps={allSteps}
-            events={allEvents}
-            hooks={allHooks}
-            env={env}
-            run={run}
-            isLoading={loading}
-          />
-          {auxiliaryDataLoading && (
-            <div className="absolute flex items-center justify-center left-4 bottom-4">
-              <Loader2 className="size-4 animate-spin" />
-              <span className="ml-4">Fetching data...</span>
-            </div>
-          )}
-        </div>
+        <WorkflowTraceViewer
+          error={error}
+          steps={allSteps}
+          events={allEvents}
+          hooks={allHooks}
+          env={env}
+          run={run}
+          isLoading={loading}
+        />
       </div>
     </>
   );

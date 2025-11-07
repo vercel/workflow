@@ -9,8 +9,9 @@ import { logger } from '../config/log.js';
 import { getEnvVars } from './env.js';
 import { getVercelDashboardUrl } from './vercel-api.js';
 
+export const WEB_PORT = 3456;
 export const WEB_PACKAGE_NAME = '@workflow/web';
-export const getHostUrl = (webPort: number) => `http://localhost:${webPort}`;
+export const HOST_URL = `http://localhost:${WEB_PORT}`;
 
 let serverProcess: ChildProcess | null = null;
 let isServerStarting = false;
@@ -126,13 +127,13 @@ function registerCleanupHandlers(): void {
  * Start the web server without detaching
  * The server will stay attached to the CLI process and be cleaned up on exit
  */
-async function startWebServer(webPort: number): Promise<boolean> {
+async function startWebServer(): Promise<boolean> {
   if (isServerStarting) {
     logger.debug('Server is already starting...');
     return false;
   }
 
-  if (await isServerRunning(`http://localhost:${webPort}`)) {
+  if (await isServerRunning(HOST_URL)) {
     logger.debug('Server is already running');
     return true;
   }
@@ -145,7 +146,7 @@ async function startWebServer(webPort: number): Promise<boolean> {
   try {
     logger.info('Starting web UI server...');
     const command = 'npx';
-    const args = ['next', 'start', '-p', String(webPort)];
+    const args = ['next', 'start', '-p', String(WEB_PORT)];
     logger.debug(`Running ${command} ${args.join(' ')} in ${packagePath}`);
 
     // Start the Next.js server WITHOUT detaching
@@ -194,8 +195,10 @@ async function startWebServer(webPort: number): Promise<boolean> {
     const retryIntervalMs = 1000;
     for (let i = 0; i < maxRetries; i++) {
       await new Promise((resolve) => setTimeout(resolve, retryIntervalMs));
-      if (await isServerRunning(getHostUrl(webPort))) {
-        logger.success(chalk.green(`Web UI server started on port ${webPort}`));
+      if (await isServerRunning(HOST_URL)) {
+        logger.success(
+          chalk.green(`Web UI server started on port ${WEB_PORT}`)
+        );
         isServerStarting = false;
         return true;
       }
@@ -296,19 +299,17 @@ export async function launchWebUI(
   // Fall back to local web UI
   // Build URL with query params
   const queryParams = envToQueryParams(resource, id, flags, envVars);
-  const webPort = flags.webPort ?? 3456;
-  const hostUrl = getHostUrl(webPort);
-  const url = `${hostUrl}?${queryParams.toString()}`;
+  const url = `${HOST_URL}?${queryParams.toString()}`;
 
   // Check if server is already running
-  const alreadyRunning = await isServerRunning(hostUrl);
+  const alreadyRunning = await isServerRunning(HOST_URL);
 
   if (alreadyRunning) {
     logger.info(chalk.cyan('Web UI server is already running'));
-    logger.info(chalk.cyan(`Access at: ${hostUrl}`));
+    logger.info(chalk.cyan(`Access at: ${HOST_URL}`));
   } else {
     // Start the server
-    const started = await startWebServer(webPort);
+    const started = await startWebServer();
     if (!started) {
       logger.error('Failed to start web UI server');
       return;

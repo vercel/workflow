@@ -139,6 +139,11 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     [searchParams]
   );
 
+  // Show skeleton for initial load
+  if (loading && !data?.data) {
+    return <TableSkeleton title="Runs" />;
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between my-4">
@@ -283,8 +288,6 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
           <AlertTitle>Error loading runs</AlertTitle>
           <AlertDescription>{getErrorMessage(error)}</AlertDescription>
         </Alert>
-      ) : loading && !data?.data ? (
-        <TableSkeleton />
       ) : !loading && (!data.data || data.data.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">
           No workflow runs found.{' '}

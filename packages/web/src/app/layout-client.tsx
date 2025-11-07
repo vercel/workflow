@@ -119,7 +119,7 @@ export function LayoutClient({ children }: LayoutClientProps) {
       enableSystem
       disableTransitionOnChange
     >
-      <div className="min-h-screen px-8 pt-8">
+      <div className="min-h-screen p-8">
         <TooltipProvider delayDuration={0}>
           <div className="max-w-7xl mx-auto">
             <div className="flex items-start justify-between">
