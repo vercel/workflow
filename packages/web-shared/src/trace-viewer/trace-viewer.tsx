@@ -26,7 +26,7 @@ import { parseTrace } from './util/tree';
 import { useStreamingSpans } from './util/use-streaming-spans';
 
 interface TraceViewerProps {
-  trace?: Trace;
+  trace: Trace;
   className?: string;
   scrollLock?: boolean;
   height?: string | number;
@@ -56,14 +56,13 @@ interface LastClickRef {
 }
 
 export function TraceViewerTimeline({
-  trace = skeletonTrace,
+  trace,
   className = '',
   scrollLock = false,
   height,
   withPanel = false,
   highlightedSpans,
 }: Omit<TraceViewerProps, 'getQuickLinks'>): ReactNode {
-  const isSkeleton = trace === skeletonTrace;
   const { state, dispatch } = useTraceViewer();
   const { timelineRef, scrollSnapshotRef } = state;
   const memoCache = state.memoCacheRef.current;
@@ -276,11 +275,7 @@ export function TraceViewerTimeline({
 
   return (
     <div
-      className={clsx(
-        styles.traceViewer,
-        isSkeleton && styles.skeleton,
-        className
-      )}
+      className={clsx(styles.traceViewer, className)}
       onClickCapture={onClick}
       ref={ref}
       style={

@@ -158,7 +158,7 @@ export const WorkflowTraceViewer = ({
     }
   }, [error, isLoading]);
 
-  if (isLoading) {
+  if (isLoading || !trace) {
     return (
       <div className="relative w-full h-full">
         <div className="border-b border-gray-alpha-400 w-full" />
