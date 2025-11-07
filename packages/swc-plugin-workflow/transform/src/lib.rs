@@ -680,55 +680,6 @@ impl StepTransform {
         }
     }
 
-    // Create a step run call for arrow functions (client mode)
-    fn create_run_step_call_arrow(&self, fn_name: &str, params: &[Pat]) -> Expr {
-        let args_array = Expr::Array(ArrayLit {
-            span: DUMMY_SP,
-            elems: params
-                .iter()
-                .map(|param| {
-                    // Check if this is a rest parameter
-                    let is_rest = matches!(param, Pat::Rest(_));
-                    Some(ExprOrSpread {
-                        spread: if is_rest { Some(DUMMY_SP) } else { None },
-                        expr: Box::new(self.pat_to_expr(param)),
-                    })
-                })
-                .collect(),
-        });
-
-        Expr::Call(CallExpr {
-            span: DUMMY_SP,
-            ctxt: SyntaxContext::empty(),
-            callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                "__private_run_step".into(),
-                DUMMY_SP,
-                SyntaxContext::empty(),
-            )))),
-            args: vec![
-                ExprOrSpread {
-                    spread: None,
-                    expr: Box::new(Expr::Lit(Lit::Str(Str {
-                        span: DUMMY_SP,
-                        value: fn_name.into(),
-                        raw: None,
-                    }))),
-                },
-                ExprOrSpread {
-                    spread: None,
-                    expr: Box::new(Expr::Object(ObjectLit {
-                        span: DUMMY_SP,
-                        props: vec![PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                            key: PropName::Ident(IdentName::new("arguments".into(), DUMMY_SP)),
-                            value: Box::new(args_array),
-                        })))],
-                    })),
-                },
-            ],
-            type_args: None,
-        })
-    }
-
     // Generate the import for registerStepFunction (step mode)
     fn create_register_import(&self) -> ModuleItem {
         ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
@@ -746,41 +697,6 @@ impl StepTransform {
             src: Box::new(Str {
                 span: DUMMY_SP,
                 value: "workflow/internal/private".into(),
-                raw: None,
-            }),
-            type_only: false,
-            with: None,
-            phase: ImportPhase::Evaluation,
-        }))
-    }
-
-    // Generate the import for runStep function (client mode)
-    fn create_run_step_import(&self) -> ModuleItem {
-        let mut specifiers = Vec::new();
-
-        if !self.step_function_names.is_empty() {
-            specifiers.push(ImportSpecifier::Named(ImportNamedSpecifier {
-                span: DUMMY_SP,
-                local: Ident::new(
-                    "__private_run_step".into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                ),
-                imported: Some(ModuleExportName::Ident(Ident::new(
-                    "runStep".into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                ))),
-                is_type_only: false,
-            }));
-        }
-
-        ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
-            span: DUMMY_SP,
-            specifiers,
-            src: Box::new(Str {
-                span: DUMMY_SP,
-                value: "workflow/api".into(),
                 raw: None,
             }),
             type_only: false,
@@ -870,55 +786,6 @@ impl StepTransform {
                     raw: None,
                 }))),
             })),
-        })
-    }
-
-    // Create a step run call (client mode)
-    fn create_run_step_call(&self, fn_name: &str, params: &[Param]) -> Expr {
-        let args_array = Expr::Array(ArrayLit {
-            span: DUMMY_SP,
-            elems: params
-                .iter()
-                .map(|param| {
-                    // Check if this is a rest parameter
-                    let is_rest = matches!(param.pat, Pat::Rest(_));
-                    Some(ExprOrSpread {
-                        spread: if is_rest { Some(DUMMY_SP) } else { None },
-                        expr: Box::new(self.pat_to_expr(&param.pat)),
-                    })
-                })
-                .collect(),
-        });
-
-        Expr::Call(CallExpr {
-            span: DUMMY_SP,
-            ctxt: SyntaxContext::empty(),
-            callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                "__private_run_step".into(),
-                DUMMY_SP,
-                SyntaxContext::empty(),
-            )))),
-            args: vec![
-                ExprOrSpread {
-                    spread: None,
-                    expr: Box::new(Expr::Lit(Lit::Str(Str {
-                        span: DUMMY_SP,
-                        value: fn_name.into(),
-                        raw: None,
-                    }))),
-                },
-                ExprOrSpread {
-                    spread: None,
-                    expr: Box::new(Expr::Object(ObjectLit {
-                        span: DUMMY_SP,
-                        props: vec![PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                            key: PropName::Ident(IdentName::new("arguments".into(), DUMMY_SP)),
-                            value: Box::new(args_array),
-                        })))],
-                    })),
-                },
-            ],
-            type_args: None,
         })
     }
 
