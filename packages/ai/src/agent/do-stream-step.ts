@@ -1,22 +1,50 @@
 import type {
+  LanguageModelV2,
   LanguageModelV2CallOptions,
   LanguageModelV2Prompt,
   LanguageModelV2StreamPart,
   LanguageModelV2ToolCall,
 } from '@ai-sdk/provider';
-import { gateway, type UIMessageChunk } from 'ai';
+import { gateway, type LanguageModel, type UIMessageChunk } from 'ai';
 
 type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 
+// Type for serialized LanguageModelV2
+type SerializedLanguageModel = {
+  __languageModelV2: true;
+  provider: string;
+  modelId: string;
+};
+
 export async function doStreamStep(
   conversationPrompt: LanguageModelV2Prompt,
-  modelId: string,
+  modelArg: LanguageModel | SerializedLanguageModel,
   writable: WritableStream<UIMessageChunk>,
   tools?: LanguageModelV2CallOptions['tools']
 ) {
   'use step';
 
-  const model = gateway(modelId);
+  // Handle different model types:
+  // 1. String model ID -> use gateway
+  // 2. LanguageModelV2 instance -> use directly
+  // 3. Serialized model (plain object) -> reconstruct using gateway
+  let model: LanguageModelV2;
+
+  if (typeof modelArg === 'string') {
+    model = gateway(modelArg);
+  } else if (
+    modelArg &&
+    typeof modelArg === 'object' &&
+    '__languageModelV2' in modelArg &&
+    modelArg.__languageModelV2
+  ) {
+    // Reconstructed serialized model - use gateway with provider/modelId
+    model = gateway(`${modelArg.provider}/${modelArg.modelId}`);
+  } else {
+    // Assume it's a LanguageModelV2 instance
+    model = modelArg as LanguageModelV2;
+  }
+
   const result = await model.doStream({
     prompt: conversationPrompt,
     tools,

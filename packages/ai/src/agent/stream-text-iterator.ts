@@ -3,7 +3,7 @@ import type {
   LanguageModelV2ToolCall,
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
-import type { ToolSet, UIMessageChunk } from 'ai';
+import type { LanguageModel, ToolSet, UIMessageChunk } from 'ai';
 import { doStreamStep } from './do-stream-step.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
@@ -17,7 +17,7 @@ export async function* streamTextIterator({
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
   writable: WritableStream<UIMessageChunk>;
-  model: string;
+  model: LanguageModel;
 }): AsyncGenerator<
   LanguageModelV2ToolCall[],
   void,

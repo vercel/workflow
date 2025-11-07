@@ -144,6 +144,7 @@ export interface SerializableSpecial {
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
   Int32Array: string; // base64 string
+  LanguageModelV2: { provider: string; modelId: string };
   Map: [any, any][];
   ReadableStream:
     | { name: string; type?: 'bytes'; startIndex?: number }
@@ -174,7 +175,7 @@ export interface SerializableSpecial {
   Uint8Array: string; // base64 string
   Uint8ClampedArray: string; // base64 string
   Uint16Array: string; // base64 string
-  Uint32Array: string; // base64 string
+  Uint32Array: string; // base64 string;
   WritableStream: { name: string };
 }
 
@@ -241,6 +242,22 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       value instanceof global.Int16Array && viewToBase64(value),
     Int32Array: (value) =>
       value instanceof global.Int32Array && viewToBase64(value),
+    LanguageModelV2: (value) => {
+      // Check if value is a LanguageModelV2 instance by checking for the spec properties
+      if (
+        value &&
+        typeof value === 'object' &&
+        value.specificationVersion === 'v2' &&
+        typeof value.provider === 'string' &&
+        typeof value.modelId === 'string'
+      ) {
+        return {
+          provider: value.provider,
+          modelId: value.modelId,
+        };
+      }
+      return false;
+    },
     Map: (value) => value instanceof global.Map && Array.from(value),
     RegExp: (value) =>
       value instanceof global.RegExp && {
@@ -512,6 +529,15 @@ function getCommonRevivers(global: Record<string, any> = globalThis) {
     Int32Array: (value: string) => {
       const ab = reviveArrayBuffer(value);
       return new global.Int32Array(ab);
+    },
+    LanguageModelV2: (value) => {
+      // Return a serialized model representation that can be reconstructed later
+      // The actual model will be created in the step context using gateway()
+      return {
+        __languageModelV2: true,
+        provider: value.provider,
+        modelId: value.modelId,
+      };
     },
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
