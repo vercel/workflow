@@ -587,6 +587,16 @@
   border-radius: 6px;
 }
 
+.skeleton {
+  display: inline-block;
+  background-color: var(--ds-gray-200);
+  border-radius: 4px;
+}
+
+.skeletonRounded {
+  border-radius: 50%;
+}
+
 .detailGroup.collapsed .detailHeadingIcon {
   transform: rotate(-90deg);
 }
