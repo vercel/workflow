@@ -210,6 +210,27 @@ export async function GET(request: Request) {
 }
 ```
 
+### Programmatically list and control runs
+
+If you want to show workflow progress directly in your product UI—or let trusted operators retry or cancel work—you can now call the same administrative helpers the CLI uses, straight from `workflow/api`.
+
+```typescript lineNumbers
+import { listRuns, cancelRun } from 'workflow/api';
+
+export async function GET() {
+  const runs = await listRuns({ status: 'running', pagination: { limit: 20 } });
+  return Response.json(runs.data);
+}
+
+export async function POST(request: Request) {
+  const { runId } = await request.json();
+  await cancelRun(runId);
+  return Response.json({ ok: true });
+}
+```
+
+Need lower-level access? Call `getWorld()` (also exported from `workflow/api`) to reach the singleton directly, or `setWorld()` from `workflow/runtime` in your tests to install a mock world. See the [World helpers reference](/docs/api-reference/workflow-api/world) for every available function.
+
 ---
 
 ## Next Steps
