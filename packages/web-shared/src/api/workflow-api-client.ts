@@ -25,7 +25,8 @@ import {
 } from './workflow-server-actions';
 
 const MAX_ITEMS = 1000;
-const LIVE_POLL_LIMIT = 5;
+const LIVE_POLL_LIMIT = 10;
+const LIVE_STEP_UPDATE_INTERVAL_MS = 1000;
 const LIVE_UPDATE_INTERVAL_MS = 5000;
 
 /**
@@ -814,27 +815,31 @@ export function useWorkflowTraceViewerData(
   }, [env, runId, eventsCursor, mergeEvents]);
 
   // Update function for live polling
-  const update = useCallback(async (): Promise<{ foundNewItems: boolean }> => {
-    if (isFetchingRef.current || !initialLoadCompleted) {
-      return { foundNewItems: false };
-    }
+  const update = useCallback(
+    async (stepsOnly: boolean = false): Promise<{ foundNewItems: boolean }> => {
+      if (isFetchingRef.current || !initialLoadCompleted) {
+        return { foundNewItems: false };
+      }
 
-    let foundNewItems = false;
+      let foundNewItems = false;
 
-    try {
-      const [_, stepsUpdated, hooksUpdated, eventsUpdated] = await Promise.all([
-        pollRun(),
-        pollSteps(),
-        pollHooks(),
-        pollEvents(),
-      ]);
-      foundNewItems = stepsUpdated || hooksUpdated || eventsUpdated;
-    } catch (err) {
-      console.error('Update error:', err);
-    }
+      try {
+        const [_, stepsUpdated, hooksUpdated, eventsUpdated] =
+          await Promise.all([
+            stepsOnly ? Promise.resolve(false) : pollRun(),
+            pollSteps(),
+            stepsOnly ? Promise.resolve(false) : pollHooks(),
+            stepsOnly ? Promise.resolve(false) : pollEvents(),
+          ]);
+        foundNewItems = stepsUpdated || hooksUpdated || eventsUpdated;
+      } catch (err) {
+        console.error('Update error:', err);
+      }
 
-    return { foundNewItems };
-  }, [pollSteps, pollHooks, pollEvents, initialLoadCompleted, pollRun]);
+      return { foundNewItems };
+    },
+    [pollSteps, pollHooks, pollEvents, initialLoadCompleted, pollRun]
+  );
 
   // Initial load
   useEffect(() => {
@@ -850,8 +855,14 @@ export function useWorkflowTraceViewerData(
     const interval = setInterval(() => {
       update();
     }, LIVE_UPDATE_INTERVAL_MS);
+    const stepInterval = setInterval(() => {
+      update(true);
+    }, LIVE_STEP_UPDATE_INTERVAL_MS);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      clearInterval(stepInterval);
+    };
   }, [live, initialLoadCompleted, update, run?.completedAt]);
 
   return {
