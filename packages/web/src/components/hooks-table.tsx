@@ -207,11 +207,6 @@ export function HooksTable({
     return <span className="font-semibold">{displayText}</span>;
   };
 
-  // Show skeleton for initial load
-  if (loading && !data?.data) {
-    return <TableSkeleton title="Hooks" />;
-  }
-
   return (
     <div>
       <div className="flex items-center justify-between my-4">
@@ -255,6 +250,8 @@ export function HooksTable({
             Learn how to create a hook
           </DocsLink>
         </div>
+      ) : loading && !data?.data ? (
+        <TableSkeleton />
       ) : (
         <>
           <Table>
