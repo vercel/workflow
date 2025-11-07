@@ -2308,7 +2308,7 @@ impl VisitMut for StepTransform {
                                 self.remove_use_workflow_directive(&mut fn_decl.function.body);
                                 if let Some(body) = &mut fn_decl.function.body {
                                     let error_msg = format!(
-                                        "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow",
+                                        "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
                                         fn_name, fn_name
                                     );
                                     let error_expr = Expr::New(NewExpr {
@@ -2855,7 +2855,7 @@ impl VisitMut for StepTransform {
                                             );
                                             if let Some(body) = &mut fn_expr.function.body {
                                                 let error_msg = format!(
-                                                    "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow",
+                                                    "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
                                                     name, name
                                                 );
                                                 let error_expr = Expr::New(NewExpr {
@@ -2981,7 +2981,7 @@ impl VisitMut for StepTransform {
                                                 &mut arrow_expr.body,
                                             );
                                             let error_msg = format!(
-                                                "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow",
+                                                "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
                                                 name, name
                                             );
                                             let error_expr = Expr::New(NewExpr {
@@ -3169,7 +3169,7 @@ impl VisitMut for StepTransform {
                                     .unwrap_or_else(|| "defaultWorkflow".to_string());
                                 if let Some(body) = &mut fn_expr.function.body {
                                     let error_msg = format!(
-                                        "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow",
+                                        "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
                                         actual_name, actual_name
                                     );
                                     let error_expr = Expr::New(NewExpr {
@@ -3302,7 +3302,7 @@ impl VisitMut for StepTransform {
                                         );
                                         if let Some(body) = &mut fn_decl.function.body {
                                             let error_msg = format!(
-                                                "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow",
+                                                "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
                                                 fn_name, fn_name
                                             );
                                             let error_expr = Expr::New(NewExpr {
@@ -3438,7 +3438,7 @@ impl VisitMut for StepTransform {
                                                             &mut arrow_expr.body,
                                                         );
                                                         let error_msg = format!(
-                                                            "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow",
+                                                            "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
                                                             name, name
                                                         );
                                                         let error_expr = Expr::New(NewExpr {
@@ -3504,7 +3504,7 @@ impl VisitMut for StepTransform {
                                                             &mut fn_expr.function.body
                                                         {
                                                             let error_msg = format!(
-                                                                "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow",
+                                                                "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
                                                                 name, name
                                                             );
                                                             let error_expr = Expr::New(NewExpr {

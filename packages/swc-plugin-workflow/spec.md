@@ -29,6 +29,7 @@ registerStepFunction("step//input.js//add", add)
 ```
 
 **ID Generation:** Step IDs are generated using the format `step//{filepath}//{functionName}`, where:
+
 - `filepath` is the relative path to the file from the project root
 - `functionName` is the name of the step function
 
@@ -113,12 +114,13 @@ export async function add(a, b) {
 }
 
 export async function workflow(a, b) {
-  throw new Error("You attempted to execute workflow workflow function directly. To start a workflow, use start(workflow) from workflow");
+  throw new Error("You attempted to execute workflow workflow function directly. To start a workflow, use start(workflow) from workflow/api");
 }
 workflow.workflowId = "workflow//workflow/main.js//workflow";
 ```
 
 **ID Generation:**
+
 - Step functions use `runStep` with the function name (not the full ID)
 - Workflow functions throw an error if called directly and have the `workflowId` property attached using the format `workflow//{filepath}//{functionName}`
 
@@ -126,7 +128,7 @@ Upstream, this mode is typically used by a framework loader (like a Next.js/webp
 
 ## Notes
 
-* Instead of individually marking functions with 'use step' or 'use_workflow', you can also add the directive to the top of a file to mark all exports within that file as step functions or workflows
-* the directives must be at the very beginning of their function or module; above any other code including imports (comments above directives are OK). They must be written with single or double quotes, not backticks.
-* The arguments and return value of 'use step' and 'use workflow' must be serializable.
-* Because the underlying network calls are always asynchronous, 'use step' and 'use workflow' can only be used on async functions.
+- Instead of individually marking functions with 'use step' or 'use_workflow', you can also add the directive to the top of a file to mark all exports within that file as step functions or workflows
+- the directives must be at the very beginning of their function or module; above any other code including imports (comments above directives are OK). They must be written with single or double quotes, not backticks.
+- The arguments and return value of 'use step' and 'use workflow' must be serializable.
+- Because the underlying network calls are always asynchronous, 'use step' and 'use workflow' can only be used on async functions.
