@@ -130,7 +130,8 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 }
 
 // Types that need specialized handling when serialized/deserialized
-// ! If a type is added here, it MUST also be added to the `Serializable` type in `schemas.ts`
+// ! If a standard type is added here, it MUST also be added to the `Serializable` type in `schemas.ts`
+// ! External types (like LanguageModelV2) are handled via duck-typing and don't need to be in schemas.ts
 export interface SerializableSpecial {
   ArrayBuffer: string; // base64 string
   BigInt: string; // string representation of bigint
