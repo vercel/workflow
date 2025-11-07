@@ -5,35 +5,30 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
-    port: 3000,
   },
   'nextjs-webpack': {
     generatedStepPath: 'app/.well-known/workflow/v1/step/route.js',
     generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
-    port: 3000,
   },
   nitro: {
     generatedStepPath: '.nitro/workflow/steps.mjs',
     generatedWorkflowPath: '.nitro/workflow/workflows.mjs',
     apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
-    port: 3000,
   },
   sveltekit: {
     generatedStepPath: 'src/routes/.well-known/workflow/v1/step/+server.js',
     generatedWorkflowPath: 'src/routes/.well-known/workflow/v1/flow/+server.js',
     apiFilePath: 'src/routes/api/chat/+server.ts',
     apiFileImportPath: '../../../..',
-    port: 3000,
   },
   vite: {
     generatedStepPath: 'dist/workflow/steps.mjs',
     generatedWorkflowPath: 'dist/workflow/workflows.mjs',
     apiFilePath: 'src/main.ts',
     apiFileImportPath: '..',
-    port: 3000,
   },
 };
 

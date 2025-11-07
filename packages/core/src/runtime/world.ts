@@ -40,7 +40,6 @@ export const createWorld = (): World => {
   if (targetWorld === 'embedded') {
     return createEmbeddedWorld({
       dataDir: process.env.WORKFLOW_EMBEDDED_DATA_DIR,
-      port: process.env.PORT ? Number(process.env.PORT) : undefined,
     });
   }
 
