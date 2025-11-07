@@ -148,12 +148,17 @@ export function hookToSpan(
 
   const lastHookReceivedEvent = hookEvents
     .slice()
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    )
     .find((event) => event.eventType === 'hook_received');
 
   const endTime = lastHookReceivedEvent
     ? lastHookReceivedEvent.createdAt
-    : new Date(Math.max(hook.createdAt.getTime() + 10_000, nowTime.getTime()));
+    : new Date(
+        Math.max(new Date(hook.createdAt).getTime() + 10_000, nowTime.getTime())
+      );
 
   // Convert hook-related events to span events
   const events = convertEventsToSpanEvents(hookEvents);
