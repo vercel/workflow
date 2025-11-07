@@ -242,6 +242,18 @@ async function evaluateStopConditions(
 }
 
 /**
+ * Safely parse JSON with fallback to empty object
+ */
+function safeJsonParse(jsonString: string): any {
+  try {
+    return JSON.parse(jsonString || '{}');
+  } catch {
+    // If parsing fails, return empty object
+    return {};
+  }
+}
+
+/**
  * Builds a StepResult from tool calls and results
  */
 function buildStepResult(
@@ -266,7 +278,7 @@ function buildStepResult(
       type: 'tool-call' as const,
       toolCallId: tc.toolCallId,
       toolName: tc.toolName,
-      input: JSON.parse(tc.input || '{}'),
+      input: safeJsonParse(tc.input || '{}'),
     })),
     staticToolCalls: [],
     dynamicToolCalls: [],
@@ -276,10 +288,10 @@ function buildStepResult(
         type: 'tool-result' as const,
         toolCallId: tr.toolCallId,
         toolName: tr.toolName,
-        input: toolCall ? JSON.parse(toolCall.input || '{}') : {},
+        input: toolCall ? safeJsonParse(toolCall.input || '{}') : {},
         output:
           tr.output.type === 'text'
-            ? JSON.parse(tr.output.value)
+            ? safeJsonParse(tr.output.value)
             : tr.output.value,
       };
     }),

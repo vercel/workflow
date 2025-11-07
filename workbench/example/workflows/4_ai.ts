@@ -1,4 +1,5 @@
-import { generateText, stepCountIs } from 'ai';
+import { generateText } from 'ai';
+import { stepCountIs } from '@workflow/ai';
 import { FatalError } from 'workflow';
 import z from 'zod/v4';
 
