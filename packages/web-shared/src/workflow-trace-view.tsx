@@ -21,7 +21,7 @@ import {
 } from './workflow-traces/trace-span-construction';
 import { otelTimeToMs } from './workflow-traces/trace-time-utils';
 
-const RE_RENDER_INTERVAL_MS = 2000;
+const RE_RENDER_INTERVAL_MS = 500;
 
 export const WorkflowTraceViewer = ({
   run,
@@ -43,10 +43,9 @@ export const WorkflowTraceViewer = ({
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
+    const updateNow = () => setNow(new Date());
     if (!run?.completedAt) {
-      const interval = setInterval(() => {
-        setNow(new Date());
-      }, RE_RENDER_INTERVAL_MS);
+      const interval = setInterval(updateNow, RE_RENDER_INTERVAL_MS);
       return () => clearInterval(interval);
     }
     return undefined;
@@ -105,7 +104,7 @@ export const WorkflowTraceViewer = ({
 
     const hookSpans = hooks.map((hook) => {
       const hookEvents = eventsByHookId.get(hook.hookId) || [];
-      return hookToSpan(hook, hookEvents);
+      return hookToSpan(hook, hookEvents, now);
     });
 
     const waitSpans = Array.from(timerEvents.entries()).map(

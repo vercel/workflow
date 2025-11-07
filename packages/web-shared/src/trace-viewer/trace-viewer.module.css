@@ -1,6 +1,6 @@
 .traceNode {
   position: relative;
-  transition: width 0.3s ease-out;
+  transition: width 0.15s ease-out;
 }
 
 .childRow {
@@ -24,11 +24,12 @@
   box-shadow: var(--ds-shadow-small);
   overflow: hidden;
   text-overflow: ellipsis;
-  content-visibility: auto;
   cursor: pointer;
   user-select: none;
   z-index: 2;
-  transition: left 0.3s ease-out, width 0.3s ease-out, height 0.3s ease-out, top 0.3s ease-out, right 0.3s ease-out;
+  /* Animate size/position changes and color changes */
+  transition: width 0.15s ease-out, right 0.15s ease-out, 
+              background-color 0.3s ease-out, border-color 0.3s ease-out, color 0.3s ease-out;
 
   &.huge {
     overflow: visible;
@@ -79,8 +80,8 @@
       var(--span-line),
       var(--geist-background) calc(var(--span-width) + 1px)
     );
-    /* Disable width transition on hover for instant expansion */
-    transition: left 0.3s ease-out, height 0.3s ease-out, top 0.3s ease-out, right 0.3s ease-out;
+    /* Disable transitions on hover for instant expansion */
+    transition: none;
 
     &[data-right-side='true'] {
       background: linear-gradient(
@@ -124,7 +125,7 @@
   height: var(--row-height);
   pointer-events: none;
   z-index: 4;
-  transition: left 0.3s ease-out, top 0.3s ease-out;
+  transition: left 0.15s ease-out, background-color 0.3s ease-out, border-color 0.3s ease-out;
 
   & .eventDiamond {
     --size: 7px;
@@ -139,6 +140,7 @@
     background: var(--span-background);
     transform-origin: 50% 50% 0;
     transform: rotate(45deg);
+    transition: background 0.3s ease-out, border-color 0.3s ease-out;
   }
 
   /* Workflow-specific: Use custom event color if provided */
@@ -762,7 +764,7 @@
   overflow: hidden;
   box-shadow: 0 4px 8px 0 var(--ds-background-200);
   border-bottom: 1px solid var(--marker-color);
-  transition: gap 0.3s ease-out;
+  transition: gap 0.15s ease-out;
 }
 
 .marker {
@@ -796,7 +798,7 @@
   line-height: 1;
   z-index: 1;
   pointer-events: none;
-  transition: width 0.3s ease-out;
+  transition: width 0.15s ease-out;
 }
 
 .eventMarkers {
@@ -810,7 +812,7 @@
   position: absolute;
   border-left: 1px dotted var(--ds-gray-500);
   height: 100%;
-  transition: left 0.3s ease-out;
+  transition: left 0.15s ease-out;
 }
 
 .cursorMarkerStickyParent {
@@ -820,7 +822,7 @@
   width: var(--timeline-scroll-width);
   height: calc(100% + 2 * var(--timeline-padding));
   pointer-events: none;
-  transition: width 0.3s ease-out;
+  transition: width 0.15s ease-out;
 }
 
 .cursorMarkerLabelContainer {
@@ -902,7 +904,7 @@
   gap: 8px;
   background-color: var(--ds-gray-100);
   border-inline: 1px solid var(--ds-gray-300);
-  transition: left 0.3s ease-out, width 0.3s ease-out;
+  transition: left 0.15s ease-out, width 0.15s ease-out;
 
   &::before,
   &::after {
@@ -1051,7 +1053,7 @@
   box-shadow: var(--ds-shadow-small);
   transform: translateX(var(--timeline-padding));
   pointer-events: none;
-  transition: width 0.3s ease-out, left 0.3s ease-out;
+  transition: width 0.15s ease-out, left 0.15s ease-out;
 }
 
 /* TRACE VIEWER */
