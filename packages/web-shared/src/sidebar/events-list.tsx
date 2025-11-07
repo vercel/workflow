@@ -56,7 +56,7 @@ export function EventsList({
         className="text-heading-16 font-medium mt-4 mb-2"
         style={{ color: 'var(--ds-gray-1000)' }}
       >
-        Events ({eventsLoading ? '...' : displayData.length})
+        Events {!eventsLoading && `(${displayData.length})`}
       </h3>
       {/* Events section */}
       {eventError ? (
