@@ -48,6 +48,10 @@ export async function runWorkflow(
       );
     }
 
+    // Get the port before creating VM context to avoid async operations
+    // affecting the deterministic timestamp
+    const port = await getPort();
+
     const {
       context,
       globalThis: vmGlobalThis,
@@ -101,7 +105,7 @@ export async function runWorkflow(
     // solution only works for vercel + embedded worlds.
     const url = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${await getPort()}`;
+      : `http://localhost:${port ?? 3000}`;
 
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {

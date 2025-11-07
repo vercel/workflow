@@ -8,7 +8,6 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { getPort } from './util.js';
 import type {
   Event,
   WorkflowRun,
@@ -40,6 +39,7 @@ import { serializeTraceCarrier, trace, withTraceContext } from './telemetry.js';
 import { getErrorName, getErrorStack } from './types.js';
 import {
   buildWorkflowSuspensionMessage,
+  getPort,
   getWorkflowRunStreamId,
 } from './util.js';
 import { runWorkflow } from './workflow.js';
@@ -563,6 +563,9 @@ export const stepEntrypoint =
         const stepName = metadata.queueName.slice('__wkf_step_'.length);
         const world = getWorld();
 
+        // Get the port early to avoid async operations during step execution
+        const port = await getPort();
+
         return trace(`STEP ${stepName}`, async (span) => {
           span?.setAttributes({
             ...Attribute.StepName(stepName),
@@ -673,7 +676,7 @@ export const stepEntrypoint =
                   // solution only works for vercel + embedded worlds.
                   url: process.env.VERCEL_URL
                     ? `https://${process.env.VERCEL_URL}`
-                    : `http://localhost:${await getPort()}`,
+                    : `http://localhost:${port ?? 3000}`,
                 },
                 ops,
               },
