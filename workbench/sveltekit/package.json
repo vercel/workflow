@@ -33,6 +33,7 @@
     "ai": "catalog:",
     "exsolve": "^1.0.7",
     "lodash.chunk": "^4.2.0",
+    "node-fetch": "^3.3.2",
     "workflow": "workspace:*",
     "zod": "catalog:"
   }
