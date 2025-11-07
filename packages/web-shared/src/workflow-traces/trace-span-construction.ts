@@ -55,18 +55,18 @@ export function convertEventsToSpanEvents(
 /**
  * Converts a workflow Wait to an OpenTelemetry Span
  */
-export function waitToSpan(
-  correlationId: string,
-  events: Event[],
-  nowTime?: Date
-): Span {
+export function waitToSpan(correlationId: string, events: Event[]): Span {
   const startEvent = events.find((event) => event.eventType === 'wait_created');
   const endEvent = events.find((event) => event.eventType === 'wait_completed');
-  const startTime = startEvent?.createdAt ?? nowTime;
-  const endTime = endEvent?.createdAt ?? nowTime;
+  const startTime = startEvent?.createdAt;
   const start = dateToOtelTime(startTime);
-  const end = dateToOtelTime(endTime);
-  const duration = calculateDuration(startTime, endTime);
+
+  // If wait is not completed, use "now" for dynamic animation
+  const end = endEvent ? dateToOtelTime(endEvent.createdAt) : 'now';
+  const duration = endEvent
+    ? calculateDuration(startTime, endEvent.createdAt)
+    : 'now';
+
   const spanEvents = convertEventsToSpanEvents(events);
   return {
     spanId: correlationId,
@@ -93,12 +93,7 @@ export function waitToSpan(
 /**
  * Converts a workflow Step to an OpenTelemetry Span
  */
-export function stepToSpan(
-  step: Step,
-  stepEvents: Event[],
-  nowTime?: Date
-): Span {
-  const now = nowTime ?? new Date();
+export function stepToSpan(step: Step, stepEvents: Event[]): Span {
   const parsedName = parseStepName(String(step.stepName));
 
   // Simplified attributes: only store resource type and full data
@@ -108,7 +103,12 @@ export function stepToSpan(
   };
 
   const resource = 'step';
-  const endTime = step.completedAt ?? now;
+
+  // If step is not completed, use "now" for dynamic animation
+  const endTime = step.completedAt ? dateToOtelTime(step.completedAt) : 'now';
+  const duration = step.completedAt
+    ? calculateDuration(step.startedAt, step.completedAt)
+    : 'now';
 
   // Convert step-related events to span events (for markers like hook_created, step_retrying, etc.)
   // This determines which events are displayed as markers. In the detail view,
@@ -127,19 +127,15 @@ export function stepToSpan(
     links: [],
     events,
     startTime: dateToOtelTime(step.startedAt),
-    endTime: dateToOtelTime(endTime),
-    duration: calculateDuration(step.startedAt, endTime),
+    endTime,
+    duration,
   };
 }
 
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(
-  hook: Hook,
-  hookEvents: Event[],
-  nowTime: Date
-): Span {
+export function hookToSpan(hook: Hook, hookEvents: Event[]): Span {
   // Simplified attributes: only store resource type and full data
   const attributes = {
     resource: 'hook' as const,
@@ -154,11 +150,13 @@ export function hookToSpan(
     )
     .find((event) => event.eventType === 'hook_received');
 
+  // If hook has not been received yet, use "now" for dynamic animation
   const endTime = lastHookReceivedEvent
-    ? lastHookReceivedEvent.createdAt
-    : new Date(
-        Math.max(new Date(hook.createdAt).getTime() + 10_000, nowTime.getTime())
-      );
+    ? dateToOtelTime(lastHookReceivedEvent.createdAt)
+    : 'now';
+  const duration = lastHookReceivedEvent
+    ? calculateDuration(hook.createdAt, lastHookReceivedEvent.createdAt)
+    : 'now';
 
   // Convert hook-related events to span events
   const events = convertEventsToSpanEvents(hookEvents);
@@ -175,21 +173,15 @@ export function hookToSpan(
     links: [],
     events,
     startTime: dateToOtelTime(hook.createdAt),
-    endTime: dateToOtelTime(endTime),
-    duration: calculateDuration(hook.createdAt, endTime),
+    endTime,
+    duration,
   };
 }
 
 /**
  * Creates a root span for the workflow run
  */
-export function runToSpan(
-  run: WorkflowRun,
-  runEvents: Event[],
-  nowTime?: Date
-): Span {
-  const now = nowTime ?? new Date();
-
+export function runToSpan(run: WorkflowRun, runEvents: Event[]): Span {
   // Simplified attributes: only store resource type and full data
   const attributes = {
     resource: 'run' as const,
@@ -197,7 +189,12 @@ export function runToSpan(
   };
 
   const startDate = run.startedAt ?? run.createdAt;
-  const endTime = run.completedAt ?? now;
+
+  // If run is not completed, use "now" for dynamic animation
+  const endTime = run.completedAt ? dateToOtelTime(run.completedAt) : 'now';
+  const duration = run.completedAt
+    ? calculateDuration(startDate, run.completedAt)
+    : 'now';
 
   // Convert run-level events to span events
   const events = convertEventsToSpanEvents(runEvents);
@@ -214,7 +211,7 @@ export function runToSpan(
     links: [],
     events,
     startTime: dateToOtelTime(startDate),
-    endTime: dateToOtelTime(endTime),
-    duration: calculateDuration(startDate, endTime),
+    endTime,
+    duration,
   };
 }

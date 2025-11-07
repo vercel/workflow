@@ -683,13 +683,13 @@ export function useWorkflowTraceViewerData(
     setError(null);
 
     const promises = [
-      fetchRun(env, runId).then((result) =>
-        setRun(unwrapServerActionResult(result))
-      ),
-      fetchAllSteps(env, runId).then((result) => {
-        // The steps are the most visible part - so we can start showing UI
-        // as soon as we have some steps
+      fetchRun(env, runId).then((result) => {
+        // The run is the most visible part - so we can start showing UI
+        // as soon as we have the run
         setLoading(false);
+        setRun(unwrapServerActionResult(result));
+      }),
+      fetchAllSteps(env, runId).then((result) => {
         setSteps(result.data);
         setStepsCursor(result.cursor);
       }),

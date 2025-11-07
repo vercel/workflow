@@ -10,7 +10,8 @@ import type {
 import { getHighResInMs, getMsInHighRes } from './timing';
 
 export const parseTrace = (
-  trace: Trace
+  trace: Trace,
+  nowMs?: number
 ): { root: RootNode; map: Record<string, SpanNode> } => {
   const { spans } = trace;
   const root: RootNode = {
@@ -21,6 +22,7 @@ export const parseTrace = (
     children: [],
   };
   const map: Record<string, SpanNode> = {};
+  const now = nowMs ?? Date.now();
 
   const resourceIndices = new Map<string, number>();
   const getResourceIndex = (resource: string): number => {
@@ -35,8 +37,11 @@ export const parseTrace = (
   let hasUserSpans = false;
   for (const span of spans) {
     const startTime = getHighResInMs(span.startTime);
-    const endTime = getHighResInMs(span.endTime);
-    const duration = getHighResInMs(span.duration);
+    // Handle "now" as a special value for endTime
+    const endTime = span.endTime === 'now' ? now : getHighResInMs(span.endTime);
+    // Handle "now" as a special value for duration
+    const duration =
+      span.duration === 'now' ? now - startTime : getHighResInMs(span.duration);
     if (endTime > root.endTime) {
       root.endTime = endTime;
       root.duration = endTime - root.startTime;

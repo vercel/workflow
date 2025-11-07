@@ -51,6 +51,10 @@ export interface TraceViewerState {
    */
   selected: SpanNode | null;
   /**
+   * Current time in milliseconds, used for spans with "now" as endTime
+   */
+  now: number;
+  /**
    * The initial scale of the trace. At this scale the entire trace is visible
    */
   baseScale: number;
@@ -213,6 +217,10 @@ export type TraceViewerAction =
     }
   | {
       type: 'forceRender';
+    }
+  | {
+      type: 'updateNow';
+      now: number;
     };
 
 export interface TraceViewerContextProps {
@@ -232,6 +240,7 @@ export const initialState: TraceViewerState = {
   resourceMap: {},
   filter: '',
   selected: null,
+  now: Date.now(),
   baseScale: 1,
   scaleRatio: 1,
   scale: 1,
@@ -559,6 +568,14 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
       return {
         ...state,
       };
+    case 'updateNow': {
+      // Update now time and trigger a re-calculation of the root node
+      // The root's endTime may change if any spans use "now"
+      return {
+        ...state,
+        now: action.now,
+      };
+    }
   }
 };
 

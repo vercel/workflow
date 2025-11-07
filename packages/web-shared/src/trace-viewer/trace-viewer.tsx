@@ -69,14 +69,42 @@ export function TraceViewerTimeline({
   const hideSearchBar = true;
 
   useEffect(() => {
-    const { root, map: spanMap } = parseTrace(trace);
+    const { root, map: spanMap } = parseTrace(trace, state.now);
     dispatch({
       type: 'setRoot',
       root,
       spanMap,
       resources: trace.resources || [],
     });
-  }, [dispatch, trace]);
+  }, [dispatch, trace, state.now]);
+
+  // Set up interval to update "now" for spans with dynamic end times
+  useEffect(() => {
+    // Check if any spans have "now" as endTime - if so, set up interval
+    const hasNowSpans = trace.spans.some(
+      (span) => span.endTime === 'now' || span.duration === 'now'
+    );
+
+    if (!hasNowSpans) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      // Re-check on each tick if we still have "now" spans
+      const stillHasNowSpans = trace.spans.some(
+        (span) => span.endTime === 'now' || span.duration === 'now'
+      );
+
+      if (stillHasNowSpans) {
+        dispatch({
+          type: 'updateNow',
+          now: Date.now(),
+        });
+      }
+    }, 2000); // Update every 2000ms - balances smooth animation with preserving hover states
+
+    return () => clearInterval(interval);
+  }, [dispatch, trace.spans]);
 
   const { rows, spans, events, scale } = useStreamingSpans(highlightedSpans);
 

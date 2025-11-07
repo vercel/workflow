@@ -65,21 +65,22 @@ export function Markers({ scale }: { scale: number }): ReactNode {
           } as CSSProperties
         }
       >
-        {new Array(markerCount).fill(null).map((_, i) => {
-          const hasLabel = i % labelSpacing === 0;
-          return (
-            <span
-              className={clsx(styles.marker, !hasLabel && styles.notch)}
-              key={String(i)}
-            >
-              {hasLabel ? (
-                <span className={styles.markerLabel}>
-                  {formatDuration(markerDuration * i)}
-                </span>
-              ) : null}
-            </span>
-          );
-        })}
+        {markerCount > 0 &&
+          new Array(markerCount).fill(null).map((_, i) => {
+            const hasLabel = i % labelSpacing === 0;
+            return (
+              <span
+                className={clsx(styles.marker, !hasLabel && styles.notch)}
+                key={String(i)}
+              >
+                {hasLabel ? (
+                  <span className={styles.markerLabel}>
+                    {formatDuration(markerDuration * i)}
+                  </span>
+                ) : null}
+              </span>
+            );
+          })}
       </div>
     </div>
   );
