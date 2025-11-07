@@ -129,7 +129,7 @@ export const Intro = async () => {
       code={workflowCode}
       lang="ts"
       codeblock={{
-        className: `shadow-none !bg-background ${codeBlockClassname}`,
+        className: `shadow-none overflow-visible !bg-background border-b-0! ${codeBlockClassname}`,
       }}
     />
   );
@@ -138,7 +138,7 @@ export const Intro = async () => {
       code={nonWorkflowCode}
       lang="ts"
       codeblock={{
-        className: `shadow-none !bg-background ${codeBlockClassname} max-h-[310px] overflow-y-auto`,
+        className: `shadow-none overflow-visible !bg-background border-b-0! ${codeBlockClassname} max-h-[310px]`,
       }}
     />
   );
@@ -149,7 +149,7 @@ export const Intro = async () => {
         <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
           Reliability-as-code
         </h2>
-        <p className=" text-lg text-muted-foreground md:mt-4">
+        <p className="text-lg text-muted-foreground md:mt-4">
           Move from hand-rolled queues and custom retries to durable, resumable
           code with simple directives.
         </p>
