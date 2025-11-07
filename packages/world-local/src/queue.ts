@@ -1,10 +1,11 @@
 import { setTimeout } from 'node:timers/promises';
 import { JsonTransport } from '@vercel/queue';
-import { pidToPorts } from 'pid-port';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
 import z from 'zod';
+import type { Config } from './config.js';
+import { resolveBaseUrl } from './config.js';
 
 // For local queue, there is no technical limit on the message visibility lifespan,
 // but the environment variable can be used for testing purposes to set a max visibility limit.
@@ -17,7 +18,7 @@ const httpAgent = new Agent({
   headersTimeout: 0,
 });
 
-export function createQueue(port?: number): Queue {
+export function createQueue(config: Partial<Config>): Queue {
   const transport = new JsonTransport();
   const generateId = monotonicFactory();
 
@@ -58,12 +59,12 @@ export function createQueue(port?: number): Queue {
 
     (async () => {
       let defaultRetriesLeft = 3;
-      const portToUse = port ?? (await getPort());
+      const baseUrl = await resolveBaseUrl(config);
       for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
         defaultRetriesLeft--;
 
         const response = await fetch(
-          `http://localhost:${portToUse}/.well-known/workflow/v1/${pathname}`,
+          `${baseUrl}/.well-known/workflow/v1/${pathname}`,
           {
             method: 'POST',
             duplex: 'half',
@@ -171,26 +172,4 @@ export function createQueue(port?: number): Queue {
   };
 
   return { queue, createQueueHandler, getDeploymentId };
-}
-
-/**
- * Gets the port number that the process is listening on.
- * @returns The port number that the process is listening on, or undefined if the process is not listening on any port.
- * NOTE: Can't move this to @workflow/utils because it's being imported into @workflow/errors for RetryableError (inside workflow runtime)
- */
-export async function getPort(): Promise<number | undefined> {
-  try {
-    const pid = process.pid;
-    const ports = await pidToPorts(pid);
-    if (!ports || ports.size === 0) {
-      return undefined;
-    }
-
-    const smallest = Math.min(...ports);
-    return smallest;
-  } catch {
-    // If port detection fails (e.g., `ss` command not available in production),
-    // return undefined and fall back to default port
-    return undefined;
-  }
 }
