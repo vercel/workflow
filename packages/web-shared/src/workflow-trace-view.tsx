@@ -21,7 +21,7 @@ import {
 } from './workflow-traces/trace-span-construction';
 import { otelTimeToMs } from './workflow-traces/trace-time-utils';
 
-const RE_RENDER_INTERVAL_MS = 500;
+const RE_RENDER_INTERVAL_MS = 2000;
 
 export const WorkflowTraceViewer = ({
   run,
