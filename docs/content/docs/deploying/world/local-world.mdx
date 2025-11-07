@@ -64,15 +64,15 @@ By default, workflow data is stored in `.workflow-data/` in your project root. T
 **Environment variable:**
 
 ```bash
-export WORKFLOW_EMBEDDED_DATA_DIR=./custom-workflow-data
+export WORKFLOW_LOCAL_DATA_DIR=./custom-workflow-data
 ```
 
 **Programmatically:**
 
 ```typescript
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld('./custom-workflow-data');
+const world = createLocalWorld('./custom-workflow-data');
 ```
 
 ### Port
@@ -88,9 +88,9 @@ npm run dev
 You can also specify it explicitly when creating the world programmatically:
 
 ```typescript
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld(undefined, 3000);
+const world = createLocalWorld(undefined, 3000);
 ```
 
 ## Usage
@@ -166,12 +166,12 @@ For production deployments, use the [Vercel World](/docs/deploying/world/vercel-
 
 ## API Reference
 
-### `createEmbeddedWorld`
+### `createLocalWorld`
 
 Creates a local world instance:
 
 ```typescript
-function createEmbeddedWorld(
+function createLocalWorld(
   dataDir?: string,
   port?: number
 ): World
@@ -189,9 +189,9 @@ function createEmbeddedWorld(
 **Example:**
 
 ```typescript
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld('./my-data', 3000);
+const world = createLocalWorld('./my-data', 3000);
 ```
 
 ## Learn More
@@ -199,3 +199,4 @@ const world = createEmbeddedWorld('./my-data', 3000);
 - [World Interface](/docs/deploying/world) - Understanding the World interface
 - [Vercel World](/docs/deploying/world/vercel-world) - For production deployments
 - [Observability](/docs/observability) - Monitoring and debugging tools
+

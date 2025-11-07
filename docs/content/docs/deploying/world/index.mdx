@@ -16,7 +16,7 @@ The workflow `World` is an interface that abstracts how workflows and steps comm
 
 ## Choosing a World implementation
 
-* By default, Workflow uses the [Local world](/docs/deploying/world/embedded-world) for easy local development.
+* By default, Workflow uses the [Local world](/docs/deploying/world/local-world) for easy local development.
 * When deployed on Vercel, Workflow switches to the [Vercel world](/docs/deploying/world/vercel-world).
 
 If you want to use a different World implementation, set the `WORKFLOW_TARGET_WORLD` environment variable to your desired World package's NPM name:
@@ -30,7 +30,7 @@ export MY_WORLD_CONFIG=... # implementation-specific configuration
 
 Workflow DevKit provides two built-in world implementations:
 
-- [Embedded World](/docs/deploying/world/embedded-world) - Filesystem-based for local development
+- [Local World](/docs/deploying/world/local-world) - Filesystem-based for local development
 - [Vercel World](/docs/deploying/world/vercel-world) - Production-ready for Vercel deployments
 
 ## Community Worlds
