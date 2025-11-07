@@ -79,6 +79,10 @@ async function chargePayment(order: Order) {
 
 By default, steps have a maximum of 3 retry attempts before they fail and propagate the error over to the workflow. Learn more about errors and retrying in the [Errors & Retrying](/docs/foundations/errors-and-retries) page.
 
+<Callout type="warning">
+**Important:** Due to serialization, parameters are passed by **value, not by reference**. If you pass an object or array to a step and mutate it, those changes will **not** be visible in the workflow context. Always return modified data from your step functions instead. See [Pass-by-Value Semantics](/docs/foundations/serialization#pass-by-value-semantics) for details and examples.
+</Callout>
+
 <Callout type="info">
 Step functions are primarily meant to be used inside a workflow.
 </Callout>

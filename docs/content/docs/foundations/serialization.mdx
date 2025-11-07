@@ -70,6 +70,106 @@ For example, one step function may produce a `ReadableStream` while a different
 step consumes the stream. The workflow function does not interact directly with
 the stream but is able to pass it on to the next step:
 
+## Pass-by-Value Semantics
+
+An important consequence of serialization is that **all parameters are passed by value, not by reference**. When you pass an object or array to a step function, the step receives a deserialized copy of that data. Any mutations to the arguments inside the step function will **not** be reflected in the workflow's context.
+
+### Common Misuse
+
+```typescript
+// ❌ INCORRECT - mutations to arguments won't persist
+export async function updateUserWorkflow(userId: string) {
+  "use workflow";
+
+  const user = { id: userId, name: "John", email: "john@example.com" };
+
+  // This passes a copy of the user object to the step
+  await updateUserStep(user);
+
+  // The user object in the workflow is UNCHANGED - user.email is still "john@example.com"
+  console.log(user.email); // Still "john@example.com", not updated!
+}
+
+async function updateUserStep(user: { id: string; name: string; email: string }) {
+  "use step";
+
+  // This modifies the LOCAL COPY, not the original in the workflow
+  user.email = "newemail@example.com"; // [!code highlight]
+}
+```
+
+```typescript
+// ❌ INCORRECT - pushing to an array argument won't persist
+export async function collectItemsWorkflow() {
+  "use workflow";
+
+  const items: string[] = ["apple"];
+
+  // This passes a copy of the items array to the step
+  await addItemStep(items);
+
+  // The items array in the workflow is UNCHANGED
+  console.log(items); // Still ["apple"], not ["apple", "banana"]!
+}
+
+async function addItemStep(items: string[]) {
+  "use step";
+
+  // This modifies the LOCAL COPY of the array
+  items.push("banana"); // [!code highlight]
+}
+```
+
+### Correct Pattern - Return Values
+
+To persist changes, **return the modified data from the step function** and reassign it in the workflow:
+
+```typescript
+// ✅ CORRECT - return the modified data
+export async function updateUserWorkflow(userId: string) {
+  "use workflow";
+
+  let user = { id: userId, name: "John", email: "john@example.com" };
+
+  // Capture the return value
+  user = await updateUserStep(user); // [!code highlight]
+
+  // Now the user object reflects the changes
+  console.log(user.email); // "newemail@example.com" ✓
+}
+
+async function updateUserStep(user: { id: string; name: string; email: string }) {
+  "use step";
+
+  user.email = "newemail@example.com";
+  return user; // [!code highlight]
+}
+```
+
+```typescript
+// ✅ CORRECT - return the modified array
+export async function collectItemsWorkflow() {
+  "use workflow";
+
+  let items: string[] = ["apple"];
+
+  // Capture the return value
+  items = await addItemStep(items); // [!code highlight]
+
+  // Now the items array reflects the changes
+  console.log(items); // ["apple", "banana"] ✓
+}
+
+async function addItemStep(items: string[]) {
+  "use step";
+
+  items.push("banana");
+  return items; // [!code highlight]
+}
+```
+
+Remember: **Only return values are persisted to the event log and visible in the workflow context.** Mutations to parameters are lost because each step receives a fresh deserialized copy of the data.
+
 ```typescript lineNumbers
 async function generateStream() {
   "use step";
