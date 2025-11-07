@@ -32,6 +32,7 @@ import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { RerunButton } from './display-utils/rerun-button';
 import { StatusBadge } from './display-utils/status-badge';
+import { Skeleton } from './ui/skeleton';
 
 interface RunDetailViewProps {
   config: WorldConfig;
@@ -59,6 +60,7 @@ export function RunDetailView({
     hooks: allHooks,
     events: allEvents,
     loading,
+    auxiliaryDataLoading,
     error,
     update,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
@@ -128,7 +130,7 @@ export function RunDetailView({
     );
   }
 
-  const workflowName = parseWorkflowName(run.workflowName)?.shortName || '?';
+  const workflowName = parseWorkflowName(run.workflowName)?.shortName;
 
   // At this point, we've already returned if there was an error
   // So hasError is always false here
@@ -203,7 +205,7 @@ export function RunDetailView({
 
       <div
         className="flex flex-col overflow-hidden"
-        style={{ height: 'calc(100vh - 10rem)' }}
+        style={{ height: 'calc(100vh - 7rem)' }}
       >
         <div className="flex-none space-y-6">
           <BackLink href={buildUrlWithConfig('/', config)} />
@@ -213,7 +215,13 @@ export function RunDetailView({
             {/* Title Row */}
             <div className="flex items-start justify-between">
               <div className="mb-6">
-                <h1 className="text-2xl font-semibold">{workflowName}</h1>
+                <h1 className="text-2xl font-semibold">
+                  {workflowName ? (
+                    workflowName
+                  ) : (
+                    <Skeleton className="w-[260px] h-[32px]" />
+                  )}
+                </h1>
               </div>
 
               <div className="flex items-center justify-between gap-2">
@@ -238,33 +246,57 @@ export function RunDetailView({
             <div className="flex items-start gap-8">
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Status</div>
-                <StatusBadge status={run.status || '...'} context={run} />
+                {run.status ? (
+                  <StatusBadge status={run.status} context={run} />
+                ) : (
+                  <Skeleton className="w-[55px] h-[24px]" />
+                )}
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Run ID</div>
-                <CopyableText text={run.runId}>
-                  <div className="text-sm mt-0.5 font-mono">{run.runId}</div>
-                </CopyableText>
+                {run.runId ? (
+                  <CopyableText text={run.runId}>
+                    <div className="text-sm mt-0.5 font-mono">{run.runId}</div>
+                  </CopyableText>
+                ) : (
+                  <Skeleton className="w-[280px] h-[20px]" />
+                )}
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Queued</div>
-                <div className="text-sm">
-                  {run.createdAt ? <RelativeTime date={run.createdAt} /> : '-'}
-                </div>
+                {run.createdAt ? (
+                  <div className="text-sm">
+                    <RelativeTime date={run.createdAt} />
+                  </div>
+                ) : (
+                  <Skeleton className="w-[110px] h-[20px]" />
+                )}
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Started</div>
                 <div className="text-sm">
-                  {run.startedAt ? <RelativeTime date={run.startedAt} /> : '-'}
+                  {run.runId ? (
+                    run.startedAt ? (
+                      <RelativeTime date={run.startedAt} />
+                    ) : (
+                      '-'
+                    )
+                  ) : (
+                    <Skeleton className="w-[110px] h-[20px]" />
+                  )}
                 </div>
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Completed</div>
                 <div className="text-sm">
-                  {run.completedAt ? (
-                    <RelativeTime date={run.completedAt} />
+                  {run.runId ? (
+                    run.completedAt ? (
+                      <RelativeTime date={run.completedAt} />
+                    ) : (
+                      '-'
+                    )
                   ) : (
-                    '-'
+                    <Skeleton className="w-[110px] h-[20px]" />
                   )}
                 </div>
               </div>

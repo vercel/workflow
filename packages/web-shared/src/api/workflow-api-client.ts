@@ -660,6 +660,7 @@ export function useWorkflowTraceViewerData(
   const [hooks, setHooks] = useState<Hook[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
+  const [auxiliaryDataLoading, setAuxiliaryDataLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
   const [stepsCursor, setStepsCursor] = useState<string | undefined>();
@@ -677,30 +678,33 @@ export function useWorkflowTraceViewerData(
 
     isFetchingRef.current = true;
     setLoading(true);
+    setAuxiliaryDataLoading(true);
     setError(null);
+
+    const promises = [
+      fetchRun(env, runId).then((result) =>
+        setRun(unwrapServerActionResult(result))
+      ),
+      fetchAllSteps(env, runId).then((result) => {
+        // The steps are the most visible part - so we can start showing UI
+        // as soon as we have some steps
+        setLoading(false);
+        setSteps(result.data);
+        setStepsCursor(result.cursor);
+      }),
+      fetchAllHooks(env, runId).then((result) => {
+        setHooks(result.data);
+        setHooksCursor(result.cursor);
+      }),
+      fetchAllEvents(env, runId).then((result) => {
+        setEvents(result.data);
+        setEventsCursor(result.cursor);
+      }),
+    ];
 
     try {
       // Fetch run
-      const runServerResult = await fetchRun(env, runId);
-      const runData = unwrapServerActionResult(runServerResult);
-      setRun(runData);
-      setLoading(false);
-
-      // TODO: Do these in parallel
-      // Fetch steps exhaustively
-      const stepsResult = await fetchAllSteps(env, runId);
-      setSteps(stepsResult.data);
-      setStepsCursor(stepsResult.cursor);
-
-      // Fetch hooks exhaustively
-      const hooksResult = await fetchAllHooks(env, runId);
-      setHooks(hooksResult.data);
-      setHooksCursor(hooksResult.cursor);
-
-      // Fetch events exhaustively
-      const eventsResult = await fetchAllEvents(env, runId);
-      setEvents(eventsResult.data);
-      setEventsCursor(eventsResult.cursor);
+      await Promise.all(promises);
     } catch (err) {
       const error =
         err instanceof WorkflowAPIError
@@ -712,6 +716,7 @@ export function useWorkflowTraceViewerData(
       setError(error);
     } finally {
       setLoading(false);
+      setAuxiliaryDataLoading(false);
       isFetchingRef.current = false;
       setInitialLoadCompleted(true);
     }
@@ -855,6 +860,7 @@ export function useWorkflowTraceViewerData(
     hooks,
     events,
     loading,
+    auxiliaryDataLoading,
     error,
     update,
   };

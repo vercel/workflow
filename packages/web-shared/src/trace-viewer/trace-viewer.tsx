@@ -55,41 +55,6 @@ interface LastClickRef {
   spanId: string;
 }
 
-const skeletonTrace: Trace = {
-  traceId: 'skeleton',
-  spans: [
-    {
-      parentSpanId: '',
-      spanId: 'root',
-      name: 'root span',
-      kind: 1,
-      resource: 'vercel.runtime',
-      startTime: [5000, 0],
-      endTime: [6000, 0],
-      duration: [1000, 0],
-      library: {
-        name: 'vercel-site',
-      },
-      status: {
-        code: 1,
-      },
-      attributes: {
-        'vercel.ownerId': 'team_abc',
-      },
-      traceFlags: 1,
-      events: [],
-      links: [],
-    },
-  ],
-  resources: [
-    {
-      name: 'vercel.runtime',
-      attributes: {},
-    },
-  ],
-  rootSpanId: 'root',
-};
-
 export function TraceViewerTimeline({
   trace = skeletonTrace,
   className = '',

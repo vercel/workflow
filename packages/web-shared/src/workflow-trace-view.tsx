@@ -161,15 +161,13 @@ export const WorkflowTraceViewer = ({
   if (isLoading) {
     return (
       <div className="relative w-full h-full">
-        <div className="border border-gray-alpha-400 rounded-md h-[500px] w-full">
-          <Skeleton className="w-full m-2 h-[56px]" />
-          <div className="border-b border-gray-alpha-400 w-full" />
-          <div className="p-2 relative w-full">
-            <Skeleton className="w-full mt-6 h-[20px]" />
-            <Skeleton className="w-[10%] mt-2 ml-6 h-[20px]" />
-            <Skeleton className="w-[10%] mt-2 ml-12 h-[20px]" />
-            <Skeleton className="w-[20%] mt-2 ml-16 h-[20px]" />
-          </div>
+        <div className="border-b border-gray-alpha-400 w-full" />
+        <Skeleton className="w-full ml-2 mt-1 mb-1 h-[56px]" />
+        <div className="p-2 relative w-full">
+          <Skeleton className="w-full mt-6 h-[20px]" />
+          <Skeleton className="w-[10%] mt-2 ml-6 h-[20px]" />
+          <Skeleton className="w-[10%] mt-2 ml-12 h-[20px]" />
+          <Skeleton className="w-[20%] mt-2 ml-16 h-[20px]" />
         </div>
       </div>
     );
