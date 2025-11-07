@@ -21,7 +21,7 @@ const DEV_TEST_CONFIGS = {
   nuxt: {
     generatedStepPath: '.nuxt/workflow/steps.mjs',
     generatedWorkflowPath: '.nuxt/workflow/workflows.mjs',
-    apiFilePath: 'server/routes/api/chat.post.ts',
+    apiFilePath: 'server/api/chat.post.ts',
     apiFileImportPath: '../../..',
   },
   sveltekit: {
