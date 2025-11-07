@@ -18,5 +18,8 @@
     "nuxt": "^4.1.3",
     "openai": "^6.6.0",
     "zod": "catalog:"
+  },
+  "dependencies": {
+    "@node-rs/xxhash": "1.7.6"
   }
 }
