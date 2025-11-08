@@ -16,8 +16,8 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).model).toBe('anthropic/claude-opus');
-      expect((agent as any).tools).toEqual({});
+      expect(agent.model).toBe('anthropic/claude-opus');
+      expect(agent.tools).toEqual({});
     });
 
     it('should accept system prompt', () => {
@@ -28,7 +28,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).system).toBe('You are a helpful assistant.');
+      expect(agent.system).toBe('You are a helpful assistant.');
     });
 
     it('should accept temperature option', () => {
@@ -39,7 +39,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).temperature).toBe(0.7);
+      expect(agent.temperature).toBe(0.7);
     });
 
     it('should accept maxOutputTokens option', () => {
@@ -50,7 +50,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).maxOutputTokens).toBe(1000);
+      expect(agent.maxOutputTokens).toBe(1000);
     });
 
     it('should accept topP option', () => {
@@ -61,7 +61,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).topP).toBe(0.9);
+      expect(agent.topP).toBe(0.9);
     });
 
     it('should accept topK option', () => {
@@ -72,7 +72,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).topK).toBe(40);
+      expect(agent.topK).toBe(40);
     });
 
     it('should accept presencePenalty option', () => {
@@ -83,7 +83,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).presencePenalty).toBe(0.5);
+      expect(agent.presencePenalty).toBe(0.5);
     });
 
     it('should accept frequencyPenalty option', () => {
@@ -94,7 +94,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).frequencyPenalty).toBe(0.5);
+      expect(agent.frequencyPenalty).toBe(0.5);
     });
 
     it('should accept stopSequences option', () => {
@@ -105,7 +105,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).stopSequences).toEqual(['STOP', 'END']);
+      expect(agent.stopSequences).toEqual(['STOP', 'END']);
     });
 
     it('should accept seed option', () => {
@@ -116,7 +116,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).seed).toBe(12345);
+      expect(agent.seed).toBe(12345);
     });
 
     it('should accept all options together', () => {
@@ -135,16 +135,16 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).model).toBe('anthropic/claude-opus');
-      expect((agent as any).system).toBe('You are a helpful assistant.');
-      expect((agent as any).temperature).toBe(0.7);
-      expect((agent as any).maxOutputTokens).toBe(1000);
-      expect((agent as any).topP).toBe(0.9);
-      expect((agent as any).topK).toBe(40);
-      expect((agent as any).presencePenalty).toBe(0.5);
-      expect((agent as any).frequencyPenalty).toBe(0.3);
-      expect((agent as any).stopSequences).toEqual(['STOP', 'END']);
-      expect((agent as any).seed).toBe(12345);
+      expect(agent.model).toBe('anthropic/claude-opus');
+      expect(agent.system).toBe('You are a helpful assistant.');
+      expect(agent.temperature).toBe(0.7);
+      expect(agent.maxOutputTokens).toBe(1000);
+      expect(agent.topP).toBe(0.9);
+      expect(agent.topK).toBe(40);
+      expect(agent.presencePenalty).toBe(0.5);
+      expect(agent.frequencyPenalty).toBe(0.3);
+      expect(agent.stopSequences).toEqual(['STOP', 'END']);
+      expect(agent.seed).toBe(12345);
     });
 
     it('should accept tools with proper structure', () => {
@@ -165,7 +165,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
-      expect((agent as any).tools).toBe(tools);
+      expect(agent.tools).toBe(tools);
     });
   });
 

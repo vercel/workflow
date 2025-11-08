@@ -150,17 +150,17 @@ export interface DurableAgentStreamOptions {
  * ```
  */
 export class DurableAgent {
-  private model: string;
-  private tools: ToolSet;
-  private system?: string;
-  private temperature?: number;
-  private maxOutputTokens?: number;
-  private topP?: number;
-  private topK?: number;
-  private presencePenalty?: number;
-  private frequencyPenalty?: number;
-  private stopSequences?: string[];
-  private seed?: number;
+  model: string;
+  tools: ToolSet;
+  system?: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+  topP?: number;
+  topK?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+  stopSequences?: string[];
+  seed?: number;
 
   constructor(options: DurableAgentOptions) {
     this.model = options.model;
