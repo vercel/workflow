@@ -18,6 +18,12 @@ const DEV_TEST_CONFIGS = {
     apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
+  nuxt: {
+    generatedStepPath: '.nuxt/workflow/steps.mjs',
+    generatedWorkflowPath: '.nuxt/workflow/workflows.mjs',
+    apiFilePath: 'server/api/chat.post.ts',
+    apiFileImportPath: '../..',
+  },
   sveltekit: {
     generatedStepPath: 'src/routes/.well-known/workflow/v1/step/+server.js',
     generatedWorkflowPath: 'src/routes/.well-known/workflow/v1/flow/+server.js',
@@ -67,6 +73,12 @@ matrix.app.push({
   name: 'sveltekit',
   project: 'workbench-sveltekit-workflow',
   ...DEV_TEST_CONFIGS.sveltekit,
+});
+
+matrix.app.push({
+  name: 'nuxt',
+  project: 'workbench-nuxt-workflow',
+  ...DEV_TEST_CONFIGS.nuxt,
 });
 
 console.log(JSON.stringify(matrix));

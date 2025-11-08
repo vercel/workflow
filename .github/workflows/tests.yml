@@ -67,6 +67,8 @@ jobs:
             project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
           - name: "vite"
             project-id: "prj_uLIcNZNDmETulAvj5h0IcDHi5432"
+          - name: "nuxt"
+            project-id: "prj_oTgiz3SGX2fpZuM6E0P38Ts8de6d"
           - name: "sveltekit"
             project-id: "prj_MqnBLm71ceXGSnm3Fs8i8gBnI23G"
     env:
