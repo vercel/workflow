@@ -1,9 +1,17 @@
 {
   "name": "@workflow/nuxt",
-  "version": "4.0.1-beta.7",
+  "version": "4.0.1-beta.1",
   "description": "Nuxt integration for Workflow DevKit",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/nuxt"
+  },
   "exports": {
     ".": {
       "types": "./dist/types.d.mts",
