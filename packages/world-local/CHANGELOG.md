@@ -1,5 +1,14 @@
 # @workflow/world-local
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- adf0cfe: Add automatic port discovery
+- Updated dependencies [bf170ad]
+- Updated dependencies [adf0cfe]
+  - @workflow/utils@4.0.1-beta.2
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

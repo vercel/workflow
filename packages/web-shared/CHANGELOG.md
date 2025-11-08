@@ -1,5 +1,19 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- 0b3e89e: Fix event data serialization for observability
+- Updated dependencies [7013f29]
+- Updated dependencies [a28bc37]
+- Updated dependencies [809e0fe]
+- Updated dependencies [adf0cfe]
+- Updated dependencies [5c0268b]
+- Updated dependencies [0b3e89e]
+- Updated dependencies [7a47eb8]
+  - @workflow/core@4.0.1-beta.10
+
 ## 4.0.1-beta.10
 
 ### Patch Changes
