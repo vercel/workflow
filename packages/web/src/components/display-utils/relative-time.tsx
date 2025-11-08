@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/tooltip';
 
 interface RelativeTimeProps {
-  date: Date;
+  date: Date | string;
   className?: string;
   type?: 'relative' | 'distance';
 }
@@ -20,6 +20,9 @@ export function RelativeTime({
   type = 'relative',
 }: RelativeTimeProps) {
   const [, setNow] = useState(Date.now());
+  if (typeof date === 'string') {
+    date = new Date(date);
+  }
   const relativeTime =
     type === 'relative'
       ? formatRelative(new Date(date), new Date())

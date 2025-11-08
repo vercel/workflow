@@ -5,35 +5,36 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
-    port: 3000,
   },
   'nextjs-webpack': {
     generatedStepPath: 'app/.well-known/workflow/v1/step/route.js',
     generatedWorkflowPath: 'app/.well-known/workflow/v1/flow/route.js',
     apiFilePath: 'app/api/chat/route.ts',
     apiFileImportPath: '../../..',
-    port: 3000,
   },
   nitro: {
     generatedStepPath: '.nitro/workflow/steps.mjs',
     generatedWorkflowPath: '.nitro/workflow/workflows.mjs',
     apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
-    port: 3000,
+  },
+  nuxt: {
+    generatedStepPath: '.nuxt/workflow/steps.mjs',
+    generatedWorkflowPath: '.nuxt/workflow/workflows.mjs',
+    apiFilePath: 'server/api/chat.post.ts',
+    apiFileImportPath: '../..',
   },
   sveltekit: {
     generatedStepPath: 'src/routes/.well-known/workflow/v1/step/+server.js',
     generatedWorkflowPath: 'src/routes/.well-known/workflow/v1/flow/+server.js',
     apiFilePath: 'src/routes/api/chat/+server.ts',
     apiFileImportPath: '../../../..',
-    port: 3000,
   },
   vite: {
     generatedStepPath: 'dist/workflow/steps.mjs',
     generatedWorkflowPath: 'dist/workflow/workflows.mjs',
     apiFilePath: 'src/main.ts',
     apiFileImportPath: '..',
-    port: 3000,
   },
 };
 
@@ -72,6 +73,12 @@ matrix.app.push({
   name: 'sveltekit',
   project: 'workbench-sveltekit-workflow',
   ...DEV_TEST_CONFIGS.sveltekit,
+});
+
+matrix.app.push({
+  name: 'nuxt',
+  project: 'workbench-nuxt-workflow',
+  ...DEV_TEST_CONFIGS.nuxt,
 });
 
 console.log(JSON.stringify(matrix));

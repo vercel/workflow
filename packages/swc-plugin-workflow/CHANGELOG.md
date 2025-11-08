@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.4
+
+### Patch Changes
+
+- e0c6618: Specify import path of `start` function on error in SWC plugin
+
 ## 4.0.1-beta.3
 
 ### Patch Changes

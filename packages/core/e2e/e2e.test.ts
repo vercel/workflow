@@ -524,4 +524,31 @@ describe('e2e', () => {
     expect(returnValue.retryableResult.duration).toBeGreaterThan(10_000);
     expect(returnValue.gotFatalError).toBe(true);
   });
+
+  test(
+    'stepDirectCallWorkflow - calling step functions directly outside workflow context',
+    { timeout: 60_000 },
+    async () => {
+      // Call the API route that directly calls a step function (no workflow context)
+      const url = new URL('/api/test-direct-step-call', deploymentUrl);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ x: 3, y: 5 }),
+      });
+
+      if (!res.ok) {
+        throw new Error(
+          `Failed to call step function directly: ${res.url} ${
+            res.status
+          }: ${await res.text()}`
+        );
+      }
+
+      const { result } = await res.json();
+
+      // Expected: add(3, 5) = 8
+      expect(result).toBe(8);
+    }
+  );
 });
