@@ -16,7 +16,7 @@ This repository contains the client side SDK code for workflows, along example a
 - **packages/next**: Next.js integration (`@workflow/next`)
 - **packages/cli**: Command-line interface (`@workflow/cli`)
 - **packages/world**: Core interfaces and types for workflow storage backends (`@workflow/world`)
-- **packages/world-embedded**: Filesystem-based workflow backend for local development and testing (`@workflow/world-local`)
+- **packages/world-local**: Filesystem-based workflow backend for local development and testing (`@workflow/world-local`)
 - **packages/world-vercel**: Production workflow backend for Vercel platform deployments (`@workflow/world-vercel`)
 - **packages/swc-plugin-workflow**: SWC compiler plugin for workflow transformations
 - **workbench/example**: Basic workflow examples using the CLI (aka "standalone mode")
