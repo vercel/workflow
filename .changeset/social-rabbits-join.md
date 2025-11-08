@@ -2,4 +2,4 @@
 "@workflow/nitro": patch
 ---
 
-Trigger nitro release
+Automatically add Workflow TypeScript plugin to nitro TS config
