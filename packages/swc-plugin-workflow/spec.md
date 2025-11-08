@@ -86,7 +86,7 @@ Upstream, a bundler will use this plugin in workflow mode to create a server bun
 
 ## Client Mode
 
-When executed in 'client' mode, step and workflow definitions have their bodies replaced with a call to `runStep` and throw statements respectively. `runStep` is exported from `workflow/api`. It effectively proxies the requests to execute steps on the server (using the bundles created in the other modes).
+When executed in 'client' mode, step definitions have their `"use step"` directive removed while keeping their implementation intact. This allows step functions to be called directly from server code (e.g., from a Next.js server route) and execute as regular functions. Workflow functions have the `workflowId` property attached and will throw an error if called directly.
 
 Input code
 
@@ -107,10 +107,8 @@ Output code
 
 ```
 // workflow/main.js
-import { runStep as __private_run_step } from "workflow/api"
-
 export async function add(a, b) {
-  return __private_run_step('add', { arguments: [a, b] })
+  return a + b;
 }
 
 export async function workflow(a, b) {
@@ -121,10 +119,10 @@ workflow.workflowId = "workflow//workflow/main.js//workflow";
 
 **ID Generation:**
 
-- Step functions use `runStep` with the function name (not the full ID)
+- Step functions keep their implementation intact (directive is removed)
 - Workflow functions throw an error if called directly and have the `workflowId` property attached using the format `workflow//{filepath}//{functionName}`
 
-Upstream, this mode is typically used by a framework loader (like a Next.js/webpack loader) to JIT transform workflow executions into proxied calls.
+Upstream, this mode is typically used by a framework loader (like a Next.js/webpack/Vite loader) to transform application code. Step functions can be called directly from server code and will execute normally, allowing them to be reused in different contexts. Workflow functions must be started using the `start()` API from `workflow/api`.
 
 ## Notes
 

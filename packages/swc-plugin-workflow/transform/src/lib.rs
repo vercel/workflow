@@ -1589,9 +1589,8 @@ impl VisitMut for StepTransform {
                         }
                     }
                     TransformMode::Client => {
-                        if !self.step_function_names.is_empty() {
-                            imports_to_add.push(self.create_run_step_import());
-                        }
+                        // No imports needed for step functions in client mode
+                        // since we keep function bodies intact
                     }
                 }
 
@@ -2274,17 +2273,9 @@ impl VisitMut for StepTransform {
                                 }
                             }
                             TransformMode::Client => {
-                                // Transform step function body to use step run call
+                                // In client mode, keep step function body intact
+                                // This allows step functions to be called directly from server code
                                 self.remove_use_step_directive(&mut fn_decl.function.body);
-                                if let Some(body) = &mut fn_decl.function.body {
-                                    body.stmts = vec![Stmt::Return(ReturnStmt {
-                                        span: DUMMY_SP,
-                                        arg: Some(Box::new(self.create_run_step_call(
-                                            &fn_name,
-                                            &fn_decl.function.params,
-                                        ))),
-                                    })];
-                                }
                                 stmt.visit_mut_children_with(self);
                             }
                         }
@@ -2414,17 +2405,9 @@ impl VisitMut for StepTransform {
                                 }
                             }
                             TransformMode::Client => {
-                                // Transform step function body to use run step call
+                                // In client mode, keep step function body intact
+                                // This allows step functions to be called directly from server code
                                 self.remove_use_step_directive(&mut fn_decl.function.body);
-                                if let Some(body) = &mut fn_decl.function.body {
-                                    body.stmts = vec![Stmt::Return(ReturnStmt {
-                                        span: DUMMY_SP,
-                                        arg: Some(Box::new(self.create_run_step_call(
-                                            &fn_name,
-                                            &fn_decl.function.params,
-                                        ))),
-                                    })];
-                                }
                                 export_decl.visit_mut_children_with(self);
                             }
                         }
@@ -2548,22 +2531,11 @@ impl VisitMut for StepTransform {
                                                     }
                                                 }
                                                 TransformMode::Client => {
-                                                    // Transform step function body to use run step call
+                                                    // In client mode, keep step function body intact
+                                                    // This allows step functions to be called directly from server code
                                                     self.remove_use_step_directive(
                                                         &mut fn_expr.function.body,
                                                     );
-                                                    if let Some(body) = &mut fn_expr.function.body {
-                                                        body.stmts =
-                                                            vec![Stmt::Return(ReturnStmt {
-                                                                span: DUMMY_SP,
-                                                                arg: Some(Box::new(
-                                                                    self.create_run_step_call(
-                                                                        &name,
-                                                                        &fn_expr.function.params,
-                                                                    ),
-                                                                )),
-                                                            })];
-                                                    }
                                                 }
                                             }
                                         }
@@ -2669,17 +2641,11 @@ impl VisitMut for StepTransform {
                                                     );
                                                 }
                                                 TransformMode::Client => {
-                                                    // Transform arrow function to use run step call
+                                                    // In client mode, keep step function body intact
+                                                    // This allows step functions to be called directly from server code
                                                     self.remove_use_step_directive_arrow(
                                                         &mut arrow_expr.body,
                                                     );
-                                                    arrow_expr.body =
-                                                        Box::new(BlockStmtOrExpr::Expr(Box::new(
-                                                            self.create_run_step_call_arrow(
-                                                                &name,
-                                                                &arrow_expr.params,
-                                                            ),
-                                                        )));
                                                 }
                                             }
                                         }
@@ -2810,19 +2776,11 @@ impl VisitMut for StepTransform {
                                             }
                                         }
                                         TransformMode::Client => {
-                                            // Transform step function body to use run step call
+                                            // In client mode, keep step function body intact
+                                            // This allows step functions to be called directly from server code
                                             self.remove_use_step_directive(
                                                 &mut fn_expr.function.body,
                                             );
-                                            if let Some(body) = &mut fn_expr.function.body {
-                                                body.stmts = vec![Stmt::Return(ReturnStmt {
-                                                    span: DUMMY_SP,
-                                                    arg: Some(Box::new(self.create_run_step_call(
-                                                        &name,
-                                                        &fn_expr.function.params,
-                                                    ))),
-                                                })];
-                                            }
                                         }
                                     }
                                 }
