@@ -32,7 +32,7 @@ export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
-  const defaultUrl = 'https://workflow-server-8vpxv1p8e.vercel.sh/api';
+  const defaultUrl = 'https://workflow-server-caiebefc9.vercel.sh/api';
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   const usingProxy = Boolean(
     config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)
