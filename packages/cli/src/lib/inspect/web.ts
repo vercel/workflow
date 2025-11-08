@@ -132,7 +132,7 @@ async function startWebServer(webPort: number): Promise<boolean> {
     return false;
   }
 
-  if (await isServerRunning(`http://localhost:${webPort}`)) {
+  if (await isServerRunning(getHostUrl(webPort))) {
     logger.debug('Server is already running');
     return true;
   }
