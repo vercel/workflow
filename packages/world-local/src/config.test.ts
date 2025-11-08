@@ -123,6 +123,17 @@ describe('resolveBaseUrl', () => {
       expect(result).toBe('http://localhost:5173');
     });
 
+    it('should handle port 0 (OS-assigned port)', async () => {
+      const { getPort } = await import('@workflow/utils/get-port');
+
+      const result = await resolveBaseUrl({
+        port: 0,
+      });
+
+      expect(result).toBe('http://localhost:0');
+      expect(getPort).not.toHaveBeenCalled();
+    });
+
     it('should handle port 80', async () => {
       const result = await resolveBaseUrl({
         port: 80,
@@ -245,6 +256,18 @@ describe('resolveBaseUrl', () => {
       });
 
       expect(result).toBe('http://localhost:5173');
+    });
+
+    it('should skip null port and use auto-detection', async () => {
+      const { getPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getPort).mockResolvedValue(5173);
+
+      const result = await resolveBaseUrl({
+        port: null as any,
+      });
+
+      expect(result).toBe('http://localhost:5173');
+      expect(getPort).toHaveBeenCalled();
     });
   });
 });

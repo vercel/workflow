@@ -37,7 +37,7 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
     return config.baseUrl;
   }
 
-  if (config.port) {
+  if (typeof config.port === 'number') {
     return `http://localhost:${config.port}`;
   }
 
