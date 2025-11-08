@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.9
+
+### Patch Changes
+
+- 0b3e89e: Fix event data serialization for observability
+
 ## 4.0.1-beta.8
 
 ### Patch Changes
