@@ -8,6 +8,5 @@ BREAKING: Change `createEmbeddedWorld` API signature from positional parameters 
 - `createEmbeddedWorld(dataDir?, port?)` → `createEmbeddedWorld(args?: Partial<Config>)`
 
 **New features:**
-- Add `baseUrl` config option for HTTPS and custom hostnames
-- Automatic port detection via `@workflow/utils/get-port`
+- Add `baseUrl` config option for HTTPS and custom hostnames (via config or `WORKFLOW_EMBEDDED_BASE_URL` env var)
 - Support for port 0 (OS-assigned port)
