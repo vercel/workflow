@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nuxt",
-  "version": "4.0.1-beta.6",
+  "version": "4.0.1-beta.7",
   "description": "Nuxt integration for Workflow DevKit",
   "license": "MIT",
   "type": "module",
