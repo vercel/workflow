@@ -34,23 +34,16 @@ export function RunTraceView({ env, runId }: RunTraceViewProps) {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="relative">
-        {loading && (
-          <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white"></div>
-          </div>
-        )}
-        <WorkflowTraceViewer
-          error={error}
-          steps={allSteps}
-          events={allEvents}
-          hooks={allHooks}
-          env={env}
-          run={run}
-          isLoading={loading}
-        />
-      </div>
+    <div className="w-full h-full relative">
+      <WorkflowTraceViewer
+        error={error}
+        steps={allSteps}
+        events={allEvents}
+        hooks={allHooks}
+        env={env}
+        run={run}
+        isLoading={loading}
+      />
     </div>
   );
 }

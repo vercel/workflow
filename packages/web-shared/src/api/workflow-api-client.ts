@@ -25,7 +25,8 @@ import {
 } from './workflow-server-actions';
 
 const MAX_ITEMS = 1000;
-const LIVE_POLL_LIMIT = 5;
+const LIVE_POLL_LIMIT = 10;
+const LIVE_STEP_UPDATE_INTERVAL_MS = 2000;
 const LIVE_UPDATE_INTERVAL_MS = 5000;
 
 /**
@@ -660,6 +661,7 @@ export function useWorkflowTraceViewerData(
   const [hooks, setHooks] = useState<Hook[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
+  const [auxiliaryDataLoading, setAuxiliaryDataLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
   const [stepsCursor, setStepsCursor] = useState<string | undefined>();
@@ -677,29 +679,33 @@ export function useWorkflowTraceViewerData(
 
     isFetchingRef.current = true;
     setLoading(true);
+    setAuxiliaryDataLoading(true);
     setError(null);
+
+    const promises = [
+      fetchRun(env, runId).then((result) => {
+        // The run is the most visible part - so we can start showing UI
+        // as soon as we have the run
+        setLoading(false);
+        setRun(unwrapServerActionResult(result));
+      }),
+      fetchAllSteps(env, runId).then((result) => {
+        setSteps(result.data);
+        setStepsCursor(result.cursor);
+      }),
+      fetchAllHooks(env, runId).then((result) => {
+        setHooks(result.data);
+        setHooksCursor(result.cursor);
+      }),
+      fetchAllEvents(env, runId).then((result) => {
+        setEvents(result.data);
+        setEventsCursor(result.cursor);
+      }),
+    ];
 
     try {
       // Fetch run
-      const runServerResult = await fetchRun(env, runId);
-      const runData = unwrapServerActionResult(runServerResult);
-      setRun(runData);
-
-      // TODO: Do these in parallel
-      // Fetch steps exhaustively
-      const stepsResult = await fetchAllSteps(env, runId);
-      setSteps(stepsResult.data);
-      setStepsCursor(stepsResult.cursor);
-
-      // Fetch hooks exhaustively
-      const hooksResult = await fetchAllHooks(env, runId);
-      setHooks(hooksResult.data);
-      setHooksCursor(hooksResult.cursor);
-
-      // Fetch events exhaustively
-      const eventsResult = await fetchAllEvents(env, runId);
-      setEvents(eventsResult.data);
-      setEventsCursor(eventsResult.cursor);
+      await Promise.all(promises);
     } catch (err) {
       const error =
         err instanceof WorkflowAPIError
@@ -711,6 +717,7 @@ export function useWorkflowTraceViewerData(
       setError(error);
     } finally {
       setLoading(false);
+      setAuxiliaryDataLoading(false);
       isFetchingRef.current = false;
       setInitialLoadCompleted(true);
     }
@@ -808,27 +815,31 @@ export function useWorkflowTraceViewerData(
   }, [env, runId, eventsCursor, mergeEvents]);
 
   // Update function for live polling
-  const update = useCallback(async (): Promise<{ foundNewItems: boolean }> => {
-    if (isFetchingRef.current || !initialLoadCompleted) {
-      return { foundNewItems: false };
-    }
+  const update = useCallback(
+    async (stepsOnly: boolean = false): Promise<{ foundNewItems: boolean }> => {
+      if (isFetchingRef.current || !initialLoadCompleted) {
+        return { foundNewItems: false };
+      }
 
-    let foundNewItems = false;
+      let foundNewItems = false;
 
-    try {
-      const [_, stepsUpdated, hooksUpdated, eventsUpdated] = await Promise.all([
-        pollRun(),
-        pollSteps(),
-        pollHooks(),
-        pollEvents(),
-      ]);
-      foundNewItems = stepsUpdated || hooksUpdated || eventsUpdated;
-    } catch (err) {
-      console.error('Update error:', err);
-    }
+      try {
+        const [_, stepsUpdated, hooksUpdated, eventsUpdated] =
+          await Promise.all([
+            stepsOnly ? Promise.resolve(false) : pollRun(),
+            pollSteps(),
+            stepsOnly ? Promise.resolve(false) : pollHooks(),
+            stepsOnly ? Promise.resolve(false) : pollEvents(),
+          ]);
+        foundNewItems = stepsUpdated || hooksUpdated || eventsUpdated;
+      } catch (err) {
+        console.error('Update error:', err);
+      }
 
-    return { foundNewItems };
-  }, [pollSteps, pollHooks, pollEvents, initialLoadCompleted, pollRun]);
+      return { foundNewItems };
+    },
+    [pollSteps, pollHooks, pollEvents, initialLoadCompleted, pollRun]
+  );
 
   // Initial load
   useEffect(() => {
@@ -844,8 +855,14 @@ export function useWorkflowTraceViewerData(
     const interval = setInterval(() => {
       update();
     }, LIVE_UPDATE_INTERVAL_MS);
+    const stepInterval = setInterval(() => {
+      update(true);
+    }, LIVE_STEP_UPDATE_INTERVAL_MS);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      clearInterval(stepInterval);
+    };
   }, [live, initialLoadCompleted, update, run?.completedAt]);
 
   return {
@@ -854,6 +871,7 @@ export function useWorkflowTraceViewerData(
     hooks,
     events,
     loading,
+    auxiliaryDataLoading,
     error,
     update,
   };
