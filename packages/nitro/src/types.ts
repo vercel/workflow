@@ -8,6 +8,12 @@ export interface ModuleOptions {
    * By default, `workflows/` directory will be scanned from root and all layer source dirs.
    */
   dirs?: string[];
+
+  /**
+   * Enable workflow TypeScript plugin in generated tsconfig.json
+   * @default false
+   */
+  typescriptPlugin?: boolean;
 }
 
 declare module 'nitro/types' {

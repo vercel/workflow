@@ -107,7 +107,7 @@ export const WorkflowTraceViewer = ({
 
     const hookSpans = hooks.map((hook) => {
       const hookEvents = eventsByHookId.get(hook.hookId) || [];
-      return hookToSpan(hook, hookEvents);
+      return hookToSpan(hook, hookEvents, now);
     });
 
     const waitSpans = Array.from(timerEvents.entries()).map(

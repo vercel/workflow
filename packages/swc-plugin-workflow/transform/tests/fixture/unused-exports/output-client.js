@@ -1,4 +1,3 @@
-import { runStep as __private_run_step } from "workflow/api";
 import { unusedHelper } from './unused-helper';
 /**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//input.js//processData"}}}}*/;
 // This variable is exported but not used anywhere in this file
@@ -12,11 +11,7 @@ export function formatData(data) {
 }
 // This step function uses the helper
 export async function processData(input) {
-    return __private_run_step("processData", {
-        arguments: [
-            input
-        ]
-    });
+    return helper(input);
 }
 // This is used internally
 function internalHelper(value) {

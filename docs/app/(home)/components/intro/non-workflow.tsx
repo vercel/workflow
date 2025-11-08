@@ -100,9 +100,9 @@ export const NonWorkflowExample = ({
 
   return (
     <div className="relative isolate max-w-3xl mx-auto">
-      <div className="bg-background border rounded-md overflow-hidden">
+      <div className="bg-background border rounded-md overflow-x-auto pb-[52px]">
         <div className="relative">
-          <div className="hidden md:flex absolute z-10 flex-col left-[18px] top-[69px] pointer-events-none select-none">
+          <div className="flex absolute z-10 flex-col left-[18px] top-[69px] pointer-events-none select-none">
             {renderIndicator(lineStates[0])}
             <div className="h-[5px]" />
             {renderIndicator(lineStates[1])}
@@ -111,10 +111,7 @@ export const NonWorkflowExample = ({
           </div>
           {codeBlock}
         </div>
-        <WorkflowLogs
-          logs={logs}
-          className="p-4 font-mono text-sm text-muted-foreground"
-        />
+        <WorkflowLogs logs={logs} />
       </div>
     </div>
   );

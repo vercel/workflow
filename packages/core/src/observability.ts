@@ -19,12 +19,13 @@ export const isStreamId = (value: unknown): boolean => {
   return typeof value === 'string' && value.startsWith(STREAM_ID_PREFIX);
 };
 
-const streamToStreamId = (value: any) => {
+const streamToStreamId = (value: any): string => {
   if ('name' in value) {
-    if (!value.name.startsWith(STREAM_ID_PREFIX)) {
-      return `${STREAM_ID_PREFIX}${value.name}`;
+    const name = String(value.name);
+    if (!name.startsWith(STREAM_ID_PREFIX)) {
+      return `${STREAM_ID_PREFIX}${name}`;
     }
-    return value.name;
+    return name;
   }
   return `${STREAM_ID_PREFIX}null`;
 };
@@ -88,11 +89,19 @@ const hydrateWorkflowIO = <
 const hydrateEventData = <T extends { eventId?: string; eventData?: any }>(
   event: T
 ): T => {
+  if (!event.eventData) {
+    return event;
+  }
   return {
     ...event,
-    eventData: event.eventData
-      ? hydrateStepArguments(event.eventData, [], globalThis)
-      : event.eventData,
+    // Events have various top-level non-devalued keys, so we need to
+    // hydrate each value individually.
+    eventData: Object.fromEntries(
+      Object.entries(event.eventData).map(([key, value]) => [
+        key,
+        hydrateStepArguments(value as any, [], globalThis),
+      ])
+    ),
   };
 };
 

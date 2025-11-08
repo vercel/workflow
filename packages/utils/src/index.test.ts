@@ -21,6 +21,7 @@ describe('parseDurationToDate', () => {
   });
 
   it('should throw on invalid duration strings', () => {
+    // @ts-expect-error - invalid duration string
     expect(() => parseDurationToDate('invalid')).toThrow();
   });
 

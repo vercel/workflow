@@ -1,7 +1,7 @@
 {
   "name": "@workflow/utils",
   "description": "Utility functions for Workflow DevKit",
-  "version": "4.0.1-beta.1",
+  "version": "4.0.1-beta.2",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -21,9 +21,9 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./node": {
-      "types": "./dist/node.d.ts",
-      "default": "./dist/node.js"
+    "./get-port": {
+      "types": "./dist/get-port.d.ts",
+      "default": "./dist/get-port.js"
     }
   },
   "scripts": {

@@ -1,4 +1,4 @@
-import { getPort } from '@workflow/utils/node';
+import { getPort } from '@workflow/utils/get-port';
 import { once } from './util.js';
 
 const getDataDirFromEnv = () => {

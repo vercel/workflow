@@ -8,7 +8,7 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { getPort } from '@workflow/utils/node';
+import { getPort } from '@workflow/utils/get-port';
 import type {
   Event,
   WorkflowRun,
@@ -673,7 +673,7 @@ export const stepEntrypoint =
                   workflowRunId,
                   workflowStartedAt: new Date(+workflowStartedAt),
                   // TODO: there should be a getUrl method on the world interface itself. This
-                  // solution only works for vercel + embedded worlds.
+                  // solution only works for vercel + local worlds.
                   url: process.env.VERCEL_URL
                     ? `https://${process.env.VERCEL_URL}`
                     : `http://localhost:${port ?? 3000}`,

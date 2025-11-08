@@ -1,5 +1,30 @@
 # workflow
 
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- fb8153b: Add Nuxt module
+- Updated dependencies [7013f29]
+- Updated dependencies [a28bc37]
+- Updated dependencies [98c36f1]
+- Updated dependencies [03d076b]
+- Updated dependencies [809e0fe]
+- Updated dependencies [adf0cfe]
+- Updated dependencies [5c0268b]
+- Updated dependencies [fb8153b]
+- Updated dependencies [98c36f1]
+- Updated dependencies [0b3e89e]
+- Updated dependencies [7a47eb8]
+  - @workflow/core@4.0.1-beta.10
+  - @workflow/sveltekit@4.0.0-beta.6
+  - @workflow/nuxt@4.0.1-beta.7
+  - @workflow/nitro@4.0.1-beta.12
+  - @workflow/errors@4.0.1-beta.4
+  - @workflow/cli@4.0.1-beta.12
+  - @workflow/next@4.0.1-beta.12
+  - @workflow/typescript-plugin@4.0.1-beta.4
+
 ## 4.0.1-beta.11
 
 ### Patch Changes
