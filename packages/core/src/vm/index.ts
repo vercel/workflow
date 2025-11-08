@@ -86,7 +86,7 @@ export function createContext(options: CreateContextOptions) {
 
   // Propagate environment variables
   (g as any).process = {
-    env: process.env,
+    env: Object.freeze({ ...process.env }),
   };
 
   // Stateless + synchronous Web APIs that are made available inside the sandbox

@@ -8,10 +8,10 @@ import { generateDefinition } from "@/lib/tsdoc"
 
 Creates a type-safe hook helper that ensures the payload type is consistent between hook creation and resumption.
 
-This is a lightweight wrapper around [`createHook()`](/docs/api-reference/workflow/create-hook) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid type mismatches.
+This is a lightweight wrapper around [`createHook()`](/docs/api-reference/workflow/create-hook) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid type mismatches. It also supports optional runtime validation and transformation of payloads using any [Standard Schema v1](https://standardschema.dev) compliant validator like Zod or Valibot.
 
 <Callout>
-We recommend using `defineHook()` over `createHook()` in production codebases for better type safety.
+We recommend using `defineHook()` over `createHook()` in production codebases for better type safety and optional runtime validation.
 </Callout>
 
 ```ts lineNumbers
@@ -67,7 +67,7 @@ export default DefineHook;`
 
 ## Examples
 
-### Type-Safe Hook Definition
+### Basic Type-Safe Hook Definition
 
 By defining the hook once with a specific payload type, you can reuse it in multiple workflows and API routes with automatic type safety.
 
@@ -117,16 +117,21 @@ export async function POST(request: Request) {
 
 ### Validate and Transform with Schema
 
-The optional `schema` accepts any validator that conforms to [Standard Schema v1](https://standardschema.dev).
+You can provide runtime validation and transformation of hook payloads using the `schema` option. This option accepts any validator that conforms to the [Standard Schema v1](https://standardschema.dev) specification.
 
-Zod is shown below as one example, but libraries like Valibot, ArkType, Effect Schema, or your own custom validator work as well.
+<Callout type="info">
+Standard Schema is a standardized specification for schema validation libraries. Most popular validation libraries support it, including Zod, Valibot, ArkType, and Effect Schema. You can also write custom validators.
+</Callout>
+
+#### Using Zod with defineHook
+
+Here's an example using [Zod](https://zod.dev) to validate and transform hook payloads:
 
 ```typescript lineNumbers
 import { defineHook } from "workflow";
 import { z } from "zod";
 
 export const approvalHook = defineHook({
-  // Provide a schema to validate/transform payloads.
   schema: z.object({ // [!code highlight]
     approved: z.boolean(), // [!code highlight]
     comment: z.string().min(1).transform((value) => value.trim()), // [!code highlight]
@@ -140,27 +145,48 @@ export async function approvalWorkflow(approvalId: string) {
     token: `approval:${approvalId}`,
   });
 
+  // Payload is automatically typed based on the schema
   const { approved, comment } = await hook;
   console.log('Approved:', approved);
-  console.log('Comment:', comment);
+  console.log('Comment (trimmed):', comment);
 }
 ```
 
-In your route handler, resume the hook with the same definition; the schema validates and transforms the payload before the workflow continues.
+When resuming the hook from an API route, the schema validates and transforms the incoming payload before the workflow resumes:
 
 ```typescript lineNumbers
 export async function POST(request: Request) {
-  // comment is "   Ready!   " here
+  // Incoming payload: { token: "...", approved: true, comment: "   Ready!   " }
   const { token, approved, comment } = await request.json();
 
-  // If validation fails, Zod throws and the hook is not resumed.
+  // The schema validates and transforms the payload:
+  // - Checks that `approved` is a boolean
+  // - Checks that `comment` is a non-empty string
+  // - Trims whitespace from the comment
+  // If validation fails, an error is thrown and the hook is not resumed
   await approvalHook.resume(token, { // [!code highlight]
     approved, // [!code highlight]
-    comment, // transformed to "Ready!" [!code highlight]
+    comment, // Automatically trimmed to "Ready!" // [!code highlight]
   }); // [!code highlight]
 
   return Response.json({ success: true });
 }
+```
+
+#### Using Other Standard Schema Libraries
+
+The same pattern works with any Standard Schema v1 compliant library. Here's an example with [Valibot](https://valibot.dev):
+
+```typescript lineNumbers
+import { defineHook } from "workflow";
+import * as v from "valibot";
+
+export const approvalHook = defineHook({
+  schema: v.object({ // [!code highlight]
+    approved: v.boolean(), // [!code highlight]
+    comment: v.pipe(v.string(), v.minLength(1), v.trim()), // [!code highlight]
+  }), // [!code highlight]
+});
 ```
 
 ### Customizing Tokens
