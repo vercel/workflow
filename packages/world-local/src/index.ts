@@ -19,10 +19,19 @@ export function createEmbeddedWorld({
 }): World {
   const dir = dataDir ?? config.value.dataDir;
   const queuePort = port ?? config.value.port;
-  const getUrl = () => `http://localhost:${queuePort}`;
+  const queue = createQueue(queuePort);
+  const getUrl = () => {
+    const resolvedPort = queue.getResolvedPort?.() ?? queuePort;
+    if (resolvedPort === undefined) {
+      throw new Error(
+        'Port is not available. Ensure a port is specified or the server is running.'
+      );
+    }
+    return `http://localhost:${resolvedPort}`;
+  };
   return {
     getUrl,
-    ...createQueue(queuePort),
+    ...queue,
     ...createStorage(dir),
     ...createStreamer(dir),
   };

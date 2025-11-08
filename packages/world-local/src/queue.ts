@@ -17,7 +17,9 @@ const httpAgent = new Agent({
   headersTimeout: 0,
 });
 
-export function createQueue(port?: number): Queue {
+export function createQueue(
+  port?: number
+): Queue & { getResolvedPort?: () => number | undefined } {
   const transport = new JsonTransport();
   const generateId = monotonicFactory();
 
@@ -26,6 +28,11 @@ export function createQueue(port?: number): Queue {
    * that we don't queue the same message multiple times
    */
   const inflightMessages = new Map<string, MessageId>();
+
+  /**
+   * Tracks the resolved port after first queue operation
+   */
+  let resolvedPort = port;
 
   const queue: Queue['queue'] = async (queueName, message, opts) => {
     const cleanup = [] as (() => void)[];
@@ -59,6 +66,10 @@ export function createQueue(port?: number): Queue {
     (async () => {
       let defaultRetriesLeft = 3;
       const portToUse = port ?? (await getPort());
+      // Cache the resolved port for getUrl()
+      if (portToUse !== undefined && resolvedPort === undefined) {
+        resolvedPort = portToUse;
+      }
       for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
         defaultRetriesLeft--;
 
@@ -170,5 +181,7 @@ export function createQueue(port?: number): Queue {
     return 'dpl_embedded';
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  const getResolvedPort = () => resolvedPort;
+
+  return { queue, createQueueHandler, getDeploymentId, getResolvedPort };
 }
