@@ -1,13 +1,13 @@
 import { runInContext } from 'node:vm';
 import { ERROR_SLUGS } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import { ENOTSUP } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { getWorld } from './runtime.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -34,6 +34,8 @@ export async function runWorkflow(
   workflowRun: WorkflowRun,
   events: Event[]
 ): Promise<unknown> {
+  const world = getWorld();
+  const url = world.getUrl();
   return trace(`WORKFLOW.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
       ...Attribute.WorkflowName(workflowRun.workflowName),
@@ -48,10 +50,6 @@ export async function runWorkflow(
         `Workflow run "${workflowRun.runId}" has no "startedAt" timestamp (should not happen)`
       );
     }
-
-    // Get the port before creating VM context to avoid async operations
-    // affecting the deterministic timestamp
-    const port = await getPort();
 
     const {
       context,
@@ -101,12 +99,6 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
-
-    // TODO: there should be a getUrl method on the world interface itself. This
-    // solution only works for vercel + embedded worlds.
-    const url = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${port ?? 3000}`;
 
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {

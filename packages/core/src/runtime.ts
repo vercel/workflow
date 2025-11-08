@@ -8,7 +8,6 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { getPort } from '@workflow/utils/get-port';
 import type {
   Event,
   WorkflowRun,
@@ -563,9 +562,6 @@ export const stepEntrypoint =
         const stepName = metadata.queueName.slice('__wkf_step_'.length);
         const world = getWorld();
 
-        // Get the port early to avoid async operations during step execution
-        const port = await getPort();
-
         return trace(`STEP ${stepName}`, async (span) => {
           span?.setAttributes({
             ...Attribute.StepName(stepName),
@@ -672,11 +668,7 @@ export const stepEntrypoint =
                 workflowMetadata: {
                   workflowRunId,
                   workflowStartedAt: new Date(+workflowStartedAt),
-                  // TODO: there should be a getUrl method on the world interface itself. This
-                  // solution only works for vercel + embedded worlds.
-                  url: process.env.VERCEL_URL
-                    ? `https://${process.env.VERCEL_URL}`
-                    : `http://localhost:${port ?? 3000}`,
+                  url: world.getUrl(),
                 },
                 ops,
               },

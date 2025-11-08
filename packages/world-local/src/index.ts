@@ -19,7 +19,9 @@ export function createEmbeddedWorld({
 }): World {
   const dir = dataDir ?? config.value.dataDir;
   const queuePort = port ?? config.value.port;
+  const getUrl = () => `http://localhost:${queuePort}`;
   return {
+    getUrl,
     ...createQueue(queuePort),
     ...createStorage(dir),
     ...createStreamer(dir),

@@ -10,7 +10,9 @@ export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
 
 export function createVercelWorld(config?: APIConfig): World {
+  const getUrl = () => `https://${process.env.VERCEL_URL}`;
   return {
+    getUrl,
     ...createQueue(config),
     ...createStorage(config),
     ...createStreamer(config),

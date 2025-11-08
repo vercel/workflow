@@ -40,8 +40,12 @@ export function createWorld(
   const queue = createQueue(boss, config);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(postgres, drizzle);
+  // NOTE: stub for now since World interface needs this.
+  //       This doesn't really make sense right now
+  const getUrl = () => config.connectionString;
 
   return {
+    getUrl,
     ...storage,
     ...streamer,
     ...queue,
