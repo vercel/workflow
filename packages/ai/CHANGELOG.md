@@ -1,5 +1,12 @@
 # @workflow/ai
 
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- Updated dependencies [fb8153b]
+  - workflow@4.0.1-beta.12
+
 ## 4.0.1-beta.11
 
 ### Patch Changes

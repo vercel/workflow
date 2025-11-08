@@ -1,27 +1,17 @@
 {
-  "compilerOptions": {
-    "target": "es2022",
-    "module": "NodeNext",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "moduleResolution": "NodeNext",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "preserve",
-    "incremental": true,
-    "paths": {
-      "@/*": ["./*"]
+  "files": [],
+  "references": [
+    {
+      "path": "./.nuxt/tsconfig.app.json"
     },
-    "plugins": [
-      {
-        "name": "workflow"
-      }
-    ]
-  },
-  "include": ["**/*.ts", "**/*.tsx", "*.js"],
-  "exclude": ["node_modules"]
+    {
+      "path": "./.nuxt/tsconfig.server.json"
+    },
+    {
+      "path": "./.nuxt/tsconfig.shared.json"
+    },
+    {
+      "path": "./.nuxt/tsconfig.node.json"
+    }
+  ]
 }
