@@ -16,6 +16,8 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).model).toBe('anthropic/claude-opus');
+      expect((agent as any).tools).toEqual({});
     });
 
     it('should accept system prompt', () => {
@@ -26,6 +28,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).system).toBe('You are a helpful assistant.');
     });
 
     it('should accept temperature option', () => {
@@ -36,6 +39,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).temperature).toBe(0.7);
     });
 
     it('should accept maxOutputTokens option', () => {
@@ -46,6 +50,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).maxOutputTokens).toBe(1000);
     });
 
     it('should accept topP option', () => {
@@ -56,6 +61,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).topP).toBe(0.9);
     });
 
     it('should accept topK option', () => {
@@ -66,6 +72,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).topK).toBe(40);
     });
 
     it('should accept presencePenalty option', () => {
@@ -76,6 +83,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).presencePenalty).toBe(0.5);
     });
 
     it('should accept frequencyPenalty option', () => {
@@ -86,6 +94,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).frequencyPenalty).toBe(0.5);
     });
 
     it('should accept stopSequences option', () => {
@@ -96,6 +105,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).stopSequences).toEqual(['STOP', 'END']);
     });
 
     it('should accept seed option', () => {
@@ -106,6 +116,7 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).seed).toBe(12345);
     });
 
     it('should accept all options together', () => {
@@ -124,24 +135,37 @@ describe('DurableAgent', () => {
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).model).toBe('anthropic/claude-opus');
+      expect((agent as any).system).toBe('You are a helpful assistant.');
+      expect((agent as any).temperature).toBe(0.7);
+      expect((agent as any).maxOutputTokens).toBe(1000);
+      expect((agent as any).topP).toBe(0.9);
+      expect((agent as any).topK).toBe(40);
+      expect((agent as any).presencePenalty).toBe(0.5);
+      expect((agent as any).frequencyPenalty).toBe(0.3);
+      expect((agent as any).stopSequences).toEqual(['STOP', 'END']);
+      expect((agent as any).seed).toBe(12345);
     });
 
     it('should accept tools with proper structure', () => {
+      const tools = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+          execute: async () => 'result',
+        },
+      };
+
       const agent = new DurableAgent({
         model: 'anthropic/claude-opus',
-        tools: {
-          testTool: {
-            description: 'A test tool',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-            },
-            execute: async () => 'result',
-          },
-        },
+        tools,
       });
 
       expect(agent).toBeDefined();
+      expect((agent as any).tools).toBe(tools);
     });
   });
 
