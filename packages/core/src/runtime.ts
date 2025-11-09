@@ -17,6 +17,7 @@ import type {
 } from '@workflow/world';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import { parseWorkflowName } from './parse-name.js';
 import { getStepFunction } from './private.js';
 import { getWorld, getWorldHandlers } from './runtime/world.js';
 import {
@@ -33,6 +34,7 @@ import {
   hydrateStepArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
+import { remapErrorStack } from './source-map.js';
 // TODO: move step handler out to a separate file
 import { contextStorage } from './step/context-storage.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -43,8 +45,6 @@ import {
   getWorkflowRunStreamId,
 } from './util.js';
 import { runWorkflow } from './workflow.js';
-import { remapErrorStack } from './source-map.js';
-import { parseWorkflowName } from './parse-name.js';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
@@ -539,7 +539,6 @@ export function workflowEntrypoint(workflowCode: string) {
               console.error(
                 `${errorName} while running "${runId}" workflow:\n\n${errorStack}`
               );
-
               await world.runs.update(runId, {
                 status: 'failed',
                 error: errorMessage,
