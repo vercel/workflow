@@ -2,7 +2,7 @@
 title: Getting Started
 ---
 
-import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun } from '@/app/(home)/components/frameworks';
+import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStack, Vite } from '@/app/(home)/components/frameworks';
 
 # Getting Started
 
@@ -12,6 +12,10 @@ Start by choosing your framework. Each guide will walk you through the steps to 
     <Card href="/docs/getting-started/next" className="flex flex-col items-center justify-center text-center gap-2">
         <Next className="size-16" />
         <span className="font-medium">Next.js</span>
+    </Card>
+    <Card href="/docs/getting-started/vite" className="flex flex-col items-center justify-center text-center gap-2">
+        <Vite className="size-16" />
+        <span className="font-medium">Vite</span>
     </Card>
     <Card href="/docs/getting-started/hono" className="flex flex-col items-center justify-center text-center gap-2">
         <Hono className="size-16" />
@@ -28,5 +32,16 @@ Start by choosing your framework. Each guide will walk you through the steps to 
     <Card href="/docs/getting-started/nuxt" className="flex flex-col items-center justify-center text-center gap-2">
         <Nuxt className="size-16" />
         <span className="font-medium">Nuxt</span>
+    </Card>
+    <Card href="/docs/getting-started/nuxt" disabled className="flex flex-col items-center justify-center text-center gap-2">
+        <AstroLight className="size-16 dark:hidden" />
+        <AstroDark className="size-16 hidden dark:block" />
+        <span className="font-medium">Astro</span>
+        <Badge variant="secondary">Coming soon</Badge>
+    </Card>
+    <Card href="/docs/getting-started/tanstack" disabled className="flex flex-col items-center justify-center text-center gap-2">
+        <TanStack className="size-16 invert" />
+        <span className="font-medium">TanStack</span>
+        <Badge variant="secondary">Coming soon</Badge>
     </Card>
 </Cards>
