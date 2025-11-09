@@ -25,13 +25,12 @@ export async function POST(request: Request) {
     return new Response('Missing token', { status: 400 });
   }
 
-  const response = await resumeWebhook(token, request); // [!code highlight]
-
-  if (!response) {
+  try {
+    const response = await resumeWebhook(token, request); // [!code highlight]
+    return response;
+  } catch (error) {
     return new Response('Webhook not found', { status: 404 });
   }
-
-  return response;
 }
 ```
 
@@ -50,10 +49,11 @@ showSections={['parameters']}
 
 ### Returns
 
-Returns a `Promise<Response | null>` that resolves to:
+Returns a `Promise<Response>` that resolves to:
 
 - `Response`: The HTTP response from the workflow's `respondWith()` call
-- `null`: If the webhook token is not found or invalid
+
+Throws an error if the webhook token is not found or invalid.
 
 ## Examples
 
@@ -72,13 +72,12 @@ export async function POST(request: Request) {
     return new Response('Token required', { status: 400 });
   }
 
-  const response = await resumeWebhook(token, request); // [!code highlight]
-
-  if (!response) {
+  try {
+    const response = await resumeWebhook(token, request); // [!code highlight]
+    return response; // Returns the workflow's custom response
+  } catch (error) {
     return new Response('Webhook not found', { status: 404 });
   }
-
-  return response; // Returns the workflow's custom response
 }
 ```
 
@@ -106,13 +105,12 @@ export async function POST(request: Request) {
   // Construct deterministic token
   const token = `github_webhook:${repo}`;
 
-  const response = await resumeWebhook(token, request); // [!code highlight]
-
-  if (!response) {
+  try {
+    const response = await resumeWebhook(token, request); // [!code highlight]
+    return response;
+  } catch (error) {
     return new Response('Workflow not found', { status: 404 });
   }
-
-  return response;
 }
 ```
 
@@ -137,9 +135,10 @@ export async function POST(request: Request) {
   // Construct token from channel ID
   const token = `slack_command:${channelId}`;
 
-  const response = await resumeWebhook(token, request); // [!code highlight]
-
-  if (!response) {
+  try {
+    const response = await resumeWebhook(token, request); // [!code highlight]
+    return response;
+  } catch (error) {
     // If no workflow is listening, return a default response
     return new Response(
       JSON.stringify({
@@ -151,8 +150,6 @@ export async function POST(request: Request) {
       }
     );
   }
-
-  return response;
 }
 ```
 
@@ -185,13 +182,12 @@ export async function POST(request: Request) {
   // Construct namespaced token
   const token = `tenant:${tenantId}:webhook:${webhookId}`;
 
-  const response = await resumeWebhook(token, request); // [!code highlight]
-
-  if (!response) {
+  try {
+    const response = await resumeWebhook(token, request); // [!code highlight]
+    return response;
+  } catch (error) {
     return new Response('Webhook not found or expired', { status: 404 });
   }
-
-  return response;
 }
 
 async function verifyTenantApiKey(tenantId: string, apiKey: string | null) {
@@ -222,19 +218,19 @@ export async function triggerWebhook(
     body: JSON.stringify(payload),
   });
 
-  const response = await resumeWebhook(token, request);
+  try {
+    const response = await resumeWebhook(token, request);
 
-  if (!response) {
+    // Parse and return the response
+    const contentType = response.headers.get('content-type');
+    if (contentType?.includes('application/json')) {
+      return await response.json();
+    }
+
+    return await response.text();
+  } catch (error) {
     throw new Error('Webhook not found');
   }
-
-  // Parse and return the response
-  const contentType = response.headers.get('content-type');
-  if (contentType?.includes('application/json')) {
-    return await response.json();
-  }
-
-  return await response.text();
 }
 ```
 
