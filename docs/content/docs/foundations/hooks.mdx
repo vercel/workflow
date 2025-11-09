@@ -62,12 +62,11 @@ import { resumeHook } from "workflow/api";
 export async function POST(request: Request) {
   const { token, approved, comment } = await request.json();
 
-  // Resume the workflow with the approval data
-  const result = await resumeHook(token, { approved, comment });
-
-  if (result) {
+  try {
+    // Resume the workflow with the approval data
+    const result = await resumeHook(token, { approved, comment });
     return Response.json({ success: true, runId: result.runId });
-  } else {
+  } catch (error) {
     return Response.json({ error: "Invalid token" }, { status: 404 });
   }
 }

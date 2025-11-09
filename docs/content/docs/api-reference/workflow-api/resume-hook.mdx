@@ -19,15 +19,15 @@ import { resumeHook } from "workflow/api";
 
 export async function POST(request: Request) {
   const { token, data } = await request.json();
-  const result = await resumeHook(token, data); // [!code highlight]
 
-  if (!result) {
+  try {
+    const result = await resumeHook(token, data); // [!code highlight]
+    return Response.json({
+      runId: result.runId
+    });
+  } catch (error) {
     return new Response('Hook not found', { status: 404 });
   }
-
-  return Response.json({
-    runId: result.runId
-  });
 }
 ```
 
@@ -46,7 +46,7 @@ showSections={['parameters']}
 
 ### Returns
 
-Returns a `Promise<Hook | null>` that resolves to:
+Returns a `Promise<Hook>` that resolves to:
 
 <TSDoc
 definition={generateDefinition({
@@ -69,16 +69,16 @@ import { resumeHook } from "workflow/api";
 export async function POST(request: Request) {
   const { token, data } = await request.json();
 
-  const result = await resumeHook(token, data); // [!code highlight]
+  try {
+    const result = await resumeHook(token, data); // [!code highlight]
 
-  if (!result) {
+    return Response.json({
+      success: true,
+      runId: result.runId
+    });
+  } catch (error) {
     return new Response('Hook not found', { status: 404 });
   }
-
-  return Response.json({
-    success: true,
-    runId: result.runId
-  });
 }
 ```
 
@@ -97,16 +97,16 @@ type ApprovalPayload = {
 export async function POST(request: Request) {
   const { token, approved, comment } = await request.json();
 
-  const result = await resumeHook<ApprovalPayload>(token, { // [!code highlight]
-    approved, // [!code highlight]
-    comment, // [!code highlight]
-  }); // [!code highlight]
+  try {
+    const result = await resumeHook<ApprovalPayload>(token, { // [!code highlight]
+      approved, // [!code highlight]
+      comment, // [!code highlight]
+    }); // [!code highlight]
 
-  if (!result) {
+    return Response.json({ runId: result.runId });
+  } catch (error) {
     return Response.json({ error: 'Invalid token' }, { status: 404 });
   }
-
-  return Response.json({ runId: result.runId });
 }
 ```
 
@@ -146,14 +146,14 @@ export async function POST(request: Request) {
     return Response.json({ error: 'Missing token' }, { status: 400 });
   }
 
-  const body = await request.json();
-  const result = await resumeHook(token, body);
+  try {
+    const body = await request.json();
+    const result = await resumeHook(token, body);
 
-  if (!result) {
+    return Response.json({ success: true, runId: result.runId });
+  } catch (error) {
     return Response.json({ error: 'Hook not found' }, { status: 404 });
   }
-
-  return Response.json({ success: true, runId: result.runId });
 }
 ```
 
