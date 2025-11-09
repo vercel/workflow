@@ -230,7 +230,12 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
         const importerPath = resolve(cwd, args.importer);
         let current = importerPath;
         const chain: string[] = [];
+        const visited = new Set<string>();
         while (current) {
+          if (visited.has(current)) {
+            break;
+          }
+          visited.add(current);
           chain.push(current);
           let next = importParents.get(current);
 
