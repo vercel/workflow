@@ -29,7 +29,13 @@ export const WorkflowRunBaseSchema = z.object({
   executionContext: z.record(z.string(), z.any()).optional(),
   input: z.array(z.any()),
   output: z.any().optional(),
+<<<<<<< HEAD
   error: StructuredErrorSchema.optional(),
+=======
+  error: z.string().optional(),
+  errorStack: z.string().optional(),
+  errorCode: z.string().optional(),
+>>>>>>> b7f6c5ed (Proper stacktrace propogation in world)
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
   createdAt: z.coerce.date(),
