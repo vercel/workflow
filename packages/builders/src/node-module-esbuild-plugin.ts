@@ -205,8 +205,7 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
       const packageViolations: PackageViolation[] = [];
       const seenViolations = new Set<string>();
       build.onResolve({ filter: /.*/ }, async (args) => {
-        if (!args.importer || args.importer.includes('node_modules'))
-          return null;
+        if (!args.importer) return null;
 
         try {
           const resolvedChild = await enhancedResolve(
@@ -215,13 +214,15 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
           );
 
           if (resolvedChild) {
-            importParents.set(
-              normalize(resolvedChild),
-              normalize(args.importer)
-            );
+            const childKey = normalize(resolvedChild);
+            const parentValue = normalize(args.importer);
+            importParents.set(childKey, parentValue);
           }
         } catch {
-          // ignore
+          // For built-in modules that can't be resolved, still track using the import path
+          const childKey = args.path;
+          const parentValue = normalize(args.importer);
+          importParents.set(childKey, parentValue);
         }
         return null;
       });
@@ -231,7 +232,23 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
         const chain: string[] = [];
         while (current) {
           chain.push(current);
-          current = importParents.get(current) ?? '';
+          let next = importParents.get(current);
+
+          // If we can't find the parent and current is in node_modules,
+          // try looking up by potential package import strings
+          if (!next && current.includes('node_modules')) {
+            const packageName = getPackageName(current);
+            if (packageName) {
+              // Try the package name directly
+              next = importParents.get(packageName);
+              if (!next) {
+                // Try with node: prefix
+                next = importParents.get(`node:${packageName}`);
+              }
+            }
+          }
+
+          current = next ?? '';
         }
         const filteredChain = chain.filter(
           (path) => !path.includes('node_modules')
@@ -239,7 +256,7 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
 
         const workflowFile = filteredChain[0] ?? importerPath;
 
-        if (!workflowFile) {
+        if (!workflowFile || workflowFile.includes('node_modules')) {
           return {
             path: args.path,
             external: true,
