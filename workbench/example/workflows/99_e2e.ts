@@ -10,6 +10,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
+import { callThrower } from './helpers.js';
 
 //////////////////////////////////////////////////////////
 
@@ -24,6 +25,27 @@ export async function addTenWorkflow(input: number) {
   const b = await add(a, 3);
   const c = await add(b, 5);
   return c;
+}
+
+//////////////////////////////////////////////////////////
+
+// Helper functions to test nested stack traces
+function deepFunction() {
+  throw new Error('Error from deeply nested function');
+}
+
+function middleFunction() {
+  deepFunction();
+}
+
+function topLevelHelper() {
+  middleFunction();
+}
+
+export async function nestedErrorWorkflow() {
+  'use workflow';
+  topLevelHelper();
+  return 'never reached';
 }
 
 //////////////////////////////////////////////////////////
@@ -418,6 +440,15 @@ async function stepThatThrowsRetryableError() {
     duration: Date.now() - stepStartedAt.getTime(),
   };
 }
+
+export async function crossFileErrorWorkflow() {
+  'use workflow';
+  // This will throw an error from the imported helpers.ts file
+  callThrower();
+  return 'never reached';
+}
+
+//////////////////////////////////////////////////////////
 
 export async function retryableAndFatalErrorWorkflow() {
   'use workflow';

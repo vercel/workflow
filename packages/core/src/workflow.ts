@@ -28,6 +28,7 @@ import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
+import { parseWorkflowName } from './parse-name.js';
 
 export async function runWorkflow(
   workflowCode: string,
@@ -542,10 +543,16 @@ export async function runWorkflow(
       SYMBOL_FOR_REQ_CONTEXT
     ];
 
-    // Get a reference to the user-defined workflow function
+    // Get a reference to the user-defined workflow function.
+    // The filename parameter ensures stack traces show a meaningful name
+    // (e.g., "example/workflows/99_e2e.ts") instead of "evalmachine.<anonymous>".
+    const parsedName = parseWorkflowName(workflowRun.workflowName);
+    const filename = parsedName?.path || workflowRun.workflowName;
+
     const workflowFn = runInContext(
       `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-      context
+      context,
+      { filename }
     );
 
     if (typeof workflowFn !== 'function') {
