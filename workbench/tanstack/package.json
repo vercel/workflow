@@ -40,7 +40,7 @@
     "lodash.chunk": "^4.2.0",
     "openai": "^6.1.0",
     "typescript": "^5.7.2",
-    "vite": "^7.1.7",
+    "vite": "catalog:",
     "vitest": "^3.0.5",
     "web-vitals": "^5.1.0",
     "workflow": "workspace:*",

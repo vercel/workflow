@@ -18,6 +18,9 @@ const config = defineConfig({
     tanstackStart(),
     viteReact(),
   ],
+  optimizeDeps: {
+    exclude: ['unicorn-magic'],
+  },
 });
 
 export default config;
