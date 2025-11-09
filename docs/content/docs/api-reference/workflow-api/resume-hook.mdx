@@ -120,13 +120,12 @@ Using `resumeHook` in Next.js server actions to resume a hook:
 import { resumeHook } from "workflow/api";
 
 export async function approveRequest(token: string, approved: boolean) {
-  const result = await resumeHook(token, { approved });
-
-  if (!result) {
+  try {
+    const result = await resumeHook(token, { approved });
+    return result.runId;
+  } catch (error) {
     throw new Error('Invalid approval token');
   }
-
-  return result.runId;
 }
 ```
 
