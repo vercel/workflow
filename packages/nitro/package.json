@@ -37,6 +37,6 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "nitro": "catalog:",
-    "vite": "7.2.2"
+    "vite": "catalog:"
   }
 }
