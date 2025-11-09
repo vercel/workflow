@@ -692,7 +692,7 @@ export const Frameworks = () => {
           <Next className="size-[56px] relative" />
           <Next className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
         </Link>
-        <Link href="/docs/getting-started/next" className="relative">
+        <Link href="/docs/getting-started/vite" className="relative">
           <Vite className="size-[56px] relative" />
           <Vite className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
         </Link>
