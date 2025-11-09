@@ -101,11 +101,18 @@ export async function GET(req: Request) {
       }
 
       if (error.name === 'WorkflowRunFailedError') {
+        // The workflow error stack trace is stored in the error.error property as a string
+        // Extract it if it looks like a stack trace (contains "at ")
+        const workflowErrorStack = (error as any).error?.includes('\n    at ')
+          ? (error as any).error
+          : undefined;
+
         return Response.json(
           {
             ...error,
             name: error.name,
             message: error.message,
+            stack: workflowErrorStack || error.stack,
           },
           { status: 400 }
         );

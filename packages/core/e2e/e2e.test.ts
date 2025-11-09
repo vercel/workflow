@@ -1,6 +1,6 @@
 import { assert, describe, expect, test } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
-import { cliInspectJson } from './utils';
+import { cliInspectJson, isLocalDeployment } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
@@ -549,6 +549,53 @@ describe('e2e', () => {
 
       // Expected: add(3, 5) = 8
       expect(result).toBe(8);
+    }
+  );
+
+  test(
+    'crossFileErrorWorkflow - stack traces work across imported modules',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow intentionally throws an error from an imported helper module
+      // to verify that stack traces correctly show cross-file call chains
+      const run = await triggerWorkflow('crossFileErrorWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The workflow should fail with the error from the helper module
+      expect(returnValue).toHaveProperty('error');
+      expect(returnValue.error).toContain('Error from imported helper module');
+
+      // Verify the stack trace is present and shows correct file paths
+      expect(returnValue).toHaveProperty('stack');
+      expect(typeof returnValue.stack).toBe('string');
+
+      // Known issue: SvelteKit dev mode has incorrect source map mappings for bundled imports.
+      // esbuild with bundle:true inlines helpers.ts but source maps incorrectly map to 99_e2e.ts
+      // This works correctly in production and other frameworks.
+      // TODO: Investigate esbuild source map generation for bundled modules
+      const isSvelteKitDevMode =
+        process.env.APP_NAME === 'sveltekit' && isLocalDeployment();
+
+      if (!isSvelteKitDevMode) {
+        // Stack trace should include frames from the helper module (helpers.ts)
+        expect(returnValue.stack).toContain('helpers.ts');
+      }
+
+      // These checks should work in all modes
+      expect(returnValue.stack).toContain('throwError');
+      expect(returnValue.stack).toContain('callThrower');
+
+      // Stack trace should include frames from the workflow file (99_e2e.ts)
+      expect(returnValue.stack).toContain('99_e2e.ts');
+      expect(returnValue.stack).toContain('crossFileErrorWorkflow');
+
+      // Stack trace should NOT contain 'evalmachine' anywhere
+      expect(returnValue.stack).not.toContain('evalmachine');
+
+      // Verify the run failed
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('failed');
+      expect(runData.error).toContain('Error from imported helper module');
     }
   );
 });
