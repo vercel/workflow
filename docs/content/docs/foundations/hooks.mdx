@@ -120,10 +120,14 @@ export async function POST(request: Request) {
   const slackEvent = await request.json();
   const channelId = slackEvent.channel;
 
-  // Reconstruct the token using the channel ID
-  await resumeHook(`slack_messages:${channelId}`, slackEvent);
+  try {
+    // Reconstruct the token using the channel ID
+    await resumeHook(`slack_messages:${channelId}`, slackEvent);
 
-  return new Response("OK");
+    return new Response("OK");
+  } catch (error) {
+    return new Response("Hook not found", { status: 404 });
+  }
 }
 ```
 
@@ -396,10 +400,13 @@ export async function documentApprovalWorkflow(documentId: string) {
 export async function POST(request: Request) {
   const { documentId, ...approvalData } = await request.json();
 
-  // The schema validates the payload before resuming the workflow
-  await approvalHook.resume(`approval:${documentId}`, approvalData);
-
-  return new Response("OK");
+  try {
+    // The schema validates the payload before resuming the workflow
+    await approvalHook.resume(`approval:${documentId}`, approvalData);
+    return new Response("OK");
+  } catch (error) {
+    return Response.json({ error: "Invalid token or validation failed" }, { status: 400 });
+  }
 }
 ```
 
