@@ -301,8 +301,8 @@ describe('workflow-node-module-error helper functions', () => {
       const cwd = process.cwd();
       const testFile = 'src/node-module-esbuild-plugin.test.ts';
 
-      // Test with 'esbuild' which is imported in this file
-      const location = getViolationLocation(cwd, testFile, 'http');
+      // Test with 'node:http' which is imported in this file but never used
+      const location = getViolationLocation(cwd, testFile, 'node:http');
 
       // Since the identifier is never referenced (only imported), we should
       // not produce a location preview.
