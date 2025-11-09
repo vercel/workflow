@@ -21,7 +21,7 @@ type PackageViolation = {
   location: Partial<esbuild.Location>;
 };
 
-/*
+/**
  * Get the package name from a file path.
  * @param filePath - The file path to get the package name from.
  * @returns The package name.
@@ -48,7 +48,7 @@ export function getPackageName(filePath: string) {
   return packageName;
 }
 
-/*
+/**
  * Escape a regular expression string.
  * @param value - The string to escape.
  * @returns The escaped string.
@@ -92,7 +92,7 @@ export function getImportedIdentifier(specifier: string) {
   }
 }
 
-/*
+/**
  * Find the usage of an identifier in a list of lines.
  * @param lines - The list of lines to search in.
  * @param startIndex - The index to start searching from.
@@ -131,7 +131,7 @@ function findIdentifierUsage(
   }
 }
 
-/*
+/**
  * Get the location of a violation.
  * @param cwd - The current working directory.
  * @param relativePath - The relative path to the file.
