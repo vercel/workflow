@@ -396,10 +396,13 @@ export async function documentApprovalWorkflow(documentId: string) {
 export async function POST(request: Request) {
   const { documentId, ...approvalData } = await request.json();
 
-  // The schema validates the payload before resuming the workflow
-  await approvalHook.resume(`approval:${documentId}`, approvalData);
-
-  return new Response("OK");
+  try {
+    // The schema validates the payload before resuming the workflow
+    await approvalHook.resume(`approval:${documentId}`, approvalData);
+    return new Response("OK");
+  } catch (error) {
+    return Response.json({ error: "Invalid token or validation failed" }, { status: 400 });
+  }
 }
 ```
 
