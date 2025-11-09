@@ -43,6 +43,8 @@ import {
   getWorkflowRunStreamId,
 } from './util.js';
 import { runWorkflow } from './workflow.js';
+import { remapErrorStack } from './source-map.js';
+import { parseWorkflowName } from './parse-name.js';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
@@ -518,15 +520,30 @@ export function workflowEntrypoint(workflowCode: string) {
               }
             } else {
               const errorName = getErrorName(err);
-              const errorStack = getErrorStack(err);
+              let errorStack = getErrorStack(err);
+
+              // Remap error stack using source maps to show original source locations
+              if (errorStack) {
+                const parsedName = parseWorkflowName(workflowName);
+                const filename = parsedName?.path || workflowName;
+                errorStack = remapErrorStack(
+                  errorStack,
+                  filename,
+                  workflowCode
+                );
+              }
+
               console.error(
                 `${errorName} while running "${runId}" workflow:\n\n${errorStack}`
               );
+
+              // Store both the error message and remapped stack trace
+              const errorString = errorStack || String(err);
+
               await world.runs.update(runId, {
                 status: 'failed',
-                error: String(err),
+                error: errorString,
                 // TODO: include error codes when we define them
-                // TODO: serialize/include the error name and stack?
               });
               span?.setAttributes({
                 ...Attribute.WorkflowRunStatus('failed'),

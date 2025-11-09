@@ -475,8 +475,10 @@ export abstract class BaseBuilder {
       treeShaking: true,
       keepNames: true,
       minify: false,
-      // TODO: investigate proper source map support
-      sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+      // Inline source maps for better stack traces in workflow VM execution.
+      // This intermediate bundle is executed via runInContext() in a VM, so we need
+      // inline source maps to get meaningful stack traces instead of "evalmachine.<anonymous>".
+      sourcemap: 'inline',
       resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
       plugins: [
         createSwcPlugin({
@@ -577,7 +579,8 @@ export const POST = workflowEntrypoint(workflowCode);`;
           loader: 'js',
         },
         outfile,
-        // TODO: investigate proper source map support
+        // Source maps for the final workflow bundle wrapper (not important since this code
+        // doesn't run in the VM - only the intermediate bundle sourcemap is relevant)
         sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
         absWorkingDir: this.config.workingDir,
         bundle: true,
