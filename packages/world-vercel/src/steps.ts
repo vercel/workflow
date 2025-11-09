@@ -16,6 +16,58 @@ import {
   makeRequest,
 } from './utils.js';
 
+// Schema for structured error with message and stack
+const StructuredErrorSchema = z.object({
+  message: z.string().optional(),
+  stack: z.string().optional(),
+});
+
+/**
+ * Helper to serialize error + errorStack into a JSON string in the error field.
+ */
+function serializeStepError(data: UpdateStepRequest): any {
+  const { error, errorStack, ...rest } = data;
+
+  if (error !== undefined || errorStack !== undefined) {
+    return {
+      ...rest,
+      error: JSON.stringify({ message: error, stack: errorStack }),
+      errorStack: undefined,
+    };
+  }
+
+  return data;
+}
+
+/**
+ * Helper to deserialize error field into error + errorStack.
+ * Handles backwards compatibility with plain string errors.
+ */
+function deserializeStepError(step: any): Step {
+  const { error, ...rest } = step;
+
+  if (!error) {
+    return step;
+  }
+
+  // Try to parse as structured error JSON
+  try {
+    const parsed = StructuredErrorSchema.parse(JSON.parse(error));
+    return {
+      ...rest,
+      error: parsed.message,
+      errorStack: parsed.stack,
+    };
+  } catch {
+    // Backwards compatibility: error is just a plain string
+    return {
+      ...rest,
+      error: error,
+      errorStack: undefined,
+    };
+  }
+}
+
 // Local schema for lazy mode with refs instead of data
 const StepWithRefsSchema = StepSchema.omit({
   input: true,
@@ -32,13 +84,14 @@ const StepWithRefsSchema = StepSchema.omit({
 function filterStepData(step: any, resolveData: 'none' | 'all'): Step {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = step;
+    const deserialized = deserializeStepError(rest);
     return {
-      ...rest,
+      ...deserialized,
       input: [],
       output: undefined,
     };
   }
-  return step;
+  return deserializeStepError(step);
 }
 
 // Functions
@@ -86,7 +139,7 @@ export async function createStep(
   data: CreateStepRequest,
   config?: APIConfig
 ): Promise<Step> {
-  return makeRequest({
+  const step = await makeRequest({
     endpoint: `/v1/runs/${runId}/steps`,
     options: {
       method: 'POST',
@@ -95,6 +148,7 @@ export async function createStep(
     config,
     schema: StepSchema,
   });
+  return deserializeStepError(step);
 }
 
 export async function updateStep(
@@ -103,15 +157,17 @@ export async function updateStep(
   data: UpdateStepRequest,
   config?: APIConfig
 ): Promise<Step> {
-  return makeRequest({
+  const serialized = serializeStepError(data);
+  const step = await makeRequest({
     endpoint: `/v1/runs/${runId}/steps/${stepId}`,
     options: {
       method: 'PUT',
-      body: JSON.stringify(data, dateToStringReplacer),
+      body: JSON.stringify(serialized, dateToStringReplacer),
     },
     config,
     schema: StepSchema,
   });
+  return deserializeStepError(step);
 }
 
 export async function getStep(

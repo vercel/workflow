@@ -207,7 +207,8 @@ export class Run<TResult> {
         if (run.status === 'failed') {
           throw new WorkflowRunFailedError(
             this.runId,
-            run.error ?? 'Unknown error'
+            run.error ?? 'Unknown error',
+            run.errorStack
           );
         }
 
@@ -520,6 +521,8 @@ export function workflowEntrypoint(workflowCode: string) {
               }
             } else {
               const errorName = getErrorName(err);
+              const errorMessage =
+                err instanceof Error ? err.message : String(err);
               let errorStack = getErrorStack(err);
 
               // Remap error stack using source maps to show original source locations
@@ -537,12 +540,10 @@ export function workflowEntrypoint(workflowCode: string) {
                 `${errorName} while running "${runId}" workflow:\n\n${errorStack}`
               );
 
-              // Store both the error message and remapped stack trace
-              const errorString = errorStack || String(err);
-
               await world.runs.update(runId, {
                 status: 'failed',
-                error: errorString,
+                error: errorMessage,
+                errorStack: errorStack,
                 // TODO: include error codes when we define them
               });
               span?.setAttributes({
@@ -739,7 +740,8 @@ export const stepEntrypoint =
             }
 
             if (FatalError.is(err)) {
-              const stackLines = getErrorStack(err).split('\n').slice(0, 4);
+              const errorStack = getErrorStack(err);
+              const stackLines = errorStack.split('\n').slice(0, 4);
               console.error(
                 `[Workflows] "${workflowRunId}" - Encountered \`FatalError\` while executing step "${stepName}":\n  > ${stackLines.join('\n    > ')}\n\nBubbling up error to parent workflow`
               );
@@ -749,15 +751,15 @@ export const stepEntrypoint =
                 correlationId: stepId,
                 eventData: {
                   error: String(err),
-                  stack: err.stack,
+                  stack: errorStack,
                   fatal: true,
                 },
               });
               await world.steps.update(workflowRunId, stepId, {
                 status: 'failed',
-                error: String(err),
+                error: err.message || String(err),
+                errorStack,
                 // TODO: include error codes when we define them
-                // TODO: serialize/include the error name and stack?
               });
 
               span?.setAttributes({
@@ -774,7 +776,8 @@ export const stepEntrypoint =
 
               if (attempt >= maxRetries) {
                 // Max retries reached
-                const stackLines = getErrorStack(err).split('\n').slice(0, 4);
+                const errorStack = getErrorStack(err);
+                const stackLines = errorStack.split('\n').slice(0, 4);
                 console.error(
                   `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${attempt}):\n  > ${stackLines.join('\n    > ')}\n\n  Max retries reached\n  Bubbling error to parent workflow`
                 );
@@ -784,13 +787,14 @@ export const stepEntrypoint =
                   correlationId: stepId,
                   eventData: {
                     error: errorMessage,
-                    stack: getErrorStack(err),
+                    stack: errorStack,
                     fatal: true,
                   },
                 });
                 await world.steps.update(workflowRunId, stepId, {
                   status: 'failed',
                   error: errorMessage,
+                  errorStack: errorStack,
                 });
 
                 span?.setAttributes({

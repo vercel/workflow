@@ -19,6 +19,7 @@ export const StepSchema = z.object({
   input: z.array(z.any()),
   output: z.any().optional(),
   error: z.string().optional(),
+  errorStack: z.string().optional(),
   errorCode: z.string().optional(),
   attempt: z.number(),
   startedAt: z.coerce.date().optional(),
@@ -44,6 +45,7 @@ export interface UpdateStepRequest {
   status?: StepStatus;
   output?: SerializedData;
   error?: string;
+  errorStack?: string;
   errorCode?: string;
   retryAfter?: Date;
 }

@@ -135,12 +135,17 @@ export class WorkflowAPIError extends WorkflowError {
 export class WorkflowRunFailedError extends WorkflowError {
   runId: string;
   error: string;
+  declare stack: string;
 
-  constructor(runId: string, error: string) {
+  constructor(runId: string, error: string, errorStack?: string) {
     super(`Workflow run "${runId}" failed: ${error}`, {});
     this.name = 'WorkflowRunFailedError';
     this.runId = runId;
     this.error = error;
+    // Override the stack with the workflow's error stack if available
+    if (errorStack !== undefined) {
+      this.stack = errorStack;
+    }
   }
 
   static is(value: unknown): value is WorkflowRunFailedError {

@@ -21,6 +21,7 @@ export const WorkflowRunSchema = z.object({
   input: z.array(z.any()),
   output: z.any().optional(),
   error: z.string().optional(),
+  errorStack: z.string().optional(),
   errorCode: z.string().optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
@@ -44,6 +45,7 @@ export interface UpdateWorkflowRunRequest {
   status?: WorkflowRunStatus;
   output?: SerializedData;
   error?: string;
+  errorStack?: string;
   errorCode?: string;
   executionContext?: Record<string, any>;
 }

@@ -53,6 +53,7 @@ const attributeOrder: AttributeKey[] = [
   'completedAt',
   'retryAfter',
   'error',
+  'errorStack',
   'errorCode',
   'metadata',
   'eventData',
@@ -123,7 +124,38 @@ const attributeToDisplayFn: Record<
     return <DetailCard summary="Output">{JsonBlock(value)}</DetailCard>;
   },
   error: (value: unknown) => {
-    return <DetailCard summary="Error">{JsonBlock(value)}</DetailCard>;
+    return (
+      <DetailCard summary="Error">
+        <pre
+          className="text-copy-12 overflow-x-auto rounded-md border p-4"
+          style={{
+            borderColor: 'var(--ds-gray-300)',
+            backgroundColor: 'var(--ds-gray-100)',
+            color: 'var(--ds-gray-1000)',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          <code>{String(value)}</code>
+        </pre>
+      </DetailCard>
+    );
+  },
+  errorStack: (value: unknown) => {
+    return (
+      <DetailCard summary="Error Stack">
+        <pre
+          className="text-copy-12 overflow-x-auto rounded-md border p-4"
+          style={{
+            borderColor: 'var(--ds-gray-300)',
+            backgroundColor: 'var(--ds-gray-100)',
+            color: 'var(--ds-gray-1000)',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          <code>{String(value)}</code>
+        </pre>
+      </DetailCard>
+    );
   },
   errorCode: JsonBlock,
   eventData: (value: unknown) => {
@@ -135,6 +167,7 @@ const resolvableAttributes = [
   'input',
   'output',
   'error',
+  'errorStack',
   'errorCode',
   'metadata',
   'eventData',
