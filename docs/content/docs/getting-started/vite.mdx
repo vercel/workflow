@@ -11,9 +11,9 @@ This guide will walk through setting up your first workflow in a Vite app. Along
 <Steps>
 
 <Step>
-## Create Your SvelteKit Project
+## Create Your Vite Project
 
-Start by creating a new SvelteKit project. This command will create a new directory named `my-workflow-app` with a minimal setup and setup a SvelteKit project inside it.
+Start by creating a new Vite project. This command will create a new directory named `my-workflow-app` with a minimal setup and setup a Vite project inside it.
 
 ```bash
 npm create vite@latest my-workflow-app -- --template react-ts
@@ -30,17 +30,17 @@ cd my-workflow-app
 <Tabs items={['npm', 'pnpm', 'yarn']}>
   <Tab value="npm">
     <CodeBlock>
-        npm i workflow nitro@npm:nitro-nightly@latest
+        npm i workflow nitro@npm:nitro-nightly@3.0.1-20251031-202656-883af4f9
     </CodeBlock>
   </Tab>
   <Tab value="pnpm">
     <CodeBlock>
-        pnpm i workflow nitro@npm:nitro-nightly@latest
+        pnpm i workflow nitro@npm:nitro-nightly@3.0.1-20251031-202656-883af4f9
     </CodeBlock>
   </Tab>
   <Tab value="yarn">
     <CodeBlock>
-        yarn add workflow nitro@npm:nitro-nightly@latest
+        yarn add workflow nitro@npm:nitro-nightly@3.0.1-20251031-202656-883af4f9
     </CodeBlock>
   </Tab>
 </Tabs>
@@ -172,14 +172,16 @@ We'll dive deeper into workflows, steps, and other ways to suspend or handle eve
 
 ## Create Your Route Handler
 
-To invoke your new workflow, we'll have to add your workflow to a `POST` API route handler, `src/routes/api/signup.post.ts` with the following code:
+To invoke your new workflow, we'll have to add your workflow to a `POST` API route handler, `api/signup.post.ts` with the following code:
 
-```typescript title="src/routes/api/signup.post.ts"
+```typescript title="api/signup.post.ts"
+import { defineHandler, readBody } from "nitro/h3";
 import { start } from "workflow/api";
-import { handleUserSignup } from "../../../workflows/user-signup";
+import { handleUserSignup } from "../workflows/user-signup";
 
-export default async ({ request }: { request: Request }) => {
-  const { email } = await request.json();
+export default defineHandler(async (event) => {
+  const body = await readBody(event);
+  const { email } = body as { email: string };
 
   // Executes asynchronously and doesn't block your app
   await start(handleUserSignup, [email]);
@@ -187,8 +189,7 @@ export default async ({ request }: { request: Request }) => {
   return Response.json({
     message: "User signup workflow started",
   });
-};
-
+});
 ```
 
 This route handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.
@@ -203,7 +204,7 @@ Workflows can be triggered from API routes or any server-side code.
 
 ## Run in development
 
-To start your development server, run the following command in your terminal in the SvelteKit root directory:
+To start your development server, run the following command in your terminal in the Vite root directory:
 
 ```bash
 npm run dev
@@ -215,7 +216,7 @@ Once your development server is running, you can trigger your workflow by runnin
 curl -X POST --json '{"email":"hello@example.com"}' http://localhost:5173/api/signup
 ```
 
-Check the SvelteKit development server logs to see your workflow execute as well as the steps that are being processed.
+Check the Vite development server logs to see your workflow execute as well as the steps that are being processed.
 
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
