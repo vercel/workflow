@@ -120,10 +120,14 @@ export async function POST(request: Request) {
   const slackEvent = await request.json();
   const channelId = slackEvent.channel;
 
-  // Reconstruct the token using the channel ID
-  await resumeHook(`slack_messages:${channelId}`, slackEvent);
+  try {
+    // Reconstruct the token using the channel ID
+    await resumeHook(`slack_messages:${channelId}`, slackEvent);
 
-  return new Response("OK");
+    return new Response("OK");
+  } catch (error) {
+    return new Response("Hook not found", { status: 404 });
+  }
 }
 ```
 
