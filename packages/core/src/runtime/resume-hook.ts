@@ -41,7 +41,8 @@ export async function getHookByToken(token: string): Promise<Hook> {
  *
  * @param token - The unique token identifying the hook
  * @param payload - The data payload to send to the hook
- * @returns Promise resolving to an object with the runId, or null if the hook doesn't exist
+ * @returns Promise resolving to the hook
+ * @throws Error if the hook is not found or if there's an error during the process
  *
  * @example
  *
@@ -51,20 +52,20 @@ export async function getHookByToken(token: string): Promise<Hook> {
  *
  * export async function POST(request: Request) {
  *   const { token, data } = await request.json();
- *   const result = await resumeHook(token, data);
  *
- *   if (!result) {
+ *   try {
+ *     const hook = await resumeHook(token, data);
+ *     return Response.json({ runId: hook.runId });
+ *   } catch (error) {
  *     return new Response('Hook not found', { status: 404 });
  *   }
- *
- *   return Response.json({ runId: result.runId });
  * }
  * ```
  */
 export async function resumeHook<T = any>(
   token: string,
   payload: T
-): Promise<Hook | null> {
+): Promise<Hook> {
   return trace('HOOK.resume', async (span) => {
     const world = getWorld();
 
@@ -126,14 +127,12 @@ export async function resumeHook<T = any>(
       );
 
       return hook;
-    } catch (_err) {
-      // If hook not found, return null
+    } catch (err) {
       span?.setAttributes({
         ...Attribute.HookToken(token),
         ...Attribute.HookFound(false),
       });
-      // TODO: Check for specific error types
-      return null;
+      throw err;
     }
   });
 }
@@ -147,7 +146,8 @@ export async function resumeHook<T = any>(
  *
  * @param token - The unique token identifying the hook
  * @param request - The request to send to the hook
- * @returns Promise resolving to the response, or null if the hook doesn't exist
+ * @returns Promise resolving to the response
+ * @throws Error if the hook is not found or if there's an error during the process
  *
  * @example
  *
@@ -163,9 +163,12 @@ export async function resumeHook<T = any>(
  *     return new Response('Missing token', { status: 400 });
  *   }
  *
- *   const response = await resumeWebhook(token, request);
- *
- *   return response ?? new Response('Webhook not found', { status: 404 });
+ *   try {
+ *     const response = await resumeWebhook(token, request);
+ *     return response;
+ *   } catch (error) {
+ *     return new Response('Webhook not found', { status: 404 });
+ *   }
  * }
  * ```
  */

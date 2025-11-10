@@ -60,9 +60,10 @@ export function defineHook<TInput, TOutput = TInput>({
      *
      * @param token - The unique token identifying the hook
      * @param payload - The payload to send; if a `schema` is configured it is validated/transformed before resuming
-     * @returns Promise resolving to the hook entity, or null if the hook doesn't exist
+     * @returns Promise resolving to the hook entity
+     * @throws Error if the hook is not found or if there's an error during the process
      */
-    async resume(token: string, payload: TInput): Promise<HookEntity | null> {
+    async resume(token: string, payload: TInput): Promise<HookEntity> {
       if (!schema?.['~standard']) {
         return await resumeHook(token, payload);
       }

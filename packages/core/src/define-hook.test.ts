@@ -61,7 +61,11 @@ describe('defineHook', () => {
   it('passes payload through when no schema is provided', async () => {
     const hook = defineHook<{ approved: boolean; comment: string }>();
 
-    resumeHookMock.mockResolvedValue(null);
+    resumeHookMock.mockResolvedValue({
+      hookId: 'hook-id',
+      token: 'token',
+      runId: 'run-id',
+    });
 
     const payload = { approved: true, comment: 'Looks good' };
     await hook.resume('token', payload);
@@ -72,7 +76,11 @@ describe('defineHook', () => {
   it('parses payload with schema before resuming', async () => {
     const hook = defineHook({ schema: approvalSchema });
 
-    resumeHookMock.mockResolvedValue(null);
+    resumeHookMock.mockResolvedValue({
+      hookId: 'hook-id',
+      token: 'token',
+      runId: 'run-id',
+    });
 
     await hook.resume('token', { approved: true, comment: '  Ready!  ' });
 

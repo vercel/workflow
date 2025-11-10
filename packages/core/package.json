@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@aws-sdk/credential-provider-web-identity": "3.609.0",
+    "@jridgewell/trace-mapping": "^0.3.31",
     "@standard-schema/spec": "^1.0.0",
     "@types/ms": "^2.1.0",
     "@vercel/functions": "catalog:",
