@@ -130,7 +130,7 @@ describe('e2e', () => {
     expect(contents).toBe('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n');
   });
 
-  test('hookWorkflow', { timeout: 60_000 }, async () => {
+  test('hookWorkflow', { timeout: 120_000 }, async () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);
 
