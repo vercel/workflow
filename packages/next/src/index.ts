@@ -1,6 +1,6 @@
-import { NextBuilder } from './builder.js';
 import type { NextConfig } from 'next';
 import semver from 'semver';
+import { getNextBuilder } from './builder.js';
 
 export function withWorkflow(
   nextConfigOrFn:
@@ -109,7 +109,8 @@ export function withWorkflow(
       phase !== 'phase-production-server'
     ) {
       const shouldWatch = process.env.NODE_ENV === 'development';
-      const workflowBuilder = new NextBuilder({
+      const NextBuilderClass = await getNextBuilder();
+      const workflowBuilder = new NextBuilderClass({
         watch: shouldWatch,
         // discover workflows from pages/app entries
         dirs: ['pages', 'app', 'src/pages', 'src/app'],

@@ -33,7 +33,7 @@
     "./internal/serialization": "./dist/internal/serialization.js",
     "./internal/builtins": "./dist/internal/builtins.js",
     "./internal/private": "./dist/internal/private.js",
-    "./next": "./dist/next.js",
+    "./next": "./dist/next.cjs",
     "./nitro": "./dist/nitro.js",
     "./nuxt": "./dist/nuxt.js",
     "./sveltekit": "./dist/sveltekit.js",
