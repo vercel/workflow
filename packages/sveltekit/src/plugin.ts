@@ -1,7 +1,7 @@
-import type { HotUpdateOptions, Plugin } from 'vite';
-import { SvelteKitBuilder } from './builder.js';
-import { workflowTransformPlugin } from '@workflow/rollup';
-import { createBuildQueue } from '@workflow/builders';
+import type { HotUpdateOptions, Plugin } from "vite";
+import { SvelteKitBuilder } from "./builder.js";
+import { workflowTransformPlugin } from "@workflow/rollup";
+import { createBuildQueue } from "@workflow/builders";
 
 export function workflowPlugin(): Plugin[] {
   let builder: SvelteKitBuilder;
@@ -10,7 +10,7 @@ export function workflowPlugin(): Plugin[] {
   return [
     workflowTransformPlugin(),
     {
-      name: 'workflow:sveltekit',
+      name: "workflow:sveltekit",
       configResolved() {
         builder = new SvelteKitBuilder();
       },
@@ -31,7 +31,7 @@ export function workflowPlugin(): Plugin[] {
           content = await read();
         } catch {
           // File might have been deleted - trigger rebuild to update generated routes
-          console.log('Workflow file changed, rebuilding...');
+          console.log("Workflow file changed, rebuilding...");
           await enqueue(() => builder.build());
           return;
         }
@@ -46,7 +46,7 @@ export function workflowPlugin(): Plugin[] {
           return;
         }
 
-        console.log('Workflow file changed, rebuilding...');
+        console.log("Workflow file changed, rebuilding...");
         await enqueue(() => builder.build());
         // Let Vite handle the normal HMR for the changed file
         return;

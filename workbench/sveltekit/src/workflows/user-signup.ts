@@ -1,24 +1,24 @@
-import { createWebhook, sleep } from 'workflow';
+import { createWebhook, sleep } from "workflow";
 
 export async function handleUserSignup(email: string) {
-  'use workflow';
+  "use workflow";
 
   const user = await createUser(email);
   await sendWelcomeEmail(user);
 
-  await sleep('5s');
+  await sleep("5s");
 
   const webhook = createWebhook();
   await sendOnboardingEmail(user, webhook.url);
 
   await webhook;
-  console.log('Webhook Resolved');
+  console.log("Webhook Resolved");
 
-  return { userId: user.id, status: 'onboarded' };
+  return { userId: user.id, status: "onboarded" };
 }
 
 async function createUser(email: string) {
-  'use step';
+  "use step";
 
   console.log(`Creating a new user with email: ${email}`);
 
@@ -26,16 +26,16 @@ async function createUser(email: string) {
 }
 
 async function sendWelcomeEmail(user: { id: string; email: string }) {
-  'use step';
+  "use step";
 
   console.log(`Sending welcome email to user: ${user.id}`);
 }
 
 async function sendOnboardingEmail(
   user: { id: string; email: string },
-  callback: string
+  callback: string,
 ) {
-  'use step';
+  "use step";
 
   console.log(`Sending onboarding email to user: ${user.id}`);
 
