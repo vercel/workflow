@@ -5,8 +5,11 @@ export default defineNitroConfig({
   modules: [
     'workflow/nitro'
   ],
-  // Workaround for monorepo symlinked packages
-  externals: {
-    external: [id => id.includes('.nitro/workflow')]
-  },
+  // Workaround for monorepo symlinks
+  noExternals: true,
+  rollupConfig: {
+    watch: {
+      exclude: ['**/.workflow-data/**', '**/node_modules/**']
+    }
+  }
 });
