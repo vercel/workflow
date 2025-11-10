@@ -1,5 +1,6 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
+import os from 'os';
 import { ZodError, type z } from 'zod';
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -22,6 +23,12 @@ export function dateToStringReplacer(_key: string, value: unknown): unknown {
   }
   return value;
 }
+
+const getUserAgent = () => {
+  return `${packageJson.name} ${packageJson.version} node-${
+    process.version
+  } ${os.platform()} (${os.arch()})`;
+};
 
 export interface HttpConfig {
   baseUrl: string;
@@ -46,7 +53,7 @@ export const getHttpUrl = (
 export const getHeaders = (config?: APIConfig): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
-  headers.set('User-Agent', `node/${packageJson.name}/v${packageJson.version}`);
+  headers.set('User-Agent', getUserAgent());
   if (projectConfig) {
     headers.set(
       'x-vercel-environment',
