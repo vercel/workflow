@@ -1,6 +1,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { ZodError, type z } from 'zod';
+import packageJson from '../package.json' with { type: 'json' };
 
 export interface APIConfig {
   baseUrl?: string;
@@ -45,6 +46,7 @@ export const getHttpUrl = (
 export const getHeaders = (config?: APIConfig): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
+  headers.set('User-Agent', `node/${packageJson.name}/v${packageJson.version}`);
   if (projectConfig) {
     headers.set(
       'x-vercel-environment',
