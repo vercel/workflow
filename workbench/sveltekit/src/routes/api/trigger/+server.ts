@@ -1,18 +1,20 @@
-import type { RequestHandler } from '@sveltejs/kit';
-import { getRun, start } from 'workflow/api';
+import { type RequestHandler } from "@sveltejs/kit";
+import { getRun, start } from "workflow/api";
+import { hydrateWorkflowArguments } from "workflow/internal/serialization";
+import { allWorkflows } from "$lib/_workflows.js";
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
-} from 'workflow/internal/errors';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from '$lib/_workflows.js';
+} from "workflow/internal/errors";
+import { hydrateWorkflowArguments } from "workflow/internal/serialization";
+import { allWorkflows } from "$lib/_workflows.js";
 
 export const POST: RequestHandler = async ({ request }) => {
   const url = new URL(request.url);
   const workflowFile =
-    url.searchParams.get('workflowFile') || 'workflows/99_e2e.ts';
+    url.searchParams.get("workflowFile") || "workflows/99_e2e.ts";
   if (!workflowFile) {
-    return new Response('No workflowFile query parameter provided', {
+    return new Response("No workflowFile query parameter provided", {
       status: 400,
     });
   }
@@ -23,9 +25,9 @@ export const POST: RequestHandler = async ({ request }) => {
     });
   }
 
-  const workflowFn = url.searchParams.get('workflowFn') || 'simple';
+  const workflowFn = url.searchParams.get("workflowFn") || "simple";
   if (!workflowFn) {
-    return new Response('No workflow query parameter provided', {
+    return new Response("No workflow query parameter provided", {
       status: 400,
     });
   }
@@ -37,9 +39,9 @@ export const POST: RequestHandler = async ({ request }) => {
   let args: any[] = [];
 
   // Args from query string
-  const argsParam = url.searchParams.get('args');
+  const argsParam = url.searchParams.get("args");
   if (argsParam) {
-    args = argsParam.split(',').map((arg) => {
+    args = argsParam.split(",").map((arg) => {
       const num = parseFloat(arg);
       return Number.isNaN(num) ? arg.trim() : num;
     });
@@ -56,7 +58,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
   try {
     const run = await start(workflow as any, args as any);
-    console.log('Run:', run);
+    console.log("Run:", run);
     return Response.json(run);
   } catch (err) {
     console.error(`Failed to start!!`, err);
@@ -66,14 +68,14 @@ export const POST: RequestHandler = async ({ request }) => {
 
 export const GET: RequestHandler = async ({ request }) => {
   const url = new URL(request.url);
-  const runId = url.searchParams.get('runId');
+  const runId = url.searchParams.get("runId");
   if (!runId) {
-    return new Response('No runId provided', { status: 400 });
+    return new Response("No runId provided", { status: 400 });
   }
 
-  const outputStreamParam = url.searchParams.get('output-stream');
+  const outputStreamParam = url.searchParams.get("output-stream");
   if (outputStreamParam) {
-    const namespace = outputStreamParam === '1' ? undefined : outputStreamParam;
+    const namespace = outputStreamParam === "1" ? undefined : outputStreamParam;
     const run = getRun(runId);
     const stream = run.getReadable({
       namespace,
@@ -83,14 +85,14 @@ export const GET: RequestHandler = async ({ request }) => {
       transform(chunk, controller) {
         const data =
           chunk instanceof Uint8Array
-            ? { data: Buffer.from(chunk).toString('base64') }
+            ? { data: Buffer.from(chunk).toString("base64") }
             : chunk;
         controller.enqueue(`${JSON.stringify(data)}\n`);
       },
     });
     return new Response(stream.pipeThrough(streamWithFraming), {
       headers: {
-        'Content-Type': 'application/octet-stream',
+        "Content-Type": "application/octet-stream",
       },
     });
   }
@@ -98,11 +100,11 @@ export const GET: RequestHandler = async ({ request }) => {
   try {
     const run = getRun(runId);
     const returnValue = await run.returnValue;
-    console.log('Return value:', returnValue);
+    console.log("Return value:", returnValue);
     return returnValue instanceof ReadableStream
       ? new Response(returnValue, {
           headers: {
-            'Content-Type': 'application/octet-stream',
+            "Content-Type": "application/octet-stream",
           },
         })
       : Response.json(returnValue);
@@ -115,7 +117,7 @@ export const GET: RequestHandler = async ({ request }) => {
             name: error.name,
             message: error.message,
           },
-          { status: 202 }
+          { status: 202 },
         );
       }
 
@@ -132,20 +134,20 @@ export const GET: RequestHandler = async ({ request }) => {
               code: cause.code,
             },
           },
-          { status: 400 }
+          { status: 400 },
         );
       }
     }
 
     console.error(
-      'Unexpected error while getting workflow return value:',
-      error
+      "Unexpected error while getting workflow return value:",
+      error,
     );
     return Response.json(
       {
-        error: 'Internal server error',
+        error: "Internal server error",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 };
