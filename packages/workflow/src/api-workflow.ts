@@ -11,8 +11,10 @@ const workflowStub = (item: string) => {
   );
 };
 
-export function Run() {
-  workflowStub('Run');
+export class Run {
+  constructor() {
+    workflowStub('Run');
+  }
 }
 export const getRun = () => workflowStub('getRun');
 export const getHookByToken = () => workflowStub('getHookByToken');
