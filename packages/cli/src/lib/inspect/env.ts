@@ -49,7 +49,6 @@ export const getEnvVars = (): Record<string, string> => {
 
 const possibleWorkflowDataPaths = [
   '.next/workflow-data',
-  '.next/.workflow-data',
   '.workflow-data',
   'workflow-data',
 ];
