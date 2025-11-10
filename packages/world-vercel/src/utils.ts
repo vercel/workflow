@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
+import os from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
-import os from 'os';
 import { ZodError, type z } from 'zod';
-import packageJson from '../package.json' with { type: 'json' };
 
 export interface APIConfig {
   baseUrl?: string;
@@ -25,6 +27,11 @@ export function dateToStringReplacer(_key: string, value: unknown): unknown {
 }
 
 const getUserAgent = () => {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const packageJson = JSON.parse(
+    readFileSync(join(__dirname, '../package.json'), 'utf-8')
+  ) as { name: string; version: string };
   return `${packageJson.name} ${packageJson.version} node-${
     process.version
   } ${os.platform()} (${os.arch()})`;

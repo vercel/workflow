@@ -2,8 +2,7 @@
   "extends": "@workflow/tsconfig/base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "target": "es2022",
-    "resolveJsonModule": true
+    "target": "es2022"
   },
   "include": ["src"],
   "exclude": ["node_modules", "**/*.test.ts"]
