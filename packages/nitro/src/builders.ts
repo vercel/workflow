@@ -63,10 +63,21 @@ export class LocalBuilder extends BaseBuilder {
       inputFiles,
     });
 
+    const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
+
     await this.createWebhookBundle({
-      outfile: join(this.#outDir, 'webhook.mjs'),
+      outfile: webhookRouteFile,
       bundle: false,
     });
+
+    // Post-process the generated file to wrap with SvelteKit request converter
+    let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
+
+    // NOTE: This is a workaround to avoid crashing in local dev when context isn't set for waitUntil()
+    webhookRouteContent = `process.on('unhandledRejection', (reason) => { if (reason !== undefined) console.error('Unhandled rejection detected', reason); });
+${webhookRouteContent}`;
+
+    await writeFile(webhookRouteFile, webhookRouteContent);
   }
 }
 
