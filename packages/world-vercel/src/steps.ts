@@ -6,6 +6,7 @@ import {
   PaginatedResponseSchema,
   type Step,
   StepSchema,
+  StructuredErrorSchema,
   type UpdateStepRequest,
 } from '@workflow/world';
 import { z } from 'zod';
@@ -16,23 +17,20 @@ import {
   makeRequest,
 } from './utils.js';
 
-// Schema for structured error with message and stack
-const StructuredErrorSchema = z.object({
-  message: z.string().optional(),
-  stack: z.string().optional(),
-});
-
 /**
- * Helper to serialize error + errorStack into a JSON string in the error field.
+ * Helper to serialize error into a JSON string in the error field.
  */
 function serializeStepError(data: UpdateStepRequest): any {
-  const { error, errorStack, ...rest } = data;
+  const { error, ...rest } = data;
 
-  if (error !== undefined || errorStack !== undefined) {
+  if (error !== undefined) {
     return {
       ...rest,
-      error: JSON.stringify({ message: error, stack: errorStack }),
-      errorStack: undefined,
+      error: JSON.stringify({
+        message: error.message,
+        stack: error.stack,
+        code: error.code,
+      }),
     };
   }
 
@@ -40,7 +38,7 @@ function serializeStepError(data: UpdateStepRequest): any {
 }
 
 /**
- * Helper to deserialize error field into error + errorStack.
+ * Helper to deserialize error field into a StructuredError object.
  * Handles backwards compatibility with plain string errors.
  */
 function deserializeStepError(step: any): Step {
@@ -55,21 +53,40 @@ function deserializeStepError(step: any): Step {
     const parsed = StructuredErrorSchema.parse(JSON.parse(error));
     return {
       ...rest,
-      error: parsed.message,
-      errorStack: parsed.stack,
-    };
+      error: {
+        message: parsed.message,
+        stack: parsed.stack,
+        code: parsed.code,
+      },
+    } as Step;
   } catch {
     // Backwards compatibility: error is just a plain string
     return {
       ...rest,
-      error: error,
-      errorStack: undefined,
-    };
+      error: {
+        message: error,
+      },
+    } as Step;
   }
 }
 
-// Local schema for lazy mode with refs instead of data
-const StepWithRefsSchema = StepSchema.omit({
+/**
+ * Wire format schema for steps coming from the backend.
+ * The backend returns error as a JSON string, not an object, so we need
+ * a schema that accepts the wire format before deserialization.
+ *
+ * This is used for validation in makeRequest(), then deserializeStepError()
+ * transforms the string into the expected StructuredError object.
+ */
+const StepWireSchema = StepSchema.omit({
+  error: true,
+}).extend({
+  // Backend returns error as a JSON string, not an object
+  error: z.string().optional(),
+});
+
+// Wire schema for lazy mode with refs instead of data
+const StepWireWithRefsSchema = StepWireSchema.omit({
   input: true,
   output: true,
 }).extend({
@@ -124,7 +141,7 @@ export async function listWorkflowRunSteps(
     options: { method: 'GET' },
     config,
     schema: PaginatedResponseSchema(
-      remoteRefBehavior === 'lazy' ? StepWithRefsSchema : StepSchema
+      remoteRefBehavior === 'lazy' ? StepWireWithRefsSchema : StepWireSchema
     ) as any,
   })) as PaginatedResponse<any>;
 
@@ -146,7 +163,7 @@ export async function createStep(
       body: JSON.stringify(data, dateToStringReplacer),
     },
     config,
-    schema: StepSchema,
+    schema: StepWireSchema,
   });
   return deserializeStepError(step);
 }
@@ -165,7 +182,7 @@ export async function updateStep(
       body: JSON.stringify(serialized, dateToStringReplacer),
     },
     config,
-    schema: StepSchema,
+    schema: StepWireSchema,
   });
   return deserializeStepError(step);
 }
@@ -192,8 +209,8 @@ export async function getStep(
     options: { method: 'GET' },
     config,
     schema: (remoteRefBehavior === 'lazy'
-      ? StepWithRefsSchema
-      : StepSchema) as any,
+      ? StepWireWithRefsSchema
+      : StepWireSchema) as any,
   });
 
   return filterStepData(step, resolveData);

@@ -205,11 +205,7 @@ export class Run<TResult> {
         }
 
         if (run.status === 'failed') {
-          throw new WorkflowRunFailedError(
-            this.runId,
-            run.error ?? 'Unknown error',
-            run.errorStack
-          );
+          throw new WorkflowRunFailedError(this.runId, run.error);
         }
 
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
@@ -541,9 +537,11 @@ export function workflowEntrypoint(workflowCode: string) {
               );
               await world.runs.update(runId, {
                 status: 'failed',
-                error: errorMessage,
-                errorStack: errorStack,
-                // TODO: include error codes when we define them
+                error: {
+                  message: errorMessage,
+                  stack: errorStack,
+                  // TODO: include error codes when we define them
+                },
               });
               span?.setAttributes({
                 ...Attribute.WorkflowRunStatus('failed'),
@@ -756,9 +754,11 @@ export const stepEntrypoint =
               });
               await world.steps.update(workflowRunId, stepId, {
                 status: 'failed',
-                error: err.message || String(err),
-                errorStack,
-                // TODO: include error codes when we define them
+                error: {
+                  message: err.message || String(err),
+                  stack: errorStack,
+                  // TODO: include error codes when we define them
+                },
               });
 
               span?.setAttributes({
@@ -792,8 +792,10 @@ export const stepEntrypoint =
                 });
                 await world.steps.update(workflowRunId, stepId, {
                   status: 'failed',
-                  error: errorMessage,
-                  errorStack: errorStack,
+                  error: {
+                    message: errorMessage,
+                    stack: errorStack,
+                  },
                 });
 
                 span?.setAttributes({

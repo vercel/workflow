@@ -2,4 +2,4 @@
 "@workflow/world-postgres": patch
 ---
 
-Add errorStack column to workflow runs and steps tables
+Support structured errors for steps and runs

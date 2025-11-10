@@ -1,5 +1,9 @@
 import { defineEventHandler, getRequestURL } from 'h3';
 import { getRun } from 'workflow/api';
+import {
+  WorkflowRunFailedError,
+  WorkflowRunNotCompletedError,
+} from 'workflow/internal/errors';
 
 export default defineEventHandler(async (event) => {
   const url = getRequestURL(event);
@@ -45,7 +49,7 @@ export default defineEventHandler(async (event) => {
       : Response.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'WorkflowRunNotCompletedError') {
+      if (WorkflowRunNotCompletedError.is(error)) {
         return Response.json(
           {
             ...error,
@@ -56,13 +60,18 @@ export default defineEventHandler(async (event) => {
         );
       }
 
-      if (error.name === 'WorkflowRunFailedError') {
+      if (WorkflowRunFailedError.is(error)) {
+        const cause = error.cause;
         return Response.json(
           {
             ...error,
             name: error.name,
             message: error.message,
-            stack: error.stack,
+            cause: {
+              message: cause.message,
+              stack: cause.stack,
+              code: cause.code,
+            },
           },
           { status: 400 }
         );

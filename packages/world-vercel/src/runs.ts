@@ -8,9 +8,10 @@ import {
   PaginatedResponseSchema,
   type PauseWorkflowRunParams,
   type ResumeWorkflowRunParams,
+  StructuredErrorSchema,
   type UpdateWorkflowRunRequest,
   type WorkflowRun,
-  WorkflowRunSchema,
+  WorkflowRunBaseSchema,
 } from '@workflow/world';
 import { z } from 'zod';
 import type { APIConfig } from './utils.js';
@@ -20,28 +21,24 @@ import {
   makeRequest,
 } from './utils.js';
 
-// Schema for structured error with message and stack
-const StructuredErrorSchema = z.object({
-  message: z.string().optional(),
-  stack: z.string().optional(),
-});
-
 /**
- * Helper to serialize error + errorStack into a JSON string in the error field.
+ * Helper to serialize error into a JSON string in the error field.
  * The error field can be either:
  * - A plain string (legacy format, just the error message)
- * - A JSON string with { message, stack } (new format)
+ * - A JSON string with { message, stack, code } (new format)
  */
 function serializeError(data: UpdateWorkflowRunRequest): any {
-  const { error, errorStack, ...rest } = data;
+  const { error, ...rest } = data;
 
-  // If we have error or errorStack, serialize as JSON string
-  if (error !== undefined || errorStack !== undefined) {
+  // If we have an error, serialize as JSON string
+  if (error !== undefined) {
     return {
       ...rest,
-      error: JSON.stringify({ message: error, stack: errorStack }),
-      // Remove errorStack from the request payload
-      errorStack: undefined,
+      error: JSON.stringify({
+        message: error.message,
+        stack: error.stack,
+        code: error.code,
+      }),
     };
   }
 
@@ -49,11 +46,11 @@ function serializeError(data: UpdateWorkflowRunRequest): any {
 }
 
 /**
- * Helper to deserialize error field from the backend into error + errorStack.
+ * Helper to deserialize error field from the backend into a StructuredError object.
  * Handles backwards compatibility:
- * - If error is a JSON string with {message, stack} → parse and split
+ * - If error is a JSON string with {message, stack, code} → parse into StructuredError
  * - If error is a plain string → treat as error message with no stack
- * - If no error → both undefined
+ * - If no error → undefined
  */
 function deserializeError(run: any): WorkflowRun {
   const { error, ...rest } = run;
@@ -67,21 +64,43 @@ function deserializeError(run: any): WorkflowRun {
     const parsed = StructuredErrorSchema.parse(JSON.parse(error));
     return {
       ...rest,
-      error: parsed.message,
-      errorStack: parsed.stack,
-    };
+      error: {
+        message: parsed.message,
+        stack: parsed.stack,
+        code: parsed.code,
+      },
+    } as WorkflowRun;
   } catch {
     // Backwards compatibility: error is just a plain string
     return {
       ...rest,
-      error: error,
-      errorStack: undefined,
-    };
+      error: {
+        message: error,
+      },
+    } as WorkflowRun;
   }
 }
 
-// Local schema for lazy mode with refs instead of data
-const WorkflowRunWithRefsSchema = WorkflowRunSchema.omit({
+/**
+ * Wire format schema for workflow runs coming from the backend.
+ * The backend returns error as a JSON string, not an object, so we need
+ * a schema that accepts the wire format before deserialization.
+ *
+ * This is used for validation in makeRequest(), then deserializeError()
+ * transforms the string into the expected StructuredError object.
+ */
+const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
+  error: true,
+}).extend({
+  // Backend returns error as a JSON string, not an object
+  error: z.string().optional(),
+});
+
+// Wire schema for resolved data (full input/output)
+const WorkflowRunWireSchema = WorkflowRunWireBaseSchema;
+
+// Wire schema for lazy mode with refs instead of data
+const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   input: true,
   output: true,
 }).extend({
@@ -145,8 +164,8 @@ export async function listWorkflowRuns(
     config,
     schema: PaginatedResponseSchema(
       remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema
     ),
   })) as PaginatedResponse<WorkflowRun>;
 
@@ -167,7 +186,7 @@ export async function createWorkflowRun(
       body: JSON.stringify(data, dateToStringReplacer),
     },
     config,
-    schema: WorkflowRunSchema,
+    schema: WorkflowRunWireSchema,
   });
   return deserializeError(run);
 }
@@ -192,8 +211,8 @@ export async function getWorkflowRun(
       options: { method: 'GET' },
       config,
       schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema) as any,
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema) as any,
     });
 
     return filterRunData(run, resolveData);
@@ -219,7 +238,7 @@ export async function updateWorkflowRun(
         body: JSON.stringify(serialized, dateToStringReplacer),
       },
       config,
-      schema: WorkflowRunSchema,
+      schema: WorkflowRunWireSchema,
     });
     return deserializeError(run);
   } catch (error) {
@@ -250,8 +269,8 @@ export async function cancelWorkflowRun(
       options: { method: 'PUT' },
       config,
       schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema) as any,
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema) as any,
     });
 
     return filterRunData(run, resolveData);
@@ -283,8 +302,8 @@ export async function pauseWorkflowRun(
       options: { method: 'PUT' },
       config,
       schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema) as any,
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema) as any,
     });
 
     return filterRunData(run, resolveData);
@@ -316,8 +335,8 @@ export async function resumeWorkflowRun(
       options: { method: 'PUT' },
       config,
       schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema) as any,
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema) as any,
     });
 
     return filterRunData(run, resolveData);

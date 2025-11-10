@@ -2,4 +2,4 @@
 "@workflow/errors": patch
 ---
 
-Add stack to WorkflowRunFailedError
+Wire through world's structured errors in WorkflowRunFailedError

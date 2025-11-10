@@ -53,8 +53,6 @@ const attributeOrder: AttributeKey[] = [
   'completedAt',
   'retryAfter',
   'error',
-  'errorStack',
-  'errorCode',
   'metadata',
   'eventData',
   'input',
@@ -124,6 +122,52 @@ const attributeToDisplayFn: Record<
     return <DetailCard summary="Output">{JsonBlock(value)}</DetailCard>;
   },
   error: (value: unknown) => {
+    // Handle structured error format
+    if (value && typeof value === 'object' && 'message' in value) {
+      const error = value as {
+        message: string;
+        stack?: string;
+        code?: string;
+      };
+
+      return (
+        <DetailCard summary="Error">
+          <div className="flex flex-col gap-2">
+            {/* Show code if it exists */}
+            {error.code && (
+              <div>
+                <span
+                  className="text-copy-12 font-medium"
+                  style={{ color: 'var(--ds-gray-700)' }}
+                >
+                  Error Code:{' '}
+                </span>
+                <code
+                  className="text-copy-12"
+                  style={{ color: 'var(--ds-gray-1000)' }}
+                >
+                  {error.code}
+                </code>
+              </div>
+            )}
+            {/* Show stack if available, otherwise just the message */}
+            <pre
+              className="text-copy-12 overflow-x-auto rounded-md border p-4"
+              style={{
+                borderColor: 'var(--ds-gray-300)',
+                backgroundColor: 'var(--ds-gray-100)',
+                color: 'var(--ds-gray-1000)',
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              <code>{error.stack || error.message}</code>
+            </pre>
+          </div>
+        </DetailCard>
+      );
+    }
+
+    // Fallback for plain string errors
     return (
       <DetailCard summary="Error">
         <pre
@@ -140,24 +184,6 @@ const attributeToDisplayFn: Record<
       </DetailCard>
     );
   },
-  errorStack: (value: unknown) => {
-    return (
-      <DetailCard summary="Error Stack">
-        <pre
-          className="text-copy-12 overflow-x-auto rounded-md border p-4"
-          style={{
-            borderColor: 'var(--ds-gray-300)',
-            backgroundColor: 'var(--ds-gray-100)',
-            color: 'var(--ds-gray-1000)',
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          <code>{String(value)}</code>
-        </pre>
-      </DetailCard>
-    );
-  },
-  errorCode: JsonBlock,
   eventData: (value: unknown) => {
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
   },
@@ -167,8 +193,6 @@ const resolvableAttributes = [
   'input',
   'output',
   'error',
-  'errorStack',
-  'errorCode',
   'metadata',
   'eventData',
 ];

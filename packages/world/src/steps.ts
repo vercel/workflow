@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { SerializedData } from './serialization.js';
-import type { PaginationOptions, ResolveData } from './shared.js';
+import {
+  type PaginationOptions,
+  type ResolveData,
+  type StructuredError,
+  StructuredErrorSchema,
+} from './shared.js';
 
 // Step schemas
 export const StepStatusSchema = z.enum([
@@ -11,6 +16,7 @@ export const StepStatusSchema = z.enum([
   'cancelled',
 ]);
 
+// TODO: implement a discriminated union here just like the run schema
 export const StepSchema = z.object({
   runId: z.string(),
   stepId: z.string(),
@@ -18,9 +24,7 @@ export const StepSchema = z.object({
   status: StepStatusSchema,
   input: z.array(z.any()),
   output: z.any().optional(),
-  error: z.string().optional(),
-  errorStack: z.string().optional(),
-  errorCode: z.string().optional(),
+  error: StructuredErrorSchema.optional(),
   attempt: z.number(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
@@ -44,9 +48,7 @@ export interface UpdateStepRequest {
   attempt?: number;
   status?: StepStatus;
   output?: SerializedData;
-  error?: string;
-  errorStack?: string;
-  errorCode?: string;
+  error?: StructuredError;
   retryAfter?: Date;
 }
 

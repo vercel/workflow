@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { SerializedData } from './serialization.js';
-import type { PaginationOptions, ResolveData } from './shared.js';
+import {
+  type PaginationOptions,
+  type ResolveData,
+  type StructuredError,
+  StructuredErrorSchema,
+} from './shared.js';
 
 // Workflow run schemas
 export const WorkflowRunStatusSchema = z.enum([
@@ -12,22 +17,55 @@ export const WorkflowRunStatusSchema = z.enum([
   'cancelled',
 ]);
 
-export const WorkflowRunSchema = z.object({
+/**
+ * Base schema for the Workflow runs. Prefer using WorkflowRunSchema
+ * which implements a discriminatedUnion for various states
+ */
+export const WorkflowRunBaseSchema = z.object({
   runId: z.string(),
-  deploymentId: z.string(),
   status: WorkflowRunStatusSchema,
+  deploymentId: z.string(),
   workflowName: z.string(),
   executionContext: z.record(z.string(), z.any()).optional(),
   input: z.array(z.any()),
   output: z.any().optional(),
-  error: z.string().optional(),
-  errorStack: z.string().optional(),
-  errorCode: z.string().optional(),
+  error: StructuredErrorSchema.optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
+
+// Discriminated union based on status
+export const WorkflowRunSchema = z.discriminatedUnion('status', [
+  // Non-final states: output and error are optional
+  WorkflowRunBaseSchema.extend({
+    status: z.enum(['pending', 'running', 'paused']),
+    output: z.void(),
+    error: z.void(),
+  }),
+  // Cancelled state
+  WorkflowRunBaseSchema.extend({
+    status: z.literal('cancelled'),
+    output: z.void(),
+    error: z.void(),
+    completedAt: z.coerce.date(),
+  }),
+  // Completed state
+  WorkflowRunBaseSchema.extend({
+    status: z.literal('completed'),
+    output: z.any(),
+    error: z.void(),
+    completedAt: z.coerce.date(),
+  }),
+  // Failed state
+  WorkflowRunBaseSchema.extend({
+    status: z.literal('failed'),
+    output: z.void(),
+    error: StructuredErrorSchema,
+    completedAt: z.coerce.date(),
+  }),
+]);
 
 // Inferred types
 export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
@@ -44,9 +82,7 @@ export interface CreateWorkflowRunRequest {
 export interface UpdateWorkflowRunRequest {
   status?: WorkflowRunStatus;
   output?: SerializedData;
-  error?: string;
-  errorStack?: string;
-  errorCode?: string;
+  error?: StructuredError;
   executionContext?: Record<string, any>;
 }
 

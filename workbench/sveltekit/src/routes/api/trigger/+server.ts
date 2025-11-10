@@ -5,6 +5,10 @@ import * as calcWorkflow from '../../../../workflows/0_calc';
 import * as batchingWorkflow from '../../../../workflows/6_batching';
 import * as duplicateE2e from '../../../../workflows/98_duplicate_case';
 import * as e2eWorkflows from '../../../../workflows/99_e2e';
+import {
+  WorkflowRunFailedError,
+  WorkflowRunNotCompletedError,
+} from 'workflow/internal/errors';
 
 const WORKFLOW_MODULES = {
   'workflows/0_calc.ts': calcWorkflow,
@@ -116,7 +120,7 @@ export const GET: RequestHandler = async ({ request }) => {
       : json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'WorkflowRunNotCompletedError') {
+      if (WorkflowRunNotCompletedError.is(error)) {
         return json(
           {
             ...error,
@@ -127,13 +131,18 @@ export const GET: RequestHandler = async ({ request }) => {
         );
       }
 
-      if (error.name === 'WorkflowRunFailedError') {
+      if (WorkflowRunFailedError.is(error)) {
+        const cause = error.cause;
         return json(
           {
             ...error,
             name: error.name,
             message: error.message,
-            stack: error.stack,
+            cause: {
+              message: cause.message,
+              stack: cause.stack,
+              code: cause.code,
+            },
           },
           { status: 400 }
         );
