@@ -101,7 +101,7 @@ export function TraceViewerTimeline({
           now: Date.now(),
         });
       }
-    }, 2000); // Update every 2000ms - balances smooth animation with preserving hover states
+    }, 2000); // Update every 2s - balances smooth animation with preserving hover states
 
     return () => clearInterval(interval);
   }, [dispatch, trace.spans]);
