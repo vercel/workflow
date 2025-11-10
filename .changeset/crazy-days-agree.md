@@ -3,4 +3,4 @@
 "@workflow/web": patch
 ---
 
-Update default fallback path for connecting to embedded world
+Update default fallback path for connecting to local world
