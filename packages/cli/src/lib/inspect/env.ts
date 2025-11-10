@@ -49,12 +49,19 @@ export const getEnvVars = (): Record<string, string> => {
 
 const possibleWorkflowDataPaths = [
   '.next/workflow-data',
+  '.next/.workflow-data',
   '.workflow-data',
   'workflow-data',
 ];
 
 async function findWorkflowDataDir(cwd: string) {
-  for (const path of possibleWorkflowDataPaths) {
+  const paths = [
+    ...possibleWorkflowDataPaths,
+    // This will be the case for testing CLI/Web from the CLI/Web
+    // package folders directly
+    '../../workbench/nextjs-turbopack/.next/workflow-data',
+  ];
+  for (const path of paths) {
     const fullPath = join(cwd, path);
     if (
       await access(fullPath)
