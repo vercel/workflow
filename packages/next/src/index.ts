@@ -1,6 +1,5 @@
 import { NextBuilder } from './builder.js';
 import type { NextConfig } from 'next';
-import semver from 'semver';
 
 export function withWorkflow(
   nextConfigOrFn:
@@ -51,35 +50,10 @@ export function withWorkflow(
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
 
-    // configure the loader if turbopack is being used
-    if (!nextConfig.turbopack) {
-      nextConfig.turbopack = {};
-    }
-    if (!nextConfig.turbopack.rules) {
-      nextConfig.turbopack.rules = {};
-    }
-    const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = require('next/package.json').version;
-    const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
-
-    for (const key of ['*.tsx', '*.ts', '*.jsx', '*.js']) {
-      nextConfig.turbopack.rules[key] = {
-        ...(supportsTurboCondition
-          ? {
-              condition: {
-                ...existingRules[key]?.condition,
-                any: [
-                  ...(existingRules[key]?.condition.any || []),
-                  {
-                    content: /(use workflow|use step)/,
-                  },
-                ],
-              },
-            }
-          : {}),
-        loaders: [...(existingRules[key]?.loaders || []), loaderPath],
-      };
-    }
+    // NOTE: Turbopack configuration is currently disabled due to conflicts with Next.js's
+    // built-in TypeScript and JSX transform handling. The webpack loader below handles
+    // workflow transformations for both webpack and turbopack builds.
+    // TODO: Investigate proper Turbopack loader integration that doesn't override defaults.
 
     // configure the loader for webpack
     const existingWebpackModify = nextConfig.webpack;
