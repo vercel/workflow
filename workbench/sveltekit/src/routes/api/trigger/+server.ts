@@ -1,5 +1,4 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import { json } from '@sveltejs/kit';
 import { getRun, start } from 'workflow/api';
 import {
   WorkflowRunFailedError,
@@ -110,7 +109,7 @@ export const GET: RequestHandler = async ({ request }) => {
   } catch (error) {
     if (error instanceof Error) {
       if (WorkflowRunNotCompletedError.is(error)) {
-        return json(
+        return Response.json(
           {
             ...error,
             name: error.name,
@@ -122,7 +121,7 @@ export const GET: RequestHandler = async ({ request }) => {
 
       if (WorkflowRunFailedError.is(error)) {
         const cause = error.cause;
-        return json(
+        return Response.json(
           {
             ...error,
             name: error.name,
