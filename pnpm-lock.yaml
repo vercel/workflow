@@ -10432,8 +10432,8 @@ packages:
     engines: {node: '>=20.16.0'}
     hasBin: true
 
-  srvx@0.9.5:
-    resolution: {integrity: sha512-nQsA2c8q3XwbSn6kTxVQjz0zS096rV+Be2pzJwrYEAdtnYszLw4MTy8JWJjz1XEGBZwP0qW51SUIX3WdjdRemQ==}
+  srvx@0.9.6:
+    resolution: {integrity: sha512-5L4rT6qQqqb+xcoDoklUgCNdmzqJ6vbcDRwPVGRXewF55IJH0pqh0lQlrJ266ZWTKJ4mfeioqHQJeAYesS+RrQ==}
     engines: {node: '>=20.16.0'}
     hasBin: true
 
@@ -17539,9 +17539,9 @@ snapshots:
     dependencies:
       uncrypto: 0.1.3
 
-  crossws@0.4.1(srvx@0.9.5):
+  crossws@0.4.1(srvx@0.9.6):
     optionalDependencies:
-      srvx: 0.9.5
+      srvx: 0.9.6
 
   css-declaration-sorter@7.3.0(postcss@8.5.6):
     dependencies:
@@ -18876,12 +18876,12 @@ snapshots:
       ufo: 1.6.1
       uncrypto: 0.1.3
 
-  h3@2.0.1-rc.5(crossws@0.4.1(srvx@0.9.5)):
+  h3@2.0.1-rc.5(crossws@0.4.1(srvx@0.9.6)):
     dependencies:
       rou3: 0.7.10
-      srvx: 0.9.5
+      srvx: 0.9.6
     optionalDependencies:
-      crossws: 0.4.1(srvx@0.9.5)
+      crossws: 0.4.1(srvx@0.9.6)
 
   hachure-fill@0.5.2: {}
 
@@ -20299,16 +20299,16 @@ snapshots:
   nitro@3.0.1-alpha.1(@netlify/blobs@9.1.2)(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7))(ioredis@5.8.2)(lru-cache@11.2.2)(rollup@4.53.2)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)):
     dependencies:
       consola: 3.4.2
-      crossws: 0.4.1(srvx@0.9.5)
+      crossws: 0.4.1(srvx@0.9.6)
       db0: 0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7))
-      h3: 2.0.1-rc.5(crossws@0.4.1(srvx@0.9.5))
+      h3: 2.0.1-rc.5(crossws@0.4.1(srvx@0.9.6))
       jiti: 2.6.1
       nf3: 0.1.10
       ofetch: 2.0.0-alpha.3
       ohash: 2.0.11
       oxc-minify: 0.96.0
       oxc-transform: 0.96.0
-      srvx: 0.9.5
+      srvx: 0.9.6
       undici: 7.16.0
       unenv: 2.0.0-rc.24
       unstorage: 2.0.0-alpha.4(@netlify/blobs@9.1.2)(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)))(ioredis@5.8.2)(lru-cache@11.2.2)(ofetch@2.0.0-alpha.3)
@@ -20347,16 +20347,16 @@ snapshots:
   nitro@3.0.1-alpha.1(@netlify/blobs@9.1.2)(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7))(ioredis@5.8.2)(lru-cache@11.2.2)(rollup@4.53.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)):
     dependencies:
       consola: 3.4.2
-      crossws: 0.4.1(srvx@0.9.5)
+      crossws: 0.4.1(srvx@0.9.6)
       db0: 0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7))
-      h3: 2.0.1-rc.5(crossws@0.4.1(srvx@0.9.5))
+      h3: 2.0.1-rc.5(crossws@0.4.1(srvx@0.9.6))
       jiti: 2.6.1
       nf3: 0.1.10
       ofetch: 2.0.0-alpha.3
       ohash: 2.0.11
       oxc-minify: 0.96.0
       oxc-transform: 0.96.0
-      srvx: 0.9.5
+      srvx: 0.9.6
       undici: 7.16.0
       unenv: 2.0.0-rc.24
       unstorage: 2.0.0-alpha.4(@netlify/blobs@9.1.2)(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(chokidar@4.0.3)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)))(ioredis@5.8.2)(lru-cache@11.2.2)(ofetch@2.0.0-alpha.3)
@@ -22463,7 +22463,7 @@ snapshots:
 
   srvx@0.8.16: {}
 
-  srvx@0.9.5: {}
+  srvx@0.9.6: {}
 
   ssh-remote-port-forward@1.0.4:
     dependencies:
