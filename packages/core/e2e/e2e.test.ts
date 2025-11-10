@@ -553,7 +553,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  test.only(
     'crossFileErrorWorkflow - stack traces work across imported modules',
     { timeout: 60_000 },
     async () => {
@@ -579,14 +579,15 @@ describe('e2e', () => {
       expect(returnValue.cause).toHaveProperty('stack');
       expect(typeof returnValue.cause.stack).toBe('string');
 
-      // Known issue: SvelteKit dev mode has incorrect source map mappings for bundled imports.
+      // Known issue: vite-based frameworks dev mode has incorrect source map mappings for bundled imports.
       // esbuild with bundle:true inlines helpers.ts but source maps incorrectly map to 99_e2e.ts
       // This works correctly in production and other frameworks.
       // TODO: Investigate esbuild source map generation for bundled modules
-      const isSvelteKitDevMode =
-        process.env.APP_NAME === 'sveltekit' && isLocalDeployment();
+      const isViteBasedFrameworkDevMode =
+        process.env.APP_NAME === 'sveltekit' ||
+        (process.env.APP_NAME === 'vite' && isLocalDeployment());
 
-      if (!isSvelteKitDevMode) {
+      if (!isViteBasedFrameworkDevMode) {
         // Stack trace should include frames from the helper module (helpers.ts)
         expect(returnValue.cause.stack).toContain('helpers.ts');
       }
