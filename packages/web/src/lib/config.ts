@@ -8,7 +8,7 @@ import type { WorldConfig } from '@/lib/config-world';
 // Default configuration
 const DEFAULT_CONFIG: WorldConfig = {
   backend: 'embedded',
-  dataDir: './.workflow-data',
+  dataDir: './.next/workflow-data',
   port: '3000',
   env: 'production',
 };
