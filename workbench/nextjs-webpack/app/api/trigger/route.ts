@@ -1,41 +1,18 @@
-import { Hono } from 'hono';
-import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
+import { getRun, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from './_workflows.js';
+import { allWorkflows } from '@/_workflows';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
 
-const app = new Hono();
-
-app.post('/api/trigger', async ({ req }) => {
+export async function POST(req: Request) {
   const url = new URL(req.url);
-
   const workflowFile =
     url.searchParams.get('workflowFile') || 'workflows/99_e2e.ts';
-  if (!workflowFile) {
-    return new Response('No workflowFile query parameter provided', {
-      status: 400,
-    });
-  }
-  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
-  if (!workflows) {
-    return new Response(`Workflow file "${workflowFile}" not found`, {
-      status: 400,
-    });
-  }
-
   const workflowFn = url.searchParams.get('workflowFn') || 'simple';
-  if (!workflowFn) {
-    return new Response('No workflow query parameter provided', {
-      status: 400,
-    });
-  }
-  const workflow = workflows[workflowFn as keyof typeof workflows];
-  if (!workflow) {
-    return new Response(`Workflow "${workflowFn}" not found`, { status: 400 });
-  }
+
+  console.log('calling workflow', { workflowFile, workflowFn });
 
   let args: any[] = [];
 
@@ -55,19 +32,37 @@ app.post('/api/trigger', async ({ req }) => {
       args = [42];
     }
   }
-  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
+  console.log(
+    `Starting "${workflowFile}/${workflowFn}" workflow with args: ${args}`
+  );
 
   try {
-    const run = await start(workflow as any, args as any);
+    const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
+    if (!workflows) {
+      return Response.json(
+        { error: `Workflow file "${workflowFile}" not found` },
+        { status: 404 }
+      );
+    }
+
+    const workflow = workflows[workflowFn as keyof typeof workflows];
+    if (!workflow) {
+      return Response.json(
+        { error: `Function "${workflowFn}" not found in ${workflowFile}` },
+        { status: 400 }
+      );
+    }
+
+    const run = await start(workflow as any, args);
     console.log('Run:', run);
     return Response.json(run);
   } catch (err) {
     console.error(`Failed to start!!`, err);
     throw err;
   }
-});
+}
 
-app.get('/api/trigger', async ({ req }) => {
+export async function GET(req: Request) {
   const url = new URL(req.url);
   const runId = url.searchParams.get('runId');
   if (!runId) {
@@ -151,49 +146,4 @@ app.get('/api/trigger', async ({ req }) => {
       { status: 500 }
     );
   }
-});
-
-app.post('/api/hook', async ({ req }) => {
-  const { token, data } = await req.json();
-
-  let hook: Awaited<ReturnType<typeof getHookByToken>>;
-  try {
-    hook = await getHookByToken(token);
-    console.log('hook', hook);
-  } catch (error) {
-    console.log('error during getHookByToken', error);
-    // TODO: `WorkflowAPIError` is not exported, so for now
-    // we'll return 404 assuming it's the "invalid" token test case
-    return Response.json(null, { status: 404 });
-  }
-
-  await resumeHook(hook.token, {
-    ...data,
-    // @ts-expect-error metadata is not typed
-    customData: hook.metadata?.customData,
-  });
-
-  return Response.json(hook);
-});
-
-app.post('/api/test-direct-step-call', async ({ req }) => {
-  // This route tests calling step functions directly outside of any workflow context
-  // After the SWC compiler changes, step functions in client mode have their directive removed
-  // and keep their original implementation, allowing them to be called as regular async functions
-  const { add } = await import('./workflows/99_e2e.js');
-
-  const body = await req.json();
-  const { x, y } = body;
-
-  console.log(`Calling step function directly with x=${x}, y=${y}`);
-
-  // Call step function directly as a regular async function (no workflow context)
-  const result = await add(x, y);
-  console.log(`add(${x}, ${y}) = ${result}`);
-
-  return Response.json({ result });
-});
-
-export default async (event: { req: Request }) => {
-  return app.fetch(event.req);
-};
+}

@@ -19,14 +19,17 @@ async function convertSvelteKitRequest(request) {
 
 export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<SvelteKitConfig>) {
+    const workingDir = config?.workingDir || process.cwd();
+    const dirs = getWorkflowDirs({ dirs: config?.dirs });
+
     super({
       ...config,
-      dirs: ['workflows'],
+      dirs,
       buildTarget: 'sveltekit' as const,
       stepsBundlePath: '', // unused in base
       workflowsBundlePath: '', // unused in base
       webhookBundlePath: '', // unused in base
-      workingDir: config?.workingDir || process.cwd(),
+      workingDir,
     });
   }
 
@@ -228,4 +231,25 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
       }
     }
   }
+}
+
+/**
+ * Gets the list of directories to scan for workflow files.
+ */
+export function getWorkflowDirs(options?: { dirs?: string[] }): string[] {
+  return unique([
+    // User-provided directories take precedence
+    ...(options?.dirs ?? []),
+    // Scan routes directories (like Next.js does with app/pages directories)
+    // This allows workflows to be placed anywhere in the routes tree
+    'routes',
+    'src/routes',
+    // Also scan dedicated workflow directories for organization
+    'workflows',
+    'src/workflows',
+  ]).sort();
+}
+
+function unique<T>(array: T[]): T[] {
+  return Array.from(new Set(array));
 }

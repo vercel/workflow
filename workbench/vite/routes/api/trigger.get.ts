@@ -1,71 +1,10 @@
-import { type RequestHandler } from '@sveltejs/kit';
-import { getRun, start } from 'workflow/api';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from '$lib/_workflows.js';
+import { getRun } from 'workflow/api';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
 
-export const POST: RequestHandler = async ({ request }) => {
-  const url = new URL(request.url);
-  const workflowFile =
-    url.searchParams.get('workflowFile') || 'workflows/99_e2e.ts';
-  if (!workflowFile) {
-    return new Response('No workflowFile query parameter provided', {
-      status: 400,
-    });
-  }
-  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
-  if (!workflows) {
-    return new Response(`Workflow file "${workflowFile}" not found`, {
-      status: 400,
-    });
-  }
-
-  const workflowFn = url.searchParams.get('workflowFn') || 'simple';
-  if (!workflowFn) {
-    return new Response('No workflow query parameter provided', {
-      status: 400,
-    });
-  }
-  const workflow = workflows[workflowFn as keyof typeof workflows];
-  if (!workflow) {
-    return new Response(`Workflow "${workflowFn}" not found`, { status: 400 });
-  }
-
-  let args: any[] = [];
-
-  // Args from query string
-  const argsParam = url.searchParams.get('args');
-  if (argsParam) {
-    args = argsParam.split(',').map((arg) => {
-      const num = parseFloat(arg);
-      return Number.isNaN(num) ? arg.trim() : num;
-    });
-  } else {
-    // Args from body
-    const body = await request.text();
-    if (body) {
-      args = hydrateWorkflowArguments(JSON.parse(body), globalThis);
-    } else {
-      args = [42];
-    }
-  }
-  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
-
-  try {
-    const run = await start(workflow as any, args as any);
-    console.log('Run:', run);
-    return Response.json(run);
-  } catch (err) {
-    console.error(`Failed to start!!`, err);
-    throw err;
-  }
-};
-
-export const GET: RequestHandler = async ({ request }) => {
-  const url = new URL(request.url);
+export default async ({ url }: { req: Request; url: URL }) => {
   const runId = url.searchParams.get('runId');
   if (!runId) {
     return new Response('No runId provided', { status: 400 });
