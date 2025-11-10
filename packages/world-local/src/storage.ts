@@ -417,6 +417,21 @@ export function createStorage(basedir: string): Storage {
     // Hooks
     hooks: {
       async create(runId, data) {
+        // Check if a hook with the same token already exists
+        // Token uniqueness is enforced globally per embedded environment
+        const hooksDir = path.join(basedir, 'hooks');
+        const files = await listJSONFiles(hooksDir);
+
+        for (const file of files) {
+          const hookPath = path.join(hooksDir, `${file}.json`);
+          const hook = await readJSON(hookPath, HookSchema);
+          if (hook && hook.token === data.token) {
+            throw new Error(
+              `Hook with token ${data.token} already exists for this project`
+            );
+          }
+        }
+
         const now = new Date();
 
         const result = {

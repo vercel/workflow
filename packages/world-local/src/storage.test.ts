@@ -927,6 +927,106 @@ describe('Storage', () => {
           .catch(() => false);
         expect(fileExists).toBe(true);
       });
+
+      it('should throw error when creating a hook with a duplicate token', async () => {
+        // Create first hook with a token
+        const hookData = {
+          hookId: 'hook_1',
+          token: 'duplicate-test-token',
+        };
+
+        await storage.hooks.create(testRunId, hookData);
+
+        // Try to create another hook with the same token
+        const duplicateHookData = {
+          hookId: 'hook_2',
+          token: 'duplicate-test-token',
+        };
+
+        await expect(
+          storage.hooks.create(testRunId, duplicateHookData)
+        ).rejects.toThrow(
+          'Hook with token duplicate-test-token already exists for this project'
+        );
+      });
+
+      it('should allow multiple hooks with different tokens for the same run', async () => {
+        const hook1 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_1',
+          token: 'token-1',
+        });
+
+        const hook2 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_2',
+          token: 'token-2',
+        });
+
+        expect(hook1.token).toBe('token-1');
+        expect(hook2.token).toBe('token-2');
+      });
+
+      it('should allow the same token only after disposing the previous hook', async () => {
+        const token = 'reusable-token';
+
+        // Create first hook
+        const hook1 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        expect(hook1.token).toBe(token);
+
+        // Try to create another hook with the same token - should fail
+        await expect(
+          storage.hooks.create(testRunId, {
+            hookId: 'hook_2',
+            token,
+          })
+        ).rejects.toThrow(
+          `Hook with token ${token} already exists for this project`
+        );
+
+        // Dispose the first hook
+        await storage.hooks.dispose('hook_1');
+
+        // Now we should be able to create a new hook with the same token
+        const hook2 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_2',
+          token,
+        });
+
+        expect(hook2.token).toBe(token);
+        expect(hook2.hookId).toBe('hook_2');
+      });
+
+      it('should enforce token uniqueness across different runs within the same project', async () => {
+        // Create a second run
+        const run2 = await storage.runs.create({
+          deploymentId: 'deployment-456',
+          workflowName: 'another-workflow',
+          input: [],
+        });
+
+        const token = 'shared-token-across-runs';
+
+        // Create hook in first run
+        const hook1 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        expect(hook1.token).toBe(token);
+
+        // Try to create hook with same token in second run - should fail
+        await expect(
+          storage.hooks.create(run2.runId, {
+            hookId: 'hook_2',
+            token,
+          })
+        ).rejects.toThrow(
+          `Hook with token ${token} already exists for this project`
+        );
+      });
     });
 
     describe('get', () => {
