@@ -1,8 +1,6 @@
 import { getRun, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import * as batchingWorkflow from '@/workflows/6_batching';
-import * as duplicateE2e from '@/workflows/98_duplicate_case';
-import * as e2eWorkflows from '@/workflows/99_e2e';
+import { allWorkflows } from '@/_workflows';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
@@ -12,9 +10,28 @@ export async function POST(req: Request) {
   const url = new URL(req.url);
   const workflowFile =
     url.searchParams.get('workflowFile') || 'workflows/99_e2e.ts';
-  const workflowFn = url.searchParams.get('workflowFn') || 'simple';
+  if (!workflowFile) {
+    return new Response('No workflowFile query parameter provided', {
+      status: 400,
+    });
+  }
+  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
+  if (!workflows) {
+    return new Response(`Workflow file "${workflowFile}" not found`, {
+      status: 400,
+    });
+  }
 
-  console.log('calling workflow', { workflowFile, workflowFn });
+  const workflowFn = url.searchParams.get('workflowFn') || 'simple';
+  if (!workflowFn) {
+    return new Response('No workflow query parameter provided', {
+      status: 400,
+    });
+  }
+  const workflow = workflows[workflowFn as keyof typeof workflows];
+  if (!workflow) {
+    return new Response(`Workflow "${workflowFn}" not found`, { status: 400 });
+  }
 
   let args: any[] = [];
 
@@ -34,21 +51,10 @@ export async function POST(req: Request) {
       args = [42];
     }
   }
-  console.log(
-    `Starting "${workflowFile}/${workflowFn}" workflow with args: ${args}`
-  );
+  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
 
   try {
-    let workflows;
-    if (workflowFile === 'workflows/99_e2e.ts') {
-      workflows = e2eWorkflows;
-    } else if (workflowFile === 'workflows/6_batching.ts') {
-      workflows = batchingWorkflow;
-    } else {
-      workflows = duplicateE2e;
-    }
-
-    const run = await start((workflows as any)[workflowFn], args);
+    const run = await start(workflow as any, args as any);
     console.log('Run:', run);
     return Response.json(run);
   } catch (err) {

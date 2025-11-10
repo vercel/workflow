@@ -90,10 +90,11 @@ describe('e2e', () => {
       output: 133,
     });
     // In local vs. vercel backends, the workflow name is different, so we check for either,
-    // since this test runs against both.
+    // since this test runs against both. Also different workbenches have different directory structures.
     expect(json.workflowName).toBeOneOf([
       `workflow//example/${workflow.workflowFile}//${workflow.workflowFn}`,
       `workflow//${workflow.workflowFile}//${workflow.workflowFn}`,
+      `workflow//src/${workflow.workflowFile}//${workflow.workflowFn}`,
     ]);
   });
 
