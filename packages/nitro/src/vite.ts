@@ -1,16 +1,16 @@
+import type {} from 'nitro/vite'
 import type { Nitro } from 'nitro/types';
-import type { Plugin } from 'vite';
+import type { Plugin as VitePlugin } from 'vite';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 import { workflowRollupPlugin } from './rollup.js';
 
-export function workflow(options?: ModuleOptions): Plugin[] {
+
+export function workflow(options?: ModuleOptions): VitePlugin[] {
   return [
-    workflowRollupPlugin(),
+    workflowRollupPlugin() as VitePlugin,
     {
       name: 'workflow:nitro',
-      // Requires https://github.com/nitrojs/nitro/discussions/3680
-      // @ts-expect-error
       nitro: {
         setup: (nitro: Nitro) => {
           nitro.options.workflow = {

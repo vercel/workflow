@@ -14,6 +14,7 @@
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",
     "openai": "^6.1.0",
+    "rollup": "^4.53.2",
     "workflow": "workspace:*",
     "zod": "catalog:"
   },
