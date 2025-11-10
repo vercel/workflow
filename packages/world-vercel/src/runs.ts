@@ -30,6 +30,8 @@ const WorkflowRunWithRefsSchema = WorkflowRunSchema.omit({
   outputRef: z.any().optional(),
   input: z.array(z.any()).optional(),
   output: z.any().optional(),
+  blobStorageBytes: z.number().optional(),
+  streamStorageBytes: z.number().optional(),
 });
 
 // Helper to filter run data based on resolveData setting
