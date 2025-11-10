@@ -1,10 +1,13 @@
 import type { Nitro } from 'nitro/types';
 import type { HotUpdateOptions, Plugin } from 'vite';
+import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 import { workflowRollupPlugin } from './rollup.js';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
+  let builder: LocalBuilder | undefined;
+
   return [
     workflowRollupPlugin(),
     {
@@ -18,6 +21,9 @@ export function workflow(options?: ModuleOptions): Plugin[] {
             ...options,
             _vite: true,
           };
+          if (nitro.options.dev) {
+            builder = new LocalBuilder(nitro);
+          }
           return nitroModule.setup(nitro);
         },
       },
@@ -38,6 +44,9 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         } catch {
           // File might have been deleted - trigger rebuild to update generated routes
           console.log('Workflow file deleted, rebuilding...');
+          if (builder) {
+            await builder.build();
+          }
           server.ws.send({
             type: 'full-reload',
             path: '*',
@@ -58,6 +67,9 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         // Trigger full reload - this will cause Nitro's dev:reload hook to fire,
         // which will rebuild workflows and update routes
         console.log('Workflow file changed, rebuilding...');
+        if (builder) {
+          await builder.build();
+        }
         server.ws.send({
           type: 'full-reload',
           path: '*',
