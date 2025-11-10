@@ -5,8 +5,12 @@
   "version": "0.0.0",
   "license": "Apache-2.0",
   "scripts": {
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js",
+    "predev": "pnpm generate:workflows",
+    "prebuild": "pnpm generate:workflows",
     "dev": "vite dev",
-    "build": "vite build"
+    "build": "vite build",
+    "start": "node .output/server/index.mjs"
   },
   "devDependencies": {
     "ai": "catalog:",
