@@ -2,4 +2,4 @@
 "@workflow/world-local": patch
 ---
 
-Implement Hook "token" uniqueness validation
+Enforce uniqueness on hook "token" values
