@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from './_workflows.js';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
+import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { allWorkflows } from './_workflows.js';
 
 const app = new Hono();
 
@@ -164,7 +164,7 @@ app.post('/api/hook', async ({ req }) => {
     console.log('error during getHookByToken', error);
     // TODO: `WorkflowAPIError` is not exported, so for now
     // we'll return 404 assuming it's the "invalid" token test case
-    return Response.json(null, { status: 404 });
+    return Response.json(null, { status: 422 });
   }
 
   await resumeHook(hook.token, {
