@@ -12,6 +12,7 @@ describe.each([
   'vite',
   'sveltekit',
   'nuxt',
+  'hono',
 ])('e2e', (project) => {
   test('builds without errors', { timeout: 180_000 }, async () => {
     // skip if we're targeting specific app to test
