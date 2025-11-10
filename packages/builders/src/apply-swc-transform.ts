@@ -1,7 +1,7 @@
+import { createRequire } from 'node:module';
 import { transform } from '@swc/core';
-import { createRequire } from 'module';
 
-const require = createRequire(import.meta.filename);
+const require = createRequire(import.meta.url);
 
 export type WorkflowManifest = {
   steps?: {

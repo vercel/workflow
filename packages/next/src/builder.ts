@@ -18,8 +18,8 @@ export async function getNextBuilder() {
     STEP_QUEUE_TRIGGER,
     WORKFLOW_QUEUE_TRIGGER,
     // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
-  } = (await eval('import')(
-    '@workflow/builders'
+  } = (await eval(
+    'import("@workflow/builders")'
   )) as typeof import('@workflow/builders');
 
   class NextBuilder extends BaseBuilderClass {
