@@ -6,13 +6,12 @@ import { stepLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import type { Serializable } from './schemas.js';
 import { hydrateStepReturnValue } from './serialization.js';
-import { STEP_FUNCTION_NAME_SYMBOL } from './symbols.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
     stepName: string
   ) {
-    const stepFunction = (...args: Args): Promise<Result> => {
+    return (...args: Args): Promise<Result> => {
       const { promise, resolve, reject } = withResolvers<Result>();
 
       const correlationId = `step_${ctx.generateUlid()}`;
@@ -125,16 +124,5 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
 
       return promise;
     };
-
-    // Attach the step name to the function so it can be properly serialized
-    // when passed as an argument to another step
-    Object.defineProperty(stepFunction, STEP_FUNCTION_NAME_SYMBOL, {
-      value: stepName,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    });
-
-    return stepFunction;
   };
 }

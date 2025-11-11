@@ -13,3 +13,9 @@ export * from './other';
 export async function validStep() {
     return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//validStep")();
 }
+Object.defineProperty(validStep, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//validStep",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
