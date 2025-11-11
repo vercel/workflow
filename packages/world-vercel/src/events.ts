@@ -28,14 +28,16 @@ function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
 
 // Would usually "EventSchema.omit({ eventData: true })" but that doesn't work
 // on zod unions. Re-creating the schema manually.
-const EventWithRefsSchema = z.object({
-  eventId: z.string(),
-  runId: z.string(),
-  eventType: EventTypeSchema,
-  correlationId: z.string().optional(),
-  eventDataRef: z.any().optional(),
-  createdAt: z.coerce.date(),
-});
+const EventWithRefsSchema = z
+  .object({
+    eventId: z.string(),
+    runId: z.string(),
+    eventType: EventTypeSchema,
+    correlationId: z.string().optional(),
+    eventDataRef: z.any().optional(),
+    createdAt: z.coerce.date(),
+  })
+  .partial();
 
 // Functions
 export async function getWorkflowRunEvents(

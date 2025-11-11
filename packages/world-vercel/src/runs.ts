@@ -24,15 +24,17 @@ import {
 const WorkflowRunWithRefsSchema = WorkflowRunSchema.omit({
   input: true,
   output: true,
-}).extend({
-  // We discard the results of the refs, so we don't care about the type here
-  inputRef: z.any().optional(),
-  outputRef: z.any().optional(),
-  input: z.array(z.any()).optional(),
-  output: z.any().optional(),
-  blobStorageBytes: z.number().optional(),
-  streamStorageBytes: z.number().optional(),
-});
+})
+  .extend({
+    // We discard the results of the refs, so we don't care about the type here
+    inputRef: z.any().optional(),
+    outputRef: z.any().optional(),
+    input: z.array(z.any()).optional(),
+    output: z.any().optional(),
+    blobStorageBytes: z.number().optional(),
+    streamStorageBytes: z.number().optional(),
+  })
+  .partial();
 
 // Helper to filter run data based on resolveData setting
 function filterRunData(run: any, resolveData: 'none' | 'all'): WorkflowRun {

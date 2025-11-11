@@ -20,13 +20,15 @@ import {
 const StepWithRefsSchema = StepSchema.omit({
   input: true,
   output: true,
-}).extend({
-  // We discard the results of the refs, so we don't care about the type here
-  inputRef: z.any().optional(),
-  outputRef: z.any().optional(),
-  input: z.array(z.any()).optional(),
-  output: z.any().optional(),
-});
+})
+  .extend({
+    // We discard the results of the refs, so we don't care about the type here
+    inputRef: z.any().optional(),
+    outputRef: z.any().optional(),
+    input: z.array(z.any()).optional(),
+    output: z.any().optional(),
+  })
+  .partial();
 
 // Helper to filter step data based on resolveData setting
 function filterStepData(step: any, resolveData: 'none' | 'all'): Step {
