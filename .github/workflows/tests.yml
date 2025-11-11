@@ -71,6 +71,8 @@ jobs:
             project-id: "prj_oTgiz3SGX2fpZuM6E0P38Ts8de6d"
           - name: "sveltekit"
             project-id: "prj_MqnBLm71ceXGSnm3Fs8i8gBnI23G"
+          - name: "hono"
+            project-id: "prj_p0GIEsfl53L7IwVbosPvi9rPSOYW"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
