@@ -43,6 +43,11 @@ export const QueuePayloadSchema = z.union([
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
+export interface QueueOptions {
+  deploymentId?: string;
+  idempotencyKey?: string;
+}
+
 export interface Queue {
   getDeploymentId(): Promise<string>;
 
@@ -56,10 +61,7 @@ export interface Queue {
   queue(
     queueName: ValidQueueName,
     message: QueuePayload,
-    opts?: {
-      deploymentId?: string;
-      idempotencyKey?: string;
-    }
+    opts?: QueueOptions
   ): Promise<{ messageId: MessageId }>;
 
   /**
