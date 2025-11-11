@@ -482,6 +482,210 @@ describe('Storage', () => {
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].stepId).not.toBe(page1.data[0].stepId);
       });
+
+      it('should handle pagination when new items are created after getting a cursor', async () => {
+        // Create initial set of items (4 items)
+        for (let i = 0; i < 4; i++) {
+          await storage.steps.create(testRunId, {
+            stepId: `step_${i}`,
+            stepName: `step-${i}`,
+            input: [],
+          });
+        }
+
+        // Get first page with limit=4 (should return all 4 items)
+        const page1 = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 4 },
+        });
+
+        expect(page1.data).toHaveLength(4);
+        expect(page1.hasMore).toBe(false);
+        // With the fix, cursor should be set to the last item even when hasMore is false
+        expect(page1.cursor).not.toBeNull();
+
+        // Now create 4 more items (total: 8 items)
+        for (let i = 4; i < 8; i++) {
+          await storage.steps.create(testRunId, {
+            stepId: `step_${i}`,
+            stepName: `step-${i}`,
+            input: [],
+          });
+        }
+
+        // Try to get the "next page" using the old cursor (which was null)
+        // This should show that we can't continue from where we left off
+        const page2 = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 4 },
+        });
+
+        // Should now return 4 items (the newest ones: step_7, step_6, step_5, step_4)
+        expect(page2.data).toHaveLength(4);
+        expect(page2.hasMore).toBe(true);
+
+        // Get the next page using the cursor from page2
+        const page3 = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 4, cursor: page2.cursor || undefined },
+        });
+
+        // Should return the older 4 items (step_3, step_2, step_1, step_0)
+        expect(page3.data).toHaveLength(4);
+        expect(page3.hasMore).toBe(false);
+
+        // Verify no overlap
+        const page2Ids = new Set(page2.data.map((s) => s.stepId));
+        const page3Ids = new Set(page3.data.map((s) => s.stepId));
+
+        for (const id of page3Ids) {
+          expect(page2Ids.has(id)).toBe(false);
+        }
+      });
+
+      it('should handle pagination with cursor after items are added mid-pagination', async () => {
+        // Create initial 4 items
+        for (let i = 0; i < 4; i++) {
+          await storage.steps.create(testRunId, {
+            stepId: `step_${i}`,
+            stepName: `step-${i}`,
+            input: [],
+          });
+        }
+
+        // Get first page with limit=2
+        const page1 = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 2 },
+        });
+
+        expect(page1.data).toHaveLength(2);
+        expect(page1.hasMore).toBe(true);
+        const cursor1 = page1.cursor;
+
+        // Get second page
+        const page2 = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 2, cursor: cursor1 || undefined },
+        });
+
+        expect(page2.data).toHaveLength(2);
+        expect(page2.hasMore).toBe(false);
+        const cursor2 = page2.cursor;
+
+        // With the fix, cursor2 should NOT be null even when hasMore is false
+        expect(cursor2).not.toBeNull();
+
+        // Now add 4 more items (total: 8)
+        for (let i = 4; i < 8; i++) {
+          await storage.steps.create(testRunId, {
+            stepId: `step_${i}`,
+            stepName: `step-${i}`,
+            input: [],
+          });
+        }
+
+        // Try to continue with cursor2 (should return no items since we're at the end)
+        // The cursor marks where we left off, so continuing from there should not return
+        // the newly created items (which are newer than the cursor position)
+        const page3 = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 2, cursor: cursor2 || undefined },
+        });
+
+        expect(page3.data).toHaveLength(0);
+        expect(page3.hasMore).toBe(false);
+
+        // But if we use cursor1 again (from the first page), we should still get the next 2 items
+        // This verifies that the cursor is stable and repeatable
+        const page2Retry = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 2, cursor: cursor1 || undefined },
+        });
+
+        // Should return 2 items that come after cursor1 position
+        // In descending order, these would be the next 2 oldest items
+        expect(page2Retry.data).toHaveLength(2);
+
+        // The items should be the same as page2 originally returned
+        // (the cursor position is stable regardless of new items added)
+        expect(page2Retry.data[0].stepId).toBe(page2.data[0].stepId);
+        expect(page2Retry.data[1].stepId).toBe(page2.data[1].stepId);
+      });
+
+      it('should reproduce GitHub issue #298: pagination after reaching the end and creating new items', async () => {
+        // This test reproduces the exact scenario from issue #298
+        // https://github.com/vercel/workflow/issues/298
+
+        // Start with X items (4 items)
+        for (let i = 0; i < 4; i++) {
+          await storage.steps.create(testRunId, {
+            stepId: `step_${i}`,
+            stepName: `step-${i}`,
+            input: [],
+          });
+        }
+
+        // First page contains X items if limit=X
+        const firstPage = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 4 },
+        });
+
+        expect(firstPage.data).toHaveLength(4);
+        expect(firstPage.hasMore).toBe(false);
+        const firstCursor = firstPage.cursor;
+
+        // Cursor should be set even when we reached the end
+        expect(firstCursor).not.toBeNull();
+
+        // Create new items (total becomes 2X = 8 items)
+        for (let i = 4; i < 8; i++) {
+          await storage.steps.create(testRunId, {
+            stepId: `step_${i}`,
+            stepName: `step-${i}`,
+            input: [],
+          });
+        }
+
+        // Next page with cursor=<previous-request-cursor> should return 0 items
+        // because the cursor marks where we left off, and there are no items
+        // OLDER than the cursor position (in descending order)
+        const nextPage = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 4, cursor: firstCursor || undefined },
+        });
+
+        expect(nextPage.data).toHaveLength(0);
+        expect(nextPage.hasMore).toBe(false);
+
+        // If we start from the beginning (no cursor), we should get the newest 4 items
+        const freshPage = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 4 },
+        });
+
+        expect(freshPage.data).toHaveLength(4);
+        expect(freshPage.hasMore).toBe(true);
+
+        // The fresh page should contain the new items (step_7, step_6, step_5, step_4)
+        expect(freshPage.data[0].stepId).toBe('step_7');
+        expect(freshPage.data[1].stepId).toBe('step_6');
+        expect(freshPage.data[2].stepId).toBe('step_5');
+        expect(freshPage.data[3].stepId).toBe('step_4');
+
+        // And the second page should contain the original items
+        const secondPage = await storage.steps.list({
+          runId: testRunId,
+          pagination: { limit: 4, cursor: freshPage.cursor || undefined },
+        });
+
+        expect(secondPage.data).toHaveLength(4);
+        expect(secondPage.data[0].stepId).toBe('step_3');
+        expect(secondPage.data[1].stepId).toBe('step_2');
+        expect(secondPage.data[2].stepId).toBe('step_1');
+        expect(secondPage.data[3].stepId).toBe('step_0');
+      });
     });
   });
 
@@ -930,6 +1134,106 @@ describe('Storage', () => {
           .then(() => true)
           .catch(() => false);
         expect(fileExists).toBe(true);
+      });
+
+      it('should throw error when creating a hook with a duplicate token', async () => {
+        // Create first hook with a token
+        const hookData = {
+          hookId: 'hook_1',
+          token: 'duplicate-test-token',
+        };
+
+        await storage.hooks.create(testRunId, hookData);
+
+        // Try to create another hook with the same token
+        const duplicateHookData = {
+          hookId: 'hook_2',
+          token: 'duplicate-test-token',
+        };
+
+        await expect(
+          storage.hooks.create(testRunId, duplicateHookData)
+        ).rejects.toThrow(
+          'Hook with token duplicate-test-token already exists for this project'
+        );
+      });
+
+      it('should allow multiple hooks with different tokens for the same run', async () => {
+        const hook1 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_1',
+          token: 'token-1',
+        });
+
+        const hook2 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_2',
+          token: 'token-2',
+        });
+
+        expect(hook1.token).toBe('token-1');
+        expect(hook2.token).toBe('token-2');
+      });
+
+      it('should allow the same token only after disposing the previous hook', async () => {
+        const token = 'reusable-token';
+
+        // Create first hook
+        const hook1 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        expect(hook1.token).toBe(token);
+
+        // Try to create another hook with the same token - should fail
+        await expect(
+          storage.hooks.create(testRunId, {
+            hookId: 'hook_2',
+            token,
+          })
+        ).rejects.toThrow(
+          `Hook with token ${token} already exists for this project`
+        );
+
+        // Dispose the first hook
+        await storage.hooks.dispose('hook_1');
+
+        // Now we should be able to create a new hook with the same token
+        const hook2 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_2',
+          token,
+        });
+
+        expect(hook2.token).toBe(token);
+        expect(hook2.hookId).toBe('hook_2');
+      });
+
+      it('should enforce token uniqueness across different runs within the same project', async () => {
+        // Create a second run
+        const run2 = await storage.runs.create({
+          deploymentId: 'deployment-456',
+          workflowName: 'another-workflow',
+          input: [],
+        });
+
+        const token = 'shared-token-across-runs';
+
+        // Create hook in first run
+        const hook1 = await storage.hooks.create(testRunId, {
+          hookId: 'hook_1',
+          token,
+        });
+
+        expect(hook1.token).toBe(token);
+
+        // Try to create hook with same token in second run - should fail
+        await expect(
+          storage.hooks.create(run2.runId, {
+            hookId: 'hook_2',
+            token,
+          })
+        ).rejects.toThrow(
+          `Hook with token ${token} already exists for this project`
+        );
       });
     });
 

@@ -1,5 +1,15 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- 00efdfb: Improve trace viewer load times and loading animation
+- Updated dependencies [8208b53]
+- Updated dependencies [aac1b6c]
+- Updated dependencies [6373ab5]
+  - @workflow/core@4.0.1-beta.11
+
 ## 4.0.1-beta.11
 
 ### Patch Changes
