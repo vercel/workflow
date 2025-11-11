@@ -1,5 +1,18 @@
 # @workflow/next
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- 94d46d4: Refactor `@workflow/next` to dynamically import `@workflow/builders`
+- Updated dependencies [8208b53]
+- Updated dependencies [4f9ae4e]
+- Updated dependencies [aac1b6c]
+- Updated dependencies [6373ab5]
+  - @workflow/builders@4.0.1-beta.9
+  - @workflow/core@4.0.1-beta.11
+  - @workflow/swc-plugin@4.0.1-beta.5
+
 ## 4.0.1-beta.12
 
 ### Patch Changes
