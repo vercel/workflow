@@ -1,5 +1,12 @@
 # @workflow/web
 
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- 11469d8: Update default fallback path for connecting to local world
+- 00efdfb: Improve trace viewer load times and loading animation
+
 ## 4.0.1-beta.9
 
 ### Patch Changes
