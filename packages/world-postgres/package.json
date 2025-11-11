@@ -50,7 +50,7 @@
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",
     "dotenv": "^16.4.5",
-    "drizzle-orm": "^0.31.2",
+    "drizzle-orm": "^0.44.7",
     "pg-boss": "^11.0.7",
     "postgres": "^3.4.7",
     "ulid": "^3.0.1",
@@ -62,7 +62,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world-testing": "workspace:*",
-    "drizzle-kit": "^0.22.7",
+    "drizzle-kit": "^0.31.6",
     "vitest": "catalog:"
   },
   "keywords": [],
