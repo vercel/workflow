@@ -41,28 +41,28 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
   // Non-final states
   WorkflowRunBaseSchema.extend({
     status: z.enum(['pending', 'running', 'paused']),
-    output: z.void(),
-    error: z.void(),
-    completedAt: z.void(),
+    output: z.undefined(),
+    error: z.undefined(),
+    completedAt: z.undefined(),
   }),
   // Cancelled state
   WorkflowRunBaseSchema.extend({
     status: z.literal('cancelled'),
-    output: z.void(),
-    error: z.void(),
+    output: z.undefined(),
+    error: z.undefined(),
     completedAt: z.coerce.date(),
   }),
   // Completed state
   WorkflowRunBaseSchema.extend({
     status: z.literal('completed'),
     output: z.any(),
-    error: z.void(),
+    error: z.undefined(),
     completedAt: z.coerce.date(),
   }),
   // Failed state
   WorkflowRunBaseSchema.extend({
     status: z.literal('failed'),
-    output: z.void(),
+    output: z.undefined(),
     error: StructuredErrorSchema,
     completedAt: z.coerce.date(),
   }),
