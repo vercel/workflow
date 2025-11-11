@@ -3,7 +3,6 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["src"],
       "outputs": ["dist", "src/version.ts"]
     },
     "test": {
