@@ -10,7 +10,7 @@ export default async ({ req }: { req: Request }) => {
   } catch (error) {
     console.log('error during getHookByToken', error);
     // TODO: `WorkflowAPIError` is not exported, so for now
-    // we'll return 404 assuming it's the "invalid" token test case
+    // we'll return 422 assuming it's the "invalid" token test case
     return Response.json(null, { status: 422 });
   }
 

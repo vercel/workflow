@@ -155,8 +155,9 @@ describe('e2e', () => {
       method: 'POST',
       body: JSON.stringify({ token: 'invalid' }),
     });
-    // NOTE: For Nitro + Vite apps in dev mode, status 404 returns Vite SPA fallback,
-    // since Nitro passes the request to Vite's dev server.
+    // NOTE: For Nitro apps (Vite, Hono, etc.) in dev mode, status 404 does some
+    // unexpected stuff and could return a Vite SPA fallback or can cause a Hono route to hang.
+    // This is because Nitro passes the 404 requests to the dev server to handle.
     expect(res.status).toBeOneOf([404, 422]);
     body = await res.json();
     expect(body).toBeNull();
