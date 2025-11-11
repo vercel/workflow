@@ -2,6 +2,10 @@ import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from './_workflows.js';
+import {
+  WorkflowRunFailedError,
+  WorkflowRunNotCompletedError,
+} from 'workflow/internal/errors';
 
 const app = new Hono();
 
@@ -107,7 +111,7 @@ app.get('/api/trigger', async ({ req }) => {
       : Response.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'WorkflowRunNotCompletedError') {
+      if (WorkflowRunNotCompletedError.is(error)) {
         return Response.json(
           {
             ...error,
@@ -118,12 +122,18 @@ app.get('/api/trigger', async ({ req }) => {
         );
       }
 
-      if (error.name === 'WorkflowRunFailedError') {
+      if (WorkflowRunFailedError.is(error)) {
+        const cause = error.cause;
         return Response.json(
           {
             ...error,
             name: error.name,
             message: error.message,
+            cause: {
+              message: cause.message,
+              stack: cause.stack,
+              code: cause.code,
+            },
           },
           { status: 400 }
         );

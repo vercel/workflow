@@ -16,8 +16,15 @@ export {
   ValidQueueName,
 } from './queue.js';
 export type * from './runs.js';
-export { WorkflowRunSchema, WorkflowRunStatusSchema } from './runs.js';
+export {
+  WorkflowRunBaseSchema,
+  WorkflowRunSchema,
+  WorkflowRunStatusSchema,
+} from './runs.js';
 export type * from './shared.js';
-export { PaginatedResponseSchema } from './shared.js';
+export {
+  PaginatedResponseSchema,
+  StructuredErrorSchema,
+} from './shared.js';
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
