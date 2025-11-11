@@ -28,7 +28,7 @@ const HookWithRefsSchema = HookSchema.omit({
   .extend({
     metadataRef: z.any().optional(),
   })
-  .partial();
+  .loose();
 
 export async function listHooks(
   params: ListHooksParams,
