@@ -260,7 +260,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const hasMore = validItems.length > limit;
   const items = hasMore ? validItems.slice(0, limit) : validItems;
   const nextCursor =
-    hasMore && items.length > 0
+    items.length > 0
       ? createCursor(
           items[items.length - 1].createdAt,
           getId?.(items[items.length - 1])
