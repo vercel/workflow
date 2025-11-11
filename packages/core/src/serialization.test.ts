@@ -1,6 +1,7 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
+import { getStepFunction, registerStepFunction } from './private.js';
 import {
   dehydrateStepArguments,
   dehydrateStepReturnValue,
@@ -8,15 +9,9 @@ import {
   dehydrateWorkflowReturnValue,
   getCommonRevivers,
   getStreamType,
-  hydrateStepArguments,
   hydrateWorkflowArguments,
 } from './serialization.js';
-import {
-  getStepFunction,
-  registerStepFunction,
-  STEP_FUNCTION_NAME_SYMBOL,
-} from './private.js';
-import { STREAM_NAME_SYMBOL } from './symbols.js';
+import { STEP_FUNCTION_NAME_SYMBOL, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
 
 describe('getStreamType', () => {
