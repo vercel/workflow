@@ -7,16 +7,13 @@
       "outputs": ["dist/**", "build", ".svelte-kit", ".vercel/output"]
     },
     "dev": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**", "build", ".svelte-kit", ".vercel/output"]
+      "dependsOn": ["^build"]
     },
     "typecheck": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**", "build", ".svelte-kit", ".vercel/output"]
+      "dependsOn": ["^build"]
     },
     "test": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**", "build", ".svelte-kit", ".vercel/output"]
+      "dependsOn": ["^build"]
     },
     "clean": {
       "cache": false
