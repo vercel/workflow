@@ -155,7 +155,9 @@ describe('e2e', () => {
       method: 'POST',
       body: JSON.stringify({ token: 'invalid' }),
     });
-    expect(res.status).toBe(404);
+    // NOTE: For Nitro + Vite apps in dev mode, status 404 returns Vite SPA fallback,
+    // since Nitro passes the request to Vite's dev server.
+    expect(res.status).toBeOneOf([404, 422]);
     body = await res.json();
     expect(body).toBeNull();
 
@@ -288,7 +290,6 @@ describe('e2e', () => {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    console.log('res', res);
     expect(res.status).toBe(404);
     const body = await res.text();
     expect(body).toBe('');
