@@ -27,6 +27,34 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           return nitroModule.setup(nitro);
         },
       },
+      configureServer(server) {
+        // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
+        return () => {
+          server.middlewares.use((req, res, next) => {
+            // Only handle workflow webhook routes
+            if (!req.url?.startsWith('/.well-known/workflow/v1/')) {
+              return next();
+            }
+
+            // Wrap writeHead to ensure we send empty body for 404s
+            const originalWriteHead = res.writeHead;
+            res.writeHead = function (this: typeof res, ...args: any[]) {
+              const statusCode = typeof args[0] === 'number' ? args[0] : 200;
+
+              // For 404s on workflow routes, ensure we're sending the right headers
+              if (statusCode === 404) {
+                // Set content-length to 0 to prevent Vite from overriding
+                res.setHeader('Content-Length', '0');
+              }
+
+              // @ts-expect-error - Complex overload signature
+              return originalWriteHead.apply(this, args);
+            } as any;
+
+            next();
+          });
+        };
+      },
       // TODO: Move this to @workflow/vite or something since this is vite specific
       async hotUpdate(options: HotUpdateOptions) {
         const { file, server, read } = options;

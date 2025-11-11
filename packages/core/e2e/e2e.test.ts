@@ -155,7 +155,7 @@ describe('e2e', () => {
       method: 'POST',
       body: JSON.stringify({ token: 'invalid' }),
     });
-    expect(res.status).toBeOneOf([404, 422]);
+    expect(res.status).toBe(404);
     body = await res.json();
     expect(body).toBeNull();
 
@@ -288,7 +288,8 @@ describe('e2e', () => {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    expect(res.status).toBeOneOf([404, 422]);
+    console.log('res', res);
+    expect(res.status).toBe(404);
     const body = await res.text();
     expect(body).toBe('');
   });
