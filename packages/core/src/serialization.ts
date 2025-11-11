@@ -281,7 +281,8 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
     StepFunction: (value) => {
       if (typeof value !== 'function') return false;
       const stepName = value[STEP_FUNCTION_NAME_SYMBOL];
-      return stepName ? stepName : false;
+      // Must return a truthy value; devalue will reject if we return false for a function
+      return stepName || false;
     },
     URL: (value) => value instanceof global.URL && value.href,
     URLSearchParams: (value) => {
@@ -472,7 +473,7 @@ function getStepReducers(
   };
 }
 
-function getCommonRevivers(global: Record<string, any> = globalThis) {
+export function getCommonRevivers(global: Record<string, any> = globalThis) {
   function reviveArrayBuffer(value: string) {
     // Handle sentinel value for zero-length buffers
     const base64 = value === '.' ? '' : value;

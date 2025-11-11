@@ -466,3 +466,24 @@ export async function retryableAndFatalErrorWorkflow() {
 
   return { retryableResult, gotFatalError };
 }
+
+//////////////////////////////////////////////////////////
+
+async function stepWithStepFunctionArg(stepFn: (x: number) => Promise<number>) {
+  'use step';
+  // Call the passed step function reference
+  const result = await stepFn(10);
+  return result * 2;
+}
+
+async function doubleNumber(x: number) {
+  'use step';
+  return x * 2;
+}
+
+export async function stepFunctionPassingWorkflow() {
+  'use workflow';
+  // Pass a step function reference to another step
+  const result = await stepWithStepFunctionArg(doubleNumber);
+  return result;
+}

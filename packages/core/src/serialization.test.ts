@@ -6,9 +6,16 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
+  getCommonRevivers,
   getStreamType,
+  hydrateStepArguments,
   hydrateWorkflowArguments,
 } from './serialization.js';
+import {
+  getStepFunction,
+  registerStepFunction,
+  STEP_FUNCTION_NAME_SYMBOL,
+} from './private.js';
 import { STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
 
@@ -781,5 +788,81 @@ describe('step return value', () => {
     expect(err?.message).toContain(
       `Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
     );
+  });
+});
+
+describe('step function serialization', () => {
+  const { globalThis: vmGlobalThis } = createContext({
+    seed: 'test',
+    fixedTimestamp: 1714857600000,
+  });
+
+  it('should detect step function by checking for STEP_FUNCTION_NAME_SYMBOL', () => {
+    const stepName = 'myStep';
+    const stepFn = async (x: number) => x * 2;
+
+    // Attach the symbol like useStep() does
+    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    // Verify the symbol is attached correctly
+    expect((stepFn as any)[STEP_FUNCTION_NAME_SYMBOL]).toBe(stepName);
+  });
+
+  it('should not have STEP_FUNCTION_NAME_SYMBOL on regular functions', () => {
+    const regularFn = async (x: number) => x * 2;
+
+    // Regular functions should not have the symbol
+    expect((regularFn as any)[STEP_FUNCTION_NAME_SYMBOL]).toBeUndefined();
+  });
+
+  it('should lookup registered step function by name', () => {
+    const stepName = 'myRegisteredStep';
+    const stepFn = async (x: number) => x * 2;
+
+    // Register the step function
+    registerStepFunction(stepName, stepFn);
+
+    // Should be retrievable by name
+    const retrieved = getStepFunction(stepName);
+    expect(retrieved).toBe(stepFn);
+  });
+
+  it('should return undefined for non-existent registered step function', () => {
+    const retrieved = getStepFunction('nonExistentStep');
+    expect(retrieved).toBeUndefined();
+  });
+
+  it('should deserialize step function name through reviver', () => {
+    const stepName = 'testStep';
+    const stepFn = async () => 42;
+
+    // Register the step function
+    registerStepFunction(stepName, stepFn);
+
+    // Get the reviver and test it directly
+    const revivers = getCommonRevivers(vmGlobalThis);
+    const result = revivers.StepFunction(stepName);
+
+    expect(result).toBe(stepFn);
+  });
+
+  it('should throw error when reviver cannot find registered step function', () => {
+    const revivers = getCommonRevivers(vmGlobalThis);
+
+    let err: Error | undefined;
+    try {
+      revivers.StepFunction('nonExistentStep');
+    } catch (err_) {
+      err = err_ as Error;
+    }
+
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('Step function "nonExistentStep" not found');
+    expect(err?.message).toContain('Make sure the step function is registered');
   });
 });

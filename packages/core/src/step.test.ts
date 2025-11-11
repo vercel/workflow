@@ -5,6 +5,7 @@ import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
+import { STEP_FUNCTION_NAME_SYMBOL } from './symbols.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { createUseStep } from './step.js';
 import { createContext } from './vm/index.js';
@@ -174,5 +175,82 @@ describe('createUseStep', () => {
         },
       ]
     `);
+  });
+
+  it('should attach STEP_FUNCTION_NAME_SYMBOL to the returned function', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_completed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          result: [42],
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const useStep = createUseStep(ctx);
+    const myStep = useStep('calculateValue');
+
+    // The returned function should have the symbol attached with the step name
+    expect((myStep as any)[STEP_FUNCTION_NAME_SYMBOL]).toBe('calculateValue');
+  });
+
+  it('should allow the symbol to be non-writable and non-configurable', async () => {
+    const ctx = setupWorkflowContext([]);
+    const useStep = createUseStep(ctx);
+    const myStep = useStep('immutableStep');
+
+    const descriptor = Object.getOwnPropertyDescriptor(
+      myStep as any,
+      STEP_FUNCTION_NAME_SYMBOL
+    );
+
+    expect(descriptor).toBeDefined();
+    expect(descriptor?.value).toBe('immutableStep');
+    expect(descriptor?.writable).toBe(false);
+    expect(descriptor?.configurable).toBe(false);
+    expect(descriptor?.enumerable).toBe(false);
+  });
+
+  it('should attach symbol to multiple step references independently', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_completed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          result: [1],
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'step_completed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
+        eventData: {
+          result: [2],
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const useStep = createUseStep(ctx);
+    const stepA = useStep('stepA');
+    const stepB = useStep('stepB');
+
+    expect((stepA as any)[STEP_FUNCTION_NAME_SYMBOL]).toBe('stepA');
+    expect((stepB as any)[STEP_FUNCTION_NAME_SYMBOL]).toBe('stepB');
+
+    // Call them to verify they work independently
+    const resultA = stepA(1);
+    const resultB = stepB(2);
+
+    expect(await resultA).toBe(1);
+    expect(await resultB).toBe(2);
   });
 });

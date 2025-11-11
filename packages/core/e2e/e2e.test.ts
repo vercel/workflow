@@ -598,4 +598,25 @@ describe('e2e', () => {
       expect(runData.error).toContain('Error from imported helper module');
     }
   );
+
+  test(
+    'stepFunctionPassingWorkflow - step function references can be passed as arguments',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow passes a step function reference to another step
+      // The receiving step calls the passed function and returns the result
+      const run = await triggerWorkflow('stepFunctionPassingWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // doubleNumber(10) = 20, then multiply by 2 = 40
+      expect(returnValue).toBe(40);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(40);
+    }
+  );
 });
