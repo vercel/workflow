@@ -1,5 +1,24 @@
 # workflow
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- 94d46d4: Refactor `@workflow/next` to dynamically import `@workflow/builders`
+- Updated dependencies [8208b53]
+- Updated dependencies [11469d8]
+- Updated dependencies [aac1b6c]
+- Updated dependencies [00efdfb]
+- Updated dependencies [6373ab5]
+- Updated dependencies [94d46d4]
+  - @workflow/core@4.0.1-beta.11
+  - @workflow/cli@4.0.1-beta.13
+  - @workflow/next@4.0.1-beta.13
+  - @workflow/nitro@4.0.1-beta.13
+  - @workflow/sveltekit@4.0.0-beta.7
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.2
+
 ## 4.0.1-beta.12
 
 ### Patch Changes

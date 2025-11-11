@@ -1,5 +1,18 @@
 # @workflow/core
 
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- 8208b53: Fix sourcemap error tracing in workflows
+- aac1b6c: Make process.env in workflow context a readonly clone
+- 6373ab5: BREAKING: `resumeHook()` now throws errors (including when a Hook is not found for a given "token") instead of returning `null`
+- Updated dependencies [2b880f9]
+- Updated dependencies [2dca0d4]
+- Updated dependencies [68363b2]
+  - @workflow/world-local@4.0.1-beta.7
+  - @workflow/world-vercel@4.0.1-beta.7
+
 ## 4.0.1-beta.10
 
 ### Patch Changes

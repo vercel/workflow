@@ -1,5 +1,12 @@
 # @workflow/world-local
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- 2b880f9: Enforce uniqueness on hook "token" values
+- 68363b2: When paginating, return a cursor even at the end of the list, to allow for stable resumption
+
 ## 4.0.1-beta.6
 
 ### Patch Changes
