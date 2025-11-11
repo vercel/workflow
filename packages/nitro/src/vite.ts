@@ -27,6 +27,8 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           return nitroModule.setup(nitro);
         },
       },
+      // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
+      //       For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.
       configureServer(server) {
         // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
         return () => {
