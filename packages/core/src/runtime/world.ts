@@ -1,10 +1,10 @@
 import { createRequire } from 'node:module';
-import Path from 'node:path';
+import { join } from 'node:path';
 import type { World } from '@workflow/world';
 import { createEmbeddedWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
 
-const require = createRequire(Path.join(process.cwd(), 'index.js'));
+const require = createRequire(join(process.cwd(), 'index.js'));
 
 let worldCache: World | undefined;
 let stubbedWorldCache: World | undefined;
