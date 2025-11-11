@@ -2303,5 +2303,32 @@ describe('runWorkflow', () => {
         'sleep with date completed'
       );
     });
+
+    it('should handle Windows paths with backslashes in workflow names', async () => {
+      // Test the specific Windows path issue from the bug report
+      const workflowName = 'workflow//C:/dev/birthday-card-generator/app/api/generate/route.ts//handleOrder';
+      const workflowCode = `function handleOrder() { return "success from Windows"; }${getWorkflowTransformCode(workflowName)}`;
+
+      // Simulate the problematic workflow name with backslashes (as might occur on Windows)
+      const windowsWorkflowName = 'workflow//C:\\dev\\birthday-card-generator\\app\\api\\generate\\route.ts//handleOrder';
+      
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'wrun_windows_test',
+        workflowName: windowsWorkflowName, // Use the backslash version
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [];
+
+      // This should work now because the workflow.ts normalizes the name before lookup
+      const result = await runWorkflow(workflowCode, workflowRun, events);
+      expect(result).toBe("success from Windows");
+    });
   });
 });
