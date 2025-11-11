@@ -4,10 +4,6 @@
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist", "src/version.ts"]
-    },
-    "test": {
-      "dependsOn": ["build"],
-      "outputs": []
     }
   }
 }
