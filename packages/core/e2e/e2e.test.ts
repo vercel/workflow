@@ -130,7 +130,7 @@ describe('e2e', () => {
     expect(contents).toBe('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n');
   });
 
-  test('hookWorkflow', { timeout: 120_000 }, async () => {
+  test('hookWorkflow', { timeout: 60_000 }, async () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);
 
@@ -587,8 +587,9 @@ describe('e2e', () => {
       // This works correctly in production and other frameworks.
       // TODO: Investigate esbuild source map generation for bundled modules
       const isViteBasedFrameworkDevMode =
-        process.env.APP_NAME === 'sveltekit' ||
-        (process.env.APP_NAME === 'vite' && isLocalDeployment());
+        (process.env.APP_NAME === 'sveltekit' ||
+          process.env.APP_NAME === 'vite') &&
+        isLocalDeployment();
 
       if (!isViteBasedFrameworkDevMode) {
         // Stack trace should include frames from the helper module (helpers.ts)
