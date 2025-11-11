@@ -28,7 +28,7 @@ const StepWithRefsSchema = StepSchema.omit({
     input: z.array(z.any()).optional(),
     output: z.any().optional(),
   })
-  .loose();
+  .partial();
 
 // Helper to filter step data based on resolveData setting
 function filterStepData(step: any, resolveData: 'none' | 'all'): Step {

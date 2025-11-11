@@ -34,7 +34,7 @@ const WorkflowRunWithRefsSchema = WorkflowRunSchema.omit({
     blobStorageBytes: z.number().optional(),
     streamStorageBytes: z.number().optional(),
   })
-  .loose();
+  .partial();
 
 // Helper to filter run data based on resolveData setting
 function filterRunData(run: any, resolveData: 'none' | 'all'): WorkflowRun {

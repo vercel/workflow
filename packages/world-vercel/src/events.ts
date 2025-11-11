@@ -37,7 +37,7 @@ const EventWithRefsSchema = z
     eventDataRef: z.any().optional(),
     createdAt: z.coerce.date(),
   })
-  .loose();
+  .partial();
 
 // Functions
 export async function getWorkflowRunEvents(
