@@ -23,13 +23,11 @@
     }
   },
   "scripts": {
-    "prebuild": "genversion --es6 src/version.ts",
-    "build": "tsc",
-    "predev": "genversion --es6 src/version.ts",
-    "dev": "tsc --watch",
+    "build": "genversion --es6 src/version.ts && tsc",
+    "dev": "genversion --es6 src/version.ts && tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist src/version.ts",
     "test": "echo 'No tests yet'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "genversion --es6 src/version.ts && tsc --noEmit"
   },
   "dependencies": {
     "@vercel/oidc": "catalog:",
