@@ -326,20 +326,22 @@ export function getExternalReducers(
       const name = global.crypto.randomUUID();
       const type = getStreamType(value);
 
-      // Only pipe stream data if we have a runId
-      if (runId) {
-        const writable = new WorkflowServerWritableStream(runId, name);
-        if (type === 'bytes') {
-          ops.push(value.pipeTo(writable));
-        } else {
-          ops.push(
-            value
-              .pipeThrough(
-                getSerializeStream(getExternalReducers(global, ops, runId))
-              )
-              .pipeTo(writable)
-          );
-        }
+      if (!runId) {
+        throw new Error(
+          'ReadableStream cannot be serialized without a valid runId'
+        );
+      }
+      const writable = new WorkflowServerWritableStream(runId, name);
+      if (type === 'bytes') {
+        ops.push(value.pipeTo(writable));
+      } else {
+        ops.push(
+          value
+            .pipeThrough(
+              getSerializeStream(getExternalReducers(global, ops, runId))
+            )
+            .pipeTo(writable)
+        );
       }
 
       const s: SerializableSpecial['ReadableStream'] = { name };
@@ -352,16 +354,18 @@ export function getExternalReducers(
 
       const name = global.crypto.randomUUID();
 
-      // Only pipe stream data if we have a runId
-      if (runId) {
-        ops.push(
-          new WorkflowServerReadableStream(name)
-            .pipeThrough(
-              getDeserializeStream(getExternalRevivers(global, ops, runId))
-            )
-            .pipeTo(value)
+      if (!runId) {
+        throw new Error(
+          'WritableStream cannot be serialized without a valid runId'
         );
       }
+      ops.push(
+        new WorkflowServerReadableStream(name)
+          .pipeThrough(
+            getDeserializeStream(getExternalRevivers(global, ops, runId))
+          )
+          .pipeTo(value)
+      );
 
       return { name };
     },
