@@ -24,11 +24,9 @@ function filterHookData(hook: any, resolveData: 'none' | 'all'): Hook {
 }
 const HookWithRefsSchema = HookSchema.omit({
   metadata: true,
-})
-  .extend({
-    metadataRef: z.any().optional(),
-  })
-  .partial();
+}).extend({
+  metadataRef: z.any().optional(),
+});
 
 export async function listHooks(
   params: ListHooksParams,
