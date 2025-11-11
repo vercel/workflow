@@ -8,6 +8,7 @@ import type {
   Step,
   WorkflowRun,
   WorkflowRunStatus,
+  World,
 } from '@workflow/world';
 
 export type EnvMap = Record<string, string | undefined>;
@@ -38,14 +39,37 @@ export type ServerActionResult<T> =
   | { success: true; data: T }
   | { success: false; error: ServerActionError };
 
+/**
+ * Cache for World instances keyed by envMap
+ */
+const worldCache = new Map<string, World>();
+
 function getWorldFromEnv(envMap: EnvMap) {
+  // Generate stable cache key from envMap
+  const sortedKeys = Object.keys(envMap).sort();
+  const sortedEntries = sortedKeys.map((key) => [key, envMap[key]]);
+  const cacheKey = JSON.stringify(Object.fromEntries(sortedEntries));
+
+  // Check if we have a cached World for this configuration
+  const cachedWorld = worldCache.get(cacheKey);
+  if (cachedWorld) {
+    return cachedWorld;
+  }
+
+  // No cached World found, create a new one
   for (const [key, value] of Object.entries(envMap)) {
     if (value === undefined || value === null || value === '') {
       continue;
     }
     process.env[key] = value;
   }
-  return createWorld();
+
+  const world = createWorld();
+
+  // Cache the newly created World
+  worldCache.set(cacheKey, world);
+
+  return world;
 }
 
 /**
