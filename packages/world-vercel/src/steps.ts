@@ -6,7 +6,6 @@ import {
   PaginatedResponseSchema,
   type Step,
   StepSchema,
-  StructuredErrorSchema,
   type UpdateStepRequest,
 } from '@workflow/world';
 import { z } from 'zod';
@@ -14,61 +13,10 @@ import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
   dateToStringReplacer,
+  deserializeError,
   makeRequest,
+  serializeError,
 } from './utils.js';
-
-/**
- * Helper to serialize error into a JSON string in the error field.
- */
-function serializeStepError(data: UpdateStepRequest): any {
-  const { error, ...rest } = data;
-
-  if (error !== undefined) {
-    return {
-      ...rest,
-      error: JSON.stringify({
-        message: error.message,
-        stack: error.stack,
-        code: error.code,
-      }),
-    };
-  }
-
-  return data;
-}
-
-/**
- * Helper to deserialize error field into a StructuredError object.
- * Handles backwards compatibility with plain string errors.
- */
-function deserializeStepError(step: any): Step {
-  const { error, ...rest } = step;
-
-  if (!error) {
-    return step;
-  }
-
-  // Try to parse as structured error JSON
-  try {
-    const parsed = StructuredErrorSchema.parse(JSON.parse(error));
-    return {
-      ...rest,
-      error: {
-        message: parsed.message,
-        stack: parsed.stack,
-        code: parsed.code,
-      },
-    } as Step;
-  } catch {
-    // Backwards compatibility: error is just a plain string
-    return {
-      ...rest,
-      error: {
-        message: error,
-      },
-    } as Step;
-  }
-}
 
 /**
  * Wire format schema for steps coming from the backend.
@@ -101,14 +49,14 @@ const StepWireWithRefsSchema = StepWireSchema.omit({
 function filterStepData(step: any, resolveData: 'none' | 'all'): Step {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = step;
-    const deserialized = deserializeStepError(rest);
+    const deserialized = deserializeError<Step>(rest);
     return {
       ...deserialized,
       input: [],
       output: undefined,
     };
   }
-  return deserializeStepError(step);
+  return deserializeError<Step>(step);
 }
 
 // Functions
@@ -165,7 +113,7 @@ export async function createStep(
     config,
     schema: StepWireSchema,
   });
-  return deserializeStepError(step);
+  return deserializeError<Step>(step);
 }
 
 export async function updateStep(
@@ -174,7 +122,7 @@ export async function updateStep(
   data: UpdateStepRequest,
   config?: APIConfig
 ): Promise<Step> {
-  const serialized = serializeStepError(data);
+  const serialized = serializeError(data);
   const step = await makeRequest({
     endpoint: `/v1/runs/${runId}/steps/${stepId}`,
     options: {
@@ -184,7 +132,7 @@ export async function updateStep(
     config,
     schema: StepWireSchema,
   });
-  return deserializeStepError(step);
+  return deserializeError<Step>(step);
 }
 
 export async function getStep(

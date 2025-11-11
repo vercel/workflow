@@ -38,11 +38,12 @@ export const WorkflowRunBaseSchema = z.object({
 
 // Discriminated union based on status
 export const WorkflowRunSchema = z.discriminatedUnion('status', [
-  // Non-final states: output and error are optional
+  // Non-final states
   WorkflowRunBaseSchema.extend({
     status: z.enum(['pending', 'running', 'paused']),
     output: z.void(),
     error: z.void(),
+    completedAt: z.void(),
   }),
   // Cancelled state
   WorkflowRunBaseSchema.extend({

@@ -8,7 +8,6 @@ import {
   PaginatedResponseSchema,
   type PauseWorkflowRunParams,
   type ResumeWorkflowRunParams,
-  StructuredErrorSchema,
   type UpdateWorkflowRunRequest,
   type WorkflowRun,
   WorkflowRunBaseSchema,
@@ -18,68 +17,10 @@ import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
   dateToStringReplacer,
+  deserializeError,
   makeRequest,
+  serializeError,
 } from './utils.js';
-
-/**
- * Helper to serialize error into a JSON string in the error field.
- * The error field can be either:
- * - A plain string (legacy format, just the error message)
- * - A JSON string with { message, stack, code } (new format)
- */
-function serializeError(data: UpdateWorkflowRunRequest): any {
-  const { error, ...rest } = data;
-
-  // If we have an error, serialize as JSON string
-  if (error !== undefined) {
-    return {
-      ...rest,
-      error: JSON.stringify({
-        message: error.message,
-        stack: error.stack,
-        code: error.code,
-      }),
-    };
-  }
-
-  return data;
-}
-
-/**
- * Helper to deserialize error field from the backend into a StructuredError object.
- * Handles backwards compatibility:
- * - If error is a JSON string with {message, stack, code} → parse into StructuredError
- * - If error is a plain string → treat as error message with no stack
- * - If no error → undefined
- */
-function deserializeError(run: any): WorkflowRun {
-  const { error, ...rest } = run;
-
-  if (!error) {
-    return run;
-  }
-
-  // Try to parse as structured error JSON
-  try {
-    const parsed = StructuredErrorSchema.parse(JSON.parse(error));
-    return {
-      ...rest,
-      error: {
-        message: parsed.message,
-        stack: parsed.stack,
-        code: parsed.code,
-      },
-    } as WorkflowRun;
-  } catch {
-    // Backwards compatibility: error is just a plain string
-    return {
-      ...rest,
-      error: {
-        message: error,
-      },
-    } as WorkflowRun;
-  }
-}
 
 /**
  * Wire format schema for workflow runs coming from the backend.
@@ -115,14 +56,14 @@ const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
 function filterRunData(run: any, resolveData: 'none' | 'all'): WorkflowRun {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
-    const deserialized = deserializeError(rest);
+    const deserialized = deserializeError<WorkflowRun>(rest);
     return {
       ...deserialized,
       input: [],
       output: undefined,
     };
   }
-  return deserializeError(run);
+  return deserializeError<WorkflowRun>(run);
 }
 
 // Functions
@@ -188,7 +129,7 @@ export async function createWorkflowRun(
     config,
     schema: WorkflowRunWireSchema,
   });
-  return deserializeError(run);
+  return deserializeError<WorkflowRun>(run);
 }
 
 export async function getWorkflowRun(
@@ -240,7 +181,7 @@ export async function updateWorkflowRun(
       config,
       schema: WorkflowRunWireSchema,
     });
-    return deserializeError(run);
+    return deserializeError<WorkflowRun>(run);
   } catch (error) {
     if (error instanceof WorkflowAPIError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
