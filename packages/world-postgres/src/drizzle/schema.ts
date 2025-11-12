@@ -60,7 +60,6 @@ export const runs = pgTable(
     executionContext: jsonb('execution_context').$type<Record<string, any>>(),
     input: jsonb('input').$type<SerializedContent>().notNull(),
     error: text('error'),
-    errorCode: varchar('error_code'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -101,7 +100,6 @@ export const steps = pgTable(
     input: jsonb('input').$type<SerializedContent>().notNull(),
     output: jsonb('output').$type<SerializedContent>(),
     error: text('error'),
-    errorCode: varchar('error_code'),
     attempt: integer('attempt').notNull(),
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),

@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- 2dca0d4: Add custom user agent
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

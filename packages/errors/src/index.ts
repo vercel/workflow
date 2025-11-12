@@ -1,4 +1,5 @@
 import { parseDurationToDate } from '@workflow/utils';
+import type { StructuredError } from '@workflow/world';
 import type { StringValue } from 'ms';
 
 const BASE_URL = 'https://useworkflow.dev/err';
@@ -121,8 +122,8 @@ export class WorkflowAPIError extends WorkflowError {
  * Thrown when a workflow run fails during execution.
  *
  * This error indicates that the workflow encountered a fatal error
- * and cannot continue. The `error` property contains details about
- * what caused the failure.
+ * and cannot continue. The `cause` property contains the underlying
+ * error with its message, stack trace, and optional error code.
  *
  * @example
  * ```
@@ -134,13 +135,24 @@ export class WorkflowAPIError extends WorkflowError {
  */
 export class WorkflowRunFailedError extends WorkflowError {
   runId: string;
-  error: string;
+  declare cause: Error & { code?: string };
 
-  constructor(runId: string, error: string) {
-    super(`Workflow run "${runId}" failed: ${error}`, {});
+  constructor(runId: string, error: StructuredError) {
+    // Create a proper Error instance from the StructuredError to set as cause
+    // NOTE: custom error types do not get serialized/deserialized. Everything is an Error
+    const causeError = new Error(error.message);
+    if (error.stack) {
+      causeError.stack = error.stack;
+    }
+    if (error.code) {
+      (causeError as any).code = error.code;
+    }
+
+    super(`Workflow run "${runId}" failed: ${error.message}`, {
+      cause: causeError,
+    });
     this.name = 'WorkflowRunFailedError';
     this.runId = runId;
-    this.error = error;
   }
 
   static is(value: unknown): value is WorkflowRunFailedError {
