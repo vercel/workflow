@@ -1,7 +1,8 @@
-import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -21,33 +22,31 @@ async function setupDatabase() {
   );
 
   try {
-    const sql = postgres(connectionString);
+    const pgClient = postgres(connectionString, { max: 1 });
+    const db = drizzle(pgClient);
 
     // Read the migration SQL file
     // The migrations are in src/drizzle/migrations, and this CLI is in dist/
     // So we need to go up one level from dist/ to reach src/
-    const migrationPath = join(
+    const migrationsFolder = join(
       __dirname,
       '..',
       'src',
       'drizzle',
-      'migrations',
-      '0000_redundant_smasher.sql'
+      'migrations'
     );
-    const migrationSQL = await readFile(migrationPath, 'utf-8');
+    console.log(`📂 Running migrations from: ${migrationsFolder}`);
 
     // Execute the migration
-    await sql.unsafe(migrationSQL);
+    await migrate(db, {
+      migrationsFolder,
+      migrationsTable: 'workflow_migrations',
+      migrationsSchema: 'workflow_drizzle',
+    });
 
     console.log('✅ Database schema created successfully!');
-    console.log('\nCreated tables:');
-    console.log('  - workflow_runs');
-    console.log('  - workflow_events');
-    console.log('  - workflow_steps');
-    console.log('  - workflow_hooks');
-    console.log('  - workflow_stream_chunks');
 
-    await sql.end();
+    await pgClient.end();
     process.exit(0);
   } catch (error) {
     console.error('❌ Failed to setup database:', error);
