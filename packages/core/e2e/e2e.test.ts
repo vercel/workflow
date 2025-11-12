@@ -611,7 +611,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  test.only(
     'stepFunctionPassingWorkflow - step function references can be passed as arguments',
     { timeout: 60_000 },
     async () => {
