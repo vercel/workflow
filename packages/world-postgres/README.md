@@ -128,8 +128,8 @@ For local development, you can use the included Docker Compose configuration:
 docker-compose up -d
 
 # Create and run migrations
-pnpm drizzle-kit generate
-pnpm drizzle-kit migrate
+pnpm drizzle-kit generate --dialect=postgresql --schema=./src/drizzle/schema.ts --out src/drizzle/migrations
+pnpm bin/setup.js
 
 # Set environment variables for local development
 export WORKFLOW_POSTGRES_URL="postgres://world:world@localhost:5432/world"
