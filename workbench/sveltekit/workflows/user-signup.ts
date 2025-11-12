@@ -1,8 +1,16 @@
+import { readFileSync } from 'node:fs';
+import { put } from '@vercel/blob';
+import fetch from 'node-fetch';
 import { createWebhook, sleep } from 'workflow';
 
 export async function handleUserSignup(email: string) {
   'use workflow';
 
+  await put('test.txt', 'test', {
+    access: 'public',
+  });
+  readFileSync('test.txt');
+  fetch('https://api.github.com');
   const user = await createUser(email);
   await sendWelcomeEmail(user);
 
