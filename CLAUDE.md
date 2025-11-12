@@ -16,7 +16,7 @@ This repository contains the client side SDK code for workflows, along example a
 - **packages/next**: Next.js integration (`@workflow/next`)
 - **packages/cli**: Command-line interface (`@workflow/cli`)
 - **packages/world**: Core interfaces and types for workflow storage backends (`@workflow/world`)
-- **packages/world-embedded**: Filesystem-based workflow backend for local development and testing (`@workflow/world-local`)
+- **packages/world-local**: Filesystem-based workflow backend for local development and testing (`@workflow/world-local`)
 - **packages/world-vercel**: Production workflow backend for Vercel platform deployments (`@workflow/world-vercel`)
 - **packages/swc-plugin-workflow**: SWC compiler plugin for workflow transformations
 - **workbench/example**: Basic workflow examples using the CLI (aka "standalone mode")
@@ -159,3 +159,6 @@ This project uses pnpm with workspace configuration. The required version is spe
 - Create a changeset using `pnpm changeset add`
   - All changed packages should be included in the changeset. Never include unchanged packages.
   - All changes should be marked as "patch". Never use "major" or "minor" modes.
+- Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
+- Remember that changes made to one workbench should propogate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
+- When writing changeset, use the `pnpm changeset` command from the root of the repo. Keep the changesets terse (see existing changesets for examples). Try to amke chagnesets that are specific to each modified package so they are targeted. Ensure that any breaking changes are marked as "**BREAKING CHANGE**

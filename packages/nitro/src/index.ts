@@ -22,6 +22,16 @@ export default {
       nitro.options.alias['debug'] ??= 'debug';
     }
 
+    // Add tsConfig plugin
+    if (nitro.options.workflow?.typescriptPlugin) {
+      nitro.options.typescript.tsConfig ||= {};
+      nitro.options.typescript.tsConfig.compilerOptions ||= {};
+      nitro.options.typescript.tsConfig.compilerOptions.plugins ||= [];
+      nitro.options.typescript.tsConfig.compilerOptions.plugins.push({
+        name: 'workflow',
+      });
+    }
+
     // Generate functions for vercel build
     if (isVercelDeploy) {
       nitro.hooks.hook('compiled', async () => {
@@ -31,9 +41,17 @@ export default {
 
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
+      const builder = new LocalBuilder(nitro);
       nitro.hooks.hook('build:before', async () => {
-        await new LocalBuilder(nitro).build();
+        await builder.build();
       });
+
+      // Allows for HMR
+      if (nitro.options.dev) {
+        nitro.hooks.hook('dev:reload', async () => {
+          await builder.build();
+        });
+      }
 
       addVirtualHandler(
         nitro,

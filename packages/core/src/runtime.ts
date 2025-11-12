@@ -8,6 +8,7 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { getPort } from '@workflow/utils/get-port';
 import type {
   Event,
   WorkflowRun,
@@ -16,6 +17,7 @@ import type {
 } from '@workflow/world';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import { parseWorkflowName } from './parse-name.js';
 import { getStepFunction } from './private.js';
 import { getWorld, getWorldHandlers } from './runtime/world.js';
 import {
@@ -32,6 +34,7 @@ import {
   hydrateStepArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
+import { remapErrorStack } from './source-map.js';
 // TODO: move step handler out to a separate file
 import { contextStorage } from './step/context-storage.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -202,10 +205,7 @@ export class Run<TResult> {
         }
 
         if (run.status === 'failed') {
-          throw new WorkflowRunFailedError(
-            this.runId,
-            run.error ?? 'Unknown error'
-          );
+          throw new WorkflowRunFailedError(this.runId, run.error);
         }
 
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
@@ -517,15 +517,31 @@ export function workflowEntrypoint(workflowCode: string) {
               }
             } else {
               const errorName = getErrorName(err);
-              const errorStack = getErrorStack(err);
+              const errorMessage =
+                err instanceof Error ? err.message : String(err);
+              let errorStack = getErrorStack(err);
+
+              // Remap error stack using source maps to show original source locations
+              if (errorStack) {
+                const parsedName = parseWorkflowName(workflowName);
+                const filename = parsedName?.path || workflowName;
+                errorStack = remapErrorStack(
+                  errorStack,
+                  filename,
+                  workflowCode
+                );
+              }
+
               console.error(
                 `${errorName} while running "${runId}" workflow:\n\n${errorStack}`
               );
               await world.runs.update(runId, {
                 status: 'failed',
-                error: String(err),
-                // TODO: include error codes when we define them
-                // TODO: serialize/include the error name and stack?
+                error: {
+                  message: errorMessage,
+                  stack: errorStack,
+                  // TODO: include error codes when we define them
+                },
               });
               span?.setAttributes({
                 ...Attribute.WorkflowRunStatus('failed'),
@@ -561,6 +577,9 @@ export const stepEntrypoint =
         // Extract the step name from the topic name
         const stepName = metadata.queueName.slice('__wkf_step_'.length);
         const world = getWorld();
+
+        // Get the port early to avoid async operations during step execution
+        const port = await getPort();
 
         return trace(`STEP ${stepName}`, async (span) => {
           span?.setAttributes({
@@ -669,10 +688,10 @@ export const stepEntrypoint =
                   workflowRunId,
                   workflowStartedAt: new Date(+workflowStartedAt),
                   // TODO: there should be a getUrl method on the world interface itself. This
-                  // solution only works for vercel + embedded worlds.
+                  // solution only works for vercel + local worlds.
                   url: process.env.VERCEL_URL
                     ? `https://${process.env.VERCEL_URL}`
-                    : `http://localhost:${process.env.PORT || 3000}`,
+                    : `http://localhost:${port ?? 3000}`,
                 },
                 ops,
               },
@@ -718,7 +737,8 @@ export const stepEntrypoint =
             }
 
             if (FatalError.is(err)) {
-              const stackLines = getErrorStack(err).split('\n').slice(0, 4);
+              const errorStack = getErrorStack(err);
+              const stackLines = errorStack.split('\n').slice(0, 4);
               console.error(
                 `[Workflows] "${workflowRunId}" - Encountered \`FatalError\` while executing step "${stepName}":\n  > ${stackLines.join('\n    > ')}\n\nBubbling up error to parent workflow`
               );
@@ -728,15 +748,17 @@ export const stepEntrypoint =
                 correlationId: stepId,
                 eventData: {
                   error: String(err),
-                  stack: err.stack,
+                  stack: errorStack,
                   fatal: true,
                 },
               });
               await world.steps.update(workflowRunId, stepId, {
                 status: 'failed',
-                error: String(err),
-                // TODO: include error codes when we define them
-                // TODO: serialize/include the error name and stack?
+                error: {
+                  message: err.message || String(err),
+                  stack: errorStack,
+                  // TODO: include error codes when we define them
+                },
               });
 
               span?.setAttributes({
@@ -753,7 +775,8 @@ export const stepEntrypoint =
 
               if (attempt >= maxRetries) {
                 // Max retries reached
-                const stackLines = getErrorStack(err).split('\n').slice(0, 4);
+                const errorStack = getErrorStack(err);
+                const stackLines = errorStack.split('\n').slice(0, 4);
                 console.error(
                   `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${attempt}):\n  > ${stackLines.join('\n    > ')}\n\n  Max retries reached\n  Bubbling error to parent workflow`
                 );
@@ -763,13 +786,16 @@ export const stepEntrypoint =
                   correlationId: stepId,
                   eventData: {
                     error: errorMessage,
-                    stack: getErrorStack(err),
+                    stack: errorStack,
                     fatal: true,
                   },
                 });
                 await world.steps.update(workflowRunId, stepId, {
                   status: 'failed',
-                  error: errorMessage,
+                  error: {
+                    message: errorMessage,
+                    stack: errorStack,
+                  },
                 });
 
                 span?.setAttributes({

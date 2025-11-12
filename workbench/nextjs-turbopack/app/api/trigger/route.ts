@@ -3,6 +3,10 @@ import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import * as batchingWorkflow from '@/workflows/6_batching';
 import * as duplicateE2e from '@/workflows/98_duplicate_case';
 import * as e2eWorkflows from '@/workflows/99_e2e';
+import {
+  WorkflowRunFailedError,
+  WorkflowRunNotCompletedError,
+} from 'workflow/internal/errors';
 
 export async function POST(req: Request) {
   const url = new URL(req.url);
@@ -97,7 +101,7 @@ export async function GET(req: Request) {
       : Response.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'WorkflowRunNotCompletedError') {
+      if (WorkflowRunNotCompletedError.is(error)) {
         return Response.json(
           {
             ...error,
@@ -108,12 +112,18 @@ export async function GET(req: Request) {
         );
       }
 
-      if (error.name === 'WorkflowRunFailedError') {
+      if (WorkflowRunFailedError.is(error)) {
+        const cause = error.cause;
         return Response.json(
           {
             ...error,
             name: error.name,
             message: error.message,
+            cause: {
+              message: cause.message,
+              stack: cause.stack,
+              code: cause.code,
+            },
           },
           { status: 400 }
         );

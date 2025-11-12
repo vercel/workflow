@@ -1,6 +1,10 @@
 import { getRun, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import workflowManifest from '../manifest.js';
+import {
+  WorkflowRunFailedError,
+  WorkflowRunNotCompletedError,
+} from 'workflow/internal/errors';
 
 export async function POST(req: Request) {
   const url = new URL(req.url);
@@ -89,7 +93,7 @@ export async function GET(req: Request) {
       : Response.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'WorkflowRunNotCompletedError') {
+      if (WorkflowRunNotCompletedError.is(error)) {
         return Response.json(
           {
             ...error,
@@ -100,12 +104,18 @@ export async function GET(req: Request) {
         );
       }
 
-      if (error.name === 'WorkflowRunFailedError') {
+      if (WorkflowRunFailedError.is(error)) {
+        const cause = error.cause;
         return Response.json(
           {
             ...error,
             name: error.name,
             message: error.message,
+            cause: {
+              message: cause.message,
+              stack: cause.stack,
+              code: cause.code,
+            },
           },
           { status: 400 }
         );

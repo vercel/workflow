@@ -1,5 +1,24 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.7
+
+### Patch Changes
+
+- Updated dependencies [8208b53]
+- Updated dependencies [4f9ae4e]
+  - @workflow/builders@4.0.1-beta.9
+  - @workflow/swc-plugin@4.0.1-beta.5
+
+## 4.0.0-beta.6
+
+### Patch Changes
+
+- 98c36f1: Use hotUpdate for HMR in sveltekit
+- 03d076b: Remove unused deps in @workflow/sveltekit
+- Updated dependencies [e0c6618]
+  - @workflow/swc-plugin@4.0.1-beta.4
+  - @workflow/builders@4.0.1-beta.8
+
 ## 4.0.0-beta.5
 
 ### Patch Changes

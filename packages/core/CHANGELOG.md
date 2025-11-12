@@ -1,5 +1,36 @@
 # @workflow/core
 
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- 8208b53: Fix sourcemap error tracing in workflows
+- aac1b6c: Make process.env in workflow context a readonly clone
+- 6373ab5: BREAKING: `resumeHook()` now throws errors (including when a Hook is not found for a given "token") instead of returning `null`
+- Updated dependencies [2b880f9]
+- Updated dependencies [2dca0d4]
+- Updated dependencies [68363b2]
+  - @workflow/world-local@4.0.1-beta.7
+  - @workflow/world-vercel@4.0.1-beta.7
+
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- 7013f29: **BREAKING**: Change `RetryableError` "retryAfter" option number value to represent milliseconds instead of seconds. Previously, numeric values were interpreted as seconds; now they are interpreted as milliseconds. This aligns with JavaScript conventions for durations (like `setTimeout` and `setInterval`).
+- a28bc37: Make `@standard-schema/spec` be a regular dependency
+- 809e0fe: Add support for specifying milliseconds in `sleep()`
+- adf0cfe: Add automatic port discovery
+- 5c0268b: Add Standard Schema support and runtime validation to `defineHook()`
+- 0b3e89e: Fix event data serialization for observability
+- 7a47eb8: Deprecate deploymentId in StartOptions with warning that it should not be set by users
+- Updated dependencies [bf170ad]
+- Updated dependencies [adf0cfe]
+  - @workflow/utils@4.0.1-beta.2
+  - @workflow/world-local@4.0.1-beta.6
+  - @workflow/errors@4.0.1-beta.4
+  - @workflow/world-vercel@4.0.1-beta.6
+
 ## 4.0.1-beta.9
 
 ### Patch Changes

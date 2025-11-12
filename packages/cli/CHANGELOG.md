@@ -1,5 +1,47 @@
 # @workflow/cli
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- 11469d8: Update default fallback path for connecting to local world
+- 00efdfb: Fix --noBrowser option help documentation
+- Updated dependencies [8208b53]
+- Updated dependencies [2b880f9]
+- Updated dependencies [11469d8]
+- Updated dependencies [4f9ae4e]
+- Updated dependencies [2dca0d4]
+- Updated dependencies [aac1b6c]
+- Updated dependencies [6373ab5]
+- Updated dependencies [68363b2]
+- Updated dependencies [00efdfb]
+  - @workflow/builders@4.0.1-beta.9
+  - @workflow/core@4.0.1-beta.11
+  - @workflow/world-local@4.0.1-beta.7
+  - @workflow/web@4.0.1-beta.10
+  - @workflow/swc-plugin@4.0.1-beta.5
+  - @workflow/world-vercel@4.0.1-beta.7
+
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- Updated dependencies [7013f29]
+- Updated dependencies [a28bc37]
+- Updated dependencies [e0c6618]
+- Updated dependencies [809e0fe]
+- Updated dependencies [adf0cfe]
+- Updated dependencies [5c0268b]
+- Updated dependencies [0b3e89e]
+- Updated dependencies [7a47eb8]
+  - @workflow/core@4.0.1-beta.10
+  - @workflow/swc-plugin@4.0.1-beta.4
+  - @workflow/world-local@4.0.1-beta.6
+  - @workflow/web@4.0.1-beta.9
+  - @workflow/errors@4.0.1-beta.4
+  - @workflow/builders@4.0.1-beta.8
+  - @workflow/world-vercel@4.0.1-beta.6
+
 ## 4.0.1-beta.11
 
 ### Patch Changes

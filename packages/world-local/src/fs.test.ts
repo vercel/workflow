@@ -131,7 +131,8 @@ describe('fs utilities', () => {
 
         expect(result.data).toHaveLength(5);
         expect(result.hasMore).toBe(false);
-        expect(result.cursor).toBeNull();
+        // Cursor should be set even when hasMore is false (for stable pagination)
+        expect(result.cursor).not.toBeNull();
 
         // Should be sorted in descending order (newest first)
         assert(result.data[0], 'expected first item to be defined');

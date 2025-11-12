@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-vercel",
-  "version": "4.0.1-beta.5",
+  "version": "4.0.1-beta.7",
   "description": "Vercel platform World implementation for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -23,21 +23,22 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist",
+    "build": "genversion --es6 src/version.ts && tsc",
+    "dev": "genversion --es6 src/version.ts && tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist src/version.ts",
     "test": "echo 'No tests yet'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "genversion --es6 src/version.ts && tsc --noEmit"
   },
   "dependencies": {
     "@vercel/oidc": "catalog:",
     "@vercel/queue": "0.0.0-alpha.28",
-    "@workflow/world": "workspace:*",
     "@workflow/errors": "workspace:*",
+    "@workflow/world": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "genversion": "^3.2.0"
   }
 }

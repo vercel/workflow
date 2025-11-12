@@ -1,6 +1,6 @@
 import { assert, describe, expect, test } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
-import { cliInspectJson } from './utils';
+import { cliInspectJson, isLocalDeployment } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
@@ -524,4 +524,90 @@ describe('e2e', () => {
     expect(returnValue.retryableResult.duration).toBeGreaterThan(10_000);
     expect(returnValue.gotFatalError).toBe(true);
   });
+
+  test(
+    'stepDirectCallWorkflow - calling step functions directly outside workflow context',
+    { timeout: 60_000 },
+    async () => {
+      // Call the API route that directly calls a step function (no workflow context)
+      const url = new URL('/api/test-direct-step-call', deploymentUrl);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ x: 3, y: 5 }),
+      });
+
+      if (!res.ok) {
+        throw new Error(
+          `Failed to call step function directly: ${res.url} ${
+            res.status
+          }: ${await res.text()}`
+        );
+      }
+
+      const { result } = await res.json();
+
+      // Expected: add(3, 5) = 8
+      expect(result).toBe(8);
+    }
+  );
+
+  test(
+    'crossFileErrorWorkflow - stack traces work across imported modules',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow intentionally throws an error from an imported helper module
+      // to verify that stack traces correctly show cross-file call chains
+      const run = await triggerWorkflow('crossFileErrorWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The workflow should fail with error response containing both top-level and cause
+      expect(returnValue).toHaveProperty('name');
+      expect(returnValue.name).toBe('WorkflowRunFailedError');
+      expect(returnValue).toHaveProperty('message');
+
+      // Verify the cause property contains the structured error
+      expect(returnValue).toHaveProperty('cause');
+      expect(returnValue.cause).toBeTypeOf('object');
+      expect(returnValue.cause).toHaveProperty('message');
+      expect(returnValue.cause.message).toContain(
+        'Error from imported helper module'
+      );
+
+      // Verify the stack trace is present in the cause
+      expect(returnValue.cause).toHaveProperty('stack');
+      expect(typeof returnValue.cause.stack).toBe('string');
+
+      // Known issue: SvelteKit dev mode has incorrect source map mappings for bundled imports.
+      // esbuild with bundle:true inlines helpers.ts but source maps incorrectly map to 99_e2e.ts
+      // This works correctly in production and other frameworks.
+      // TODO: Investigate esbuild source map generation for bundled modules
+      const isSvelteKitDevMode =
+        process.env.APP_NAME === 'sveltekit' && isLocalDeployment();
+
+      if (!isSvelteKitDevMode) {
+        // Stack trace should include frames from the helper module (helpers.ts)
+        expect(returnValue.cause.stack).toContain('helpers.ts');
+      }
+
+      // These checks should work in all modes
+      expect(returnValue.cause.stack).toContain('throwError');
+      expect(returnValue.cause.stack).toContain('callThrower');
+
+      // Stack trace should include frames from the workflow file (99_e2e.ts)
+      expect(returnValue.cause.stack).toContain('99_e2e.ts');
+      expect(returnValue.cause.stack).toContain('crossFileErrorWorkflow');
+
+      // Stack trace should NOT contain 'evalmachine' anywhere
+      expect(returnValue.cause.stack).not.toContain('evalmachine');
+
+      // Verify the run failed with structured error
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('failed');
+      expect(runData.error).toBeTypeOf('object');
+      expect(runData.error.message).toContain(
+        'Error from imported helper module'
+      );
+    }
+  );
 });

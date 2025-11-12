@@ -1,6 +1,9 @@
+import os from 'node:os';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
+import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { ZodError, type z } from 'zod';
+import { version } from './version.js';
 
 export interface APIConfig {
   baseUrl?: string;
@@ -21,6 +24,81 @@ export function dateToStringReplacer(_key: string, value: unknown): unknown {
   }
   return value;
 }
+
+/**
+ * Helper to serialize error into a JSON string in the error field.
+ * The error field can be either:
+ * - A plain string (legacy format, just the error message)
+ * - A JSON string with { message, stack, code } (new format)
+ */
+export function serializeError<T extends { error?: StructuredError }>(
+  data: T
+): Omit<T, 'error'> & { error?: string } {
+  const { error, ...rest } = data;
+
+  // If we have an error, serialize as JSON string
+  if (error !== undefined) {
+    return {
+      ...rest,
+      error: JSON.stringify({
+        message: error.message,
+        stack: error.stack,
+        code: error.code,
+      }),
+    } as Omit<T, 'error'> & { error: string };
+  }
+
+  return data as Omit<T, 'error'>;
+}
+
+/**
+ * Helper to deserialize error field from the backend into a StructuredError object.
+ * Handles backwards compatibility:
+ * - If error is a JSON string with {message, stack, code} → parse into StructuredError
+ * - If error is a plain string → treat as error message with no stack
+ * - If no error → undefined
+ *
+ * This function transforms objects from wire format (where error is a JSON string)
+ * to domain format (where error is a StructuredError object). The generic type
+ * parameter should be the expected output type (WorkflowRun or Step).
+ *
+ * Note: The type assertion is necessary because the wire format types from Zod schemas
+ * have `error?: string` while the domain types have complex error types (e.g., discriminated
+ * unions with `error: void` or `error: StructuredError` depending on status), but the
+ * transformation preserves all other fields correctly.
+ */
+export function deserializeError<T extends Record<string, any>>(obj: any): T {
+  const { error, ...rest } = obj;
+
+  if (!error) {
+    return obj as T;
+  }
+
+  // Try to parse as structured error JSON
+  try {
+    const parsed = StructuredErrorSchema.parse(JSON.parse(error));
+    return {
+      ...rest,
+      error: {
+        message: parsed.message,
+        stack: parsed.stack,
+        code: parsed.code,
+      },
+    } as T;
+  } catch {
+    // Backwards compatibility: error is just a plain string
+    return {
+      ...rest,
+      error: {
+        message: error,
+      },
+    } as T;
+  }
+}
+
+const getUserAgent = () => {
+  return `@workflow/world-vercel/${version} node-${process.version} ${os.platform()} (${os.arch()})`;
+};
 
 export interface HttpConfig {
   baseUrl: string;
@@ -45,6 +123,7 @@ export const getHttpUrl = (
 export const getHeaders = (config?: APIConfig): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
+  headers.set('User-Agent', getUserAgent());
   if (projectConfig) {
     headers.set(
       'x-vercel-environment',

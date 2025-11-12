@@ -1,5 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import { JsonTransport } from '@vercel/queue';
+import { getPort } from '@workflow/utils/get-port';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
@@ -57,11 +58,12 @@ export function createQueue(port?: number): Queue {
 
     (async () => {
       let defaultRetriesLeft = 3;
+      const portToUse = port ?? (await getPort());
       for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
         defaultRetriesLeft--;
 
         const response = await fetch(
-          `http://localhost:${port}/.well-known/workflow/v1/${pathname}`,
+          `http://localhost:${portToUse}/.well-known/workflow/v1/${pathname}`,
           {
             method: 'POST',
             duplex: 'half',

@@ -116,6 +116,16 @@ const hydrate = <T>(data: T): T => {
  * @returns ServerActionResult with success=true and the data
  */
 function createResponse<T>(data: T): ServerActionResult<T> {
+  if (data && typeof data === 'object') {
+    // We can't pass non-serializable objects from client to server. To ensure
+    // we don't accidentally do this, we convert the object to JSON.
+    try {
+      data = JSON.parse(JSON.stringify(data)) as T;
+    } catch {
+      // If we can't serialize the data, we'll leave it to the API layer to
+      // throw an error if the data isn't transportable.
+    }
+  }
   return {
     success: true,
     data,
@@ -238,7 +248,8 @@ export async function fetchStep(
   try {
     const world = getWorldFromEnv(worldEnv);
     const step = await world.steps.get(runId, stepId, { resolveData });
-    return createResponse(hydrate(step as Step));
+    const hydratedStep = hydrate(step as Step);
+    return createResponse(hydratedStep);
   } catch (error) {
     console.error('Failed to fetch step:', error);
     return {
@@ -311,7 +322,7 @@ export async function fetchEventsByCorrelationId(
       resolveData: withData ? 'all' : 'none',
     });
     return createResponse({
-      data: result.data as unknown as Event[],
+      data: result.data.map(hydrate),
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
     });

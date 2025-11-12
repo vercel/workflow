@@ -521,14 +521,21 @@ export const Frameworks = () => {
           <Next className="size-[56px] relative" />
           <Next className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
         </Link>
+        <Link href="/docs/getting-started/hono" className="relative">
+          <Hono className="size-[56px]" />
+          <Hono className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
+        </Link>
         <Link href="/docs/getting-started/nitro" className="relative">
           <Nitro className="size-[56px]" />
           <Nitro className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
         </Link>
-
         <Link href="/docs/getting-started/sveltekit" className="relative">
           <SvelteKit className="size-[56px]" />
           <SvelteKit className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
+        </Link>
+        <Link href="/docs/getting-started/nuxt">
+          <Nuxt className="size-[56px]" />
+          <Nuxt className="size-[64px] absolute top-0 opacity-15 blur-lg -z-10" />
         </Link>
 
         <div className="col-span-4 w-full pt-6">
@@ -553,20 +560,6 @@ export const Frameworks = () => {
         >
           <NestGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <Nest className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[60px]"
-          onClick={() => handleRequest('Nuxt')}
-        >
-          <NuxtGray className="size-[60px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
-          <Nuxt className="size-[60px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
-        </div>
-        <div
-          className="group relative cursor-pointer size-[48px]"
-          onClick={() => handleRequest('Hono')}
-        >
-          <HonoGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
-          <Hono className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
         </div>
         <div
           className="group relative cursor-pointer size-[52px]"

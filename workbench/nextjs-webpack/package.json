@@ -4,8 +4,8 @@
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "clean": "rm -rf .next .swc app/.well-known/workflow",
     "start": "next start",
     "lint": "next lint"

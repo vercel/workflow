@@ -16,5 +16,8 @@
     "vite": "^7.1.12",
     "workflow": "workspace:*",
     "zod": "catalog:"
+  },
+  "dependencies": {
+    "@node-rs/xxhash": "1.7.6"
   }
 }

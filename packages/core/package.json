@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.0.1-beta.9",
+  "version": "4.0.1-beta.11",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@aws-sdk/credential-provider-web-identity": "3.609.0",
+    "@jridgewell/trace-mapping": "^0.3.31",
     "@standard-schema/spec": "^1.0.0",
     "@types/ms": "^2.1.0",
     "@vercel/functions": "catalog:",
@@ -59,7 +60,6 @@
     "devalue": "^5.4.1",
     "ms": "2.1.3",
     "nanoid": "^5.1.6",
-    "pid-port": "^2.0.0",
     "seedrandom": "^3.0.5",
     "ulid": "^3.0.1",
     "zod": "catalog:"

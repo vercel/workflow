@@ -62,12 +62,11 @@ import { resumeHook } from "workflow/api";
 export async function POST(request: Request) {
   const { token, approved, comment } = await request.json();
 
-  // Resume the workflow with the approval data
-  const result = await resumeHook(token, { approved, comment });
-
-  if (result) {
+  try {
+    // Resume the workflow with the approval data
+    const result = await resumeHook(token, { approved, comment });
     return Response.json({ success: true, runId: result.runId });
-  } else {
+  } catch (error) {
     return Response.json({ error: "Invalid token" }, { status: 404 });
   }
 }
@@ -121,10 +120,14 @@ export async function POST(request: Request) {
   const slackEvent = await request.json();
   const channelId = slackEvent.channel;
 
-  // Reconstruct the token using the channel ID
-  await resumeHook(`slack_messages:${channelId}`, slackEvent);
+  try {
+    // Reconstruct the token using the channel ID
+    await resumeHook(`slack_messages:${channelId}`, slackEvent);
 
-  return new Response("OK");
+    return new Response("OK");
+  } catch (error) {
+    return new Response("Hook not found", { status: 404 });
+  }
 }
 ```
 
@@ -216,13 +219,9 @@ export async function webhookWithStaticResponse() {
   "use workflow";
 
   const webhook = createWebhook({
-    respondWith: new Response(
-      JSON.stringify({ success: true, message: "Webhook received" }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      }
-    )
+    respondWith: Response.json({
+      success: true, message: "Webhook received"
+    }),
   });
 
   const request = await webhook;
@@ -366,20 +365,21 @@ async function postToSlack(channelId: string, message: string) {
 
 ### Type-Safe Hooks with `defineHook()`
 
-The [`defineHook()`](/docs/api-reference/workflow/define-hook) helper provides type safety between creating and resuming hooks:
+The [`defineHook()`](/docs/api-reference/workflow/define-hook) helper provides type safety and runtime validation between creating and resuming hooks using [Standard Schema v1](https://standardschema.dev). Use any compliant validator like Zod or Valibot:
 
 ```typescript lineNumbers
 import { defineHook } from "workflow";
+import { z } from "zod";
 
-// Define the hook type once
-type ApprovalRequest = {
-  requestId: string;
-  approved: boolean;
-  approvedBy: string;
-  comment: string;
-};
-
-const approvalHook = defineHook<ApprovalRequest>();
+// Define the hook with schema for type safety and runtime validation
+const approvalHook = defineHook({ // [!code highlight]
+  schema: z.object({ // [!code highlight]
+    requestId: z.string(), // [!code highlight]
+    approved: z.boolean(), // [!code highlight]
+    approvedBy: z.string(), // [!code highlight]
+    comment: z.string().transform((value) => value.trim()), // [!code highlight]
+  }), // [!code highlight]
+}); // [!code highlight]
 
 // In your workflow
 export async function documentApprovalWorkflow(documentId: string) {
@@ -389,24 +389,28 @@ export async function documentApprovalWorkflow(documentId: string) {
     token: `approval:${documentId}`
   });
 
+  // Payload is type-safe and validated
   const approval = await hook;
 
   console.log(`Document ${approval.requestId} ${approval.approved ? "approved" : "rejected"}`);
   console.log(`By: ${approval.approvedBy}, Comment: ${approval.comment}`);
 }
 
-// In your API route - TypeScript ensures the payload matches!
+// In your API route - both type-safe and runtime-validated!
 export async function POST(request: Request) {
   const { documentId, ...approvalData } = await request.json();
 
-  // This is type-safe - TypeScript knows the exact shape required
-  await approvalHook.resume(`approval:${documentId}`, approvalData);
-
-  return new Response("OK");
+  try {
+    // The schema validates the payload before resuming the workflow
+    await approvalHook.resume(`approval:${documentId}`, approvalData);
+    return new Response("OK");
+  } catch (error) {
+    return Response.json({ error: "Invalid token or validation failed" }, { status: 400 });
+  }
 }
 ```
 
-This pattern is especially valuable in larger applications where the workflow and API code are in separate files.
+This pattern is especially valuable in larger applications where the workflow and API code are in separate files, providing both compile-time type safety and runtime validation.
 
 ## Best Practices
 

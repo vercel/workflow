@@ -1,6 +1,6 @@
 {
   "name": "workflow",
-  "version": "4.0.1-beta.11",
+  "version": "4.0.1-beta.13",
   "description": "Workflow DevKit - Build durable, resilient, and observable workflows",
   "main": "dist/typescript-plugin.cjs",
   "type": "module",
@@ -33,8 +33,9 @@
     "./internal/serialization": "./dist/internal/serialization.js",
     "./internal/builtins": "./dist/internal/builtins.js",
     "./internal/private": "./dist/internal/private.js",
-    "./next": "./dist/next.js",
+    "./next": "./dist/next.cjs",
     "./nitro": "./dist/nitro.js",
+    "./nuxt": "./dist/nuxt.js",
     "./sveltekit": "./dist/sveltekit.js",
     "./rollup": "./dist/rollup.js",
     "./vite": "./dist/vite.js",
@@ -55,6 +56,7 @@
     "ms": "2.1.3",
     "@workflow/next": "workspace:*",
     "@workflow/nitro": "workspace:*",
+    "@workflow/nuxt": "workspace:*",
     "@workflow/sveltekit": "workspace:*"
   },
   "devDependencies": {
