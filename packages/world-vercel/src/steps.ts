@@ -6,7 +6,6 @@ import {
   PaginatedResponseSchema,
   type Step,
   StepSchema,
-  StructuredErrorSchema,
   type UpdateStepRequest,
 } from '@workflow/world';
 import { z } from 'zod';
