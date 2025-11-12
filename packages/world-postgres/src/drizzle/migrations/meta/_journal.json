@@ -8,6 +8,13 @@
       "when": 1762873019948,
       "tag": "0000_cultured_the_anarchist",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1762968119388,
+      "tag": "0001_handy_jocasta",
+      "breakpoints": true
     }
   ]
 }
