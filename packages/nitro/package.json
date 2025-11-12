@@ -31,13 +31,13 @@
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
-    "exsolve": "^1.0.7",
-    "pathe": "^2.0.3"
+    "exsolve": "1.0.7",
+    "pathe": "2.0.3"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "nitro": "catalog:",
-    "vite": "^7.1.12"
+    "vite": "7.1.12"
   }
 }

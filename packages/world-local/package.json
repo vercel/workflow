@@ -33,13 +33,13 @@
     "@vercel/queue": "0.0.0-alpha.23",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
-    "ulid": "^3.0.1",
-    "undici": "^6.19.0",
+    "ulid": "3.0.1",
+    "undici": "6.19.0",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@opentelemetry/api": "^1.9.0",
-    "@types/ms": "^0.7.34",
+    "@opentelemetry/api": "1.9.0",
+    "@types/ms": "0.7.34",
     "@types/node": "catalog:",
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
