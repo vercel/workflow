@@ -3,12 +3,15 @@ import { JsonTransport } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
+  type QueuePayload,
   QueuePayloadSchema,
   type QueuePrefix,
   type ValidQueueName,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { MessageData, type QueueDriver } from './queue-drivers/types.js';
+
+const transport = new JsonTransport();
 
 const QUEUE_MAX_VISIBILITY =
   parseInt(process.env.WORKFLOW_POSTGRES_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
@@ -24,8 +27,10 @@ const QUEUE_MAX_VISIBILITY =
  * we can reuse the embedded world, mix and match worlds to build
  * hybrid architectures, and even migrate between worlds.
  */
-export function createQueue(queueImplementation: QueueDriver): Queue {
-  const transport = new JsonTransport();
+export function createQueue(
+  queueDriver: QueueDriver,
+  securityToken: string
+): Queue {
   const generateMessageId = monotonicFactory();
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
@@ -48,11 +53,11 @@ export function createQueue(queueImplementation: QueueDriver): Queue {
 
     switch (prefix) {
       case '__wkf_step_':
-        await queueImplementation.pushStep(payload);
+        await queueDriver.pushStep(payload);
         break;
 
       case '__wkf_workflow_':
-        await queueImplementation.pushFlow(payload);
+        await queueDriver.pushFlow(payload);
         break;
     }
 
@@ -64,30 +69,28 @@ export function createQueue(queueImplementation: QueueDriver): Queue {
     handler
   ) => {
     return async (req) => {
-      const reqBody = await req.json();
-      const messageData = MessageData.parse(reqBody);
-      const bodyStream = Stream.Readable.toWeb(
-        Stream.Readable.from([messageData.data])
-      );
+      const secret = req.headers.get('X-Workflow-Secret');
+      const [message, payload] = await parse(req);
 
-      const body = await transport.deserialize(
-        bodyStream as ReadableStream<Uint8Array>
-      );
-
-      const message = QueuePayloadSchema.parse(body);
-
-      if (!isValidQueueName(messageData.queueName)) {
+      if (!secret || securityToken !== secret) {
         return Response.json(
-          { error: `Invalid queue name: ${messageData.queueName}` },
+          { error: 'Unauthorized: Invalid or missing secret key' },
+          { status: 401 }
+        );
+      }
+
+      if (!isValidQueueName(message.queueName)) {
+        return Response.json(
+          { error: `Invalid queue name: ${message.queueName}` },
           { status: 400 }
         );
       }
 
       try {
-        const result = await handler(message, {
-          attempt: messageData.attempt,
-          queueName: messageData.queueName,
-          messageId: messageData.messageId,
+        const result = await handler(payload, {
+          attempt: message.attempt,
+          queueName: message.queueName,
+          messageId: message.messageId,
         });
 
         let timeoutSeconds: number | null = null;
@@ -138,4 +141,20 @@ function isValidQueueName(name: string): name is ValidQueueName {
   }
 
   return false;
+}
+
+async function parse(req: Request): Promise<[MessageData, QueuePayload]> {
+  const reqBody = await req.json();
+  const messageData = MessageData.parse(reqBody);
+  const bodyStream = Stream.Readable.toWeb(
+    Stream.Readable.from([messageData.data])
+  );
+
+  const body = await transport.deserialize(
+    bodyStream as ReadableStream<Uint8Array>
+  );
+
+  const payload = QueuePayloadSchema.parse(body);
+
+  return [messageData, payload];
 }
