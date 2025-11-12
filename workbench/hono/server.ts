@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from './_workflows.js';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
+import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { allWorkflows } from './_workflows.js';
 
 const app = new Hono();
 
@@ -163,8 +163,9 @@ app.post('/api/hook', async ({ req }) => {
   } catch (error) {
     console.log('error during getHookByToken', error);
     // TODO: `WorkflowAPIError` is not exported, so for now
-    // we'll return 404 assuming it's the "invalid" token test case
-    return Response.json(null, { status: 404 });
+    // we'll return 422 assuming it's the "invalid" token test case
+    // NOTE: Need to return 422 because Nitro passes 404 requests to the dev server to handle.
+    return Response.json(null, { status: 422 });
   }
 
   await resumeHook(hook.token, {

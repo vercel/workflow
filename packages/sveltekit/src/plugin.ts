@@ -113,7 +113,22 @@ export function workflowPlugin(options?: WorkflowPluginOptions): Plugin {
       }
 
       // Read the file to check for workflow/step directives
-      const content = await read();
+      let content: string;
+      try {
+        content = await read();
+      } catch {
+        // File might have been deleted - trigger rebuild to update generated routes
+        console.log('Workflow file deleted, regenerating routes...');
+        try {
+          await builder.build();
+        } catch (buildError) {
+          // Build might fail if files are being deleted during test cleanup
+          // Log but don't crash - the next successful change will trigger a rebuild
+          console.error('Build failed during file deletion:', buildError);
+        }
+        return;
+      }
+
       const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
       const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
 
@@ -123,7 +138,14 @@ export function workflowPlugin(options?: WorkflowPluginOptions): Plugin {
 
       // Rebuild everything - simpler and more reliable than tracking individual files
       console.log('Workflow file changed, regenerating routes...');
-      await builder.build();
+      try {
+        await builder.build();
+      } catch (buildError) {
+        // Build might fail if files are being modified/deleted during test cleanup
+        // Log but don't crash - the next successful change will trigger a rebuild
+        console.error('Build failed during HMR:', buildError);
+        return;
+      }
 
       // Trigger full reload of workflow routes
       server.ws.send({
