@@ -1,4 +1,4 @@
 {
-  "extends": "@workflow/tsconfig",
+  "extends": "@workflow/tsconfig/base.json",
   "exclude": ["dist", "node_modules"]
 }
