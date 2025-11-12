@@ -18,3 +18,5 @@ catalog:
   zod: 4.1.11
 onlyBuiltDependencies:
   - esbuild
+
+savePrefix: ''
