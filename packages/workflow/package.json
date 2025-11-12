@@ -28,7 +28,11 @@
       "require": "./dist/typescript-plugin.cjs",
       "default": "./dist/index.js"
     },
-    "./api": "./dist/api.js",
+    "./api": {
+      "types": "./dist/api.d.ts",
+      "workflow": "./dist/api-workflow.js",
+      "default": "./dist/api.js"
+    },
     "./internal/errors": "./dist/internal/errors.js",
     "./internal/serialization": "./dist/internal/serialization.js",
     "./internal/builtins": "./dist/internal/builtins.js",
@@ -60,7 +64,7 @@
     "@workflow/sveltekit": "workspace:*"
   },
   "devDependencies": {
-    "@types/ms": "^2.1.0",
+    "@types/ms": "2.1.0",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*"
   },

@@ -610,4 +610,81 @@ describe('e2e', () => {
       );
     }
   );
+
+  test(
+    'hookCleanupTestWorkflow - hook token reuse after workflow completion',
+    { timeout: 60_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      // Start first workflow
+      const run1 = await triggerWorkflow('hookCleanupTestWorkflow', [
+        token,
+        customData,
+      ]);
+
+      // Wait for hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Send payload to first workflow
+      const hookUrl = new URL('/api/hook', deploymentUrl);
+      let res = await fetch(hookUrl, {
+        method: 'POST',
+        body: JSON.stringify({
+          token,
+          data: { message: 'test-message-1', customData },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      let body = await res.json();
+      expect(body.runId).toBe(run1.runId);
+
+      // Get first workflow result
+      const run1Result = await getWorkflowReturnValue(run1.runId);
+      expect(run1Result).toMatchObject({
+        message: 'test-message-1',
+        customData,
+        hookCleanupTestData: 'workflow_completed',
+      });
+
+      // Now verify token can be reused for a second workflow
+      const run2 = await triggerWorkflow('hookCleanupTestWorkflow', [
+        token,
+        customData,
+      ]);
+
+      // Wait for hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Send payload to second workflow using same token
+      res = await fetch(hookUrl, {
+        method: 'POST',
+        body: JSON.stringify({
+          token,
+          data: { message: 'test-message-2', customData },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      body = await res.json();
+      expect(body.runId).toBe(run2.runId);
+
+      // Get second workflow result
+      const run2Result = await getWorkflowReturnValue(run2.runId);
+      expect(run2Result).toMatchObject({
+        message: 'test-message-2',
+        customData,
+        hookCleanupTestData: 'workflow_completed',
+      });
+
+      // Verify both runs completed successfully
+      const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
+      expect(run1Data.status).toBe('completed');
+
+      const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
+      expect(run2Data.status).toBe('completed');
+    }
+  );
 });

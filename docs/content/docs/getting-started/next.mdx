@@ -148,6 +148,8 @@ export async function handleUserSignup(email: string) {
  await sleep("5s"); // Pause for 5s - doesn't consume any resources
  await sendOnboardingEmail(user);
 
+ console.log("Workflow is complete! Run 'npx workflow web' to inspect your run")
+
  return { userId: user.id, status: "onboarded" };
 }
 
