@@ -13,3 +13,9 @@ Object.defineProperty(step, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
     enumerable: false,
     configurable: false
 });
+Object.defineProperty(stepArrow, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//stepArrow",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});

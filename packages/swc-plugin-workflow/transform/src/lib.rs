@@ -2160,6 +2160,28 @@ impl VisitMut for StepTransform {
                                     ),
                                 );
                             }
+                        } else if let Decl::Var(var_decl) = &export_decl.decl {
+                            // Handle exported variable declarations like `export const stepArrow = async () => {}`
+                            for declarator in &var_decl.decls {
+                                if let Pat::Ident(binding) = &declarator.name {
+                                    let name = binding.id.sym.to_string();
+                                    if step_functions.contains(&name) {
+                                        if let Some(init) = &declarator.init {
+                                            let span = match &**init {
+                                                Expr::Fn(fn_expr) => fn_expr.function.span,
+                                                Expr::Arrow(arrow_expr) => arrow_expr.span,
+                                                _ => declarator.span,
+                                            };
+                                            step_marking_statements.push(
+                                                self.create_step_function_marking(
+                                                    &name,
+                                                    span,
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => {}
