@@ -1,0 +1,6 @@
+{
+  "setup-worktree": [
+    "pnpm install",
+    "cp -r $ROOT_WORKTREE_PATH/.vercel .vercel"
+  ]
+}
