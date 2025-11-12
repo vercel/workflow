@@ -281,8 +281,8 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
     StepFunction: (value) => {
       if (typeof value !== 'function') return false;
       const stepName = value[STEP_FUNCTION_NAME_SYMBOL];
-      // Must return a truthy value; devalue will reject if we return false for a function
-      return stepName || false;
+      // Avoid returning a falsy value for empty string step names
+      return typeof stepName === 'string' ? stepName : false;
     },
     URL: (value) => value instanceof global.URL && value.href,
     URLSearchParams: (value) => {
