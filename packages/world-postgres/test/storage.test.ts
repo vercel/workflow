@@ -31,7 +31,7 @@ describe('Storage (Postgres integration)', () => {
   let events: ReturnType<typeof createEventsStorage>;
 
   async function truncateTables() {
-    await sql`TRUNCATE TABLE workflow_events, workflow_steps, workflow_hooks, workflow_runs RESTART IDENTITY CASCADE`;
+    await sql`TRUNCATE TABLE workflow.workflow_events, workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_runs RESTART IDENTITY CASCADE`;
   }
 
   beforeAll(async () => {
