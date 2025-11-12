@@ -469,6 +469,38 @@ export async function retryableAndFatalErrorWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+export async function hookCleanupTestWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  type Payload = { message: string; customData: string };
+
+  const hook = createHook<Payload>({
+    token,
+    metadata: { customData },
+  });
+
+  // Wait for exactly one payload
+  const payload = await hook;
+
+  return {
+    message: payload.message,
+    customData: payload.customData,
+    hookCleanupTestData: 'workflow_completed',
+  };
+}
+
+//////////////////////////////////////////////////////////
+
+export async function stepFunctionPassingWorkflow() {
+  'use workflow';
+  // Pass a step function reference to another step
+  const result = await stepWithStepFunctionArg(doubleNumber);
+  return result;
+}
+
 async function stepWithStepFunctionArg(stepFn: (x: number) => Promise<number>) {
   'use step';
   // Call the passed step function reference
@@ -479,11 +511,4 @@ async function stepWithStepFunctionArg(stepFn: (x: number) => Promise<number>) {
 async function doubleNumber(x: number) {
   'use step';
   return x * 2;
-}
-
-export async function stepFunctionPassingWorkflow() {
-  'use workflow';
-  // Pass a step function reference to another step
-  const result = await stepWithStepFunctionArg(doubleNumber);
-  return result;
 }
