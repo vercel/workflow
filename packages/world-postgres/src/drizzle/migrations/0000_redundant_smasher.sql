@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS "workflow_steps" (
 	"started_at" timestamp,
 	"completed_at" timestamp,
 	"created_at" timestamp DEFAULT now() NOT NULL,
-	"updated_at" timestamp DEFAULT now() NOT NULL
+	"updated_at" timestamp DEFAULT now() NOT NULL,
+	"retry_after" timestamp
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "workflow_stream_chunks" (
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS "workflow_stream_chunks" (
 );
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "workflow_events_run_id_index" ON "workflow_events" USING btree ("run_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "workflow_events_correlation_id_index" ON "workflow_events" USING btree ("correlation_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "workflow_hooks_run_id_index" ON "workflow_hooks" USING btree ("run_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "workflow_hooks_token_index" ON "workflow_hooks" USING btree ("token");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "workflow_runs_name_index" ON "workflow_runs" USING btree ("name");--> statement-breakpoint
