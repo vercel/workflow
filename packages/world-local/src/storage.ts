@@ -215,6 +215,25 @@ function createHooksStorage(basedir: string): Storage['hooks'] {
   return { create, get, getByToken, list, dispose };
 }
 
+/**
+ * Helper function to delete all hooks associated with a workflow run
+ */
+async function deleteAllHooksForRun(
+  basedir: string,
+  runId: string
+): Promise<void> {
+  const hooksDir = path.join(basedir, 'hooks');
+  const files = await listJSONFiles(hooksDir);
+
+  for (const file of files) {
+    const hookPath = path.join(hooksDir, `${file}.json`);
+    const hook = await readJSON(hookPath, HookSchema);
+    if (hook && hook.runId === runId) {
+      await deleteJSON(hookPath);
+    }
+  }
+}
+
 export function createStorage(basedir: string): Storage {
   return {
     runs: {
@@ -272,15 +291,23 @@ export function createStorage(basedir: string): Storage {
         if (data.status === 'running' && !updatedRun.startedAt) {
           updatedRun.startedAt = now;
         }
-        if (
+
+        const isBecomingTerminal =
           data.status === 'completed' ||
           data.status === 'failed' ||
-          data.status === 'cancelled'
-        ) {
+          data.status === 'cancelled';
+
+        if (isBecomingTerminal) {
           updatedRun.completedAt = now;
         }
 
         await writeJSON(runPath, updatedRun, { overwrite: true });
+
+        // If transitioning to a terminal status, clean up all hooks for this run
+        if (isBecomingTerminal) {
+          await deleteAllHooksForRun(basedir, id);
+        }
+
         return updatedRun;
       },
 
@@ -324,6 +351,7 @@ export function createStorage(basedir: string): Storage {
       },
 
       async cancel(id, params) {
+        // This will call update which triggers hook cleanup automatically
         const run = await this.update(id, { status: 'cancelled' });
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         return filterRunData(run, resolveData);

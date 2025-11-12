@@ -164,6 +164,10 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       if (!value) {
         throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
       }
+
+      // Clean up all hooks for this run when cancelling
+      await drizzle.delete(Schema.hooks).where(eq(Schema.hooks.runId, id));
+
       return deserializeRunError(compact(value));
     },
     async pause(id) {
@@ -284,11 +288,13 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       if (data.status === 'running' && !currentRun.startedAt) {
         updates.startedAt = new Date();
       }
-      if (
+
+      const isBecomingTerminal =
         data.status === 'completed' ||
         data.status === 'failed' ||
-        data.status === 'cancelled'
-      ) {
+        data.status === 'cancelled';
+
+      if (isBecomingTerminal) {
         updates.completedAt = new Date();
       }
 
@@ -300,6 +306,12 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       if (!value) {
         throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
       }
+
+      // If transitioning to a terminal status, clean up all hooks for this run
+      if (isBecomingTerminal) {
+        await drizzle.delete(Schema.hooks).where(eq(Schema.hooks.runId, id));
+      }
+
       return deserializeRunError(compact(value));
     },
   };
