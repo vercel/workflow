@@ -15,8 +15,9 @@ export const Route = createFileRoute('/api/hook')({
         } catch (error) {
           console.log('error during getHookByToken', error);
           // TODO: `WorkflowAPIError` is not exported, so for now
-          // we'll return 400 assuming it's the "invalid" token test case
-          return json(null, { status: 400 });
+          // we'll return 422 assuming it's the "invalid" token test case
+          // NOTE: Need to return 422 because Nitro passes 404 requests to the dev server to handle.
+          return json(null, { status: 422 });
         }
 
         await resumeHook(hook.token, {
