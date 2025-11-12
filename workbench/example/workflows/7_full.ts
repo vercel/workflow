@@ -1,4 +1,4 @@
-import { sleep, createWebhook } from 'workflow';
+import { createWebhook, sleep } from 'workflow';
 
 export async function handleUserSignup(email: string) {
   'use workflow';
