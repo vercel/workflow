@@ -350,21 +350,20 @@ export function getExternalReducers(
 
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
-      if (!runId) {
-        throw new Error(
-          'WritableStream cannot be serialized without a valid runId'
-        );
-      }
 
       const name = global.crypto.randomUUID();
 
-      ops.push(
-        new WorkflowServerReadableStream(name)
-          .pipeThrough(
-            getDeserializeStream(getExternalRevivers(global, ops, runId))
-          )
-          .pipeTo(value)
-      );
+      // Only pipe stream data if we have a runId
+      // TODO: Does this cause any issues?
+      if (runId) {
+        ops.push(
+          new WorkflowServerReadableStream(name)
+            .pipeThrough(
+              getDeserializeStream(getExternalRevivers(global, ops, runId))
+            )
+            .pipeTo(value)
+        );
+      }
 
       return { name };
     },

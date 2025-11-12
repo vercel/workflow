@@ -177,12 +177,7 @@ describe('workflow arguments', () => {
 
   it('should work with WritableStream', () => {
     const stream = new WritableStream();
-    const serialized = dehydrateWorkflowArguments(
-      stream,
-      [],
-      globalThis,
-      'wrun_test'
-    );
+    const serialized = dehydrateWorkflowArguments(stream, []);
     const uuid = serialized[2];
     expect(serialized).toMatchInlineSnapshot(`
       [
