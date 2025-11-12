@@ -445,8 +445,8 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3(supports-color@8.1.1)
       devalue:
-        specifier: TooTallNate/devalue#feat/func-with-types
-        version: https://codeload.github.com/TooTallNate/devalue/tar.gz/acaf804d8b152675c06543786defc985402a48c9
+        specifier: ^5.5.0
+        version: 5.5.0
       ms:
         specifier: 2.1.3
         version: 2.1.3
@@ -6303,9 +6303,8 @@ packages:
   devalue@5.4.2:
     resolution: {integrity: sha512-MwPZTKEPK2k8Qgfmqrd48ZKVvzSQjgW0lXLxiIBA8dQjtf/6mw6pggHNLcyDKyf+fI6eXxlQwPsfaCMTU5U+Bw==}
 
-  devalue@https://codeload.github.com/TooTallNate/devalue/tar.gz/acaf804d8b152675c06543786defc985402a48c9:
-    resolution: {tarball: https://codeload.github.com/TooTallNate/devalue/tar.gz/acaf804d8b152675c06543786defc985402a48c9}
-    version: 5.4.2
+  devalue@5.5.0:
+    resolution: {integrity: sha512-69sM5yrHfFLJt0AZ9QqZXGCPfJ7fQjvpln3Rq5+PS03LD32Ost1Q9N+eEnaQwGRIriKkMImXD56ocjQmfjbV3w==}
 
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
@@ -16231,7 +16230,7 @@ snapshots:
 
   devalue@5.4.2: {}
 
-  devalue@https://codeload.github.com/TooTallNate/devalue/tar.gz/acaf804d8b152675c06543786defc985402a48c9: {}
+  devalue@5.5.0: {}
 
   devlop@1.1.0:
     dependencies:
