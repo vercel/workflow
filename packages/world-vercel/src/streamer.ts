@@ -8,7 +8,7 @@ function getStreamUrl(
 ) {
   if (runId) {
     return new URL(
-      `${httpConfig.baseUrl}/v1/run/${runId}/stream/${encodeURIComponent(name)}`
+      `${httpConfig.baseUrl}/v1/runs/${runId}/stream/${encodeURIComponent(name)}`
     );
   }
   return new URL(`${httpConfig.baseUrl}/v1/stream/${encodeURIComponent(name)}`);
