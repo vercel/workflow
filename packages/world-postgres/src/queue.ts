@@ -1,4 +1,4 @@
-import * as Stream from 'node:stream';
+import Stream from 'node:stream';
 import { JsonTransport } from '@vercel/queue';
 import {
   MessageId,
@@ -7,129 +7,135 @@ import {
   type QueuePrefix,
   type ValidQueueName,
 } from '@workflow/world';
-import { createEmbeddedWorld } from '@workflow/world-local';
-import type PgBoss from 'pg-boss';
 import { monotonicFactory } from 'ulid';
-import { MessageData } from './boss.js';
-import type { PostgresWorldConfig } from './config.js';
+import { MessageData, type QueueDriver } from './queue-drivers/types.js';
+
+const QUEUE_MAX_VISIBILITY =
+  parseInt(process.env.WORKFLOW_POSTGRES_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
+  Infinity;
 
 /**
  * The Postgres queue works by creating two job types in pg-boss:
  * - `workflow` for workflow jobs
  *   - `step` for step jobs
  *
- * When a message is queued, it is sent to pg-boss with the appropriate job type.
+ * When a message is queued, it is prepared and sent to the queue driver with.
  * When a job is processed, it is deserialized and then re-queued into the _embedded world_, showing that
  * we can reuse the embedded world, mix and match worlds to build
  * hybrid architectures, and even migrate between worlds.
  */
-export function createQueue(
-  boss: PgBoss,
-  config: PostgresWorldConfig
-): Queue & { start(): Promise<void> } {
-  const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  const embeddedWorld = createEmbeddedWorld({ dataDir: undefined, port });
-
+export function createQueue(queueImplementation: QueueDriver): Queue {
   const transport = new JsonTransport();
   const generateMessageId = monotonicFactory();
-
-  const prefix = config.jobPrefix || 'workflow_';
-  const Queues = {
-    __wkf_workflow_: `${prefix}flows`,
-    __wkf_step_: `${prefix}steps`,
-  } as const satisfies Record<QueuePrefix, string>;
-
-  const createQueueHandler = embeddedWorld.createQueueHandler;
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     return 'postgres';
   };
 
-  const createdQueues = new Map<string, Promise<void>>();
-
-  function createQueue(name: string) {
-    let createdQueue = createdQueues.get(name);
-    if (!createdQueue) {
-      createdQueue = boss.createQueue(name);
-      createdQueues.set(name, createdQueue);
-    }
-    return createdQueue;
-  }
-
   const queue: Queue['queue'] = async (queue, message, opts) => {
-    await boss.start();
-    const [prefix, queueId] = parseQueueName(queue);
-    const jobName = Queues[prefix];
-    await createQueue(jobName);
     const body = transport.serialize(message);
+    const [prefix, queueId] = parseQueueName(queue);
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
-    await boss.send({
-      name: jobName,
-      options: {
-        singletonKey: opts?.idempotencyKey ?? messageId,
-        retryLimit: 3,
-      },
-      data: MessageData.encode({
-        id: queueId,
-        data: body,
-        attempt: 1,
-        messageId,
-        idempotencyKey: opts?.idempotencyKey,
-      }),
-    });
+
+    const payload = {
+      id: queueId,
+      data: body,
+      attempt: 1,
+      messageId,
+      idempotencyKey: opts?.idempotencyKey,
+      queueName: `${prefix}${queueId}`,
+    };
+
+    switch (prefix) {
+      case '__wkf_step_':
+        await queueImplementation.pushStep(payload);
+        break;
+
+      case '__wkf_workflow_':
+        await queueImplementation.pushFlow(payload);
+        break;
+    }
+
     return { messageId };
   };
 
-  async function setupListener(queue: QueuePrefix, jobName: string) {
-    await createQueue(jobName);
-    await Promise.all(
-      Array.from({ length: config.queueConcurrency || 10 }, async () => {
-        await boss.work(jobName, work);
-      })
-    );
-
-    async function work([job]: PgBoss.Job[]) {
-      const messageData = MessageData.parse(job.data);
+  const createQueueHandler: Queue['createQueueHandler'] = (
+    _prefix,
+    handler
+  ) => {
+    return async (req) => {
+      const reqBody = await req.json();
+      const messageData = MessageData.parse(reqBody);
       const bodyStream = Stream.Readable.toWeb(
         Stream.Readable.from([messageData.data])
       );
+
       const body = await transport.deserialize(
         bodyStream as ReadableStream<Uint8Array>
       );
-      const message = QueuePayloadSchema.parse(body);
-      const queueName = `${queue}${messageData.id}` as const;
-      await embeddedWorld.queue(queueName, message, {
-        idempotencyKey: messageData.idempotencyKey,
-      });
-    }
-  }
 
-  async function setupListeners() {
-    for (const [prefix, jobName] of Object.entries(Queues) as [
-      QueuePrefix,
-      string,
-    ][]) {
-      await setupListener(prefix, jobName);
-    }
-  }
+      const message = QueuePayloadSchema.parse(body);
+
+      if (!isValidQueueName(messageData.queueName)) {
+        return Response.json(
+          { error: `Invalid queue name: ${messageData.queueName}` },
+          { status: 400 }
+        );
+      }
+
+      try {
+        const result = await handler(message, {
+          attempt: messageData.attempt,
+          queueName: messageData.queueName,
+          messageId: messageData.messageId,
+        });
+
+        let timeoutSeconds: number | null = null;
+        if (typeof result?.timeoutSeconds === 'number') {
+          timeoutSeconds = Math.min(
+            result.timeoutSeconds,
+            QUEUE_MAX_VISIBILITY
+          );
+        }
+
+        if (timeoutSeconds) {
+          return Response.json({ timeoutSeconds }, { status: 503 });
+        }
+
+        return Response.json({ ok: true });
+      } catch (error) {
+        return Response.json(String(error), { status: 500 });
+      }
+    };
+  };
 
   return {
     createQueueHandler,
     getDeploymentId,
     queue,
-    async start() {
-      boss = await boss.start();
-      await setupListeners();
-    },
   };
 }
 
 const parseQueueName = (name: ValidQueueName): [QueuePrefix, string] => {
   const prefixes: QueuePrefix[] = ['__wkf_step_', '__wkf_workflow_'];
+
   for (const prefix of prefixes) {
     if (name.startsWith(prefix)) {
       return [prefix, name.slice(prefix.length)];
     }
   }
+
   throw new Error(`Invalid queue name: ${name}`);
 };
+
+function isValidQueueName(name: string): name is ValidQueueName {
+  const prefixes: QueuePrefix[] = ['__wkf_step_', '__wkf_workflow_'];
+
+  for (const prefix of prefixes) {
+    if (name.startsWith(prefix)) {
+      return true;
+    }
+  }
+
+  return false;
+}
