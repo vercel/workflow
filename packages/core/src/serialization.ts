@@ -279,8 +279,15 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
     },
     Set: (value) => value instanceof global.Set && Array.from(value),
     StepFunction: (value) => {
+      console.log('serialize StepFunction', {
+        value,
+        typpe: typeof value,
+      });
       if (typeof value !== 'function') return false;
       const stepName = value[STEP_FUNCTION_NAME_SYMBOL];
+      console.log({
+        stepName,
+      });
       // Avoid returning a falsy value for empty string step names
       return typeof stepName === 'string' ? stepName : false;
     },
@@ -862,9 +869,16 @@ export function dehydrateStepArguments(
   global: Record<string, any>
 ) {
   try {
+    console.error('dehydrating', {
+      value,
+    });
     const str = devalue.stringify(value, getWorkflowReducers(global));
     return revive(str);
   } catch (error) {
+    console.error('serialize fail', {
+      value,
+      error,
+    });
     throw new WorkflowRuntimeError(
       `Failed to serialize step arguments. Ensure you're passing serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`,
       { slug: 'serialization-failed', cause: error }
