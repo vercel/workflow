@@ -1,4 +1,4 @@
 {
-  "extends": "./.nuxt/tsconfig.json",
+  "extends": "@workflow/tsconfig",
   "exclude": ["dist", "node_modules"]
 }
