@@ -164,6 +164,7 @@ app.post('/api/hook', async ({ req }) => {
     console.log('error during getHookByToken', error);
     // TODO: `WorkflowAPIError` is not exported, so for now
     // we'll return 422 assuming it's the "invalid" token test case
+    // NOTE: Need to return 422 because Nitro passes 404 requests to the dev server to handle.
     return Response.json(null, { status: 422 });
   }
 

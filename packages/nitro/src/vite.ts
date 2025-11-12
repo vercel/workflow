@@ -43,6 +43,8 @@ export function workflow(options?: ModuleOptions): Plugin[] {
             res.writeHead = function (this: typeof res, ...args: any[]) {
               const statusCode = typeof args[0] === 'number' ? args[0] : 200;
 
+              // NOTE: Workaround because Nitro passes 404 requests to the vite to handle.
+              //       Causes `webhook route with invalid token` test to fail.
               // For 404s on workflow routes, ensure we're sending the right headers
               if (statusCode === 404) {
                 // Set content-length to 0 to prevent Vite from overriding
@@ -77,6 +79,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           if (builder) {
             await builder.build();
           }
+          // NOTE: Might be too aggressive
           server.ws.send({
             type: 'full-reload',
             path: '*',
