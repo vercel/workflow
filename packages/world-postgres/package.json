@@ -42,7 +42,7 @@
     "clean": "tsc --build --clean && rm -rf dist",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "db:push": "pnpm exec drizzle-kit --version && drizzle-kit push"
+    "db:push": "node dist/cli.js"
   },
   "dependencies": {
     "@vercel/queue": "0.0.0-alpha.23",
