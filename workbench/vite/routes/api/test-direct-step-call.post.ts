@@ -2,7 +2,7 @@
 // After the SWC compiler changes, step functions in client mode have their directive removed
 // and keep their original implementation, allowing them to be called as regular async functions
 
-import { add } from '../../workflows/99_e2e';
+import { add } from '../../workflows/99_e2e.js';
 
 export default async ({ req }: { req: Request }) => {
   const body = await req.json();
