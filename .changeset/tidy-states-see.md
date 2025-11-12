@@ -3,4 +3,4 @@
 "@workflow/core": patch
 ---
 
-Support passing step function references across serialization layer
+Support serializing step function references
