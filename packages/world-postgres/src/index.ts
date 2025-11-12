@@ -1,9 +1,9 @@
 import type { Storage, World } from '@workflow/world';
-import PgBoss from 'pg-boss';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import { createPgBossQueue } from './queue-drivers/pg-boss.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -30,14 +30,14 @@ export function createWorld(
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '10', 10) ||
       10,
+    queueFactory: (config) => createPgBossQueue(config),
   }
 ): World & { start(): Promise<void> } {
-  const boss = new PgBoss({
-    connectionString: config.connectionString,
-  });
+  const queueDriver = config.queueFactory(config);
   const postgres = createPostgres(config.connectionString);
   const drizzle = createClient(postgres);
-  const queue = createQueue(boss, config);
+
+  const queue = createQueue(queueDriver);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(postgres, drizzle);
 
@@ -46,7 +46,7 @@ export function createWorld(
     ...streamer,
     ...queue,
     async start() {
-      await queue.start();
+      await queueDriver.start();
     },
   };
 }
