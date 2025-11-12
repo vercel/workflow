@@ -231,7 +231,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
+        run: pnpm turbo run build --force --filter='!./workbench/*'
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts
