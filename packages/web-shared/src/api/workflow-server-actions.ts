@@ -41,6 +41,12 @@ export type ServerActionResult<T> =
 
 /**
  * Cache for World instances keyed by envMap
+ *
+ * IMPORTANT: This cache works under the assumption that if the UI is used to look at
+ * different worlds, the user should pass all relevant variables via EnvMap, instead of
+ * setting them directly on their Next.js instance. If environment variables are set
+ * directly on process.env, the cached World may operate with incorrect environment
+ * configuration.
  */
 const worldCache = new Map<string, World>();
 
@@ -51,6 +57,8 @@ function getWorldFromEnv(envMap: EnvMap) {
   const cacheKey = JSON.stringify(Object.fromEntries(sortedEntries));
 
   // Check if we have a cached World for this configuration
+  // Note: This returns the cached World without re-setting process.env.
+  // See comment above worldCache for important usage assumptions.
   const cachedWorld = worldCache.get(cacheKey);
   if (cachedWorld) {
     return cachedWorld;
