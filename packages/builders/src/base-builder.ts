@@ -320,11 +320,13 @@ export abstract class BaseBuilder {
 
     const entryContent = `
     // Built in steps
+    import { stepEntrypoint } from 'workflow/runtime';
     import '${builtInSteps}';
     // User steps
     ${imports}
     // API entrypoint
-    export { stepEntrypoint as POST } from 'workflow/runtime';`;
+    export const __wkf_entrypoint = stepEntrypoint;
+    export const POST = stepEntrypoint;`;
 
     // Bundle with esbuild and our custom SWC plugin
     const esbuildCtx = await esbuild.context({
@@ -549,8 +551,8 @@ export abstract class BaseBuilder {
 import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
-
-export const POST = workflowEntrypoint(workflowCode);`;
+export const __wkf_entrypoint = workflowEntrypoint(workflowCode);
+export const POST = __wkf_entrypoint`;
 
       // we skip the final bundling step for Next.js so it can bundle itself
       if (!bundleFinalOutput) {
