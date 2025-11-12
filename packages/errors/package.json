@@ -31,7 +31,8 @@
   "devDependencies": {
     "@types/ms": "^2.1.0",
     "@types/node": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "@workflow/world": "workspace:*"
   },
   "dependencies": {
     "@workflow/utils": "workspace:*",

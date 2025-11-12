@@ -233,7 +233,6 @@ export function createStorage(basedir: string): Storage {
           input: (data.input as any[]) || [],
           output: undefined,
           error: undefined,
-          errorCode: undefined,
           startedAt: undefined,
           completedAt: undefined,
           createdAt: now,
@@ -263,11 +262,11 @@ export function createStorage(basedir: string): Storage {
         }
 
         const now = new Date();
-        const updatedRun: WorkflowRun = {
+        const updatedRun = {
           ...run,
           ...data,
           updatedAt: now,
-        };
+        } as WorkflowRun;
 
         // Only set startedAt the first time the run transitions to 'running'
         if (data.status === 'running' && !updatedRun.startedAt) {
@@ -355,7 +354,6 @@ export function createStorage(basedir: string): Storage {
           input: data.input as any[],
           output: undefined,
           error: undefined,
-          errorCode: undefined,
           attempt: 0,
           startedAt: undefined,
           completedAt: undefined,

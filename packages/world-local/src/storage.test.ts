@@ -45,7 +45,6 @@ describe('Storage', () => {
         expect(run.input).toEqual(['arg1', 'arg2']);
         expect(run.output).toBeUndefined();
         expect(run.error).toBeUndefined();
-        expect(run.errorCode).toBeUndefined();
         expect(run.startedAt).toBeUndefined();
         expect(run.completedAt).toBeUndefined();
         expect(run.createdAt).toBeInstanceOf(Date);
@@ -142,13 +141,17 @@ describe('Storage', () => {
 
         const updated = await storage.runs.update(created.runId, {
           status: 'failed',
-          error: 'Something went wrong',
-          errorCode: 'ERR_001',
+          error: {
+            message: 'Something went wrong',
+            code: 'ERR_001',
+          },
         });
 
         expect(updated.status).toBe('failed');
-        expect(updated.error).toBe('Something went wrong');
-        expect(updated.errorCode).toBe('ERR_001');
+        expect(updated.error).toEqual({
+          message: 'Something went wrong',
+          code: 'ERR_001',
+        });
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
 
@@ -306,7 +309,6 @@ describe('Storage', () => {
         expect(step.input).toEqual(['input1', 'input2']);
         expect(step.output).toBeUndefined();
         expect(step.error).toBeUndefined();
-        expect(step.errorCode).toBeUndefined();
         expect(step.attempt).toBe(0);
         expect(step.startedAt).toBeUndefined();
         expect(step.completedAt).toBeUndefined();
@@ -401,13 +403,15 @@ describe('Storage', () => {
 
         const updated = await storage.steps.update(testRunId, 'step_123', {
           status: 'failed',
-          error: 'Step failed',
-          errorCode: 'STEP_ERR',
+          error: {
+            message: 'Step failed',
+            code: 'STEP_ERR',
+          },
         });
 
         expect(updated.status).toBe('failed');
-        expect(updated.error).toBe('Step failed');
-        expect(updated.errorCode).toBe('STEP_ERR');
+        expect(updated.error?.message).toBe('Step failed');
+        expect(updated.error?.code).toBe('STEP_ERR');
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
 

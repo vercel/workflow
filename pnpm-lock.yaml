@@ -497,6 +497,9 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../world
 
   packages/next:
     dependencies:

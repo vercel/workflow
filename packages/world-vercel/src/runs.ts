@@ -10,18 +10,38 @@ import {
   type ResumeWorkflowRunParams,
   type UpdateWorkflowRunRequest,
   type WorkflowRun,
-  WorkflowRunSchema,
+  WorkflowRunBaseSchema,
 } from '@workflow/world';
 import { z } from 'zod';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
   dateToStringReplacer,
+  deserializeError,
   makeRequest,
+  serializeError,
 } from './utils.js';
 
-// Local schema for lazy mode with refs instead of data
-const WorkflowRunWithRefsSchema = WorkflowRunSchema.omit({
+/**
+ * Wire format schema for workflow runs coming from the backend.
+ * The backend returns error as a JSON string, not an object, so we need
+ * a schema that accepts the wire format before deserialization.
+ *
+ * This is used for validation in makeRequest(), then deserializeError()
+ * transforms the string into the expected StructuredError object.
+ */
+const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
+  error: true,
+}).extend({
+  // Backend returns error as a JSON string, not an object
+  error: z.string().optional(),
+});
+
+// Wire schema for resolved data (full input/output)
+const WorkflowRunWireSchema = WorkflowRunWireBaseSchema;
+
+// Wire schema for lazy mode with refs instead of data
+const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   input: true,
   output: true,
 }).extend({
@@ -38,13 +58,14 @@ const WorkflowRunWithRefsSchema = WorkflowRunSchema.omit({
 function filterRunData(run: any, resolveData: 'none' | 'all'): WorkflowRun {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
+    const deserialized = deserializeError<WorkflowRun>(rest);
     return {
-      ...rest,
+      ...deserialized,
       input: [],
       output: undefined,
     };
   }
-  return run;
+  return deserializeError<WorkflowRun>(run);
 }
 
 // Functions
@@ -86,8 +107,8 @@ export async function listWorkflowRuns(
     config,
     schema: PaginatedResponseSchema(
       remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema
     ),
   })) as PaginatedResponse<WorkflowRun>;
 
@@ -101,15 +122,16 @@ export async function createWorkflowRun(
   data: CreateWorkflowRunRequest,
   config?: APIConfig
 ): Promise<WorkflowRun> {
-  return makeRequest({
+  const run = await makeRequest({
     endpoint: '/v1/runs/create',
     options: {
       method: 'POST',
       body: JSON.stringify(data, dateToStringReplacer),
     },
     config,
-    schema: WorkflowRunSchema,
+    schema: WorkflowRunWireSchema,
   });
+  return deserializeError<WorkflowRun>(run);
 }
 
 export async function getWorkflowRun(
@@ -132,8 +154,8 @@ export async function getWorkflowRun(
       options: { method: 'GET' },
       config,
       schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema) as any,
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema) as any,
     });
 
     return filterRunData(run, resolveData);
@@ -151,15 +173,17 @@ export async function updateWorkflowRun(
   config?: APIConfig
 ): Promise<WorkflowRun> {
   try {
-    return makeRequest({
+    const serialized = serializeError(data);
+    const run = await makeRequest({
       endpoint: `/v1/runs/${id}`,
       options: {
         method: 'PUT',
-        body: JSON.stringify(data, dateToStringReplacer),
+        body: JSON.stringify(serialized, dateToStringReplacer),
       },
       config,
-      schema: WorkflowRunSchema,
+      schema: WorkflowRunWireSchema,
     });
+    return deserializeError<WorkflowRun>(run);
   } catch (error) {
     if (error instanceof WorkflowAPIError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
@@ -188,8 +212,8 @@ export async function cancelWorkflowRun(
       options: { method: 'PUT' },
       config,
       schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema) as any,
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema) as any,
     });
 
     return filterRunData(run, resolveData);
@@ -221,8 +245,8 @@ export async function pauseWorkflowRun(
       options: { method: 'PUT' },
       config,
       schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema) as any,
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema) as any,
     });
 
     return filterRunData(run, resolveData);
@@ -254,8 +278,8 @@ export async function resumeWorkflowRun(
       options: { method: 'PUT' },
       config,
       schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWithRefsSchema
-        : WorkflowRunSchema) as any,
+        ? WorkflowRunWireWithRefsSchema
+        : WorkflowRunWireSchema) as any,
     });
 
     return filterRunData(run, resolveData);

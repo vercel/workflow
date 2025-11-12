@@ -46,3 +46,14 @@ export type PaginatedResponse<T> = z.infer<
  * - "all": Returns full data with complete input and output
  */
 export type ResolveData = 'none' | 'all';
+
+/**
+ * A standard error schema shape for propogating errors from runs and steps
+ */
+export const StructuredErrorSchema = z.object({
+  message: z.string(),
+  stack: z.string().optional(),
+  code: z.string().optional(), // TODO: currently unused. make this an enum maybe
+});
+
+export type StructuredError = z.infer<typeof StructuredErrorSchema>;

@@ -1,4 +1,8 @@
 import { getRun } from 'workflow/api';
+import {
+  WorkflowRunFailedError,
+  WorkflowRunNotCompletedError,
+} from 'workflow/internal/errors';
 
 export default async ({ url }: { req: Request; url: URL }) => {
   const runId = url.searchParams.get('runId');
@@ -43,7 +47,7 @@ export default async ({ url }: { req: Request; url: URL }) => {
       : Response.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'WorkflowRunNotCompletedError') {
+      if (WorkflowRunNotCompletedError.is(error)) {
         return Response.json(
           {
             ...error,
@@ -54,19 +58,18 @@ export default async ({ url }: { req: Request; url: URL }) => {
         );
       }
 
-      if (error.name === 'WorkflowRunFailedError') {
-        // The workflow error stack trace is stored in the error.error property as a string
-        // Extract it if it looks like a stack trace (contains "at ")
-        const workflowErrorStack = (error as any).error?.includes('\n    at ')
-          ? (error as any).error
-          : undefined;
-
+      if (WorkflowRunFailedError.is(error)) {
+        const cause = error.cause;
         return Response.json(
           {
             ...error,
             name: error.name,
             message: error.message,
-            stack: workflowErrorStack || error.stack,
+            cause: {
+              message: cause.message,
+              stack: cause.stack,
+              code: cause.code,
+            },
           },
           { status: 400 }
         );
