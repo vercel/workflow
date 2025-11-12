@@ -3,10 +3,10 @@ import * as z from 'zod';
 import { Base64Buffer } from '../zod.js';
 
 /**
-/* Most queues are using JSON under the hood, so we need to base64
-/* encode the body to ensure binary safety maybe later we can
-/* have a `blobs` table for larger payloads
-**/
+ * Most queues are using JSON under the hood, so we need to base64
+ * encode the body to ensure binary safety maybe later we can
+ * have a `blobs` table for larger payloads
+ */
 export const MessageData = z.object({
   id: z
     .string()

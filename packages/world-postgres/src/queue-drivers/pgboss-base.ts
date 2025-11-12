@@ -1,9 +1,24 @@
 import PgBoss from 'pg-boss';
-import type { QueueConfig } from '../config.js';
-import { MessageData } from './types.js';
-import { proxyStep, proxyWorkflow } from './wkf-proxy.js';
+import { MessageData, type QueueDriver } from './types.js';
 
-export function createPgBossQueue(config: QueueConfig) {
+export interface ProxyFunctions {
+  proxyWorkflow: (message: MessageData) => Promise<Response>;
+  proxyStep: (message: MessageData) => Promise<Response>;
+}
+
+/**
+ * Base QueueDriver implementation using pg-boss for job management.
+ * Accepts a proxy implementation that handles the actual workflow/step execution.
+ * This eliminates code duplication between HTTP and function-based proxies.
+ */
+export function createPgBossQueue(
+  config: {
+    connectionString: string;
+    jobPrefix?: string;
+    queueConcurrency?: number;
+  },
+  proxy: ProxyFunctions
+): QueueDriver {
   let startPromise: Promise<unknown> | null = null;
   const boss = new PgBoss(config.connectionString);
 
@@ -51,7 +66,22 @@ export function createPgBossQueue(config: QueueConfig) {
         console.log(`[${job.id}] running: ${message.queueName}`);
 
         try {
-          await proxyWorkflow(message);
+          const response = await proxy.proxyWorkflow(message);
+
+          // TODO: Properly handle sleep
+          if (response.status === 503) {
+            const body = (await response.json()) as {
+              timeoutSeconds?: number;
+            };
+            if (body.timeoutSeconds) {
+              throw new Error(`Retry after ${body.timeoutSeconds}s`);
+            }
+          }
+
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`Workflow failed: ${text}`);
+          }
         } catch (error) {
           console.error(
             `[${job.id}] Error handling workflow: ${message.queueName}`,
@@ -67,7 +97,21 @@ export function createPgBossQueue(config: QueueConfig) {
         console.log(`[${job.id}] running: ${message.queueName}`);
 
         try {
-          await proxyStep(message);
+          const response = await proxy.proxyStep(message);
+
+          if (response.status === 503) {
+            const body = (await response.json()) as {
+              timeoutSeconds?: number;
+            };
+            if (body.timeoutSeconds) {
+              throw new Error(`Retry after ${body.timeoutSeconds}s`);
+            }
+          }
+
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`Step failed: ${text}`);
+          }
         } catch (error) {
           console.error(
             `[${job.id}] Error handling step: ${message.queueName}`,
