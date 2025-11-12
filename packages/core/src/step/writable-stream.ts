@@ -1,7 +1,7 @@
 import {
-  WorkflowServerWritableStream,
-  getSerializeStream,
   getExternalReducers,
+  getSerializeStream,
+  WorkflowServerWritableStream,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import type { WorkflowWritableStreamOptions } from '../writable-stream.js';
@@ -30,20 +30,18 @@ export function getWritable<W = any>(
   }
 
   const { namespace } = options;
-  const name = getWorkflowRunStreamId(
-    ctx.workflowMetadata.workflowRunId,
-    namespace
-  );
+  const runId = ctx.workflowMetadata.workflowRunId;
+  const name = getWorkflowRunStreamId(runId, namespace);
 
   // Create a transform stream that serializes chunks and pipes to the workflow server
   const serialize = getSerializeStream(
-    getExternalReducers(globalThis, ctx.ops)
+    getExternalReducers(globalThis, ctx.ops, runId)
   );
 
   // Pipe the serialized data to the workflow server stream
   // Register this async operation with the runtime's ops array so it's awaited via waitUntil
   ctx.ops.push(
-    serialize.readable.pipeTo(new WorkflowServerWritableStream(name))
+    serialize.readable.pipeTo(new WorkflowServerWritableStream(runId, name))
   );
 
   // Return the writable side of the transform stream

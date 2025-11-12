@@ -88,7 +88,11 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
   });
 
   return {
-    async writeToStream(name, chunk) {
+    async writeToStream(
+      name: string,
+      _runId: string,
+      chunk: string | Uint8Array
+    ) {
       const chunkId = genChunkId();
       await drizzle.insert(streams).values({
         chunkId,

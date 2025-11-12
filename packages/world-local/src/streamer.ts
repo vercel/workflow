@@ -48,7 +48,11 @@ export function createStreamer(basedir: string): Streamer {
   }>();
 
   return {
-    async writeToStream(name, chunk) {
+    async writeToStream(
+      name: string,
+      _runId: string,
+      chunk: string | Uint8Array
+    ) {
       const chunkId = `strm_${monotonicUlid()}`;
 
       if (typeof chunk === 'string') {
@@ -83,7 +87,7 @@ export function createStreamer(basedir: string): Streamer {
       });
     },
 
-    async closeStream(name) {
+    async closeStream(name: string) {
       const chunkId = `strm_${monotonicUlid()}`;
       const chunkPath = path.join(
         basedir,
@@ -100,7 +104,7 @@ export function createStreamer(basedir: string): Streamer {
       streamEmitter.emit(`close:${name}` as const, { streamName: name });
     },
 
-    async readFromStream(name, startIndex = 0) {
+    async readFromStream(name: string, startIndex = 0) {
       const chunksDir = path.join(basedir, 'streams', 'chunks');
       let removeListeners = () => {};
 
