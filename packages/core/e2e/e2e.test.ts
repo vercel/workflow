@@ -571,29 +571,27 @@ describe('e2e', () => {
       expect(returnValue).toHaveProperty('cause');
       expect(returnValue.cause).toBeTypeOf('object');
       expect(returnValue.cause).toHaveProperty('message');
-      expect(returnValue.cause.message).toContain(
-        'Error from imported helper module'
-      );
+      expect(returnValue.cause.message).toContain('Error from workflow helper');
 
       // Verify the stack trace is present in the cause
       expect(returnValue.cause).toHaveProperty('stack');
       expect(typeof returnValue.cause.stack).toBe('string');
 
       // Known issue: SvelteKit dev mode has incorrect source map mappings for bundled imports.
-      // esbuild with bundle:true inlines helpers.ts but source maps incorrectly map to 99_e2e.ts
+      // esbuild with bundle:true inlines the helper but source maps incorrectly map to 99_e2e.ts
       // This works correctly in production and other frameworks.
       // TODO: Investigate esbuild source map generation for bundled modules
       const isSvelteKitDevMode =
         process.env.APP_NAME === 'sveltekit' && isLocalDeployment();
 
       if (!isSvelteKitDevMode) {
-        // Stack trace should include frames from the helper module (helpers.ts)
-        expect(returnValue.cause.stack).toContain('helpers.ts');
+        // Stack trace should include frames from the workflow error test module
+        expect(returnValue.cause.stack).toContain('98_workflow_error_test.ts');
       }
 
       // These checks should work in all modes
-      expect(returnValue.cause.stack).toContain('throwError');
-      expect(returnValue.cause.stack).toContain('callThrower');
+      expect(returnValue.cause.stack).toContain('throwWorkflowError');
+      expect(returnValue.cause.stack).toContain('workflowErrorHelper');
 
       // Stack trace should include frames from the workflow file (99_e2e.ts)
       expect(returnValue.cause.stack).toContain('99_e2e.ts');
@@ -606,9 +604,83 @@ describe('e2e', () => {
       const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
       expect(runData.status).toBe('failed');
       expect(runData.error).toBeTypeOf('object');
-      expect(runData.error.message).toContain(
-        'Error from imported helper module'
+      expect(runData.error.message).toContain('Error from workflow helper');
+    }
+  );
+
+  test(
+    'deepStepErrorWorkflow - stack traces work with step errors across multiple files',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow intentionally throws a FatalError from a step that calls imported helpers
+      // Call chain: deepStepErrorWorkflow -> deepStepWithNestedError (step) -> stepErrorHelper -> throwStepError
+      // This verifies that stack traces preserve the call chain from step errors
+      const run = await triggerWorkflow('deepStepErrorWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The workflow should fail with error response
+      expect(returnValue).toHaveProperty('name');
+      expect(returnValue.name).toBe('WorkflowRunFailedError');
+      expect(returnValue).toHaveProperty('message');
+
+      // Verify the cause property contains the structured error
+      expect(returnValue).toHaveProperty('cause');
+      expect(returnValue.cause).toBeTypeOf('object');
+      expect(returnValue.cause).toHaveProperty('message');
+      expect(returnValue.cause.message).toContain('Error from step helper');
+
+      // Verify the stack trace contains the error chain
+      expect(returnValue.cause).toHaveProperty('stack');
+      expect(typeof returnValue.cause.stack).toBe('string');
+
+      // Log the full stack trace for debugging
+      console.log('Full stack trace from deepStepErrorWorkflow:');
+      console.log(returnValue.cause.stack);
+
+      // Known issue: SvelteKit dev mode has incorrect source map mappings for bundled imports.
+      const isSvelteKitDevMode =
+        process.env.APP_NAME === 'sveltekit' && isLocalDeployment();
+
+      if (!isSvelteKitDevMode) {
+        // Stack trace should include frames from the step error test module
+        expect(returnValue.cause.stack).toContain('98_step_error_test.ts');
+      }
+
+      // These checks should work in all modes - verify the call chain
+      // Bottom of stack: the error thrower
+      expect(returnValue.cause.stack).toContain('throwStepError');
+
+      // Middle layer: helper function
+      expect(returnValue.cause.stack).toContain('stepErrorHelper');
+
+      // Top layer: the step function
+      expect(returnValue.cause.stack).toContain('deepStepWithNestedError');
+
+      // Note: Workflow functions don't appear in the step error's stack trace
+      // because they execute in the workflow VM context, while the error
+      // originates in the step execution Node.js context. This is expected.
+
+      // Stack trace should NOT contain 'evalmachine' anywhere
+      expect(returnValue.cause.stack).not.toContain('evalmachine');
+
+      // Verify the run failed with structured error
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('failed');
+      expect(runData.error).toBeTypeOf('object');
+      expect(runData.error.message).toContain('Error from step helper');
+
+      // Verify it was a step execution failure (not a workflow execution failure)
+      // The error should come from a step, so check the steps
+      const { json: stepsData } = await cliInspectJson(
+        `steps --runId ${run.runId}`
       );
+      expect(Array.isArray(stepsData)).toBe(true);
+      expect(stepsData.length).toBeGreaterThan(0);
+
+      // Find the failed step
+      const failedStep = stepsData.find((s: any) => s.status === 'failed');
+      expect(failedStep).toBeDefined();
+      expect(failedStep.stepName).toContain('deepStepWithNestedError');
     }
   );
 });

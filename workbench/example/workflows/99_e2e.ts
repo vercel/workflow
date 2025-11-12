@@ -10,7 +10,8 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { callThrower } from './helpers.js';
+import { workflowErrorHelper } from './98_workflow_error_test.js';
+import { deepStepWithNestedError } from './98_step_error_test.js';
 
 //////////////////////////////////////////////////////////
 
@@ -443,8 +444,18 @@ async function stepThatThrowsRetryableError() {
 
 export async function crossFileErrorWorkflow() {
   'use workflow';
-  // This will throw an error from the imported helpers.ts file
-  callThrower();
+  // This will throw an error from the imported 98_workflow_error_test.ts file
+  workflowErrorHelper();
+  return 'never reached';
+}
+
+//////////////////////////////////////////////////////////
+
+export async function deepStepErrorWorkflow() {
+  'use workflow';
+  // This workflow calls a step that throws an error through a helper chain
+  // Call chain: deepStepErrorWorkflow -> deepStepWithNestedError (step) -> stepErrorHelper -> throwStepError
+  await deepStepWithNestedError();
   return 'never reached';
 }
 
