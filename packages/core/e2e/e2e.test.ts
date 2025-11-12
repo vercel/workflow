@@ -124,9 +124,12 @@ describe('e2e', () => {
     const decoder = new TextDecoder();
     let contents = '';
     for await (const chunk of returnValue) {
+      console.log('Received chunk:', chunk);
       const text = decoder.decode(chunk, { stream: true });
+      console.log('Decoded text:', text);
       contents += text;
     }
+    console.log('Final contents:', contents);
     expect(contents).toBe('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n');
   });
 
