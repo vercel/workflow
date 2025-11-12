@@ -92,7 +92,7 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Replace the default export with SvelteKit-compatible handler
     stepsRouteContent = stepsRouteContent.replace(
-      /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
+      /export\s*const\s*POST\s*=\s*stepEntrypoint\s*;$/m,
       `${SVELTEKIT_REQUEST_CONVERTER}
 export const POST = async ({request}) => {
   const normalRequest = await convertSvelteKitRequest(request);
@@ -133,11 +133,11 @@ export const POST = async ({request}) => {
 
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
+      /export\s*const\s*POST\s*=\s*__wkf_entrypoint\s*;?$/m,
       `${SVELTEKIT_REQUEST_CONVERTER}
 export const POST = async ({request}) => {
   const normalRequest = await convertSvelteKitRequest(request);
-  return workflowEntrypoint(workflowCode)(normalRequest);
+  return __wkf_entrypoint(normalRequest);
 }`
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
