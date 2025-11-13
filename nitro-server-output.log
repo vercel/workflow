@@ -1,0 +1,110 @@
+=== NITRO SERVER OUTPUT FOR CROSSFILE ERROR TESTS ===
+=== (Simplified error chains with renamed files) ===
+
+> @workflow/example-nitro-v3@0.0.0 predev /Users/pranaygp/github/vercel/workflow/workbench/nitro-v3
+> pnpm generate:workflows
+
+✓ Generated ./_workflows.ts with 12 workflow(s)
+  - workflows/0_demo.ts
+  - workflows/1_simple.ts
+  - workflows/2_control_flow.ts
+  - workflows/3_streams.ts
+  - workflows/4_ai.ts
+  - workflows/5_hooks.ts
+  - workflows/6_batching.ts
+  - workflows/7_full.ts
+  - workflows/98_duplicate_case.ts
+  - workflows/98_step_error_test.ts      <-- NEW: Step error test file
+  - workflows/98_workflow_error_test.ts  <-- NEW: Workflow error test file
+  - workflows/99_e2e.ts
+
+> @workflow/example-nitro-v3@0.0.0 dev /Users/pranaygp/github/vercel/workflow/workbench/nitro-v3
+> nitro dev
+
+ℹ Using index.html as renderer template.
+➜ Listening on: http://localhost:3000/ (all interfaces)
+Discovering workflow directives 198ms
+Created intermediate workflow bundle 126ms
+Created steps bundle 27ms (with inline sourcemaps)
+Creating webhook route
+[nitro] ✔ Nitro Server built with rollup in 409ms
+
+
+=== TEST 1: crossFileErrorWorkflow (Workflow Error in VM Context) ===
+
+Starting "crossFileErrorWorkflow" workflow with args:
+
+Error while running "wrun_01K9VGB8JZCJYY0KC7VGTWH8KS" workflow:
+
+Error: Error from workflow helper
+    at throwWorkflowError (../example/workflows/98_workflow_error_test.ts:4:10)
+    at workflowErrorHelper (../example/workflows/98_workflow_error_test.ts:7:4)
+    at crossFileErrorWorkflow (../example/workflows/99_e2e.ts:290:4)
+    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/workflow.ts:574:7)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:362:28)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:280:14)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)
+
+Call chain (Workflow VM context):
+  throwWorkflowError (98_workflow_error_test.ts:4)
+    ↓
+  workflowErrorHelper (98_workflow_error_test.ts:7)
+    ↓
+  crossFileErrorWorkflow (99_e2e.ts:290)
+
+
+=== TEST 2: deepStepErrorWorkflow (Step Error in Node.js Context) ===
+
+Starting "deepStepErrorWorkflow" workflow with args:
+
+[Workflows] "wrun_01K9VGBX3N34GG0SP36DC5156E" - Encountered `FatalError` while executing step "step//example/workflows/98_step_error_test.ts//deepStepWithNestedError":
+  > FatalError: Error from step helper
+    >     at throwStepError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:7:11)
+    >     at stepErrorHelper (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:10:5)
+    >     at deepStepWithNestedError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:13:5)
+
+Bubbling up error to parent workflow
+FatalError while running "wrun_01K9VGBX3N34GG0SP36DC5156E" workflow:
+
+FatalError: Error from step helper
+    at throwStepError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:7:11)
+    at stepErrorHelper (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:10:5)
+    at deepStepWithNestedError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:13:5)
+    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:698:21)
+    at AsyncLocalStorage.run (node:internal/async_local_storage/async_hooks:91:14)
+    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:680:43)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:576:14)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)
+
+Call chain (Step Node.js context):
+  throwStepError (98_step_error_test.ts:7)
+    ↓
+  stepErrorHelper (98_step_error_test.ts:10)
+    ↓
+  deepStepWithNestedError (98_step_error_test.ts:13) [STEP FUNCTION]
+    ↓
+  [Error preserved and propagated to workflow context]
+
+
+=== KEY OBSERVATIONS ===
+
+1. WORKFLOW ERROR (Test 1):
+   - Error thrown in workflow VM context
+   - Stack trace shows: 98_workflow_error_test.ts → 99_e2e.ts
+   - Inline sourcemaps in workflow bundle enable proper file/line references
+
+2. STEP ERROR (Test 2):
+   - Error thrown in step Node.js context
+   - Stack trace shows full call chain within the step: 98_step_error_test.ts lines 7→10→13
+   - Inline sourcemaps in step bundle enable proper file/line references
+   - Stack trace PRESERVED when error bubbles up to workflow (fix in step.ts:94-100)
+
+3. SOURCEMAP CONFIGURATION:
+   - Workflow bundle: sourcemap: 'inline' (base-builder.ts:481)
+   - Step bundle: sourcemap: 'inline' (base-builder.ts:355)
+   - Node.js runtime: NODE_OPTIONS="--enable-source-maps"

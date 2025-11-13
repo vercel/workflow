@@ -1,0 +1,185 @@
+
+ RUN  v3.2.4 /Users/pranaygp/github/vercel/workflow
+
+stdout | packages/core/e2e/e2e.test.ts > e2e > crossFileErrorWorkflow - stack traces work across imported modules
+[Debug]: Executing node ./node_modules/workflow/bin/run.js inspect --json runs wrun_01K9VGFKKY8R566JGSTQR4KAHK 
+[Debug]: in CWD: /Users/pranaygp/github/vercel/workflow/workbench/nitro
+
+┌────────────────────────────────────────────────────────┐
+│                                                        │
+│              Workflow CLI v4.0.1-beta.13               │
+│           Docs at https://useworkflow.dev/             │
+│     This is a beta release - commands might change     │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+[Debug] Inferring env vars, backend: embedded
+[Warn] PORT environment variable is not set, using default port 3000
+[Debug] Found workflow data directory: /Users/pranaygp/github/vercel/workflow/workbench/nitro-v3/.workflow-data
+[Debug] Initializing world
+{
+  "runId": "wrun_01K9VGFKKY8R566JGSTQR4KAHK",
+  "status": "failed",
+  "deploymentId": "dpl_embedded",
+  "workflowName": "workflow//example/workflows/99_e2e.ts//crossFileErrorWorkflow",
+  "input": [],
+  "error": {
+    "message": "Error: Error from workflow helper",
+    "stack": "Error: Error from workflow helper\n    at throwWorkflowError (../example/workflows/98_workflow_error_test.ts:4:10)\n    at workflowErrorHelper (../example/workflows/98_workflow_error_test.ts:7:4)\n    at crossFileErrorWorkflow (../example/workflows/99_e2e.ts:290:4)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/workflow.ts:574:7)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:362:28)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:280:14)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)"
+  },
+  "startedAt": "2025-11-12T07:46:31.842Z",
+  "completedAt": "2025-11-12T07:46:32.071Z",
+  "createdAt": "2025-11-12T07:46:31.678Z",
+  "updatedAt": "2025-11-12T07:46:32.071Z"
+}
+stdout | packages/core/e2e/e2e.test.ts > e2e > crossFileErrorWorkflow - stack traces work across imported modules
+Result: {
+  "runId": "wrun_01K9VGFKKY8R566JGSTQR4KAHK",
+  "status": "failed",
+  "deploymentId": "dpl_embedded",
+  "workflowName": "workflow//example/workflows/99_e2e.ts//crossFileErrorWorkflow",
+  "input": [],
+  "error": {
+    "message": "Error: Error from workflow helper",
+    "stack": "Error: Error from workflow helper\n    at throwWorkflowError (../example/workflows/98_workflow_error_test.ts:4:10)\n    at workflowErrorHelper (../example/workflows/98_workflow_error_test.ts:7:4)\n    at crossFileErrorWorkflow (../example/workflows/99_e2e.ts:290:4)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/workflow.ts:574:7)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:362:28)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:280:14)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)"
+  },
+  "startedAt": "2025-11-12T07:46:31.842Z",
+  "completedAt": "2025-11-12T07:46:32.071Z",
+  "createdAt": "2025-11-12T07:46:31.678Z",
+  "updatedAt": "2025-11-12T07:46:32.071Z"
+}
+
+
+ ✓ packages/core/e2e/e2e.test.ts (21 tests | 20 skipped) 2122ms
+   ✓ e2e > crossFileErrorWorkflow - stack traces work across imported modules  2121ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 20 skipped (21)
+   Start at  02:46:31
+   Duration  2.59s (transform 85ms, setup 0ms, collect 188ms, tests 2.12s, environment 0ms, prepare 34ms)
+
+
+ RUN  v3.2.4 /Users/pranaygp/github/vercel/workflow
+
+stdout | packages/core/e2e/e2e.test.ts > e2e > deepStepErrorWorkflow - stack traces work with step errors across multiple files
+Full stack trace from deepStepErrorWorkflow:
+FatalError: Error from step helper
+    at throwStepError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:7:11)
+    at stepErrorHelper (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:10:5)
+    at deepStepWithNestedError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:13:5)
+    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:698:21)
+    at AsyncLocalStorage.run (node:internal/async_local_storage/async_hooks:91:14)
+    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:680:43)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:576:14)
+    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)
+[Debug]: Executing node ./node_modules/workflow/bin/run.js inspect --json runs wrun_01K9VGG5DSFTMNDSA8XAHH9WH8 
+[Debug]: in CWD: /Users/pranaygp/github/vercel/workflow/workbench/nitro
+
+┌────────────────────────────────────────────────────────┐
+│                                                        │
+│              Workflow CLI v4.0.1-beta.13               │
+│           Docs at https://useworkflow.dev/             │
+│     This is a beta release - commands might change     │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+[Debug] Inferring env vars, backend: embedded
+[Warn] PORT environment variable is not set, using default port 3000
+[Debug] Found workflow data directory: /Users/pranaygp/github/vercel/workflow/workbench/nitro-v3/.workflow-data
+[Debug] Initializing world
+{
+  "runId": "wrun_01K9VGG5DSFTMNDSA8XAHH9WH8",
+  "status": "failed",
+  "deploymentId": "dpl_embedded",
+  "workflowName": "workflow//example/workflows/99_e2e.ts//deepStepErrorWorkflow",
+  "input": [],
+  "error": {
+    "message": "FatalError: Error from step helper",
+    "stack": "FatalError: Error from step helper\n    at throwStepError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:7:11)\n    at stepErrorHelper (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:10:5)\n    at deepStepWithNestedError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:13:5)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:698:21)\n    at AsyncLocalStorage.run (node:internal/async_local_storage/async_hooks:91:14)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:680:43)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:576:14)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)"
+  },
+  "startedAt": "2025-11-12T07:46:50.076Z",
+  "completedAt": "2025-11-12T07:46:50.924Z",
+  "createdAt": "2025-11-12T07:46:49.913Z",
+  "updatedAt": "2025-11-12T07:46:50.924Z"
+}
+stdout | packages/core/e2e/e2e.test.ts > e2e > deepStepErrorWorkflow - stack traces work with step errors across multiple files
+Result: {
+  "runId": "wrun_01K9VGG5DSFTMNDSA8XAHH9WH8",
+  "status": "failed",
+  "deploymentId": "dpl_embedded",
+  "workflowName": "workflow//example/workflows/99_e2e.ts//deepStepErrorWorkflow",
+  "input": [],
+  "error": {
+    "message": "FatalError: Error from step helper",
+    "stack": "FatalError: Error from step helper\n    at throwStepError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:7:11)\n    at stepErrorHelper (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:10:5)\n    at deepStepWithNestedError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:13:5)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:698:21)\n    at AsyncLocalStorage.run (node:internal/async_local_storage/async_hooks:91:14)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:680:43)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:576:14)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)"
+  },
+  "startedAt": "2025-11-12T07:46:50.076Z",
+  "completedAt": "2025-11-12T07:46:50.924Z",
+  "createdAt": "2025-11-12T07:46:49.913Z",
+  "updatedAt": "2025-11-12T07:46:50.924Z"
+}
+
+
+stdout | packages/core/e2e/e2e.test.ts > e2e > deepStepErrorWorkflow - stack traces work with step errors across multiple files
+[Debug]: Executing node ./node_modules/workflow/bin/run.js inspect --json steps --runId wrun_01K9VGG5DSFTMNDSA8XAHH9WH8 
+[Debug]: in CWD: /Users/pranaygp/github/vercel/workflow/workbench/nitro
+
+┌────────────────────────────────────────────────────────┐
+│                                                        │
+│              Workflow CLI v4.0.1-beta.13               │
+│           Docs at https://useworkflow.dev/             │
+│     This is a beta release - commands might change     │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+[Debug] Inferring env vars, backend: embedded
+[Warn] PORT environment variable is not set, using default port 3000
+[Debug] Found workflow data directory: /Users/pranaygp/github/vercel/workflow/workbench/nitro-v3/.workflow-data
+[Debug] Initializing world
+[Debug] Fetching steps for run wrun_01K9VGG5DSFTMNDSA8XAHH9WH8
+[
+  {
+    "runId": "wrun_01K9VGG5DSFTMNDSA8XAHH9WH8",
+    "stepId": "step_01K9VGG5JWA530ZVR68PDJMSJE",
+    "stepName": "step//example/workflows/98_step_error_test.ts//deepStepWithNestedError",
+    "status": "failed",
+    "input": [],
+    "error": {
+      "message": "Error from step helper",
+      "stack": "FatalError: Error from step helper\n    at throwStepError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:7:11)\n    at stepErrorHelper (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:10:5)\n    at deepStepWithNestedError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:13:5)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:698:21)\n    at AsyncLocalStorage.run (node:internal/async_local_storage/async_hooks:91:14)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:680:43)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:576:14)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)"
+    },
+    "attempt": 1,
+    "startedAt": "2025-11-12T07:46:50.587Z",
+    "completedAt": "2025-11-12T07:46:50.588Z",
+    "createdAt": "2025-11-12T07:46:50.276Z",
+    "updatedAt": "2025-11-12T07:46:50.588Z"
+  }
+]
+stdout | packages/core/e2e/e2e.test.ts > e2e > deepStepErrorWorkflow - stack traces work with step errors across multiple files
+Result: [
+  {
+    "runId": "wrun_01K9VGG5DSFTMNDSA8XAHH9WH8",
+    "stepId": "step_01K9VGG5JWA530ZVR68PDJMSJE",
+    "stepName": "step//example/workflows/98_step_error_test.ts//deepStepWithNestedError",
+    "status": "failed",
+    "input": [],
+    "error": {
+      "message": "Error from step helper",
+      "stack": "FatalError: Error from step helper\n    at throwStepError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:7:11)\n    at stepErrorHelper (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:10:5)\n    at deepStepWithNestedError (/Users/pranaygp/github/vercel/workflow/workbench/example/workflows/98_step_error_test.ts:13:5)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:698:21)\n    at AsyncLocalStorage.run (node:internal/async_local_storage/async_hooks:91:14)\n    at <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:680:43)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:94:22)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/telemetry.ts:57:58)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/core/src/runtime.ts:576:14)\n    at async <anonymous> (/Users/pranaygp/github/vercel/workflow/packages/world-local/src/queue.ts:148:24)"
+    },
+    "attempt": 1,
+    "startedAt": "2025-11-12T07:46:50.587Z",
+    "completedAt": "2025-11-12T07:46:50.588Z",
+    "createdAt": "2025-11-12T07:46:50.276Z",
+    "updatedAt": "2025-11-12T07:46:50.588Z"
+  }
+]
+
+
+ ✓ packages/core/e2e/e2e.test.ts (21 tests | 20 skipped) 3028ms
+   ✓ e2e > deepStepErrorWorkflow - stack traces work with step errors across multiple files  3027ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 20 skipped (21)
+   Start at  02:46:49
+   Duration  3.48s (transform 83ms, setup 0ms, collect 189ms, tests 3.03s, environment 0ms, prepare 30ms)
+

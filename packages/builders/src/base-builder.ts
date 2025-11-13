@@ -348,8 +348,11 @@ export abstract class BaseBuilder {
       keepNames: true,
       minify: false,
       resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
-      // TODO: investigate proper source map support
-      sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+      // Inline source maps for better stack traces in step execution.
+      // Steps execute in Node.js context and inline sourcemaps ensure we get
+      // meaningful stack traces with proper file names and line numbers when errors
+      // occur in deeply nested function calls across multiple files.
+      sourcemap: 'inline',
       plugins: [
         createSwcPlugin({
           mode: 'step',
