@@ -671,13 +671,18 @@ export const POST = workflowEntrypoint(workflowCode);`;
    * Creates a webhook handler bundle for resuming workflows via HTTP callbacks.
    *
    * @param bundle - If true, bundles dependencies (needed for Build Output API)
+   * @param suppressUndefinedRejections - If true, suppresses undefined rejections.
+   *                                      This is a workaround to avoid crashing in local
+   *                                      dev when context isn't set for waitUntil()
    */
   protected async createWebhookBundle({
     outfile,
     bundle = false,
+    suppressUndefinedRejections = false,
   }: {
     outfile: string;
     bundle?: boolean;
+    suppressUndefinedRejections?: boolean;
   }): Promise<void> {
     console.log('Creating webhook route');
     await mkdir(dirname(outfile), { recursive: true });
@@ -725,7 +730,7 @@ export const OPTIONS = handler;`;
     const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
-        js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${suppressUndefinedRejections ? 'process.on("unhandledRejection", (reason) => { if (reason !== undefined) console.error("Unhandled rejection detected", reason); });' : ''}`,
       },
       stdin: {
         contents: routeContent,
