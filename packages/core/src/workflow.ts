@@ -549,8 +549,13 @@ export async function runWorkflow(
     const parsedName = parseWorkflowName(workflowRun.workflowName);
     const filename = parsedName?.path || workflowRun.workflowName;
 
+    // Normalize the workflow name to handle Windows path separators
+    // The SWC transform normalizes paths to forward slashes during bundling,
+    // but the workflow name lookup might contain backslashes on Windows
+    const normalizedWorkflowName = workflowRun.workflowName.replace(/\\/g, '/');
+
     const workflowFn = runInContext(
-      `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
+      `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(normalizedWorkflowName)})`,
       context,
       { filename }
     );
@@ -558,7 +563,7 @@ export async function runWorkflow(
     if (typeof workflowFn !== 'function') {
       throw new ReferenceError(
         `Workflow ${JSON.stringify(
-          workflowRun.workflowName
+          normalizedWorkflowName
         )} must be a function, but got "${typeof workflowFn}" instead`
       );
     }
