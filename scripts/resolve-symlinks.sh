@@ -1,8 +1,26 @@
 #!/bin/bash
 set -e
 
-# Script to recursively resolve all symlinks in the app directory
-# This is needed for CI where Next.js dev mode doesn't work well with symlinks
+# Script to recursively resolve all symlinks in a workbench directory
+# This is needed for CI where dev mode doesn't work well with symlinks
+#
+# Usage: ./scripts/resolve-symlinks.sh <workbench-directory>
+# Example: ./scripts/resolve-symlinks.sh workbench/nextjs-turbopack
+
+# Check if directory argument is provided
+if [ -z "$1" ]; then
+  echo "Error: No directory specified"
+  echo "Usage: $0 <workbench-directory>"
+  exit 1
+fi
+
+TARGET_DIR="$1"
+
+# Check if directory exists
+if [ ! -d "$TARGET_DIR" ]; then
+  echo "Error: Directory '$TARGET_DIR' does not exist"
+  exit 1
+fi
 
 # Only run in CI
 if [ -z "$CI" ]; then
@@ -10,6 +28,9 @@ if [ -z "$CI" ]; then
   echo "If you need to resolve symlinks locally, run it manually with CI=true"
   exit 1
 fi
+
+echo "Resolving symlinks in $TARGET_DIR..."
+cd "$TARGET_DIR"
 
 echo "Resolving symlinked files in workflows directory..."
 
@@ -84,4 +105,4 @@ git ls-files -z --cached --others --exclude-standard | xargs -0 -I {} sh -c 'tes
   fi
 done
 
-echo "All symlinks resolved successfully!"
+echo "All symlinks resolved successfully in $TARGET_DIR!"
