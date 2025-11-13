@@ -4,6 +4,7 @@ import { config } from 'dotenv';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
+import { DEFAULT_PG_URL } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -14,7 +15,7 @@ async function setupDatabase() {
   const connectionString =
     process.env.WORKFLOW_POSTGRES_URL ||
     process.env.DATABASE_URL ||
-    'postgres://world:world@localhost:5432/world';
+    DEFAULT_PG_URL;
 
   console.log('🔧 Setting up database schema...');
   console.log(

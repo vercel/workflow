@@ -7,19 +7,18 @@ import { MessageData, type QueueDriver } from './types.js';
  * Takes in a proxy that will handle the actual step/flow execution.
  */
 export function createPgBossQueue(
-  config: {
-    jobPrefix?: string;
+  opts: {
+    jobPrefix: string;
     connectionString: string;
-    queueConcurrency?: number;
+    queueConcurrency: number;
   },
   proxy: WkfProxy
 ): QueueDriver {
   let startPromise: Promise<unknown> | null = null;
-  const boss = new PgBoss(config.connectionString);
+  const boss = new PgBoss(opts.connectionString);
 
-  const prefix = config.jobPrefix || 'workflow_';
-  const stepQueueName = `${prefix}steps`;
-  const workflowQueueName = `${prefix}flows`;
+  const stepQueueName = `${opts.jobPrefix}steps`;
+  const workflowQueueName = `${opts.jobPrefix}flows`;
 
   const ensureStarted = async () => {
     if (!startPromise) {
@@ -59,7 +58,7 @@ export function createPgBossQueue(
       const stepWorker = createWorker(proxy.proxyStep);
       const workflowWorker = createWorker(proxy.proxyWorkflow);
 
-      for (let i = 0; i < (config.queueConcurrency || 10); i++) {
+      for (let i = 0; i < opts.queueConcurrency; i++) {
         await boss.work(workflowQueueName, workflowWorker);
         await boss.work(stepQueueName, stepWorker);
       }
