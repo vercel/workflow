@@ -17,8 +17,9 @@ export function createPgBossQueue(
   let startPromise: Promise<unknown> | null = null;
   const boss = new PgBoss(config.connectionString);
 
-  const stepQueueName = 'workflow_steps';
-  const workflowQueueName = 'workflow_flows';
+  const prefix = config.jobPrefix || 'workflow_';
+  const stepQueueName = `${prefix}steps`;
+  const workflowQueueName = `${prefix}flows`;
 
   const ensureStarted = async () => {
     if (!startPromise) {

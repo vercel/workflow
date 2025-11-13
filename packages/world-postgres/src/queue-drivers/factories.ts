@@ -7,7 +7,7 @@ import type { QueueDriver } from './types.js';
  * QueueDriver implementation using pg-boss for job management
  * and direct function calls for execution.
  */
-export function createPgBossFunctionProxy(opts: {
+export function createPgBossFunctionProxyQueue(opts: {
   jobPrefix?: string;
   securityToken: string;
   connectionString: string;
@@ -33,7 +33,7 @@ export function createPgBossFunctionProxy(opts: {
  * QueueDriver implementation using pg-boss for job management
  * and HTTP for execution.
  */
-export function createPgBossHttpProxy(config: {
+export function createPgBossHttpProxyQueue(config: {
   port?: number;
   baseUrl?: string;
   jobPrefix?: string;
