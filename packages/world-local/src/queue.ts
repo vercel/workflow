@@ -67,7 +67,6 @@ export function createQueue(port?: number): Queue {
           {
             method: 'POST',
             duplex: 'half',
-            // @ts-expect-error undici type differences
             dispatcher: httpAgent,
             headers: {
               'content-type': 'application/json',
