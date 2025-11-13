@@ -689,7 +689,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
     // Create a static route that calls resumeWebhook
     // This route works for both Next.js and Vercel Build Output API
-    const routeContent = `import { resumeWebhook } from 'workflow/api';
+    const routeContent = `${suppressUndefinedRejections ? 'process.on("unhandledRejection", (reason) => { if (reason !== undefined) console.error("Unhandled rejection detected", reason); });' : ''}import { resumeWebhook } from 'workflow/api';
 
 async function handler(request) {
   const url = new URL(request.url);
@@ -730,7 +730,7 @@ export const OPTIONS = handler;`;
     const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
-        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${suppressUndefinedRejections ? 'process.on("unhandledRejection", (reason) => { if (reason !== undefined) console.error("Unhandled rejection detected", reason); });' : ''}`,
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */`,
       },
       stdin: {
         contents: routeContent,
