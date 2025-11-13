@@ -13,13 +13,13 @@ This guide will walk through setting up your first workflow in a Next.js app. Al
 <Step>
 ## Create Your Next.js Project
 
-Start by creating a new Next.js project. This command will create a new directory named `my-workflow-app` and setup a Next.js project inside it.
+Start by creating a new Next.js project. This command will create a new directory named `my-workflow-app` and set up a Next.js project inside it.
 
 ```bash
 npm create next-app@latest my-workflow-app
 ```
 
-Enter the newly made directory:
+Enter the newly created directory:
 
 ```bash
 cd my-workflow-app
@@ -217,7 +217,7 @@ We'll dive deeper into workflows, steps, and other ways to suspend or handle eve
 
 ## Create Your Route Handler
 
-To invoke your new workflow, we'll have to add your workflow to a `POST` API Route Handler, `app/api/signup/route.ts` with the following code:
+To invoke your new workflow, we'll need to add your workflow to a `POST` API Route Handler, `app/api/signup/route.ts`, with the following code:
 
 ```typescript title="app/api/signup/route.ts"
 import { start } from 'workflow/api';
@@ -260,7 +260,7 @@ Once your development server is running, you can trigger your workflow by runnin
 curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/signup
 ```
 
-Check the Next.js development server logs to see your workflow execute as well as the steps that are being processed.
+Check the Next.js development server logs to see your workflow execute, as well as the steps that are being processed.
 
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
@@ -275,7 +275,7 @@ npx workflow inspect runs
 
 ## Deploying to production
 
-Workflow DevKit apps currently work best when deployed to [Vercel](https://vercel.com/home) and needs no special configuration.
+Workflow DevKit apps currently work best when deployed to [Vercel](https://vercel.com/home) and need no special configuration.
 
 Check the [Deploying](/docs/deploying) section to learn how your workflows can be deployed elsewhere.
 
