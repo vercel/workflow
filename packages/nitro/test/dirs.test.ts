@@ -15,7 +15,7 @@ const nitroMock = (dirs: string[]) => {
 describe('nitro:getWorkflowDirs', () => {
   test('default dirs', () => {
     const result = getWorkflowDirs(nitroMock([]));
-    expect(result).toEqual(['/root/server/workflows', '/root/workflows']);
+    expect(result).toEqual(['/root/api', '/root/routes', '/root/workflows']);
   });
 
   test('custom dirs', () => {
@@ -24,8 +24,9 @@ describe('nitro:getWorkflowDirs', () => {
     );
     expect(result).toEqual([
       '/custom/dir2',
+      '/root/api',
       '/root/relative/dir1',
-      '/root/server/workflows',
+      '/root/routes',
       '/root/workflows',
     ]);
   });
