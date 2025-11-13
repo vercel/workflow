@@ -6,8 +6,8 @@ import { createFunctionProxy } from './proxies/function-proxy.js';
 import { createHttpProxy } from './proxies/http-proxy.js';
 import { createQueue } from './queue.js';
 import {
-  createPgBossFunctionProxy,
-  createPgBossHttpProxy,
+  createPgBossFunctionProxyQueue,
+  createPgBossHttpProxyQueue,
 } from './queue-drivers/factories.js';
 import { createPgBossQueue } from './queue-drivers/pgboss.js';
 import {
@@ -55,11 +55,12 @@ function createStorage(drizzle: Drizzle): Storage {
 }
 
 function defaultQueueFactory() {
-  return createPgBossHttpProxy({
+  return createPgBossHttpProxyQueue({
     baseUrl: process.env.WORKFLOW_POSTGRES_BASE_URL,
     connectionString: process.env.WORKFLOW_POSTGRES_URL || DEFAULT_PG_URL,
     securityToken:
       process.env.WORKFLOW_POSTGRES_SECURITY_TOKEN || 'this-is-not-safe',
+    jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '10', 10) ||
       10,
@@ -71,4 +72,8 @@ export type { PostgresWorldConfig } from './config.js';
 export * from './drizzle/schema.js';
 
 export { createFunctionProxy, createHttpProxy };
-export { createPgBossQueue, createPgBossFunctionProxy, createPgBossHttpProxy };
+export {
+  createPgBossQueue,
+  createPgBossFunctionProxyQueue as createPgBossFunctionProxy,
+  createPgBossHttpProxyQueue as createPgBossHttpProxy,
+};
