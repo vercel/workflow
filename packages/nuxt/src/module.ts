@@ -1,4 +1,5 @@
 import { defineNuxtModule } from '@nuxt/kit';
+import type { NuxtModule } from '@nuxt/schema';
 import type { ModuleOptions as NitroModuleOptions } from '@workflow/nitro';
 
 // Module options TypeScript interface definition
@@ -10,7 +11,7 @@ export interface ModuleOptions {
   typescriptPlugin: boolean;
 }
 
-export default defineNuxtModule<ModuleOptions>({
+const module: NuxtModule<ModuleOptions> = defineNuxtModule({
   meta: {
     name: 'workflow',
     configKey: 'workflow',
@@ -31,3 +32,5 @@ export default defineNuxtModule<ModuleOptions>({
     }
   },
 });
+
+export default module;

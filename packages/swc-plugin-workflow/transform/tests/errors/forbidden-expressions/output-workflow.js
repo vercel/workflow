@@ -12,3 +12,15 @@ class TestClass extends BaseClass {
         return super.method();
     }
 }
+Object.defineProperty(stepWithThis, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//stepWithThis",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
+Object.defineProperty(stepWithArguments, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//stepWithArguments",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});

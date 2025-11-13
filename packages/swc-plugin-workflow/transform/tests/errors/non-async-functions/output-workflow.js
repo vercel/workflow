@@ -24,3 +24,9 @@ export const validWorkflow = async ()=>{
     return 'test';
 };
 validWorkflow.workflowId = "workflow//input.js//validWorkflow";
+Object.defineProperty(validStep, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//validStep",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});

@@ -1,4 +1,8 @@
 {
-  "extends": "./.nuxt/tsconfig.json",
-  "exclude": ["dist", "node_modules"]
+  "extends": "@workflow/tsconfig/base.json",
+  "exclude": ["dist", "node_modules"],
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false
+  }
 }

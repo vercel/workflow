@@ -44,3 +44,45 @@ export async function multiple({ a, b }, { c, d }) {
 export async function rest_top_level(a, b, ...rest) {
     return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//rest_top_level")(a, b, ...rest);
 }
+Object.defineProperty(destructure, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//destructure",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
+Object.defineProperty(process_array, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//process_array",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
+Object.defineProperty(nested_destructure, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//nested_destructure",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
+Object.defineProperty(with_defaults, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//with_defaults",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
+Object.defineProperty(with_rest, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//with_rest",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
+Object.defineProperty(multiple, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//multiple",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
+Object.defineProperty(rest_top_level, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
+    value: "step//input.js//rest_top_level",
+    writable: false,
+    enumerable: false,
+    configurable: false
+});
