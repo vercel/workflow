@@ -3,9 +3,3 @@
 'use step';
 'use workflow';
 export var test = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//test");
-Object.defineProperty(test, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
-    value: "step//input.js//test",
-    writable: false,
-    enumerable: false,
-    configurable: false
-});

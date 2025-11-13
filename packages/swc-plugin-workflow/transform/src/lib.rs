@@ -2187,89 +2187,8 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // Step function marking is now handled inside the useStep() function
-        // No need to add Object.defineProperty statements in the output
-
         // Clear the workflow_functions_needing_id since we've already processed them
         self.workflow_functions_needing_id.clear();
-
-        // In workflow mode, mark all step functions with the STEP_FUNCTION_NAME_SYMBOL
-        if self.mode == TransformMode::Workflow {
-            let step_functions: Vec<_> = self.step_function_names.iter().cloned().collect();
-
-            // Collect function marking statements first (to avoid borrow conflicts)
-            let mut step_marking_statements = Vec::new();
-            for item in items.iter() {
-                match item {
-                    ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fn_decl))) => {
-                        let fn_name = fn_decl.ident.sym.to_string();
-                        if step_functions.contains(&fn_name) {
-                            step_marking_statements.push(
-                                self.create_step_function_marking(&fn_name, fn_decl.function.span),
-                            );
-                        }
-                    }
-                    ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
-                        if let Decl::Fn(fn_decl) = &export_decl.decl {
-                            let fn_name = fn_decl.ident.sym.to_string();
-                            if step_functions.contains(&fn_name) {
-                                step_marking_statements.push(
-                                    self.create_step_function_marking(
-                                        &fn_name,
-                                        fn_decl.function.span,
-                                    ),
-                                );
-                            }
-                        } else if let Decl::Var(var_decl) = &export_decl.decl {
-                            // Handle exported variable declarations like `export const stepArrow = async () => {}`
-                            for declarator in &var_decl.decls {
-                                if let Pat::Ident(binding) = &declarator.name {
-                                    let name = binding.id.sym.to_string();
-                                    if step_functions.contains(&name) {
-                                        if let Some(init) = &declarator.init {
-                                            let span = match &**init {
-                                                Expr::Fn(fn_expr) => fn_expr.function.span,
-                                                Expr::Arrow(arrow_expr) => arrow_expr.span,
-                                                _ => declarator.span,
-                                            };
-                                            step_marking_statements.push(
-                                                self.create_step_function_marking(&name, span),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
-                        // Handle non-exported variable declarations like `const stepArrow = async () => {}`
-                        for declarator in &var_decl.decls {
-                            if let Pat::Ident(binding) = &declarator.name {
-                                let name = binding.id.sym.to_string();
-                                if step_functions.contains(&name) {
-                                    if let Some(init) = &declarator.init {
-                                        let span = match &**init {
-                                            Expr::Fn(fn_expr) => fn_expr.function.span,
-                                            Expr::Arrow(arrow_expr) => arrow_expr.span,
-                                            _ => declarator.span,
-                                        };
-                                        step_marking_statements.push(
-                                            self.create_step_function_marking(&name, span),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // Now add all the marking statements
-            for stmt in step_marking_statements {
-                items.push(ModuleItem::Stmt(stmt));
-            }
-        }
 
         // In workflow mode, convert step functions to const declarations
         // (Must be after visit_mut_children_with so step_function_names is populated)
@@ -2333,7 +2252,8 @@ impl VisitMut for StepTransform {
                                             // This is an exported step function variable - convert to assignment
                                             let step_id =
                                                 self.create_id(Some(&name), declarator.span, false);
-                                            let initializer = self.create_step_initializer(&step_id);
+                                            let initializer =
+                                                self.create_step_initializer(&step_id);
                                             // Preserve the original identifier's syntax context to avoid SWC renaming
                                             let orig_ctxt = binding.id.ctxt;
                                             declarator.init = Some(Box::new(initializer));
@@ -2343,7 +2263,8 @@ impl VisitMut for StepTransform {
                                                 binding.id.span,
                                                 orig_ctxt,
                                             );
-                                            if let Pat::Ident(ref mut new_binding) = declarator.name {
+                                            if let Pat::Ident(ref mut new_binding) = declarator.name
+                                            {
                                                 new_binding.id = new_ident;
                                             }
                                         }
@@ -2419,9 +2340,7 @@ impl VisitMut for StepTransform {
                             new_var_decl.kind = original_kind;
                             items_to_replace.push((
                                 idx,
-                                ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(
-                                    new_var_decl,
-                                )))),
+                                ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(new_var_decl)))),
                             ));
                         }
                     }
@@ -2745,10 +2664,9 @@ impl VisitMut for StepTransform {
                                                         false,
                                                     );
                                                     // Replace the entire function expression with the initializer
-                                                    *init =
-                                                        Box::new(self.create_step_initializer(
-                                                            &step_id,
-                                                        ));
+                                                    *init = Box::new(
+                                                        self.create_step_initializer(&step_id),
+                                                    );
                                                 }
                                                 TransformMode::Client => {
                                                     // In client mode, just remove the directive and keep the function as-is
@@ -2832,10 +2750,9 @@ impl VisitMut for StepTransform {
                                                         false,
                                                     );
                                                     // Replace the entire arrow function with the initializer
-                                                    *init =
-                                                        Box::new(self.create_step_initializer(
-                                                            &step_id,
-                                                        ));
+                                                    *init = Box::new(
+                                                        self.create_step_initializer(&step_id),
+                                                    );
                                                 }
                                                 TransformMode::Client => {
                                                     // In client mode, just remove the directive and keep the function as-is
