@@ -14,7 +14,12 @@ import { createStreamer } from './streamer.js';
  * @param args.baseUrl - Full base URL override for queue transport (default: `http://localhost:{port}`)
  */
 export function createEmbeddedWorld(args?: Partial<Config>): World {
-  const mergedConfig = { ...config.value, ...(args ?? {}) };
+  const definedArgs = args
+    ? Object.fromEntries(
+        Object.entries(args).filter(([, value]) => value !== undefined)
+      )
+    : {};
+  const mergedConfig = { ...config.value, ...definedArgs };
   return {
     ...createQueue(mergedConfig),
     ...createStorage(mergedConfig.dataDir),
