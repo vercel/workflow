@@ -32,13 +32,15 @@ fn normalize_stderr_files() {
                             for sub_entry in sub_entries.flatten() {
                                 let sub_path = sub_entry.path();
                                 if sub_path.extension().and_then(|s| s.to_str()) == Some("stderr") {
-                                    if let Ok(content) = fs::read_to_string(&sub_path) {
-                                        // Normalize: remove all CR, then add CRLF for each line
-                                        let normalized = content
-                                            .replace("\r\n", "\n") // First normalize CRLF to LF
-                                            .replace("\r", "\n") // Handle old Mac-style CR
-                                            .replace("\n", "\r\n"); // Convert all LF to CRLF
-                                        let _ = fs::write(&sub_path, normalized);
+                                    if let Ok(mut content) = fs::read_to_string(&sub_path) {
+                                        // On Windows, normalize line endings to LF
+                                        // SWC's error handler outputs LF even on Windows
+                                        // but Git may check out files with CRLF due to autocrlf
+                                        content = content
+                                            .replace("\r\n", "\n") // Normalize CRLF to LF
+                                            .replace("\r", "\n"); // Handle old Mac-style CR
+                                        // Write back with LF line endings
+                                        let _ = fs::write(&sub_path, content);
                                     }
                                 }
                             }
