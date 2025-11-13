@@ -107,7 +107,7 @@ export abstract class BaseBuilder {
         '**/.vercel/**',
         '**/.workflow-data/**',
         '**/.well-known/workflow/**',
-        '**/.svelte-kit/**'.
+        '**/.svelte-kit/**',
       ],
       absolute: true,
     });
