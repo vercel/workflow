@@ -31,4 +31,4 @@ export default defineNuxtModule<ModuleOptions>({
       nuxt.options.nitro.modules.push('@workflow/nitro');
     }
   },
-}) satisfies NuxtModule<ModuleOptions>;
+});
