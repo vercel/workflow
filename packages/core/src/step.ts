@@ -126,10 +126,23 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
     };
 
     // Ensure the "name" property matches the original step function name
+    // Extract function name from stepName (format: "step//filepath//functionName")
     const functionName = stepName.split('//').pop();
     Object.defineProperty(stepFunction, 'name', {
       value: functionName,
     });
+
+    // Add the step function identifier to the step function for serialization
+    Object.defineProperty(
+      stepFunction,
+      Symbol.for('WORKFLOW_STEP_FUNCTION_NAME'),
+      {
+        value: stepName,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      }
+    );
 
     return stepFunction;
   };

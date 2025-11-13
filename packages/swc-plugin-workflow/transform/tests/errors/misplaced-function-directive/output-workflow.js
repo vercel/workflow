@@ -6,9 +6,3 @@ export const badWorkflow = async ()=>{
     'use workflow';
     return true;
 };
-Object.defineProperty(badStep, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
-    value: "step//input.js//badStep",
-    writable: false,
-    enumerable: false,
-    configurable: false
-});
