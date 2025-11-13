@@ -13,28 +13,28 @@ catalogs:
       specifier: 22.19.0
       version: 22.19.0
     '@vercel/functions':
-      specifier: ^3.1.4
+      specifier: 3.1.4
       version: 3.1.4
     '@vercel/oidc':
-      specifier: ^3.0.3
+      specifier: 3.0.3
       version: 3.0.3
     '@vitest/coverage-v8':
-      specifier: ^3.2.4
+      specifier: 3.2.4
       version: 3.2.4
     ai:
       specifier: 5.0.76
       version: 5.0.76
     esbuild:
-      specifier: ^0.25.11
+      specifier: 0.25.11
       version: 0.25.11
     nitro:
-      specifier: ^3.0.1-alpha.1
+      specifier: 3.0.1-alpha.1
       version: 3.0.1-alpha.1
     typescript:
-      specifier: ^5.9.3
+      specifier: 5.9.3
       version: 5.9.3
     vitest:
-      specifier: ^3.2.4
+      specifier: 3.2.4
       version: 3.2.4
     zod:
       specifier: 4.1.11
