@@ -512,3 +512,36 @@ async function doubleNumber(x: number) {
   'use step';
   return x * 2;
 }
+
+//////////////////////////////////////////////////////////
+
+async function stepThatExitsOnFirstAttempt() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepThatExitsOnFirstAttempt - attempt: ${attempt}`);
+
+  // Kill the process on the first attempt to simulate a fatal crash
+  if (attempt === 1) {
+    console.log(
+      `Attempt ${attempt} - calling process.exit() to simulate fatal crash`
+    );
+    process.exit(1);
+  }
+
+  console.log(`Attempt ${attempt} - succeeding after process recovered`);
+  return { attempt, status: 'recovered' };
+}
+
+export async function processExitResilienceWorkflow() {
+  'use workflow';
+  console.log('Starting process exit resilience workflow');
+
+  // This step should crash the process on the first attempt,
+  // but the workflow should recover and retry on a new process
+  const result = await stepThatExitsOnFirstAttempt();
+
+  console.log(
+    `Workflow completed successfully after process crash: ${JSON.stringify(result)}`
+  );
+  return result;
+}

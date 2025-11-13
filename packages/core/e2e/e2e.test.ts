@@ -719,4 +719,49 @@ describe('e2e', () => {
       expect(stepCompletedEvents).toHaveLength(1);
     }
   );
+
+  test(
+    'processExitResilienceWorkflow - step self-terminates on first attempt',
+    { timeout: 60_000 },
+    async () => {
+      // This test verifies that the workflow system is resilient to fatal process crashes
+      // The step will call process.exit() on the first attempt, simulating an unhandled
+      // fatal error, but the system should recover and retry on a new process
+      const run = await triggerWorkflow('processExitResilienceWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The workflow should complete successfully after the process crash
+      expect(returnValue).toMatchObject({
+        attempt: 2,
+        status: 'recovered',
+      });
+
+      // Verify the run data shows successful completion
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData).toMatchObject({
+        runId: run.runId,
+        status: 'completed',
+        output: { attempt: 2, status: 'recovered' },
+      });
+
+      // Query steps to verify the step was retried
+      const { json: stepsData } = await cliInspectJson(
+        `steps --runId ${run.runId} --withData`
+      );
+      expect(stepsData).toBeDefined();
+      expect(Array.isArray(stepsData)).toBe(true);
+      expect(stepsData.length).toBeGreaterThan(0);
+
+      // Find the stepThatExitsOnFirstAttempt step
+      const exitStep = stepsData.find((s: any) =>
+        s.stepName.includes('stepThatExitsOnFirstAttempt')
+      );
+      expect(exitStep).toBeDefined();
+      expect(exitStep.status).toBe('completed');
+      expect(exitStep.attempt).toBe(2);
+      expect(exitStep.output).toEqual([{ attempt: 2, status: 'recovered' }]);
+    }
+  );
 });
