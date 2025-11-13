@@ -22,12 +22,12 @@ import {
   listWorkflowRunSteps,
   updateStep,
 } from './steps.js';
-import type { APIConfig } from './utils.js';
+import { type APIConfig, withWaitUntilObject } from './utils.js';
 
 export function createStorage(config?: APIConfig): Storage {
   return {
     // Storage interface with namespaced methods
-    runs: {
+    runs: withWaitUntilObject({
       create: (data) => createWorkflowRun(data, config),
       get: (id, params) => getWorkflowRun(id, params, config),
       update: (id, data) => updateWorkflowRun(id, data, config),
@@ -35,25 +35,25 @@ export function createStorage(config?: APIConfig): Storage {
       cancel: (id, params) => cancelWorkflowRun(id, params, config),
       pause: (id, params) => pauseWorkflowRun(id, params, config),
       resume: (id, params) => resumeWorkflowRun(id, params, config),
-    },
-    steps: {
+    }),
+    steps: withWaitUntilObject({
       create: (runId, data) => createStep(runId, data, config),
       get: (runId, stepId, params) => getStep(runId, stepId, params, config),
       update: (runId, stepId, data) => updateStep(runId, stepId, data, config),
       list: (params) => listWorkflowRunSteps(params, config),
-    },
-    events: {
+    }),
+    events: withWaitUntilObject({
       create: (runId, data, params) =>
         createWorkflowRunEvent(runId, data, params, config),
       list: (params) => getWorkflowRunEvents(params, config),
       listByCorrelationId: (params) => getWorkflowRunEvents(params, config),
-    },
-    hooks: {
+    }),
+    hooks: withWaitUntilObject({
       create: (runId, data) => createHook(runId, data, config),
       get: (hookId, params) => getHook(hookId, params, config),
       getByToken: (token) => getHookByToken(token, config),
       list: (params) => listHooks(params, config),
       dispose: (hookId) => disposeHook(hookId, config),
-    },
+    }),
   };
 }
