@@ -5,6 +5,7 @@ import type { Serializable, WorkflowInvokePayload } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
+import { waitedUntil } from '../util.js';
 import { getWorld } from './world.js';
 
 export interface StartOptions {
@@ -54,66 +55,68 @@ export async function start<TArgs extends unknown[], TResult>(
   argsOrOptions?: TArgs | StartOptions,
   options?: StartOptions
 ) {
-  // @ts-expect-error this field is added by our client transform
-  const workflowName = workflow.workflowId;
+  return await waitedUntil(() => {
+    // @ts-expect-error this field is added by our client transform
+    const workflowName = workflow.workflowId;
 
-  if (!workflowName) {
-    throw new WorkflowRuntimeError(
-      `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`,
-      { slug: 'start-invalid-workflow-function' }
-    );
-  }
-
-  return trace(`WORKFLOW.start ${workflowName}`, async (span) => {
-    span?.setAttributes({
-      ...Attribute.WorkflowName(workflowName),
-      ...Attribute.WorkflowOperation('start'),
-    });
-
-    let args: Serializable[] = [];
-    let opts: StartOptions = options ?? {};
-    if (Array.isArray(argsOrOptions)) {
-      args = argsOrOptions as Serializable[];
-    } else if (typeof argsOrOptions === 'object') {
-      opts = argsOrOptions;
+    if (!workflowName) {
+      throw new WorkflowRuntimeError(
+        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`,
+        { slug: 'start-invalid-workflow-function' }
+      );
     }
 
-    span?.setAttributes({
-      ...Attribute.WorkflowArgumentsCount(args.length),
-    });
+    return trace(`WORKFLOW.start ${workflowName}`, async (span) => {
+      span?.setAttributes({
+        ...Attribute.WorkflowName(workflowName),
+        ...Attribute.WorkflowOperation('start'),
+      });
 
-    const world = getWorld();
-    const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
-    const ops: Promise<void>[] = [];
-    const workflowArguments = dehydrateWorkflowArguments(args, ops);
-    // Serialize current trace context to propagate across queue boundary
-    const traceCarrier = await serializeTraceCarrier();
-
-    const runResponse = await world.runs.create({
-      deploymentId: deploymentId,
-      workflowName: workflowName,
-      input: workflowArguments,
-      executionContext: { traceCarrier },
-    });
-    waitUntil(Promise.all(ops));
-
-    span?.setAttributes({
-      ...Attribute.WorkflowRunId(runResponse.runId),
-      ...Attribute.WorkflowRunStatus(runResponse.status),
-      ...Attribute.DeploymentId(deploymentId),
-    });
-
-    await world.queue(
-      `__wkf_workflow_${workflowName}`,
-      {
-        runId: runResponse.runId,
-        traceCarrier,
-      } satisfies WorkflowInvokePayload,
-      {
-        deploymentId,
+      let args: Serializable[] = [];
+      let opts: StartOptions = options ?? {};
+      if (Array.isArray(argsOrOptions)) {
+        args = argsOrOptions as Serializable[];
+      } else if (typeof argsOrOptions === 'object') {
+        opts = argsOrOptions;
       }
-    );
 
-    return new Run<TResult>(runResponse.runId);
+      span?.setAttributes({
+        ...Attribute.WorkflowArgumentsCount(args.length),
+      });
+
+      const world = getWorld();
+      const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+      const ops: Promise<void>[] = [];
+      const workflowArguments = dehydrateWorkflowArguments(args, ops);
+      // Serialize current trace context to propagate across queue boundary
+      const traceCarrier = await serializeTraceCarrier();
+
+      const runResponse = await world.runs.create({
+        deploymentId: deploymentId,
+        workflowName: workflowName,
+        input: workflowArguments,
+        executionContext: { traceCarrier },
+      });
+      waitUntil(Promise.all(ops));
+
+      span?.setAttributes({
+        ...Attribute.WorkflowRunId(runResponse.runId),
+        ...Attribute.WorkflowRunStatus(runResponse.status),
+        ...Attribute.DeploymentId(deploymentId),
+      });
+
+      await world.queue(
+        `__wkf_workflow_${workflowName}`,
+        {
+          runId: runResponse.runId,
+          traceCarrier,
+        } satisfies WorkflowInvokePayload,
+        {
+          deploymentId,
+        }
+      );
+
+      return new Run<TResult>(runResponse.runId);
+    });
   });
 }
