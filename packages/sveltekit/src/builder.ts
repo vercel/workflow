@@ -21,9 +21,15 @@ export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<SvelteKitConfig>) {
     const workingDir = config?.workingDir || process.cwd();
 
+    // Merge user-provided dirs with framework defaults
+    // User dirs are included if provided, then framework defaults are added
+    const defaultDirs = ['workflows', 'src/workflows', 'routes', 'src/routes'];
+    const userDirs = config?.dirs ?? [];
+    const allDirs = Array.from(new Set([...userDirs, ...defaultDirs]));
+
     super({
       ...config,
-      dirs: ['src/routes', 'src/lib'],
+      dirs: allDirs,
       buildTarget: 'sveltekit' as const,
       stepsBundlePath: '', // unused in base
       workflowsBundlePath: '', // unused in base
