@@ -152,3 +152,45 @@ export async function handleWebhookWorkflow() {
   // …
 }
 ```
+
+## Pass-by-Value Semantics
+
+**Parameters are passed by value, not by reference.** Steps receive deserialized copies of data. Mutations inside a step won't affect the original in the workflow.
+
+**Incorrect:**
+
+```typescript
+export async function updateUserWorkflow(userId: string) {
+  "use workflow";
+
+  let user = { id: userId, name: "John", email: "john@example.com" };
+  await updateUserStep(user);
+  
+  // user.email is still "john@example.com"
+  console.log(user.email);
+}
+
+async function updateUserStep(user: { id: string; name: string; email: string }) {
+  "use step";
+  user.email = "newemail@example.com"; // Changes are lost
+}
+```
+
+**Correct - return the modified data:**
+
+```typescript
+export async function updateUserWorkflow(userId: string) {
+  "use workflow";
+
+  let user = { id: userId, name: "John", email: "john@example.com" };
+  user = await updateUserStep(user); // Reassign the return value
+  
+  console.log(user.email); // "newemail@example.com"
+}
+
+async function updateUserStep(user: { id: string; name: string; email: string }) {
+  "use step";
+  user.email = "newemail@example.com";
+  return user;
+}
+```
