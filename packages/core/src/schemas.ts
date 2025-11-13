@@ -63,4 +63,5 @@ export type Serializable =
   | Uint8ClampedArray
   | Uint16Array
   | Uint32Array
-  | WritableStream<Uint8Array>;
+  | WritableStream<Uint8Array>
+  | ((...args: Serializable[]) => Promise<Serializable>); // Step function

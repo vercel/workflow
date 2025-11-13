@@ -789,6 +789,119 @@ impl StepTransform {
         })
     }
 
+    // Mark a step function with the STEP_FUNCTION_NAME_SYMBOL in workflow mode
+    fn create_step_function_marking(&self, fn_name: &str, span: swc_core::common::Span) -> Stmt {
+        let step_id = self.create_id(Some(fn_name), span, false);
+
+        // Create: Object.defineProperty(functionName, Symbol.for('WORKFLOW_STEP_FUNCTION_NAME'), {
+        //   value: "stepId",
+        //   writable: false,
+        //   enumerable: false,
+        //   configurable: false
+        // })
+        Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: Box::new(Expr::Ident(Ident::new(
+                        "Object".into(),
+                        DUMMY_SP,
+                        SyntaxContext::empty(),
+                    ))),
+                    prop: MemberProp::Ident(IdentName::new("defineProperty".into(), DUMMY_SP)),
+                }))),
+                args: vec![
+                    // First argument: functionName
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Ident(Ident::new(
+                            fn_name.into(),
+                            DUMMY_SP,
+                            SyntaxContext::empty(),
+                        ))),
+                    },
+                    // Second argument: Symbol.for('WORKFLOW_STEP_FUNCTION_NAME')
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Call(CallExpr {
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                                span: DUMMY_SP,
+                                obj: Box::new(Expr::Ident(Ident::new(
+                                    "Symbol".into(),
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                ))),
+                                prop: MemberProp::Ident(IdentName::new("for".into(), DUMMY_SP)),
+                            }))),
+                            args: vec![ExprOrSpread {
+                                spread: None,
+                                expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                    span: DUMMY_SP,
+                                    value: "WORKFLOW_STEP_FUNCTION_NAME".into(),
+                                    raw: None,
+                                }))),
+                            }],
+                            type_args: None,
+                        })),
+                    },
+                    // Third argument: property descriptor object
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Object(ObjectLit {
+                            span: DUMMY_SP,
+                            props: vec![
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName::new("value".into(), DUMMY_SP)),
+                                    value: Box::new(Expr::Lit(Lit::Str(Str {
+                                        span: DUMMY_SP,
+                                        value: step_id.into(),
+                                        raw: None,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName::new(
+                                        "writable".into(),
+                                        DUMMY_SP,
+                                    )),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName::new(
+                                        "enumerable".into(),
+                                        DUMMY_SP,
+                                    )),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName::new(
+                                        "configurable".into(),
+                                        DUMMY_SP,
+                                    )),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                            ],
+                        })),
+                    },
+                ],
+                type_args: None,
+            })),
+        })
+    }
+
     // Create a registration call for step mode
     fn create_registration_call(&mut self, name: &str, span: swc_core::common::Span) {
         // Only register each function once
@@ -2017,6 +2130,67 @@ impl VisitMut for StepTransform {
                 items.push(ModuleItem::Stmt(
                     self.create_workflow_id_assignment(&fn_name, span),
                 ));
+            }
+        }
+
+        // In workflow mode, mark all step functions with the STEP_FUNCTION_NAME_SYMBOL
+        if self.mode == TransformMode::Workflow {
+            let step_functions: Vec<_> = self.step_function_names.iter().cloned().collect();
+
+            // Collect function marking statements first (to avoid borrow conflicts)
+            let mut step_marking_statements = Vec::new();
+            for item in items.iter() {
+                match item {
+                    ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fn_decl))) => {
+                        let fn_name = fn_decl.ident.sym.to_string();
+                        if step_functions.contains(&fn_name) {
+                            step_marking_statements.push(
+                                self.create_step_function_marking(&fn_name, fn_decl.function.span),
+                            );
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
+                        if let Decl::Fn(fn_decl) = &export_decl.decl {
+                            let fn_name = fn_decl.ident.sym.to_string();
+                            if step_functions.contains(&fn_name) {
+                                step_marking_statements.push(
+                                    self.create_step_function_marking(
+                                        &fn_name,
+                                        fn_decl.function.span,
+                                    ),
+                                );
+                            }
+                        } else if let Decl::Var(var_decl) = &export_decl.decl {
+                            // Handle exported variable declarations like `export const stepArrow = async () => {}`
+                            for declarator in &var_decl.decls {
+                                if let Pat::Ident(binding) = &declarator.name {
+                                    let name = binding.id.sym.to_string();
+                                    if step_functions.contains(&name) {
+                                        if let Some(init) = &declarator.init {
+                                            let span = match &**init {
+                                                Expr::Fn(fn_expr) => fn_expr.function.span,
+                                                Expr::Arrow(arrow_expr) => arrow_expr.span,
+                                                _ => declarator.span,
+                                            };
+                                            step_marking_statements.push(
+                                                self.create_step_function_marking(
+                                                    &name,
+                                                    span,
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Now add all the marking statements
+            for stmt in step_marking_statements {
+                items.push(ModuleItem::Stmt(stmt));
             }
         }
 

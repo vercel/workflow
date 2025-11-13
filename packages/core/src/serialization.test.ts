@@ -1,15 +1,18 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
+import { getStepFunction, registerStepFunction } from './private.js';
 import {
   dehydrateStepArguments,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
+  getCommonRevivers,
   getStreamType,
+  getWorkflowReducers,
   hydrateWorkflowArguments,
 } from './serialization.js';
-import { STREAM_NAME_SYMBOL } from './symbols.js';
+import { STEP_FUNCTION_NAME_SYMBOL, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
 
 describe('getStreamType', () => {
@@ -781,5 +784,132 @@ describe('step return value', () => {
     expect(err?.message).toContain(
       `Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
     );
+  });
+});
+
+describe('step function serialization', () => {
+  const { globalThis: vmGlobalThis } = createContext({
+    seed: 'test',
+    fixedTimestamp: 1714857600000,
+  });
+
+  it('should detect step function by checking for STEP_FUNCTION_NAME_SYMBOL', () => {
+    const stepName = 'myStep';
+    const stepFn = async (x: number) => x * 2;
+
+    // Attach the symbol like useStep() does
+    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    // Verify the symbol is attached correctly
+    expect((stepFn as any)[STEP_FUNCTION_NAME_SYMBOL]).toBe(stepName);
+  });
+
+  it('should not have STEP_FUNCTION_NAME_SYMBOL on regular functions', () => {
+    const regularFn = async (x: number) => x * 2;
+
+    // Regular functions should not have the symbol
+    expect((regularFn as any)[STEP_FUNCTION_NAME_SYMBOL]).toBeUndefined();
+  });
+
+  it('should lookup registered step function by name', () => {
+    const stepName = 'myRegisteredStep';
+    const stepFn = async (x: number) => x * 2;
+
+    // Register the step function
+    registerStepFunction(stepName, stepFn);
+
+    // Should be retrievable by name
+    const retrieved = getStepFunction(stepName);
+    expect(retrieved).toBe(stepFn);
+  });
+
+  it('should return undefined for non-existent registered step function', () => {
+    const retrieved = getStepFunction('nonExistentStep');
+    expect(retrieved).toBeUndefined();
+  });
+
+  it('should deserialize step function name through reviver', () => {
+    const stepName = 'testStep';
+    const stepFn = async () => 42;
+
+    // Register the step function
+    registerStepFunction(stepName, stepFn);
+
+    // Get the reviver and test it directly
+    const revivers = getCommonRevivers(vmGlobalThis);
+    const result = revivers.StepFunction(stepName);
+
+    expect(result).toBe(stepFn);
+  });
+
+  it('should throw error when reviver cannot find registered step function', () => {
+    const revivers = getCommonRevivers(vmGlobalThis);
+
+    let err: Error | undefined;
+    try {
+      revivers.StepFunction('nonExistentStep');
+    } catch (err_) {
+      err = err_ as Error;
+    }
+
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('Step function "nonExistentStep" not found');
+    expect(err?.message).toContain('Make sure the step function is registered');
+  });
+
+  it('should dehydrate step function passed as argument to a step', () => {
+    const stepName = 'step//workflows/test.ts//myStep';
+    const stepFn = async (x: number) => x * 2;
+
+    // Register the step function
+    registerStepFunction(stepName, stepFn);
+
+    // Attach the symbol to the function (like the SWC compiler would)
+    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    // Simulate passing a step function as an argument within a workflow
+    // When calling a step from within a workflow context
+    const args = [stepFn, 42];
+
+    // This should serialize the step function by its name using the reducer
+    const dehydrated = dehydrateStepArguments(args, globalThis);
+
+    // Verify it dehydrated successfully
+    expect(dehydrated).toBeDefined();
+    expect(Array.isArray(dehydrated)).toBe(true);
+    // The dehydrated structure is the flattened format from devalue
+    // It should contain the step function serialized as its name
+    expect(dehydrated).toContain(stepName);
+    expect(dehydrated).toContain(42);
+  });
+
+  it('should serialize step function to name through reducer', () => {
+    const stepName = 'step//workflows/test.ts//anotherStep';
+    const stepFn = async () => 'result';
+
+    // Attach the symbol to the function (like the SWC compiler would)
+    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    // Get the reducer and verify it detects the step function
+    const reducer = getWorkflowReducers(globalThis).StepFunction;
+    const result = reducer(stepFn);
+
+    // Should return the step name
+    expect(result).toBe(stepName);
   });
 });

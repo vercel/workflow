@@ -491,3 +491,24 @@ export async function hookCleanupTestWorkflow(
     hookCleanupTestData: 'workflow_completed',
   };
 }
+
+//////////////////////////////////////////////////////////
+
+export async function stepFunctionPassingWorkflow() {
+  'use workflow';
+  // Pass a step function reference to another step
+  const result = await stepWithStepFunctionArg(doubleNumber);
+  return result;
+}
+
+async function stepWithStepFunctionArg(stepFn: (x: number) => Promise<number>) {
+  'use step';
+  // Call the passed step function reference
+  const result = await stepFn(10);
+  return result * 2;
+}
+
+async function doubleNumber(x: number) {
+  'use step';
+  return x * 2;
+}
