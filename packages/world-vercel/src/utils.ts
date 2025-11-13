@@ -1,5 +1,4 @@
 import os from 'node:os';
-import { waitUntil } from '@vercel/functions';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
@@ -202,45 +201,4 @@ export async function makeRequest<T>({
       { url, cause: error }
     );
   }
-}
-
-function withWaitUntil<Args extends any[], T>(
-  fn: (...args: Args) => T,
-  waitUntilFn: typeof waitUntil
-): (...args: Args) => T {
-  return (...args) => {
-    const value = fn(...args);
-    if (value instanceof Promise) {
-      waitUntilFn(value);
-    }
-    return value;
-  };
-}
-
-/**
- * Wrap each function in this object returning a Promise with `waitUntil` to
- * ensure Vercel Functions keeps the function alive until the Promise resolves.
- *
- * This is to provide a transaction-like mechanism and ensure
- * requests are not cut off prematurely when people forget to put an `await`
- * or wrap with waitUntil themselves.
- */
-export function withWaitUntilObject<Obj extends object>(
-  obj: Obj,
-  { waitUntilFn = waitUntil } = {}
-): Obj {
-  const newObject = {} as Obj;
-
-  for (const [key, value] of Object.entries(obj)) {
-    if (typeof value !== 'function') {
-      newObject[key as keyof Obj] = value;
-    } else {
-      newObject[key as keyof Obj] = withWaitUntil(
-        value,
-        waitUntilFn
-      ) as unknown as Obj[keyof Obj];
-    }
-  }
-
-  return newObject;
 }
