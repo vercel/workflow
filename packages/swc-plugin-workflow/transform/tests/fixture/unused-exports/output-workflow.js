@@ -19,9 +19,3 @@ function internalHelper(value) {
 export function calculate(x) {
     return internalHelper(x);
 }
-Object.defineProperty(processData, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
-    value: "step//input.js//processData",
-    writable: false,
-    enumerable: false,
-    configurable: false
-});
