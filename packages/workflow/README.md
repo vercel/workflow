@@ -28,6 +28,10 @@ The Workflow DevKit community can be found on [GitHub Discussions](https://githu
 
 Contributions to Workflow DevKit are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and the wider community.
 
+### For External Contributors
+
+When you submit a PR as an external contributor, CI checks may not run automatically due to GitHub Actions security restrictions. A repository maintainer will review your PR and trigger CI by commenting `/run-ci` on your PR. See [.github/EXTERNAL_PR_CI.md](.github/EXTERNAL_PR_CI.md) for more details.
+
 ## Authors
 
 Workflow DevKit was built by engineers at [Vercel](https://vercel.com) and the [Open Source Community](https://github.com/vercel/workflow/graphs/contributors).
