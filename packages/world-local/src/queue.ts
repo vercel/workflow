@@ -68,6 +68,7 @@ export function createQueue(config: Partial<Config>): Queue {
           {
             method: 'POST',
             duplex: 'half',
+            // @ts-expect-error undici type differences
             dispatcher: httpAgent,
             headers: {
               'content-type': 'application/json',
