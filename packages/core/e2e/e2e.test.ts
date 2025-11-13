@@ -706,6 +706,17 @@ describe('e2e', () => {
       );
       expect(runData.status).toBe('completed');
       expect(runData.output).toBe(40);
+
+      // Verify that exactly 2 steps were executed:
+      // 1. stepWithStepFunctionArg(doubleNumber)
+      //   (doubleNumber(10) is run inside the stepWithStepFunctionArg step)
+      const { json: eventsData } = await cliInspectJson(
+        `events --run ${run.runId} --json`
+      );
+      const stepExecutionEvents = eventsData.events?.filter(
+        (event: any) => event.type === 'step-execution-completed'
+      );
+      expect(stepExecutionEvents).toHaveLength(1);
     }
   );
 });
