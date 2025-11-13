@@ -155,14 +155,11 @@ export const POST = async ({request}) => {
     await this.createWebhookBundle({
       outfile: webhookRouteFile,
       bundle: false, // SvelteKit will handle bundling
+      suppressUndefinedRejections: true,
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter
     let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
-
-    // NOTE: This is a workaround to avoid crashing in local dev when context isn't set for waitUntil()
-    webhookRouteContent = `process.on('unhandledRejection', (reason) => { if (reason !== undefined) console.error('Unhandled rejection detected', reason); });
-${webhookRouteContent}`;
 
     // Update handler signature to accept token as parameter
     webhookRouteContent = webhookRouteContent.replace(
