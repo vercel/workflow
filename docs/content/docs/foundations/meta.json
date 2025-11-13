@@ -6,6 +6,7 @@
     "control-flow-patterns",
     "errors-and-retries",
     "hooks",
+    "streaming",
     "serialization",
     "idempotency"
   ],
