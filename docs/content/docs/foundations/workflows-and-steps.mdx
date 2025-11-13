@@ -43,10 +43,10 @@ export async function processOrderWorkflow(orderId: string) {
 - All step results are persisted to the event log
 - Must be **deterministic** to allow resuming after failures
 
-Determinism in the workflow is required in order to resume to workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle,
-each time, using an event log to resume the workflow to the correct spot.
+Determinism in the workflow is required in order to resume the workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle,
+each time using an event log to resume the workflow to the correct spot.
 
-The sandboxed environment that workflows are run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't change across replays.
+The sandboxed environment that workflows run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't change across replays.
 
 ## Step Functions
 
