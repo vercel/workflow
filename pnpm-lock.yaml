@@ -13,28 +13,28 @@ catalogs:
       specifier: 22.19.0
       version: 22.19.0
     '@vercel/functions':
-      specifier: ^3.1.4
+      specifier: 3.1.4
       version: 3.1.4
     '@vercel/oidc':
-      specifier: ^3.0.3
+      specifier: 3.0.3
       version: 3.0.3
     '@vitest/coverage-v8':
-      specifier: ^3.2.4
+      specifier: 3.2.4
       version: 3.2.4
     ai:
       specifier: 5.0.76
       version: 5.0.76
     esbuild:
-      specifier: ^0.25.11
+      specifier: 0.25.11
       version: 0.25.11
     nitro:
-      specifier: ^3.0.1-alpha.1
+      specifier: 3.0.1-alpha.1
       version: 3.0.1-alpha.1
     typescript:
-      specifier: ^5.9.3
+      specifier: 5.9.3
       version: 5.9.3
     vitest:
-      specifier: ^3.2.4
+      specifier: 3.2.4
       version: 3.2.4
     zod:
       specifier: 4.1.11
@@ -1434,34 +1434,6 @@ importers:
       nitro:
         specifier: 'catalog:'
         version: 3.0.1-alpha.1(@netlify/blobs@9.1.2)(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7))(ioredis@5.8.2)(lru-cache@11.2.2)(rollup@4.53.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
-      openai:
-        specifier: ^6.6.0
-        version: 6.6.0(ws@8.18.3)(zod@4.1.11)
-      vite:
-        specifier: ^7.1.12
-        version: 7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
-      workflow:
-        specifier: workspace:*
-        version: link:../../packages/workflow
-      zod:
-        specifier: 'catalog:'
-        version: 4.1.11
-
-  workbench/vite copy:
-    dependencies:
-      '@node-rs/xxhash':
-        specifier: 1.7.6
-        version: 1.7.6
-    devDependencies:
-      ai:
-        specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
-      lodash.chunk:
-        specifier: ^4.2.0
-        version: 4.2.0
-      nitro:
-        specifier: 'catalog:'
-        version: nitro-nightly@3.0.1-20251031-202656-883af4f9(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.31.4(@opentelemetry/api@1.9.0)(@types/react@19.1.13)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)(react@19.2.0))(ioredis@5.8.2)(lru-cache@11.2.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
       openai:
         specifier: ^6.6.0
         version: 6.6.0(ws@8.18.3)(zod@4.1.11)
