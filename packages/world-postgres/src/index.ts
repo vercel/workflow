@@ -1,6 +1,6 @@
 import type { Storage, World } from '@workflow/world';
 import createPostgres from 'postgres';
-import type { PostgresWorldConfig } from './config.js';
+import { loadWorldConfig, type PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createFunctionProxy } from './proxies/function-proxy.js';
 import { createHttpProxy } from './proxies/http-proxy.js';
@@ -18,16 +18,15 @@ import {
 } from './storage.js';
 import { createStreamer } from './streamer.js';
 
-export const DEFAULT_PG_URL = 'postgres://world:world@localhost:5432/world';
-
 export function createWorld(
-  config: PostgresWorldConfig = {
-    connectionString: process.env.WORKFLOW_POSTGRES_URL || DEFAULT_PG_URL,
-    securityToken: process.env.WORKFLOW_POSTGRES_SECURITY_TOKEN || 'secret',
-    queueFactory: defaultQueueFactory,
-  }
+  opts: PostgresWorldConfig = {}
 ): World & { start(): Promise<void> } {
-  const queueDriver = config.queueFactory();
+  const config = loadWorldConfig(opts);
+
+  const queueDriver = opts.queueFactory
+    ? opts.queueFactory()
+    : createPgBossHttpProxyQueue();
+
   const postgres = createPostgres(config.connectionString);
   const drizzle = createClient(postgres);
 
@@ -54,19 +53,6 @@ function createStorage(drizzle: Drizzle): Storage {
   };
 }
 
-function defaultQueueFactory() {
-  return createPgBossHttpProxyQueue({
-    baseUrl: process.env.WORKFLOW_POSTGRES_BASE_URL,
-    connectionString: process.env.WORKFLOW_POSTGRES_URL || DEFAULT_PG_URL,
-    securityToken:
-      process.env.WORKFLOW_POSTGRES_SECURITY_TOKEN || 'this-is-not-safe',
-    jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
-    queueConcurrency:
-      parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '10', 10) ||
-      10,
-  });
-}
-
 export type { PostgresWorldConfig } from './config.js';
 // Re-export schema for users who want to extend or inspect the database schema
 export * from './drizzle/schema.js';
@@ -74,6 +60,6 @@ export * from './drizzle/schema.js';
 export { createFunctionProxy, createHttpProxy };
 export {
   createPgBossQueue,
-  createPgBossFunctionProxyQueue as createPgBossFunctionProxy,
-  createPgBossHttpProxyQueue as createPgBossHttpProxy,
+  createPgBossFunctionProxyQueue,
+  createPgBossHttpProxyQueue,
 };
