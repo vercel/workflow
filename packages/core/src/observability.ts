@@ -99,7 +99,7 @@ const hydrateEventData = <T extends { eventId?: string; eventData?: any }>(
     eventData: Object.fromEntries(
       Object.entries(event.eventData).map(([key, value]) => [
         key,
-        hydrateStepArguments(value as any, [], globalThis),
+        hydrateStepArguments(value as any, [], globalThis, streamPrintRevivers),
       ])
     ),
   };
@@ -111,7 +111,7 @@ const hydrateHookMetadata = <T extends { hookId?: string; metadata?: any }>(
   return {
     ...hook,
     metadata: hook.metadata
-      ? hydrateStepArguments(hook.metadata, [], globalThis)
+      ? hydrateStepArguments(hook.metadata, [], globalThis, streamPrintRevivers)
       : hook.metadata,
   };
 };

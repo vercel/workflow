@@ -1,3 +1,5 @@
+'use client';
+
 import type { Dispatch, MutableRefObject, ReactNode, Reducer } from 'react';
 import {
   createContext,
