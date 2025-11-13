@@ -713,10 +713,10 @@ describe('e2e', () => {
       const { json: eventsData } = await cliInspectJson(
         `events --run ${run.runId} --json`
       );
-      const stepExecutionEvents = eventsData.events?.filter(
-        (event: any) => event.type === 'step-execution-completed'
+      const stepCompletedEvents = eventsData.filter(
+        (event) => event.eventType === 'step_completed'
       );
-      expect(stepExecutionEvents).toHaveLength(1);
+      expect(stepCompletedEvents).toHaveLength(1);
     }
   );
 });
