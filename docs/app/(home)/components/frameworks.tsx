@@ -745,7 +745,7 @@ export const Frameworks = () => {
         </div>
         <div
           className="group relative cursor-pointer size-[48px]"
-          onClick={() => handleRequest('TanStack')}
+          onClick={() => handleRequest('Astro')}
         >
           <AstroGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <AstroDark className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100 hidden dark:block" />
