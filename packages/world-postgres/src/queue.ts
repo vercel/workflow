@@ -17,16 +17,6 @@ const QUEUE_MAX_VISIBILITY =
   parseInt(process.env.WORKFLOW_POSTGRES_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
   Infinity;
 
-/**
- * The Postgres queue works by creating two job types in pg-boss:
- * - `workflow` for workflow jobs
- *   - `step` for step jobs
- *
- * When a message is queued, it is prepared and sent to the queue driver with.
- * When a job is processed, it is deserialized and then re-queued into the _embedded world_, showing that
- * we can reuse the embedded world, mix and match worlds to build
- * hybrid architectures, and even migrate between worlds.
- */
 export function createQueue(
   queueDriver: QueueDriver,
   securityToken: string
@@ -93,6 +83,7 @@ export function createQueue(
           messageId: message.messageId,
         });
 
+        // TODO: Understand what's this?
         let timeoutSeconds: number | null = null;
         if (typeof result?.timeoutSeconds === 'number') {
           timeoutSeconds = Math.min(
