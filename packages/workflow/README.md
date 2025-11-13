@@ -32,7 +32,7 @@ Contributions to Workflow DevKit are welcome and highly appreciated. Please use 
 
 Workflow DevKit was built by engineers at [Vercel](https://vercel.com) and the [Open Source Community](https://github.com/vercel/workflow/graphs/contributors).
 
-The initial core contributing engineers are
+The initial core contributing engineers are:
 
 - Adrian Lam ([@adriandlam](https://github.com/adriandlam))
 - Dillon Mulroy ([@dmmulroy](https://github.com/dmmulroy))

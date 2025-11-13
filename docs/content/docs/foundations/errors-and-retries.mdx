@@ -65,7 +65,7 @@ async function callApi(endpoint: string) {
 
 ## Customize Retry Behavior
 
-When you need to customize the delay on the retry, use [`RetryableError`](/docs/api-reference/workflow/retryable-error)and set the retryAfter property.
+When you need to customize the delay on the retry, use [`RetryableError`](/docs/api-reference/workflow/retryable-error) and set the retryAfter property.
 
 ```typescript lineNumbers
 import { FatalError, RetryableError } from "workflow";
@@ -95,7 +95,7 @@ async function callApi(endpoint: string) {
 
 ## Advanced Example
 
-This final example combines everything we've learnt, along with [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
+This final example combines everything we've learned, along with [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
 
 ```typescript lineNumbers
 import { FatalError, RetryableError, getStepMetadata } from "workflow";
@@ -129,7 +129,7 @@ async function callApi(endpoint: string) {
 callApi.maxRetries = 5;
 ```
 
-## Rolling back failed steps
+## Rolling Back Failed Steps
 
 When a workflow fails partway through, it can leave the system in an inconsistent state.
 A common pattern to address this is "rollbacks": for each successful step, record a corresponding rollback action that can undo it.
