@@ -20,8 +20,7 @@ export function workflowPlugin(): AstroIntegration {
         });
       },
       'astro:build:done': async () => {
-        // Check if we're building for Vercel
-        if (process.env.VERCEL_DEPLOYMENT_ID) {
+        if (process.env.VERCEL_DEPLOYMENT_URL) {
           const vercelBuilder = new VercelBuilder();
           await vercelBuilder.build();
         }

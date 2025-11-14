@@ -27,6 +27,21 @@ const DEBUG_FILES = [
   'step.js.debug.json',
 ];
 
+const WORKFLOW_ROUTES = [
+  {
+    src: '^/\\.well-known/workflow/v1/flow/?$',
+    dest: '/.well-known/workflow/v1/flow',
+  },
+  {
+    src: '^/\\.well-known/workflow/v1/step/?$',
+    dest: '/.well-known/workflow/v1/step',
+  },
+  {
+    src: '^/\\.well-known/workflow/v1/webhook/([^/]+?)/?$',
+    dest: '/.well-known/workflow/v1/webhook/[token]',
+  },
+];
+
 export class LocalBuilder extends BaseBuilder {
   constructor(config?: Partial<AstroConfig>) {
     const workingDir = config?.workingDir || process.cwd();
@@ -217,16 +232,31 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       buildTarget: 'vercel-build-output-api',
     });
   }
+
   override async build(): Promise<void> {
-    // const configPath = join(
-    //   this.config.workingDir,
-    //   ".vercel/output/config.json",
-    // );
-    // const originalConfig = JSON.parse(await readFile(configPath, "utf-8"));
+    const configPath = join(
+      this.config.workingDir,
+      '.vercel/output/config.json'
+    );
+
+    // The config output by astro
+    const config = JSON.parse(await readFile(configPath, 'utf-8'));
+
+    // Filter out existing workflow routes (wrong `dest` mapping)
+    config.routes = config.routes.filter(
+      (route: { src?: string; dest: string }) =>
+        !route.src?.includes('.well-known/workflow')
+    );
+
+    // Add new workflow routes
+    for (const route of WORKFLOW_ROUTES) {
+      config.routes.push(route);
+    }
+
+    // Bundles workflows for vercel but overwrites vercel's astro config
     await super.build();
-    console.log('built vercel build output api');
-    // const newConfig = JSON.parse(await readFile(configPath, "utf-8"));
-    // originalConfig.routes.unshift(...newConfig.routes);
-    // await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
+
+    // Use old astro config
+    await writeFile(configPath, JSON.stringify(config, null, 2));
   }
 }
