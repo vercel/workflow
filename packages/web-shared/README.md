@@ -61,6 +61,8 @@ See `npx workflow inspect --help` for more information.
 If you're deploying this as part of your Vercel NextJS app, setting `WORKFLOW_TARGET_WORLD` to `vercel` is enough
 to infer your other project details from the Vercel environment variables.
 
+**Important:** When using the UI to inspect different worlds, all relevant environment variables should be passed via the `EnvMap` parameter to the hooks and components, rather than setting them directly on your Next.js instance via `process.env`. The server-side World caching is based on the `EnvMap` configuration, so setting environment variables directly on `process.env` may cause cached World instances to operate with incorrect environment configuration.
+
 ## Styling
 
 In order for tailwind classes to be picked up correctly, you might need to configure your NextJS app

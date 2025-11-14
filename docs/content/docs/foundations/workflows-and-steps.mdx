@@ -43,10 +43,10 @@ export async function processOrderWorkflow(orderId: string) {
 - All step results are persisted to the event log
 - Must be **deterministic** to allow resuming after failures
 
-Determinism in the workflow is required in order to resume to workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle,
-each time, using an event log to resume the workflow to the correct spot.
+Determinism in the workflow is required in order to resume the workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle,
+each time using an event log to resume the workflow to the correct spot.
 
-The sandboxed environment that workflows are run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't change across replays.
+The sandboxed environment that workflows run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't change across replays.
 
 ## Step Functions
 
@@ -78,6 +78,10 @@ async function chargePayment(order: Order) {
 - Results persisted for replay
 
 By default, steps have a maximum of 3 retry attempts before they fail and propagate the error over to the workflow. Learn more about errors and retrying in the [Errors & Retrying](/docs/foundations/errors-and-retries) page.
+
+<Callout type="warning">
+**Important:** Due to serialization, parameters are passed by **value, not by reference**. If you pass an object or array to a step and mutate it, those changes will **not** be visible in the workflow context. Always return modified data from your step functions instead. See [Pass-by-Value Semantics](/docs/foundations/serialization#pass-by-value-semantics) for details and examples.
+</Callout>
 
 <Callout type="info">
 Step functions are primarily meant to be used inside a workflow.

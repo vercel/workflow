@@ -8,6 +8,7 @@ import type {
   Step,
   WorkflowRun,
   WorkflowRunStatus,
+  World,
 } from '@workflow/world';
 
 export type EnvMap = Record<string, string | undefined>;
@@ -38,14 +39,45 @@ export type ServerActionResult<T> =
   | { success: true; data: T }
   | { success: false; error: ServerActionError };
 
+/**
+ * Cache for World instances keyed by envMap
+ *
+ * IMPORTANT: This cache works under the assumption that if the UI is used to look at
+ * different worlds, the user should pass all relevant variables via EnvMap, instead of
+ * setting them directly on their Next.js instance. If environment variables are set
+ * directly on process.env, the cached World may operate with incorrect environment
+ * configuration.
+ */
+const worldCache = new Map<string, World>();
+
 function getWorldFromEnv(envMap: EnvMap) {
+  // Generate stable cache key from envMap
+  const sortedKeys = Object.keys(envMap).sort();
+  const sortedEntries = sortedKeys.map((key) => [key, envMap[key]]);
+  const cacheKey = JSON.stringify(Object.fromEntries(sortedEntries));
+
+  // Check if we have a cached World for this configuration
+  // Note: This returns the cached World without re-setting process.env.
+  // See comment above worldCache for important usage assumptions.
+  const cachedWorld = worldCache.get(cacheKey);
+  if (cachedWorld) {
+    return cachedWorld;
+  }
+
+  // No cached World found, create a new one
   for (const [key, value] of Object.entries(envMap)) {
     if (value === undefined || value === null || value === '') {
       continue;
     }
     process.env[key] = value;
   }
-  return createWorld();
+
+  const world = createWorld();
+
+  // Cache the newly created World
+  worldCache.set(cacheKey, world);
+
+  return world;
 }
 
 /**

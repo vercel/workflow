@@ -1,8 +1,10 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import * as devalue from 'devalue';
+import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import {
   BODY_INIT_SYMBOL,
+  STEP_FUNCTION_NAME_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
@@ -172,6 +174,7 @@ export interface SerializableSpecial {
     redirected: boolean;
   };
   Set: any[];
+  StepFunction: string; // step function name/ID
   URL: string;
   URLSearchParams: string;
   Uint8Array: string; // base64 string
@@ -278,6 +281,11 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       };
     },
     Set: (value) => value instanceof global.Set && Array.from(value),
+    StepFunction: (value) => {
+      if (typeof value !== 'function') return false;
+      const stepName = value[STEP_FUNCTION_NAME_SYMBOL];
+      return typeof stepName === 'string' ? stepName : false;
+    },
     URL: (value) => value instanceof global.URL && value.href,
     URLSearchParams: (value) => {
       if (!(value instanceof global.URLSearchParams)) return false;
@@ -502,7 +510,7 @@ function getStepReducers(
   };
 }
 
-function getCommonRevivers(global: Record<string, any> = globalThis) {
+export function getCommonRevivers(global: Record<string, any> = globalThis) {
   function reviveArrayBuffer(value: string) {
     // Handle sentinel value for zero-length buffers
     const base64 = value === '.' ? '' : value;
@@ -554,6 +562,15 @@ function getCommonRevivers(global: Record<string, any> = globalThis) {
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
     Set: (value) => new global.Set(value),
+    StepFunction: (value) => {
+      const stepFn = getStepFunction(value);
+      if (!stepFn) {
+        throw new Error(
+          `Step function "${value}" not found. Make sure the step function is registered.`
+        );
+      }
+      return stepFn;
+    },
     URL: (value) => new global.URL(value),
     URLSearchParams: (value) =>
       new global.URLSearchParams(value === '.' ? '' : value),

@@ -39,6 +39,6 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "genversion": "^3.2.0"
+    "genversion": "3.2.0"
   }
 }

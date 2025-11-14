@@ -9,6 +9,7 @@ import {
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
+import { waitedUntil } from '../util.js';
 import { getWorld } from './world.js';
 
 /**
@@ -66,74 +67,77 @@ export async function resumeHook<T = any>(
   token: string,
   payload: T
 ): Promise<Hook> {
-  return trace('HOOK.resume', async (span) => {
-    const world = getWorld();
+  return await waitedUntil(() => {
+    return trace('HOOK.resume', async (span) => {
+      const world = getWorld();
 
-    try {
-      const hook = await getHookByToken(token);
+      try {
+        const hook = await getHookByToken(token);
 
-      span?.setAttributes({
-        ...Attribute.HookToken(token),
-        ...Attribute.HookId(hook.hookId),
-        ...Attribute.WorkflowRunId(hook.runId),
-      });
+        span?.setAttributes({
+          ...Attribute.HookToken(token),
+          ...Attribute.HookId(hook.hookId),
+          ...Attribute.WorkflowRunId(hook.runId),
+        });
 
-      // Dehydrate the payload for storage
-      const ops: Promise<any>[] = [];
-      const dehydratedPayload = dehydrateStepReturnValue(
-        payload,
-        ops,
-        globalThis,
-        hook.runId
-      );
-      waitUntil(Promise.all(ops));
+        // Dehydrate the payload for storage
+        const ops: Promise<any>[] = [];
+        const dehydratedPayload = dehydrateStepReturnValue(
+          payload,
+          ops,
+          globalThis,
+          hook.runId
+        );
+        waitUntil(Promise.all(ops));
 
-      // Create a hook_received event with the payload
-      await world.events.create(hook.runId, {
-        eventType: 'hook_received',
-        correlationId: hook.hookId,
-        eventData: {
-          payload: dehydratedPayload,
-        },
-      });
+        // Create a hook_received event with the payload
+        await world.events.create(hook.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: {
+            payload: dehydratedPayload,
+          },
+        });
 
-      const workflowRun = await world.runs.get(hook.runId);
+        const workflowRun = await world.runs.get(hook.runId);
 
-      span?.setAttributes({
-        ...Attribute.WorkflowName(workflowRun.workflowName),
-      });
+        span?.setAttributes({
+          ...Attribute.WorkflowName(workflowRun.workflowName),
+        });
 
-      const traceCarrier = workflowRun.executionContext?.traceCarrier;
+        const traceCarrier = workflowRun.executionContext?.traceCarrier;
 
-      if (traceCarrier) {
-        const context = await getSpanContextForTraceCarrier(traceCarrier);
-        if (context) {
-          span?.addLink?.({ context });
+        if (traceCarrier) {
+          const context = await getSpanContextForTraceCarrier(traceCarrier);
+          if (context) {
+            span?.addLink?.({ context });
+          }
         }
+
+        // Re-trigger the workflow against the deployment ID associated
+        // with the workflow run that the hook belongs to
+        await world.queue(
+          `__wkf_workflow_${workflowRun.workflowName}`,
+          {
+            runId: hook.runId,
+            // attach the trace carrier from the workflow run
+            traceCarrier:
+              workflowRun.executionContext?.traceCarrier ?? undefined,
+          } satisfies WorkflowInvokePayload,
+          {
+            deploymentId: workflowRun.deploymentId,
+          }
+        );
+
+        return hook;
+      } catch (err) {
+        span?.setAttributes({
+          ...Attribute.HookToken(token),
+          ...Attribute.HookFound(false),
+        });
+        throw err;
       }
-
-      // Re-trigger the workflow against the deployment ID associated
-      // with the workflow run that the hook belongs to
-      await world.queue(
-        `__wkf_workflow_${workflowRun.workflowName}`,
-        {
-          runId: hook.runId,
-          // attach the trace carrier from the workflow run
-          traceCarrier: workflowRun.executionContext?.traceCarrier ?? undefined,
-        } satisfies WorkflowInvokePayload,
-        {
-          deploymentId: workflowRun.deploymentId,
-        }
-      );
-
-      return hook;
-    } catch (err) {
-      span?.setAttributes({
-        ...Attribute.HookToken(token),
-        ...Attribute.HookFound(false),
-      });
-      throw err;
-    }
+    });
   });
 }
 

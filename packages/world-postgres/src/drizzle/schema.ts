@@ -13,7 +13,7 @@ import {
   integer,
   jsonb,
   pgEnum,
-  pgTable,
+  pgSchema,
   primaryKey,
   text,
   timestamp,
@@ -49,7 +49,9 @@ type DrizzlishOfType<T extends object> = {
  */
 export type SerializedContent = any[];
 
-export const runs = pgTable(
+export const schema = pgSchema('workflow');
+
+export const runs = schema.table(
   'workflow_runs',
   {
     runId: varchar('id').primaryKey(),
@@ -74,7 +76,7 @@ export const runs = pgTable(
   })
 );
 
-export const events = pgTable(
+export const events = schema.table(
   'workflow_events',
   {
     eventId: varchar('id').primaryKey(),
@@ -90,7 +92,7 @@ export const events = pgTable(
   })
 );
 
-export const steps = pgTable(
+export const steps = schema.table(
   'workflow_steps',
   {
     runId: varchar('run_id').notNull(),
@@ -116,7 +118,7 @@ export const steps = pgTable(
   })
 );
 
-export const hooks = pgTable(
+export const hooks = schema.table(
   'workflow_hooks',
   {
     runId: varchar('run_id').notNull(),
@@ -140,7 +142,7 @@ const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
   },
 });
 
-export const streams = pgTable(
+export const streams = schema.table(
   'workflow_stream_chunks',
   {
     chunkId: varchar('id').$type<`chnk_${string}`>().notNull(),
