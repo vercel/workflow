@@ -5,8 +5,12 @@
   "version": "0.0.0",
   "license": "Apache-2.0",
   "scripts": {
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js",
+    "predev": "pnpm generate:workflows",
+    "prebuild": "pnpm generate:workflows",
     "dev": "nitro dev",
-    "build": "nitro build"
+    "build": "nitro build",
+    "start": "node .output/server/index.mjs"
   },
   "devDependencies": {
     "@types/node": "catalog:",
