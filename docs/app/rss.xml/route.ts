@@ -8,13 +8,10 @@ export const revalidate = false;
 
 export const GET = () => {
   const feed = new Feed({
-    title: 'Vercel Documentation',
+    title: 'Workflow DevKit Documentation',
     id: baseUrl,
     link: baseUrl,
     language: 'en',
-
-    image: `${baseUrl}/banner.png`,
-    favicon: `${baseUrl}/icon.png`,
     copyright: `All rights reserved ${new Date().getFullYear()}, Vercel`,
   });
 
