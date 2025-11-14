@@ -47,6 +47,7 @@
     "dexie": "4.2.1",
     "dexie-react-hooks": "4.2.0",
     "embla-carousel-react": "^8.6.0",
+    "feed": "5.1.0",
     "fumadocs-core": "^16.0.11",
     "fumadocs-mdx": "13.0.8",
     "fumadocs-typescript": "^4.0.13",
