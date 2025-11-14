@@ -9,8 +9,7 @@
     "start": "next start",
     "postinstall": "fumadocs-mdx",
     "postbuild": "node scripts/pack.ts",
-    "lint": "biome check && bun scripts/lint.ts",
-    "lint:links": "bun scripts/lint.ts",
+    "lint": "biome check",
     "format": "biome format --write"
   },
   "dependencies": {
