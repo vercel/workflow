@@ -184,6 +184,11 @@ export default class Init extends BaseCommand {
                 `npx giget@latest nitro ${projectName} --install`
               );
               return `Created Nitro app in ${chalk.cyan(projectPath)}`;
+            case 'nuxt':
+              await execAsync(
+                `npm create nuxt@latest ${projectName} -- --packageManager ${packageManager} --gitInit --no-modules`
+              );
+              return `Created Nuxt app in ${chalk.cyan(projectPath)}`;
             default:
               throw new Error(`Unsupported template: ${template}`);
           }
@@ -191,7 +196,7 @@ export default class Init extends BaseCommand {
       },
       {
         title:
-          template === 'next' || template === 'nitro'
+          template === 'next' || template === 'nitro' || template === 'nuxt'
             ? 'Installing `workflow` package'
             : 'Installing `workflow` and `nitro` package',
         task: async (message) => {
@@ -199,6 +204,7 @@ export default class Init extends BaseCommand {
           switch (template) {
             case 'next':
             case 'nitro':
+            case 'nuxt':
               await execAsync(
                 `cd ${projectPath} && ${packageManager} i workflow`
               );
@@ -235,8 +241,26 @@ export default defineNitroConfig({
         },
       },
       {
+        title: 'Configuring Nuxt config',
+        enabled: template === 'nuxt',
+        task: async (message) => {
+          message('Configuring Nuxt config');
+          const nuxtConfig = `import { defineNuxtConfig } from "nuxt/config";
+
+export default defineNuxtConfig({
+  modules: ["workflow/nuxt"],
+  compatibilityDate: "latest",
+});
+`;
+
+          writeFileSync(path.join(projectPath, 'nuxt.config.ts'), nuxtConfig);
+
+          return 'Configured Nuxt config';
+        },
+      },
+      {
         title: 'Configuring TypeScript intellisense',
-        enabled: useTsPlugin,
+        enabled: useTsPlugin && template !== 'nuxt',
         task: async (message) => {
           message(`Configuring TypeScript intellisense`);
           const tsConfig = parseJSON(
@@ -283,8 +307,11 @@ export default defineNitroConfig({
         title: 'Creating example workflow',
         task: async (message) => {
           message(`Creating example workflow`);
-          const workflowsPath = path.join(projectPath, 'workflows');
-          mkdirSync(workflowsPath);
+          const workflowsPath =
+            template === 'nitro' || template === 'nuxt'
+              ? path.join(projectPath, 'server', 'workflows')
+              : path.join(projectPath, 'workflows');
+          mkdirSync(workflowsPath, { recursive: true });
           const workflowContent = `import { FatalError, sleep } from "workflow";
 
 export async function handleUserSignup(email: string) {
@@ -374,6 +401,28 @@ export default defineEventHandler(async (event) => {
   return Response.json({
     message: "User signup workflow started",
   });
+});`
+              );
+              return `Created API route handler in ${chalk.cyan(path.join(projectPath, 'server', 'api', 'signup.post.ts'))}`;
+            }
+            case 'nuxt': {
+              const apiPath = path.join(projectPath, 'server', 'api');
+              mkdirSync(apiPath, { recursive: true });
+              writeFileSync(
+                path.join(apiPath, 'signup.post.ts'),
+                `import { start } from 'workflow/api';
+import { defineEventHandler, readBody } from 'h3';
+import { handleUserSignup } from "../workflows/user-signup";
+
+export default defineEventHandler(async (event) => {
+  const { email } = await readBody(event);
+
+  // Executes asynchronously and doesn't block your app
+  await start(handleUserSignup, [email]);
+
+  return {
+    message: "User signup workflow started",
+  };
 });`
               );
               return `Created API route handler in ${chalk.cyan(path.join(projectPath, 'server', 'api', 'signup.post.ts'))}`;
