@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
@@ -21,11 +21,11 @@ async function normalizeRequestConverter(request) {
 }
 `;
 
-const DEBUG_FILES = [
-  'flow.js.debug.json',
-  'manifest.debug.json',
-  'step.js.debug.json',
-];
+// const DEBUG_FILES = [
+//   "flow.js.debug.json",
+//   "manifest.debug.json",
+//   "step.js.debug.json",
+// ];
 
 export class LocalBuilder extends BaseBuilder {
   constructor(config?: Partial<AstroConfig>) {
