@@ -32,10 +32,10 @@ const links = [
 ];
 
 const suggestions = [
-  'What is Vercel?',
-  'What can I deploy with Vercel?',
-  'What is Fluid Compute?',
-  'How much does Vercel cost?',
+  'What is Workflow?',
+  'How does retrying work?',
+  'What control flow patterns are there?',
+  'How do directives work?',
 ];
 
 const Layout = ({ children }: LayoutProps<'/'>) => (
