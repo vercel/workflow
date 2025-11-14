@@ -127,6 +127,8 @@ export function createQueue(config: Partial<Config>): Queue {
       const headers = HeaderParser.safeParse(Object.fromEntries(req.headers));
 
       if (!headers.success || !req.body) {
+        console.log(!headers.success);
+        console.log(!req.body);
         return Response.json(
           {
             error: !req.body
