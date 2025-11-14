@@ -1,12 +1,12 @@
-"use client";
+'use client';
 
-import { track } from "@vercel/analytics";
-import Link from "next/link";
-import type { ComponentProps } from "react";
-import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
+import { track } from '@vercel/analytics';
+import Link from 'next/link';
+import type { ComponentProps } from 'react';
+import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
 
-export const Express = (props: ComponentProps<"svg">) => (
+export const Express = (props: ComponentProps<'svg'>) => (
   <svg
     width="999"
     height="223"
@@ -23,7 +23,7 @@ export const Express = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const AstroDark = (props: ComponentProps<"svg">) => (
+export const AstroDark = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -63,7 +63,7 @@ export const AstroDark = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const AstroLight = (props: ComponentProps<"svg">) => (
+export const AstroLight = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -88,7 +88,7 @@ export const AstroLight = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const AstroGray = (props: ComponentProps<"svg">) => (
+export const AstroGray = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -113,7 +113,7 @@ export const AstroGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const TanStack = (props: ComponentProps<"svg">) => (
+export const TanStack = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 410 413"
     fill="none"
@@ -134,7 +134,7 @@ export const TanStack = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const TanStackGray = (props: ComponentProps<"svg">) => (
+export const TanStackGray = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 409 413"
     fill="none"
@@ -148,7 +148,7 @@ export const TanStackGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Vite = (props: ComponentProps<"svg">) => (
+export const Vite = (props: ComponentProps<'svg'>) => (
   <svg
     width="410"
     height="404"
@@ -194,7 +194,7 @@ export const Vite = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Nitro = (props: ComponentProps<"svg">) => (
+export const Nitro = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     fill="none"
@@ -211,7 +211,7 @@ export const Nitro = (props: ComponentProps<"svg">) => (
       />
       <mask
         id="mask0_115_108"
-        style={{ maskType: "alpha" }}
+        style={{ maskType: 'alpha' }}
         maskUnits="userSpaceOnUse"
         x="0"
         y="0"
@@ -283,7 +283,7 @@ export const Nitro = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const SvelteKit = (props: ComponentProps<"svg">) => (
+export const SvelteKit = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     xmlnsXlink="http://www.w3.org/1999/xlink"
@@ -306,7 +306,7 @@ export const SvelteKit = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const SvelteKitGray = (props: ComponentProps<"svg">) => (
+export const SvelteKitGray = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     xmlnsXlink="http://www.w3.org/1999/xlink"
@@ -329,7 +329,7 @@ export const SvelteKitGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Nuxt = (props: ComponentProps<"svg">) => (
+export const Nuxt = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 424 283"
     fill="none"
@@ -344,7 +344,7 @@ export const Nuxt = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const NuxtGray = (props: ComponentProps<"svg">) => (
+export const NuxtGray = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 424 283"
     fill="none"
@@ -359,7 +359,7 @@ export const NuxtGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Hono = (props: ComponentProps<"svg">) => (
+export const Hono = (props: ComponentProps<'svg'>) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 98" {...props}>
     <title>Hono</title>
     <path
@@ -376,7 +376,7 @@ export const Hono = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const HonoGray = (props: ComponentProps<"svg">) => (
+export const HonoGray = (props: ComponentProps<'svg'>) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 98" {...props}>
     <title>Hono</title>
     <path
@@ -396,7 +396,7 @@ export const HonoGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Bun = (props: ComponentProps<"svg">) => (
+export const Bun = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="Bun"
@@ -430,7 +430,7 @@ export const Bun = (props: ComponentProps<"svg">) => (
         id="Top"
         d="M35.12,5.53A16.41,16.41,0,0,1,29.49,18c-.28.25-.06.73.3.59,3.37-1.31,7.92-5.23,6-13.14C35.71,5,35.12,5.12,35.12,5.53Zm2.27,0A16.24,16.24,0,0,1,39,19c-.12.35.31.65.55.36C41.74,16.56,43.65,11,37.93,5,37.64,4.74,37.19,5.14,37.39,5.49Zm2.76-.17A16.42,16.42,0,0,1,47,17.12a.33.33,0,0,0,.65.11c.92-3.49.4-9.44-7.17-12.53C40.08,4.54,39.82,5.08,40.15,5.32ZM21.69,15.76a16.94,16.94,0,0,0,10.47-9c.18-.36.75-.22.66.18-1.73,8-7.52,9.67-11.12,9.45C21.32,16.4,21.33,15.87,21.69,15.76Z"
         fill="#ccbea7"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
       />
       <path
         id="Outline"
@@ -485,19 +485,19 @@ export const Bun = (props: ComponentProps<"svg">) => (
       <path
         id="Eyes"
         d="M25.7,38.8a5.51,5.51,0,1,0-5.5-5.51A5.51,5.51,0,0,0,25.7,38.8Zm24.77,0A5.51,5.51,0,1,0,45,33.29,5.5,5.5,0,0,0,50.47,38.8Z"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
       />
       <path
         id="Iris"
         d="M24,33.64a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,24,33.64Zm24.77,0a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,48.75,33.64Z"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
         fill="#fff"
       />
     </g>
   </svg>
 );
 
-export const BunGray = (props: ComponentProps<"svg">) => (
+export const BunGray = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="Bun"
@@ -534,7 +534,7 @@ export const BunGray = (props: ComponentProps<"svg">) => (
         id="Top"
         d="M35.12,5.53A16.41,16.41,0,0,1,29.49,18c-.28.25-.06.73.3.59,3.37-1.31,7.92-5.23,6-13.14C35.71,5,35.12,5.12,35.12,5.53Zm2.27,0A16.24,16.24,0,0,1,39,19c-.12.35.31.65.55.36C41.74,16.56,43.65,11,37.93,5,37.64,4.74,37.19,5.14,37.39,5.49Zm2.76-.17A16.42,16.42,0,0,1,47,17.12a.33.33,0,0,0,.65.11c.92-3.49.4-9.44-7.17-12.53C40.08,4.54,39.82,5.08,40.15,5.32ZM21.69,15.76a16.94,16.94,0,0,0,10.47-9c.18-.36.75-.22.66.18-1.73,8-7.52,9.67-11.12,9.45C21.32,16.4,21.33,15.87,21.69,15.76Z"
         fill="var(--color-background)"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
       />
       <path
         id="Outline"
@@ -596,20 +596,20 @@ export const BunGray = (props: ComponentProps<"svg">) => (
       <path
         id="Eyes"
         d="M25.7,38.8a5.51,5.51,0,1,0-5.5-5.51A5.51,5.51,0,0,0,25.7,38.8Zm24.77,0A5.51,5.51,0,1,0,45,33.29,5.5,5.5,0,0,0,50.47,38.8Z"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
         fill="var(--color-muted-foreground)"
       />
       <path
         id="Iris"
         d="M24,33.64a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,24,33.64Zm24.77,0a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,48.75,33.64Z"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
         fill="var(--color-background)"
       />
     </g>
   </svg>
 );
 
-export const Nest = (props: ComponentProps<"svg">) => (
+export const Nest = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="NestJS"
@@ -625,7 +625,7 @@ export const Nest = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const NestGray = (props: ComponentProps<"svg">) => (
+export const NestGray = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="NestJS"
@@ -641,7 +641,7 @@ export const NestGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Next = (props: ComponentProps<"svg">) => (
+export const Next = (props: ComponentProps<'svg'>) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" {...props}>
     <title>Next.js</title>
     <circle cx="64" cy="64" r="62" strokeWidth="4" className="stroke-border" />
@@ -681,8 +681,8 @@ export const Next = (props: ComponentProps<"svg">) => (
 
 export const Frameworks = () => {
   const handleRequest = (framework: string) => {
-    track("Framework requested", { framework: framework.toLowerCase() });
-    toast.success("Request received", {
+    track('Framework requested', { framework: framework.toLowerCase() });
+    toast.success('Request received', {
       description: `Thanks for expressing interest in ${framework}. We will be adding support for it soon.`,
     });
   };
@@ -742,21 +742,21 @@ export const Frameworks = () => {
         </div>
         <div
           className="group relative cursor-pointer size-[48px]"
-          onClick={() => handleRequest("NestJS")}
+          onClick={() => handleRequest('NestJS')}
         >
           <NestGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <Nest className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
         </div>
         <div
           className="group relative cursor-pointer size-[48px]"
-          onClick={() => handleRequest("TanStack")}
+          onClick={() => handleRequest('TanStack')}
         >
           <TanStackGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <TanStack className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100 dark:invert" />
         </div>
         <div
           className="group relative cursor-pointer size-[48px]"
-          onClick={() => handleRequest("Astro")}
+          onClick={() => handleRequest('Astro')}
         >
           <AstroGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
           <AstroDark className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100 hidden dark:block" />

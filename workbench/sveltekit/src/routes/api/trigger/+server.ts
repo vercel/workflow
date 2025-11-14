@@ -56,11 +56,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
   try {
     const run = await start(workflow as any, args as any);
-<<<<<<< HEAD
-    console.log('Run:', run.runId);
-=======
     console.log("Run:", run);
->>>>>>> 6e910dd2 (Normalize Workbenches)
     return Response.json(run);
   } catch (err) {
     console.error(`Failed to start!!`, err);
