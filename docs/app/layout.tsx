@@ -29,6 +29,10 @@ const links = [
     label: 'Docs',
     href: '/docs',
   },
+  {
+    label: 'Examples',
+    href: 'https://github.com/vercel/workflow-examples',
+  },
 ];
 
 const suggestions = [
