@@ -29,6 +29,8 @@ async function myAgent() {
   const agent = new DurableAgent({
     model: 'anthropic/claude-haiku-4.5',
     system: 'You are a helpful weather assistant.',
+    temperature: 0.7, // Control output randomness
+    maxOutputTokens: 1000, // Limit response length
     tools: {
       getWeather: {
         description: 'Get weather for a city',
@@ -162,6 +164,52 @@ async function multiToolAgentWorkflow(userQuery: string) {
         description: 'Search for upcoming events in a location',
         inputSchema: z.object({ location: z.string(), category: z.string() }),
         execute: searchEvents,
+      },
+    },
+  });
+
+  await agent.stream({
+    messages: [
+      {
+        role: 'user',
+        content: userQuery,
+      },
+    ],
+  });
+}
+```
+
+### Advanced Configuration
+
+```typescript
+import { DurableAgent } from '@workflow/ai/agent';
+import { z } from 'zod';
+
+async function calculateResult({ formula }: { formula: string }) {
+  "use step";
+  // Perform calculation
+  return "42";
+}
+
+async function advancedAgentWorkflow(userQuery: string) {
+  'use workflow';
+
+  const agent = new DurableAgent({
+    model: 'anthropic/claude-haiku-4.5',
+    system: 'You are a precise calculator assistant.',
+    // Model behavior controls
+    temperature: 0.3, // Lower temperature for more deterministic responses
+    maxOutputTokens: 500, // Limit response length
+    topP: 0.9, // Nucleus sampling for response variety
+    presencePenalty: 0.2, // Reduce repetition
+    frequencyPenalty: 0.2, // Reduce word repetition
+    seed: 12345, // For reproducible results
+    stopSequences: ['END'], // Stop generation at specific sequences
+    tools: {
+      calculateResult: {
+        description: 'Calculate a mathematical result',
+        inputSchema: z.object({ formula: z.string() }),
+        execute: calculateResult,
       },
     },
   });

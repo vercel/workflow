@@ -12,7 +12,17 @@ export async function doStreamStep(
   conversationPrompt: LanguageModelV2Prompt,
   modelId: string,
   writable: WritableStream<UIMessageChunk>,
-  tools?: LanguageModelV2CallOptions['tools']
+  tools?: LanguageModelV2CallOptions['tools'],
+  callOptions?: {
+    temperature?: number;
+    maxOutputTokens?: number;
+    topP?: number;
+    topK?: number;
+    presencePenalty?: number;
+    frequencyPenalty?: number;
+    stopSequences?: string[];
+    seed?: number;
+  }
 ) {
   'use step';
 
@@ -20,6 +30,14 @@ export async function doStreamStep(
   const result = await model.doStream({
     prompt: conversationPrompt,
     tools,
+    temperature: callOptions?.temperature,
+    maxOutputTokens: callOptions?.maxOutputTokens,
+    topP: callOptions?.topP,
+    topK: callOptions?.topK,
+    presencePenalty: callOptions?.presencePenalty,
+    frequencyPenalty: callOptions?.frequencyPenalty,
+    stopSequences: callOptions?.stopSequences,
+    seed: callOptions?.seed,
   });
 
   let finish: FinishPart | undefined;
