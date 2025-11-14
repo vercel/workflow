@@ -15,9 +15,28 @@ import {
 } from '@clack/prompts';
 import { Flags } from '@oclif/core';
 import chalk from 'chalk';
+import { parse as parseJSON, stringify as stringifyJSON } from 'comment-json';
 import { BaseCommand } from '../base.js';
 
 const execAsync = promisify(exec);
+
+const templates = {
+  next: {
+    name: 'Next.js',
+  },
+  hono: {
+    name: 'Hono',
+  },
+  nitro: {
+    name: 'Nitro',
+  },
+  sveltekit: {
+    name: 'SvelteKit',
+  },
+  nuxt: {
+    name: 'Nuxt',
+  },
+};
 
 export default class Init extends BaseCommand {
   static description = 'Initialize a new workflow project';
@@ -31,8 +50,13 @@ export default class Init extends BaseCommand {
   static flags = {
     template: Flags.string({
       description: 'template to use',
-      options: ['next', 'hono', 'nitro'],
+      options: Object.keys(templates),
       default: 'next',
+    }),
+    packageManager: Flags.string({
+      description: 'package manager to use',
+      options: ['npm', 'pnpm', 'yarn', 'bun'],
+      default: 'npm',
     }),
     yes: Flags.boolean({
       char: 'y',
@@ -100,14 +124,10 @@ export default class Init extends BaseCommand {
 
       template = (await select({
         message: 'What template would you like to use?',
-        options: [
-          { label: 'Hono', value: 'hono', hint: 'via Nitro v3' },
-          { label: 'Next.js', value: 'next' },
-          {
-            label: 'Nitro',
-            value: 'nitro',
-          },
-        ],
+        options: Object.entries(templates).map(([key, value]) => ({
+          label: value.name,
+          value: key,
+        })),
         initialValue: 'next',
       })) as string;
 
@@ -116,6 +136,16 @@ export default class Init extends BaseCommand {
         return;
       }
     }
+
+    const packageManager = (await select({
+      message: 'What package manager would you like to use?',
+      options: [
+        { label: 'npm', value: 'npm' },
+        { label: 'pnpm', value: 'pnpm' },
+        { label: 'yarn', value: 'yarn' },
+        { label: 'bun', value: 'bun', disabled: true },
+      ],
+    })) as string;
 
     const useTsPlugin =
       flags.yes ||
@@ -135,21 +165,73 @@ export default class Init extends BaseCommand {
 
     await tasks([
       {
-        title:
-          template === 'next' ? 'Creating Next.js app' : 'Creating Hono app',
+        title: `Creating ${templates[template as keyof typeof templates].name} app`,
         enabled: createNewProject,
         task: async (message) => {
-          message('Creating a new Next.js app');
-          await execAsync(`npx create-next-app@latest ${projectName} --yes`);
-          return `Created Next.js app in ${chalk.cyan(projectPath)}`;
+          message(
+            `Creating a new ${templates[template as keyof typeof templates].name} app`
+          );
+          switch (template) {
+            case 'next':
+              await execAsync(
+                `npx create-next-app@latest ${projectName} --yes`
+              );
+              return `Created Next.js app in ${chalk.cyan(projectPath)}`;
+            case 'hono':
+              throw new Error('Hono is not supported yet');
+            case 'nitro':
+              await execAsync(
+                `npx giget@latest nitro ${projectName} --install`
+              );
+              return `Created Nitro app in ${chalk.cyan(projectPath)}`;
+            default:
+              throw new Error(`Unsupported template: ${template}`);
+          }
         },
       },
       {
-        title: 'Installing `workflow` package',
+        title:
+          template === 'next' || template === 'nitro'
+            ? 'Installing `workflow` package'
+            : 'Installing `workflow` and `nitro` package',
         task: async (message) => {
           message(`Installing \`workflow\` package`);
-          await execAsync(`cd ${projectPath} && pnpm add workflow`);
-          return `Installed \`workflow\` package`;
+          switch (template) {
+            case 'next':
+            case 'nitro':
+              await execAsync(
+                `cd ${projectPath} && ${packageManager} i workflow`
+              );
+              return `Installed \`workflow\` package`;
+            case 'hono':
+              await execAsync(
+                `cd ${projectPath} && ${packageManager} i workflow nitro`
+              );
+              return `Installed \`workflow\` and \`nitro\` package`;
+            default:
+              throw new Error(`Unsupported template: ${template}`);
+          }
+        },
+      },
+      {
+        title: 'Configuring Nitro config',
+        enabled: template === 'nitro',
+        task: async (message) => {
+          message('Configuring Nitro config');
+          const nitroConfig = `import { defineNitroConfig } from "nitropack/config";
+
+// https://nitro.build/config
+export default defineNitroConfig({
+	compatibilityDate: "latest",
+	srcDir: "server",
+	imports: false,
+	modules: ["workflow/nitro"],
+});
+`;
+
+          writeFileSync(path.join(projectPath, 'nitro.config.ts'), nitroConfig);
+
+          return 'Configured Nitro config';
         },
       },
       {
@@ -157,21 +239,28 @@ export default class Init extends BaseCommand {
         enabled: useTsPlugin,
         task: async (message) => {
           message(`Configuring TypeScript intellisense`);
-          const tsConfig = JSON.parse(
+          const tsConfig = parseJSON(
             readFileSync(path.join(projectPath, 'tsconfig.json'), 'utf8')
-          );
+          ) as any;
+          if (!tsConfig.compilerOptions) {
+            tsConfig.compilerOptions = {};
+          }
+          if (!tsConfig.compilerOptions.plugins) {
+            tsConfig.compilerOptions.plugins = [];
+          }
           tsConfig.compilerOptions.plugins.push({
             name: 'workflow',
           });
           writeFileSync(
             path.join(projectPath, 'tsconfig.json'),
-            JSON.stringify(tsConfig, null, 2)
+            stringifyJSON(tsConfig, null, 2)
           );
           return 'Configured TypeScript intellisense';
         },
       },
       {
         title: 'Configuring Next.js config',
+        enabled: template === 'next',
         task: async (message) => {
           message(`Configuring Next.js config`);
           let nextConfig = readFileSync(
@@ -243,11 +332,14 @@ async function sendOnboardingEmail(user: { id: string; email: string}) {
         title: 'Creating API route handler',
         task: async (message) => {
           message(`Creating API route handler`);
-          const apiPath = path.join(projectPath, 'app', 'api', 'signup');
-          mkdirSync(apiPath, { recursive: true });
-          writeFileSync(
-            path.join(apiPath, 'route.ts'),
-            `import { start } from 'workflow/api';
+          switch (template) {
+            case 'next':
+              {
+                const apiPath = path.join(projectPath, 'app', 'api', 'signup');
+                mkdirSync(apiPath, { recursive: true });
+                writeFileSync(
+                  path.join(apiPath, 'route.ts'),
+                  `import { start } from 'workflow/api';
 import { handleUserSignup } from "@/workflows/user-signup";
 import { NextResponse } from "next/server";
 
@@ -261,8 +353,34 @@ export async function POST(request: Request) {
   message: "User signup workflow started",
  });
 }`
-          );
-          return `Created API route handler in ${chalk.cyan(path.join(projectPath, 'app', 'api', 'signup', 'route.ts'))}`;
+                );
+              }
+              return `Created API route handler in ${chalk.cyan(path.join(projectPath, 'app', 'api', 'signup', 'route.ts'))}`;
+            case 'nitro': {
+              const apiPath = path.join(projectPath, 'server', 'api');
+              mkdirSync(apiPath, { recursive: true });
+              writeFileSync(
+                path.join(apiPath, 'signup.post.ts'),
+                `import { start } from 'workflow/api';
+import { defineEventHandler, readBody } from 'h3';
+import { handleUserSignup } from "../../workflows/user-signup";
+
+export default defineEventHandler(async (event) => {
+  const { email } = await readBody(event);
+
+  // Executes asynchronously and doesn't block your app
+  await start(handleUserSignup, [email]);
+
+  return Response.json({
+    message: "User signup workflow started",
+  });
+});`
+              );
+              return `Created API route handler in ${chalk.cyan(path.join(projectPath, 'server', 'api', 'signup.post.ts'))}`;
+            }
+            default:
+              throw new Error(`Unsupported template: ${template}`);
+          }
         },
       },
     ]);
@@ -271,7 +389,7 @@ export async function POST(request: Request) {
 
     outro(
       `${chalk.green('Success!')} Next steps:
-     Run ${chalk.dim(`${createNewProject ? `cd ${projectName} && ` : ''}npm run dev`)} to start the development server
+     Run ${chalk.dim(`${createNewProject ? `cd ${projectName} && ` : ''}${packageManager} run dev`)} to start the development server
      Trigger the workflow: ${chalk.dim('curl -X POST --json \'{"email":"hello@example.com"}\' http://localhost:3000/api/signup')}`
     );
   }
