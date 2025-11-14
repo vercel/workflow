@@ -1,3 +1,4 @@
+import { registerStepFunction } from "workflow/internal/private";
 import { DurableAgent } from '@workflow/ai/agent';
 import { gateway, tool } from 'ai';
 import * as z from 'zod';

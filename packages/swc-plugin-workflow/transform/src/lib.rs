@@ -2062,6 +2062,7 @@ impl VisitMut for StepTransform {
                     TransformMode::Step => {
                         if !self.registration_calls.is_empty()
                             || !self.object_property_step_functions.is_empty()
+                            || !self.nested_step_functions.is_empty()
                         {
                             imports_to_add.push(self.create_register_import());
                         }
