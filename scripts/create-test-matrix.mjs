@@ -48,6 +48,7 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'src/pages/.well-known/workflow/v1/flow.js',
     apiFilePath: 'src/pages/api/chat.ts',
     apiFileImportPath: '../..',
+    workflowsDir: 'src/workflows',
   },
 };
 
@@ -109,7 +110,7 @@ matrix.app.push({
 matrix.app.push({
   name: 'astro',
   project: 'workbench-astro-workflow',
-  ...DEV_TEST_CONFIGS.vite,
+  ...DEV_TEST_CONFIGS.astro,
 });
 
 console.log(JSON.stringify(matrix));
