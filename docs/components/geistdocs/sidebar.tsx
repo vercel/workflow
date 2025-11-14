@@ -23,12 +23,18 @@ type FolderProps = {
 };
 
 export const Folder = ({ item, level, children }: FolderProps) => (
-  <Collapsible>
+  <Collapsible defaultOpen={item.defaultOpen}>
     <CollapsibleTrigger
       className="group mt-4 mb-2 flex w-full items-center justify-between gap-4 first-child:mt-0"
       data-level={level}
     >
-      <span className="text-pretty font-medium text-sm">{item.name}</span>
+      {item.index ? (
+        <Link href={item.index.url} className="text-pretty font-medium text-sm">
+          {item.name}
+        </Link>
+      ) : (
+        <span className="text-pretty font-medium text-sm">{item.name}</span>
+      )}
       <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
     </CollapsibleTrigger>
     <CollapsibleContent>
