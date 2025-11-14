@@ -4,15 +4,7 @@ import { resolveModulePath } from 'exsolve';
 import type { HotUpdateOptions, Plugin } from 'vite';
 import { SvelteKitBuilder } from './builder.js';
 
-export interface WorkflowPluginOptions {
-  /**
-   * Directories to scan for workflow files.
-   * If not specified, defaults to ['workflows', 'src/workflows', 'routes', 'src/routes']
-   */
-  dirs?: string[];
-}
-
-export function workflowPlugin(options?: WorkflowPluginOptions): Plugin {
+export function workflowPlugin(): Plugin {
   let builder: SvelteKitBuilder;
 
   return {
@@ -97,9 +89,7 @@ export function workflowPlugin(options?: WorkflowPluginOptions): Plugin {
     },
 
     configResolved() {
-      builder = new SvelteKitBuilder({
-        dirs: options?.dirs,
-      });
+      builder = new SvelteKitBuilder();
     },
 
     // TODO: Move this to @workflow/vite or something since this is vite specific
