@@ -2,7 +2,7 @@ import { registerStepFunction } from "workflow/internal/private";
 import * as z from 'zod';
 import { tool } from 'ai';
 /**__internal_workflows{"steps":{"input.js":{"timeTool/execute":{"stepId":"step//input.js//timeTool/execute"},"weatherTool/execute":{"stepId":"step//input.js//weatherTool/execute"},"weatherTool2/execute":{"stepId":"step//input.js//weatherTool2/execute"}}}}*/;
-var weatherTool2$execute = async ({ location })=>{
+var weatherTool$execute = async ({ location })=>{
     return {
         location,
         temperature: 72 + Math.floor(Math.random() * 21) - 10
@@ -13,7 +13,7 @@ var timeTool$execute = async ()=>{
         time: new Date().toISOString()
     };
 };
-var weatherTool$execute = async ({ location })=>{
+var weatherTool2$execute = async ({ location })=>{
     return {
         location,
         temperature: 72 + Math.floor(Math.random() * 21) - 10
