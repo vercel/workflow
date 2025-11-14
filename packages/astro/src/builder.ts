@@ -71,11 +71,11 @@ export class LocalBuilder extends BaseBuilder {
     await this.buildWebhookRoute({ workflowGeneratedDir });
 
     // Astro requires non-api routes to be prefixed with _ (debug files)
-    for (const file of DEBUG_FILES) {
-      const filePath = join(workflowGeneratedDir, file);
-      const prefixedFilePath = join(workflowGeneratedDir, `_${file}`);
-      await rename(filePath, prefixedFilePath);
-    }
+    // for (const file of DEBUG_FILES) {
+    //   const filePath = join(workflowGeneratedDir, file);
+    //   const prefixedFilePath = join(workflowGeneratedDir, `_${file}`);
+    //   await rename(filePath, prefixedFilePath);
+    // }
   }
 
   private async buildStepsRoute({
