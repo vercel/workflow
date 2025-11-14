@@ -133,16 +133,12 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
     });
 
     // Add the step function identifier to the step function for serialization
-    Object.defineProperty(
-      stepFunction,
-      Symbol.for('WORKFLOW_STEP_FUNCTION_NAME'),
-      {
-        value: stepName,
-        writable: false,
-        enumerable: false,
-        configurable: false,
-      }
-    );
+    Object.defineProperty(stepFunction, 'stepId', {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
 
     return stepFunction;
   };
