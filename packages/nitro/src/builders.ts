@@ -63,19 +63,25 @@ export class LocalBuilder extends BaseBuilder {
       inputFiles,
     });
 
+    const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
+
     await this.createWebhookBundle({
-      outfile: join(this.#outDir, 'webhook.mjs'),
+      outfile: webhookRouteFile,
       bundle: false,
+      suppressUndefinedRejections: true,
     });
   }
 }
 
 export function getWorkflowDirs(nitro: Nitro) {
+  const srcDir = nitro.options.srcDir || nitro.options.rootDir;
+
   return unique(
     [
       ...(nitro.options.workflow?.dirs ?? []),
-      join(nitro.options.rootDir, 'workflows'),
-      ...nitro.options.scanDirs.map((dir) => join(dir, 'workflows')),
+      join(srcDir, 'workflows'),
+      join(srcDir, nitro.options.routesDir || 'routes'),
+      join(srcDir, nitro.options.apiDir || 'api'),
     ].map((dir) => resolve(nitro.options.rootDir, dir))
   ).sort();
 }

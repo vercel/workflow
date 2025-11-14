@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from './_workflows.js';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
+import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { allWorkflows } from './_workflows.js';
 
 const app = new Hono();
 
@@ -163,8 +163,9 @@ app.post('/api/hook', async ({ req }) => {
   } catch (error) {
     console.log('error during getHookByToken', error);
     // TODO: `WorkflowAPIError` is not exported, so for now
-    // we'll return 404 assuming it's the "invalid" token test case
-    return Response.json(null, { status: 404 });
+    // we'll return 422 assuming it's the "invalid" token test case
+    // NOTE: Need to return 422 because Nitro passes 404 requests to the dev server to handle.
+    return Response.json(null, { status: 422 });
   }
 
   await resumeHook(hook.token, {
@@ -176,4 +177,24 @@ app.post('/api/hook', async ({ req }) => {
   return Response.json(hook);
 });
 
-export default app;
+app.post('/api/test-direct-step-call', async ({ req }) => {
+  // This route tests calling step functions directly outside of any workflow context
+  // After the SWC compiler changes, step functions in client mode have their directive removed
+  // and keep their original implementation, allowing them to be called as regular async functions
+  const { add } = await import('./workflows/99_e2e.js');
+
+  const body = await req.json();
+  const { x, y } = body;
+
+  console.log(`Calling step function directly with x=${x}, y=${y}`);
+
+  // Call step function directly as a regular async function (no workflow context)
+  const result = await add(x, y);
+  console.log(`add(${x}, ${y}) = ${result}`);
+
+  return Response.json({ result });
+});
+
+export default async (event: { req: Request }) => {
+  return app.fetch(event.req);
+};

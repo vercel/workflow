@@ -90,10 +90,11 @@ describe('e2e', () => {
       output: 133,
     });
     // In local vs. vercel backends, the workflow name is different, so we check for either,
-    // since this test runs against both.
+    // since this test runs against both. Also different workbenches have different directory structures.
     expect(json.workflowName).toBeOneOf([
       `workflow//example/${workflow.workflowFile}//${workflow.workflowFn}`,
       `workflow//${workflow.workflowFile}//${workflow.workflowFn}`,
+      `workflow//src/${workflow.workflowFile}//${workflow.workflowFn}`,
     ]);
   });
 
@@ -154,7 +155,10 @@ describe('e2e', () => {
       method: 'POST',
       body: JSON.stringify({ token: 'invalid' }),
     });
-    expect(res.status).toBe(404);
+    // NOTE: For Nitro apps (Vite, Hono, etc.) in dev mode, status 404 does some
+    // unexpected stuff and could return a Vite SPA fallback or can cause a Hono route to hang.
+    // This is because Nitro passes the 404 requests to the dev server to handle.
+    expect(res.status).toBeOneOf([404, 422]);
     body = await res.json();
     expect(body).toBeNull();
 
@@ -578,14 +582,16 @@ describe('e2e', () => {
       expect(returnValue.cause).toHaveProperty('stack');
       expect(typeof returnValue.cause.stack).toBe('string');
 
-      // Known issue: SvelteKit dev mode has incorrect source map mappings for bundled imports.
+      // Known issue: vite-based frameworks dev mode has incorrect source map mappings for bundled imports.
       // esbuild with bundle:true inlines helpers.ts but source maps incorrectly map to 99_e2e.ts
       // This works correctly in production and other frameworks.
       // TODO: Investigate esbuild source map generation for bundled modules
-      const isSvelteKitDevMode =
-        process.env.APP_NAME === 'sveltekit' && isLocalDeployment();
+      const isViteBasedFrameworkDevMode =
+        (process.env.APP_NAME === 'sveltekit' ||
+          process.env.APP_NAME === 'vite') &&
+        isLocalDeployment();
 
-      if (!isSvelteKitDevMode) {
+      if (!isViteBasedFrameworkDevMode) {
         // Stack trace should include frames from the helper module (helpers.ts)
         expect(returnValue.cause.stack).toContain('helpers.ts');
       }

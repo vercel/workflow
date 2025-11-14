@@ -91,7 +91,14 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
     // Nitro v3+ (native web handlers)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import { POST } from "${join(nitro.options.buildDir, buildPath)}";
-    export default ({ req }) => POST(req);
+    export default async ({ req }) => {
+      try {
+        return await POST(req);
+      } catch (error) {
+        console.error('Handler error:', error);
+        return new Response('Internal Server Error', { status: 500 });
+      }
+    };
   `;
   }
 }
