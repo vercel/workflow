@@ -2,7 +2,11 @@ import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { Run } from '../runtime.js';
 import type { Serializable, WorkflowInvokePayload } from '../schemas.js';
-import { dehydrateWorkflowArguments } from '../serialization.js';
+import {
+  dehydrateWorkflowArguments,
+  resolveStreamOpsForRun,
+  type StreamOperationPromise,
+} from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
@@ -86,7 +90,7 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = getWorld();
       const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
-      const ops: Promise<void>[] = [];
+      const ops: StreamOperationPromise[] = [];
       const workflowArguments = dehydrateWorkflowArguments(args, ops);
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
@@ -97,7 +101,9 @@ export async function start<TArgs extends unknown[], TResult>(
         input: workflowArguments,
         executionContext: { traceCarrier },
       });
-      waitUntil(Promise.all(ops));
+
+      const asyncOps = resolveStreamOpsForRun(ops, runResponse.runId);
+      waitUntil(Promise.all(asyncOps));
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runResponse.runId),

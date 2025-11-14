@@ -10,6 +10,17 @@ import {
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 
+export type StreamOperationPromise =
+  | Promise<void>
+  | ((runId: string) => Promise<void>);
+
+export const resolveStreamOpsForRun = (
+  ops: StreamOperationPromise[],
+  runId: string
+): StreamOperationPromise[] => {
+  return ops.map((op) => (typeof op === 'function' ? op(runId) : op));
+};
+
 /**
  * Detect if a readable stream is a byte stream.
  *
@@ -115,7 +126,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 }
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
-  constructor(runId: string, name: string) {
+  constructor(name: string, runId: string) {
     if (typeof runId !== 'string' || runId.length === 0) {
       throw new Error(`"runId" is required, got "${runId}"`);
     }
@@ -312,13 +323,11 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
  *
  * @param global
  * @param ops
- * @param runId
  * @returns
  */
 export function getExternalReducers(
   global: Record<string, any> = globalThis,
-  ops: Promise<any>[],
-  runId?: string
+  ops: StreamOperationPromise[]
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -334,22 +343,29 @@ export function getExternalReducers(
       const name = global.crypto.randomUUID();
       const type = getStreamType(value);
 
-      // Only pipe stream data if we have a runId
-      // TODO: Does this cause any issues?
-      if (runId) {
-        const writable = new WorkflowServerWritableStream(runId, name);
-        if (type === 'bytes') {
-          ops.push(value.pipeTo(writable));
-        } else {
-          ops.push(
-            value
-              .pipeThrough(
-                getSerializeStream(getExternalReducers(global, ops, runId))
-              )
-              .pipeTo(writable)
-          );
-        }
-      }
+      const writePromiseFactory = (runId: string) =>
+        new Promise<void>((resolve, reject) => {
+          try {
+            const writable = new WorkflowServerWritableStream(name, runId);
+            if (type === 'bytes') {
+              ops.push(value.pipeTo(writable));
+              resolve();
+            } else {
+              ops.push(
+                value
+                  .pipeThrough(
+                    getSerializeStream(getExternalReducers(global, ops))
+                  )
+                  .pipeTo(writable)
+              );
+              resolve();
+            }
+          } catch (error) {
+            reject(error);
+          }
+        });
+
+      ops.push(writePromiseFactory);
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
@@ -361,17 +377,18 @@ export function getExternalReducers(
 
       const name = global.crypto.randomUUID();
 
-      // Only pipe stream data if we have a runId
-      // TODO: Does this cause any issues?
-      if (runId) {
-        ops.push(
-          new WorkflowServerReadableStream(name)
-            .pipeThrough(
-              getDeserializeStream(getExternalRevivers(global, ops, runId))
-            )
-            .pipeTo(value)
-        );
-      }
+      const readPromiseFactory = () =>
+        new Promise<void>((resolve, reject) => {
+          try {
+            const readable = new WorkflowServerReadableStream(name);
+            ops.push(readable.pipeTo(value));
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        });
+
+      ops.push(readPromiseFactory);
 
       return { name };
     },
@@ -435,7 +452,7 @@ export function getWorkflowReducers(
  */
 function getStepReducers(
   global: Record<string, any> = globalThis,
-  ops: Promise<any>[],
+  ops: StreamOperationPromise[],
   runId?: string
 ): Reducers {
   return {
@@ -603,7 +620,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
  */
 export function getExternalRevivers(
   global: Record<string, any> = globalThis,
-  ops: Promise<any>[],
+  ops: StreamOperationPromise[],
   runId?: string
 ): Revivers {
   return {
@@ -657,9 +674,7 @@ export function getExternalRevivers(
         );
       }
 
-      const serialize = getSerializeStream(
-        getExternalReducers(global, ops, runId)
-      );
+      const serialize = getSerializeStream(getExternalReducers(global, ops));
       ops.push(
         serialize.readable.pipeTo(
           new WorkflowServerWritableStream(runId, value.name)
@@ -747,7 +762,7 @@ export function getWorkflowRevivers(
  */
 function getStepRevivers(
   global: Record<string, any> = globalThis,
-  ops: Promise<any>[],
+  ops: StreamOperationPromise[],
   runId?: string
 ): Revivers {
   return {
@@ -830,15 +845,11 @@ function getStepRevivers(
  */
 export function dehydrateWorkflowArguments(
   value: unknown,
-  ops: Promise<any>[],
-  global: Record<string, any> = globalThis,
-  runId?: string
+  ops: StreamOperationPromise[],
+  global: Record<string, any> = globalThis
 ) {
   try {
-    const str = devalue.stringify(
-      value,
-      getExternalReducers(global, ops, runId)
-    );
+    const str = devalue.stringify(value, getExternalReducers(global, ops));
     return revive(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
@@ -906,7 +917,7 @@ export function dehydrateWorkflowReturnValue(
  */
 export function hydrateWorkflowReturnValue(
   value: Parameters<typeof devalue.unflatten>[0],
-  ops: Promise<any>[],
+  ops: StreamOperationPromise[],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   runId?: string
