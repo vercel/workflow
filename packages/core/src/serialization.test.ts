@@ -12,7 +12,7 @@ import {
   getWorkflowReducers,
   hydrateWorkflowArguments,
 } from './serialization.js';
-import { STEP_FUNCTION_NAME_SYMBOL, STREAM_NAME_SYMBOL } from './symbols.js';
+import { STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
 
 describe('getStreamType', () => {
@@ -793,27 +793,27 @@ describe('step function serialization', () => {
     fixedTimestamp: 1714857600000,
   });
 
-  it('should detect step function by checking for STEP_FUNCTION_NAME_SYMBOL', () => {
+  it('should detect step function by checking for stepId property', () => {
     const stepName = 'myStep';
     const stepFn = async (x: number) => x * 2;
 
-    // Attach the symbol like useStep() does
-    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+    // Attach stepId like useStep() does
+    Object.defineProperty(stepFn, 'stepId', {
       value: stepName,
       writable: false,
       enumerable: false,
       configurable: false,
     });
 
-    // Verify the symbol is attached correctly
-    expect((stepFn as any)[STEP_FUNCTION_NAME_SYMBOL]).toBe(stepName);
+    // Verify the property is attached correctly
+    expect((stepFn as any).stepId).toBe(stepName);
   });
 
-  it('should not have STEP_FUNCTION_NAME_SYMBOL on regular functions', () => {
+  it('should not have stepId on regular functions', () => {
     const regularFn = async (x: number) => x * 2;
 
-    // Regular functions should not have the symbol
-    expect((regularFn as any)[STEP_FUNCTION_NAME_SYMBOL]).toBeUndefined();
+    // Regular functions should not have stepId
+    expect((regularFn as any).stepId).toBeUndefined();
   });
 
   it('should lookup registered step function by name', () => {
@@ -869,8 +869,8 @@ describe('step function serialization', () => {
     // Register the step function
     registerStepFunction(stepName, stepFn);
 
-    // Attach the symbol to the function (like the SWC compiler would)
-    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+    // Attach stepId to the function (like useStep() does)
+    Object.defineProperty(stepFn, 'stepId', {
       value: stepName,
       writable: false,
       enumerable: false,
@@ -897,8 +897,8 @@ describe('step function serialization', () => {
     const stepName = 'step//workflows/test.ts//anotherStep';
     const stepFn = async () => 'result';
 
-    // Attach the symbol to the function (like the SWC compiler would)
-    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+    // Attach stepId to the function (like useStep() does)
+    Object.defineProperty(stepFn, 'stepId', {
       value: stepName,
       writable: false,
       enumerable: false,
