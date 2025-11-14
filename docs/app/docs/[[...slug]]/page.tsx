@@ -1,4 +1,5 @@
 import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { notFound } from 'next/navigation';
 import { AskAI } from '@/components/geistdocs/ask-ai';
@@ -65,6 +66,8 @@ const Page = async (props: PageProps<'/docs/[[...slug]]'>) => {
             Step,
             Steps,
             ...AccordionComponents,
+            Tabs,
+            Tab,
           })}
         />
       </DocsBody>
