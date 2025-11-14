@@ -12,7 +12,7 @@ const adapter = process.env.VERCEL_DEPLOYMENT_ID
 
 // https://astro.build/config
 export default defineConfig({
-  vite: { plugins: [workflowPlugin()] },
+  integrations: [workflowPlugin()],
   adapter: adapter,
   security: {
     checkOrigin: false,

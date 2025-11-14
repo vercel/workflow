@@ -1,22 +1,38 @@
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import { resolveModulePath } from 'exsolve';
-import type { HotUpdateOptions, Plugin } from 'vite';
-import { AstroBuilder } from './builder.js';
+import type { HotUpdateOptions, PluginOption } from 'vite';
+import type { AstroIntegration } from 'astro';
+import { LocalBuilder, VercelBuilder } from './builder.js';
 
-export interface WorkflowPluginOptions {
-  /**
-   * Directories to scan for workflow files.
-   * If not specified, defaults to ['workflows', 'src/workflows', 'routes', 'src/routes']
-   */
-  dirs?: string[];
-}
-
-export function workflowPlugin(options?: WorkflowPluginOptions): Plugin {
-  let builder: AstroBuilder;
+export function workflowPlugin(): AstroIntegration {
+  const builder = new LocalBuilder();
 
   return {
     name: 'workflow:astro',
+    hooks: {
+      'astro:config:setup': async ({ updateConfig }) => {
+        await builder.build();
+        updateConfig({
+          vite: {
+            plugins: [createVitePlugin(builder) as any],
+          },
+        });
+      },
+      'astro:build:done': async () => {
+        // Check if we're building for Vercel
+        if (process.env.VERCEL_DEPLOYMENT_ID) {
+          const vercelBuilder = new VercelBuilder();
+          await vercelBuilder.build();
+        }
+      },
+    },
+  };
+}
+
+function createVitePlugin(builder: LocalBuilder): PluginOption {
+  return {
+    name: 'workflow:astro:vite',
 
     // TODO: Move this to @workflow/vite or something since this is vite specific
     // Transform workflow files with SWC
@@ -94,12 +110,6 @@ export function workflowPlugin(options?: WorkflowPluginOptions): Plugin {
         code: result.code,
         map: result.map ? JSON.parse(result.map) : null,
       };
-    },
-
-    configResolved() {
-      builder = new AstroBuilder({
-        dirs: options?.dirs,
-      });
     },
 
     // TODO: Move this to @workflow/vite or something since this is vite specific
