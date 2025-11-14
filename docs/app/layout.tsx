@@ -1,69 +1,41 @@
-import '@/app/global.css';
-import { Analytics } from '@vercel/analytics/next';
-import { RootProvider } from 'fumadocs-ui/provider';
-import { Geist, Geist_Mono } from 'next/font/google';
-import { HomeLayout } from '@/components/layout/home';
-import { Toaster } from '@/components/ui/sonner';
-import { baseOptions } from '@/lib/layout.shared';
-import { Metadata } from 'next';
+import './global.css';
+import { CommandIcon } from 'lucide-react';
+import { Navbar } from '@/components/geistdocs/navbar';
+import { GeistdocsProvider } from '@/components/geistdocs/provider';
+import { mono, sans } from '@/lib/geistdocs/fonts';
+import { cn } from '@/lib/utils';
 
-const geistSans = Geist({
-  variable: '--font-geist-sans',
-  subsets: ['latin'],
-});
+const Logo = () => <CommandIcon className="size-5" />;
 
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
-  subsets: ['latin'],
-});
+const links = [
+  {
+    label: 'Docs',
+    href: '/docs',
+  },
+];
 
-export const metadata: Metadata = {
-  metadataBase: new URL('https://useworkflow.dev'),
-};
+const suggestions = [
+  'What is Vercel?',
+  'What can I deploy with Vercel?',
+  'What is Fluid Compute?',
+  'How much does Vercel cost?',
+];
 
-export default function Layout({ children }: { children: React.ReactNode }) {
-  return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      suppressHydrationWarning
-    >
-      <body className="flex flex-col min-h-screen">
-        <RootProvider
-          search={{
-            links: [
-              ['Getting Started with Workflows', '/docs/getting-started'],
-              ['Concepts', '/docs/foundations/concepts'],
-              [
-                'Control Flow Patterns',
-                '/docs/foundations/control-flow-patterns',
-              ],
-              ['Errors & Retries', '/docs/foundations/errors-and-retries'],
-              ['API Reference', '/docs/api-reference'],
-            ],
-          }}
-        >
-          <HomeLayout
-            baseOptions={baseOptions}
-            links={[
-              {
-                text: 'Docs',
-                url: '/docs/getting-started',
-                secondary: false,
-              },
-              {
-                text: 'Examples',
-                url: 'https://github.com/vercel/workflow-examples',
-                secondary: false,
-              },
-            ]}
-          >
-            {children}
-          </HomeLayout>
-        </RootProvider>
-        <Toaster />
-        <Analytics />
-      </body>
-    </html>
-  );
-}
+const Layout = ({ children }: LayoutProps<'/'>) => (
+  <html
+    className={cn(sans.variable, mono.variable, 'scroll-smooth antialiased')}
+    lang="en"
+    suppressHydrationWarning
+  >
+    <body>
+      <GeistdocsProvider>
+        <Navbar items={links} suggestions={suggestions}>
+          <Logo />
+        </Navbar>
+        {children}
+      </GeistdocsProvider>
+    </body>
+  </html>
+);
+
+export default Layout;

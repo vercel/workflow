@@ -1,14 +1,10 @@
 @import "tailwindcss";
-@import "tw-animate-css";
-
 @import "fumadocs-ui/css/shadcn.css";
 @import "fumadocs-ui/css/preset.css";
+@import "tw-animate-css";
+@import "./styles/geistdocs.css";
 
 @custom-variant dark (&:is(.dark *));
-
-@source '../../node_modules/fumadocs-ui/dist/**/*.js';
-@source '../../node_modules/@repo/components/src/**/*.{js,jsx,ts,tsx}';
-@source '../../node_modules/@repo/shadcn-ui/components/**/*.{js,jsx,ts,tsx}';
 
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
@@ -46,8 +42,6 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-
-  --color-primary-blue: var(--primary-blue);
 }
 
 :root {
@@ -58,8 +52,8 @@
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
+  --primary: oklch(57.61% 0.2508 258.23);
+  --primary-foreground: oklch(1 0 0);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
@@ -70,7 +64,7 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.66 0.2298 34.95);
+  --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
@@ -83,8 +77,6 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-
-  --primary-blue: oklch(57.61% 0.2508 258.23);
 }
 
 .dark {
@@ -94,8 +86,8 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: oklch(57.61% 0.2508 258.23);
+  --primary-foreground: oklch(1 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -126,115 +118,6 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-sidebar text-foreground dark:bg-background;
+    @apply bg-background text-foreground;
   }
-}
-
-/* This layer is by next-forge */
-@layer base {
-  ::after,
-  ::before,
-  ::backdrop,
-  ::file-selector-button {
-    @apply border-border;
-  }
-  * {
-    @apply min-w-0;
-  }
-  html {
-    text-rendering: optimizelegibility;
-  }
-  body {
-    @apply min-h-[100dvh];
-  }
-  input::placeholder,
-  textarea::placeholder {
-    @apply text-muted-foreground;
-  }
-  button:not(:disabled),
-  [role="button"]:not(:disabled) {
-    @apply cursor-pointer;
-  }
-}
-
-/* Fix Fumadocs theme toggle icons */
-[data-theme-toggle] svg {
-  @apply fill-none;
-}
-
-#nd-subnav {
-  @apply hidden!;
-}
-
-#nd-subnav [data-active="true"] {
-  @apply font-medium text-fd-foreground;
-}
-
-#nd-subnav > div {
-  @apply container;
-}
-
-#nd-docs-layout {
-  @apply mx-0 sm:mx-6 xl:mx-auto p-0 max-w-[1400px];
-}
-
-#nd-tocnav {
-  @apply translate-y-px;
-}
-
-#nd-sidebar [data-hide-if-empty] {
-  @apply hidden;
-}
-
-/* Hide unnecessary links on mobile */
-#nd-sidebar-mobile a[href="/"],
-#nd-sidebar-mobile a[href="/docs"].lg\:hidden {
-  @apply hidden;
-}
-
-.landing-page #nd-subnav button[data-search] + button {
-  @apply hidden;
-}
-
-table {
-  @apply rounded-sm bg-none !border-none;
-}
-
-table th {
-  @apply !bg-background border-b border-x-0 px-4.5 py-2;
-}
-
-table td {
-  @apply !bg-background border-none px-4.5 py-3;
-}
-
-/* Reset the counter for each code block */
-.with-line-numbers {
-  counter-reset: line-number;
-}
-
-/* Style each line within the code block */
-.with-line-numbers code .line {
-  @apply relative pl-12!;
-  counter-increment: line-number; /* Increment the counter for each line */
-}
-
-/* Display the line number using a pseudo-element */
-.with-line-numbers code .line::before {
-  @apply absolute left-0 w-8! text-right text-muted-foreground;
-  content: counter(line-number); /* Display the current counter value */
-}
-
-/* Fix padding for code blocks inside tabs */
-[data-radix-tabs-content] figure:only-child .shiki .line {
-  padding-left: 1rem;
-  padding-right: 1rem;
-}
-
-.with-line-numbers.with-checks code .line {
-  @apply pl-17!;
-}
-
-.with-checks.with-line-numbers code .line::before {
-  @apply left-5!;
 }
