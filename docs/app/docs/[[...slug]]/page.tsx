@@ -1,3 +1,4 @@
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { notFound } from 'next/navigation';
 import { AskAI } from '@/components/geistdocs/ask-ai';
@@ -16,7 +17,6 @@ import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { OpenInChat } from '@/components/geistdocs/open-in-chat';
 import { ScrollTop } from '@/components/geistdocs/scroll-top';
 import { TableOfContents } from '@/components/geistdocs/toc';
-import { Step, Steps } from '@/components/steps';
 import * as AccordionComponents from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 
