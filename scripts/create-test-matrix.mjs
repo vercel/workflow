@@ -43,6 +43,12 @@ const DEV_TEST_CONFIGS = {
     apiFilePath: 'server.ts',
     apiFileImportPath: '.',
   },
+  astro: {
+    generatedStepPath: 'src/pages/.well-known/workflow/v1/step.js',
+    generatedWorkflowPath: 'src/pages/.well-known/workflow/v1/flow.js',
+    apiFilePath: 'src/pages/api/chat.ts',
+    apiFileImportPath: '../..',
+  },
 };
 
 const matrix = {
