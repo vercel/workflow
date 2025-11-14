@@ -4,8 +4,6 @@ title: defineHook
 
 import { generateDefinition } from "@/lib/tsdoc"
 
-# `defineHook()`
-
 Creates a type-safe hook helper that ensures the payload type is consistent between hook creation and resumption.
 
 This is a lightweight wrapper around [`createHook()`](/docs/api-reference/workflow/create-hook) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid type mismatches. It also supports optional runtime validation and transformation of payloads using any [Standard Schema v1](https://standardschema.dev) compliant validator like Zod or Valibot.

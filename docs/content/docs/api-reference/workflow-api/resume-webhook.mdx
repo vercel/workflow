@@ -4,8 +4,6 @@ title: resumeWebhook
 
 import { generateDefinition } from "@/lib/tsdoc"
 
-# `resumeWebhook()`
-
 Resumes a workflow run by sending an HTTP `Request` to a webhook identified by its token.
 
 This function creates a `hook_received` event and re-triggers the workflow to continue execution. It's designed to be called from API routes or server actions that receive external HTTP requests.

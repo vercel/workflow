@@ -4,8 +4,6 @@ title: RetryableError
 
 import { generateDefinition } from "@/lib/tsdoc"
 
-# `RetryableError`
-
 When a `RetryableError` is thrown in a step, it indicates that the workflow should retry a step. Additionally, it contains a parameter `retryAfter` indicating when the step should be retried after.
 
 You should use this when you want to retry a step or retry after a certain duration.
