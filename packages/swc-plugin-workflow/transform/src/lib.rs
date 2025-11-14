@@ -176,6 +176,18 @@ pub struct StepTransform {
     workflow_functions_needing_id: Vec<(String, swc_core::common::Span)>,
     // Track step function exports that need to be converted to const declarations in workflow mode
     step_exports_to_convert: Vec<(String, String, swc_core::common::Span)>, // (fn_name, step_id, span)
+    // Track object property step functions for hoisting in step mode
+    // (parent_var_name, prop_name, arrow_expr, span)
+    object_property_step_functions: Vec<(String, String, ArrowExpr, swc_core::common::Span)>,
+    // Counter for anonymous function names
+    #[allow(dead_code)]
+    anonymous_fn_counter: usize,
+    // Track object properties that need to be converted to initializer calls in workflow mode
+    // (parent_var_name, prop_name, step_id)
+    object_property_workflow_conversions: Vec<(String, String, String)>,
+    // Current context: variable name being processed when visiting object properties
+    #[allow(dead_code)]
+    current_var_context: Option<String>,
 }
 
 // Structure to track variable names and their access patterns
@@ -259,6 +271,10 @@ impl StepTransform {
             workflow_exports_to_expand: Vec::new(),
             workflow_functions_needing_id: Vec::new(),
             step_exports_to_convert: Vec::new(),
+            object_property_step_functions: Vec::new(),
+            anonymous_fn_counter: 0,
+            object_property_workflow_conversions: Vec::new(),
+            current_var_context: None,
         }
     }
 
@@ -282,6 +298,292 @@ impl StepTransform {
             None => {
                 let prefix = if is_workflow { "workflow" } else { "step" };
                 naming::format_name(prefix, &self.filename, span.lo.0)
+            }
+        }
+    }
+
+    // Create an identifier for an object property step function
+    // Used for functions defined as object properties, e.g., tool({ execute: async () => {...} })
+    fn create_object_property_id(
+        &self,
+        parent_var_name: &str,
+        prop_name: &str,
+        is_workflow: bool,
+    ) -> String {
+        let fn_name = format!("{}/{}", parent_var_name, prop_name);
+        let prefix = if is_workflow { "workflow" } else { "step" };
+        naming::format_name(prefix, &self.filename, &fn_name)
+    }
+
+    // Process object properties for step functions
+    fn process_object_properties_for_step_functions(
+        &mut self,
+        obj_lit: &mut ObjectLit,
+        parent_var_name: &str,
+    ) {
+        for prop in &mut obj_lit.props {
+            if let PropOrSpread::Prop(boxed_prop) = prop {
+                match &mut **boxed_prop {
+                    Prop::KeyValue(kv_prop) => {
+                        // Get the property key first
+                        let prop_key = match &kv_prop.key {
+                            PropName::Ident(ident) => ident.sym.to_string(),
+                            PropName::Str(s) => s.value.to_string(),
+                            _ => continue, // Skip complex keys
+                        };
+
+                        // Check if we should transform this property
+                        let should_transform = match &*kv_prop.value {
+                            Expr::Arrow(arrow_expr) => {
+                                self.has_use_step_directive_arrow(&arrow_expr.body)
+                            }
+                            Expr::Fn(fn_expr) => {
+                                self.has_use_step_directive(&fn_expr.function.body)
+                            }
+                            _ => false,
+                        };
+
+                        if should_transform {
+                            // Process the transformation
+                            match &mut *kv_prop.value {
+                                Expr::Arrow(arrow_expr) => {
+                                    if !arrow_expr.is_async {
+                                        emit_error(WorkflowErrorKind::NonAsyncFunction {
+                                            span: arrow_expr.span,
+                                            directive: "use step",
+                                        });
+                                    } else {
+                                        // Remove the directive first
+                                        self.remove_use_step_directive_arrow(&mut arrow_expr.body);
+
+                                        // Track this as an object property step function (after removing directive)
+                                        self.object_property_step_functions.push((
+                                            parent_var_name.to_string(),
+                                            prop_key.clone(),
+                                            arrow_expr.clone(),
+                                            arrow_expr.span,
+                                        ));
+
+                                        let span = arrow_expr.span;
+                                        drop(arrow_expr); // Drop the mutable reference
+
+                                        self.apply_object_property_transformation(
+                                            kv_prop,
+                                            parent_var_name,
+                                            &prop_key,
+                                            span,
+                                        );
+                                    }
+                                }
+                                Expr::Fn(fn_expr) => {
+                                    if !fn_expr.function.is_async {
+                                        emit_error(WorkflowErrorKind::NonAsyncFunction {
+                                            span: fn_expr.function.span,
+                                            directive: "use step",
+                                        });
+                                    } else {
+                                        // Remove the directive first
+                                        self.remove_use_step_directive(&mut fn_expr.function.body);
+
+                                        // Convert to arrow expression for hoisting (as arrow functions are simpler to work with)
+                                        let arrow_params: Vec<Pat> = fn_expr
+                                            .function
+                                            .params
+                                            .iter()
+                                            .map(|param| param.pat.clone())
+                                            .collect();
+
+                                        let arrow_from_fn = ArrowExpr {
+                                            span: fn_expr.function.span,
+                                            ctxt: SyntaxContext::empty(),
+                                            is_async: fn_expr.function.is_async,
+                                            is_generator: fn_expr.function.is_generator,
+                                            params: arrow_params,
+                                            body: Box::new(BlockStmtOrExpr::BlockStmt(
+                                                fn_expr
+                                                    .function
+                                                    .body
+                                                    .as_ref()
+                                                    .cloned()
+                                                    .unwrap_or_else(|| BlockStmt {
+                                                        span: DUMMY_SP,
+                                                        ctxt: SyntaxContext::empty(),
+                                                        stmts: vec![],
+                                                    }),
+                                            )),
+                                            type_params: None,
+                                            return_type: fn_expr.function.return_type.clone(),
+                                        };
+
+                                        let span = fn_expr.function.span;
+
+                                        // Track this as an object property step function (after removing directive)
+                                        self.object_property_step_functions.push((
+                                            parent_var_name.to_string(),
+                                            prop_key.clone(),
+                                            arrow_from_fn,
+                                            span,
+                                        ));
+
+                                        drop(fn_expr); // Drop the mutable reference
+
+                                        self.apply_object_property_transformation(
+                                            kv_prop,
+                                            parent_var_name,
+                                            &prop_key,
+                                            span,
+                                        );
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Prop::Method(method_prop) => {
+                        // Handle object methods like: execute() { "use step"; ... }
+                        let prop_key = match &method_prop.key {
+                            PropName::Ident(ident) => ident.sym.to_string(),
+                            PropName::Str(s) => s.value.to_string(),
+                            _ => continue, // Skip complex keys
+                        };
+
+                        if self.has_use_step_directive(&method_prop.function.body) {
+                            if !method_prop.function.is_async {
+                                emit_error(WorkflowErrorKind::NonAsyncFunction {
+                                    span: method_prop.function.span,
+                                    directive: "use step",
+                                });
+                            } else {
+                                // Remove the directive first
+                                self.remove_use_step_directive(&mut method_prop.function.body);
+
+                                // Convert method to arrow expression for hoisting
+                                let arrow_params: Vec<Pat> = method_prop
+                                    .function
+                                    .params
+                                    .iter()
+                                    .map(|param| param.pat.clone())
+                                    .collect();
+
+                                let arrow_from_method = ArrowExpr {
+                                    span: method_prop.function.span,
+                                    ctxt: SyntaxContext::empty(),
+                                    is_async: method_prop.function.is_async,
+                                    is_generator: method_prop.function.is_generator,
+                                    params: arrow_params,
+                                    body: Box::new(BlockStmtOrExpr::BlockStmt(
+                                        method_prop.function.body.as_ref().cloned().unwrap_or_else(
+                                            || BlockStmt {
+                                                span: DUMMY_SP,
+                                                ctxt: SyntaxContext::empty(),
+                                                stmts: vec![],
+                                            },
+                                        ),
+                                    )),
+                                    type_params: None,
+                                    return_type: method_prop.function.return_type.clone(),
+                                };
+
+                                let span = method_prop.function.span;
+
+                                // Track this as an object property step function
+                                self.object_property_step_functions.push((
+                                    parent_var_name.to_string(),
+                                    prop_key.clone(),
+                                    arrow_from_method,
+                                    span,
+                                ));
+
+                                // Now handle the transformation based on mode
+                                match self.mode {
+                                    TransformMode::Step => {
+                                        // In step mode, replace method with reference to hoisted variable
+                                        let hoist_var_name =
+                                            format!("{}${}", parent_var_name, prop_key);
+                                        let step_id = self.create_object_property_id(
+                                            parent_var_name,
+                                            &prop_key,
+                                            false,
+                                        );
+                                        // Replace the method with a shorthand property referencing the hoisted function
+                                        *boxed_prop = Box::new(Prop::Shorthand(Ident::new(
+                                            hoist_var_name.into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        )));
+                                        self.object_property_workflow_conversions.push((
+                                            parent_var_name.to_string(),
+                                            prop_key,
+                                            step_id,
+                                        ));
+                                    }
+                                    TransformMode::Workflow => {
+                                        // In workflow mode, convert method to key-value property with initializer call
+                                        let step_id = self.create_object_property_id(
+                                            parent_var_name,
+                                            &prop_key,
+                                            false,
+                                        );
+                                        *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
+                                            key: method_prop.key.clone(),
+                                            value: Box::new(self.create_step_initializer(&step_id)),
+                                        }));
+                                        self.object_property_workflow_conversions.push((
+                                            parent_var_name.to_string(),
+                                            prop_key,
+                                            step_id,
+                                        ));
+                                    }
+                                    TransformMode::Client => {
+                                        // In client mode, just remove the directive (already done above)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Helper to apply transformation to object property based on mode
+    fn apply_object_property_transformation(
+        &mut self,
+        kv_prop: &mut KeyValueProp,
+        parent_var_name: &str,
+        prop_key: &str,
+        span: swc_core::common::Span,
+    ) {
+        let step_id = self.create_object_property_id(parent_var_name, prop_key, false);
+
+        match self.mode {
+            TransformMode::Step => {
+                // In step mode, replace with reference to hoisted variable
+                let hoist_var_name = format!("{}${}", parent_var_name, prop_key);
+                *kv_prop.value = Expr::Ident(Ident::new(
+                    hoist_var_name.into(),
+                    DUMMY_SP,
+                    SyntaxContext::empty(),
+                ));
+                // Track for metadata
+                self.object_property_workflow_conversions.push((
+                    parent_var_name.to_string(),
+                    prop_key.to_string(),
+                    step_id,
+                ));
+            }
+            TransformMode::Workflow => {
+                // Replace with initializer call
+                *kv_prop.value = self.create_step_initializer(&step_id);
+                self.object_property_workflow_conversions.push((
+                    parent_var_name.to_string(),
+                    prop_key.to_string(),
+                    step_id,
+                ));
+            }
+            TransformMode::Client => {
+                // In client mode, just remove the directive
             }
         }
     }
@@ -1238,21 +1540,29 @@ impl StepTransform {
     fn generate_metadata_comment(&self) -> String {
         let mut metadata = std::collections::HashMap::new();
 
-        // Build steps metadata
-        if !self.step_function_names.is_empty() {
-            // Sort function names for deterministic ordering
-            let mut sorted_step_names: Vec<_> = self.step_function_names.iter().collect();
-            sorted_step_names.sort();
-
-            let steps_entries: Vec<String> = sorted_step_names
-                .into_iter()
+        // Build steps metadata (including object properties)
+        if !self.step_function_names.is_empty()
+            || !self.object_property_workflow_conversions.is_empty()
+        {
+            let mut steps_entries: Vec<String> = self
+                .step_function_names
+                .iter()
                 .map(|fn_name| {
                     let step_id = self.create_id(Some(fn_name), DUMMY_SP, false);
                     format!("\"{}\":{{\"stepId\":\"{}\"}}", fn_name, step_id)
                 })
                 .collect();
 
-            metadata.insert("steps", format!("{{{}}}", steps_entries.join(",")));
+            // Add object property step functions to metadata
+            for (parent_var, prop_name, step_id) in &self.object_property_workflow_conversions {
+                let key = format!("{}/{}", parent_var, prop_name);
+                steps_entries.push(format!("\"{}\":{{\"stepId\":\"{}\"}}", key, step_id));
+            }
+
+            if !steps_entries.is_empty() {
+                steps_entries.sort();
+                metadata.insert("steps", format!("{{{}}}", steps_entries.join(",")));
+            }
         }
 
         // Build workflows metadata
@@ -1505,7 +1815,9 @@ impl VisitMut for StepTransform {
                         // No imports needed for workflow mode
                     }
                     TransformMode::Step => {
-                        if !self.registration_calls.is_empty() {
+                        if !self.registration_calls.is_empty()
+                            || !self.object_property_step_functions.is_empty()
+                        {
                             imports_to_add.push(self.create_register_import());
                         }
                     }
@@ -1519,8 +1831,97 @@ impl VisitMut for StepTransform {
                     module.body.insert(0, import);
                 }
 
-                // Add registration calls at the end for step mode
+                // Add hoisted object property functions and registration calls at the end for step mode
                 if matches!(self.mode, TransformMode::Step) {
+                    // Collect hoisting information before the loop
+                    let hoisting_info: Vec<_> = self
+                        .object_property_step_functions
+                        .iter()
+                        .map(|(parent_var, prop_name, arrow_expr, _span)| {
+                            let hoist_var_name = format!("{}${}", parent_var, prop_name);
+                            let step_id =
+                                self.create_object_property_id(parent_var, prop_name, false);
+                            (
+                                hoist_var_name,
+                                arrow_expr.clone(),
+                                step_id,
+                                parent_var.clone(),
+                            )
+                        })
+                        .collect();
+
+                    // Now drain and process
+                    self.object_property_step_functions.drain(..);
+
+                    for (hoist_var_name, arrow_expr, step_id, _parent_var) in hoisting_info {
+                        // Create a const declaration for the hoisted function
+                        let hoisted_decl =
+                            ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                                span: DUMMY_SP,
+                                ctxt: SyntaxContext::empty(),
+                                kind: VarDeclKind::Var,
+                                decls: vec![VarDeclarator {
+                                    span: DUMMY_SP,
+                                    name: Pat::Ident(BindingIdent {
+                                        id: Ident::new(
+                                            hoist_var_name.clone().into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        ),
+                                        type_ann: None,
+                                    }),
+                                    init: Some(Box::new(Expr::Arrow(arrow_expr))),
+                                    definite: false,
+                                }],
+                                declare: false,
+                            }))));
+
+                        // Insert after imports
+                        let insert_pos = module
+                            .body
+                            .iter()
+                            .position(|item| {
+                                !matches!(item, ModuleItem::ModuleDecl(ModuleDecl::Import(_)))
+                            })
+                            .unwrap_or(0);
+                        module.body.insert(insert_pos, hoisted_decl);
+
+                        // Create a registration call
+                        let registration_call = Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Call(CallExpr {
+                                span: DUMMY_SP,
+                                ctxt: SyntaxContext::empty(),
+                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+                                    "registerStepFunction".into(),
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                )))),
+                                args: vec![
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                            span: DUMMY_SP,
+                                            value: step_id.into(),
+                                            raw: None,
+                                        }))),
+                                    },
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Ident(Ident::new(
+                                            hoist_var_name.into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        ))),
+                                    },
+                                ],
+                                type_args: None,
+                            })),
+                        });
+
+                        self.registration_calls.push(registration_call);
+                    }
+
                     for call in self.registration_calls.drain(..) {
                         module.body.push(ModuleItem::Stmt(call));
                     }
@@ -2689,6 +3090,22 @@ impl VisitMut for StepTransform {
                                         }
                                     }
                                 }
+                                Expr::Object(obj_lit) => {
+                                    // Check for arrow functions in object properties with step directives
+                                    self.process_object_properties_for_step_functions(
+                                        obj_lit, &name,
+                                    );
+                                }
+                                Expr::Call(call_expr) => {
+                                    // Check arguments for object literals containing step functions
+                                    for arg in &mut call_expr.args {
+                                        if let Expr::Object(obj_lit) = &mut *arg.expr {
+                                            self.process_object_properties_for_step_functions(
+                                                obj_lit, &name,
+                                            );
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -2966,6 +3383,20 @@ impl VisitMut for StepTransform {
                                                 .push((name.clone(), arrow_expr.span));
                                         }
                                     }
+                                }
+                            }
+                        }
+                        Expr::Object(obj_lit) => {
+                            // Check for arrow functions in object properties with step directives
+                            self.process_object_properties_for_step_functions(obj_lit, &name);
+                        }
+                        Expr::Call(call_expr) => {
+                            // Check arguments for object literals containing step functions
+                            for arg in &mut call_expr.args {
+                                if let Expr::Object(obj_lit) = &mut *arg.expr {
+                                    self.process_object_properties_for_step_functions(
+                                        obj_lit, &name,
+                                    );
                                 }
                             }
                         }
