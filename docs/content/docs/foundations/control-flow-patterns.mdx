@@ -4,8 +4,6 @@ title: Control Flow Patterns
 
 Common distributed control flow patterns are really simple to implement in workflows and require learning no new syntax. You can just use familiar async/await patterns.
 
----
-
 ## Sequential Execution
 
 The simplest way to orchestrate steps is to execute them one after another, where each step can be dependent on the previous step.
@@ -21,8 +19,6 @@ export async function dataPipelineWorkflow(data: any) {
   return stored;
 }
 ```
-
----
 
 ## Parallel Execution
 

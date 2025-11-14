@@ -8,9 +8,6 @@ This is an advanced guide that dives into internals of the Workflow DevKit direc
 
 Workflows use special directives to mark code for transformation by the Workflow DevKit compiler. This page explains how `"use workflow"` and `"use step"` directives work, what transformations are applied, and why they're necessary for durable execution.
 
-
----
-
 ## Directives Overview
 
 Workflows use two directives to mark functions for special handling:
@@ -39,8 +36,6 @@ async function createUser(email: string) {
 
 These directives trigger the `@workflow/swc-plugin` compiler to transform your code in different ways depending on the execution context.
 
----
-
 ## The Three Transformation Modes
 
 The compiler operates in three distinct modes, transforming the same source code differently for each execution context:
@@ -64,8 +59,6 @@ flowchart LR
 | Client   | Build/Runtime | Provides workflow IDs and types to `start`   | Your application code              | Optional* |
 
 \* Client mode is **recommended** for better developer experience—it provides automatic ID generation and type safety. Without it, you must manually construct workflow IDs or use the build manifest.
-
----
 
 ## Detailed Transformation Examples
 
@@ -201,8 +194,6 @@ The IDs are generated exactly like in workflow mode to ensure they can be direct
 </Tab>
 </Tabs>
 
----
-
 ## Generated Files
 
 When you build your application, the Workflow DevKit generates three handler files in `.well-known/workflow/v1/`:
@@ -261,8 +252,6 @@ Contains webhook handling logic for delivering external data to running workflow
 
 **Note:** The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to leverage App Router's dynamic routing, while other frameworks generate a single `webhook.js` or `webhook.mjs` handler.
 
----
-
 ## Why Three Modes?
 
 The multi-mode transformation enables the Workflow DevKit's durable execution model:
@@ -277,8 +266,6 @@ This separation allows:
 - **Sandboxed orchestration**: Workflow logic runs in a controlled VM without direct runtime access
 - **Stateless execution**: Your compute can scale to zero and resume from any point in the workflow
 - **Type safety**: TypeScript works seamlessly with workflow references (when using client mode)
-
----
 
 ## Determinism and Replay
 
@@ -299,8 +286,6 @@ Because workflow functions are deterministic and have no side effects, they can 
 - Results are cached in the event log after first execution
 
 Learn more about [Workflows and Steps](/docs/foundations/workflows-and-steps).
-
----
 
 ## ID Generation
 
@@ -324,8 +309,6 @@ The compiler generates stable IDs for workflows and steps based on file paths an
   Although IDs can change when files are moved or functions are renamed, Workflow DevKit function assume atomic versioning in the World. This means changing IDs won't break old workflows from running, but will prevent run from being upgraded and will cause your workflow/step names to change in the observability across deployments.
 </Callout>
 
----
-
 ## Framework Integration
 
 These transformations are framework-agnostic—they output standard JavaScript that works anywhere.
@@ -333,8 +316,6 @@ These transformations are framework-agnostic—they output standard JavaScript t
 **For users**: Your framework handles all transformations automatically. See the [Getting Started](/docs/getting-started) guide for your framework.
 
 **For framework authors**: Learn how to integrate these transformations into your framework in [Building Framework Integrations](/docs/how-it-works/framework-integrations).
-
----
 
 ## Debugging Transformed Code
 

@@ -8,8 +8,6 @@ All function arguments and return values passed between workflow and step functi
 The serialization system ensures that all data persists correctly across workflow suspensions and resumptions, enabling durable execution.
 </Callout>
 
----
-
 ## Supported Serializable Types
 
 The following types can be serialized and passed through workflow functions:
@@ -51,15 +49,11 @@ These types have special handling and are explained in detail in the sections be
 - `ReadableStream<Serializable>`
 - `WritableStream<Serializable>`
 
----
-
 ## Streaming
 
 `ReadableStream` and `WritableStream` are supported as serializable types with special handling. These streams can be passed between workflow and step functions while maintaining their streaming capabilities.
 
 For complete information about using streams in workflows, including patterns for AI streaming, file processing, and progress updates, see the [Streaming Guide](/docs/foundations/streaming).
-
----
 
 ## Request & Response
 

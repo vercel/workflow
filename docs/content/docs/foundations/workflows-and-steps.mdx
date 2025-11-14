@@ -11,8 +11,6 @@ Moreover, workflows let you easily model complex multi-step processes in simple,
 1. **Workflow Functions**: Functions that orchestrate/organize steps
 2. **Step Functions**: Functions that carry out the actual work
 
----
-
 ## Workflow Functions
 
 *Directive: `"use workflow"`*
@@ -112,8 +110,6 @@ export async function POST() {
 Keep in mind that calling a step function outside of a workflow function will not have retry semantics nor will it be observable. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
 </Callout>
 
----
-
 ### Suspension and Resumption
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the event log and no compute resources are used until the workflow resumes execution.
@@ -143,8 +139,6 @@ export async function documentReviewProcess(userId: string) {
   console.log("Document reviewed!")
 }
 ```
-
----
 
 ## Writing Workflows
 

@@ -4,8 +4,6 @@ title: Streaming
 
 Workflows can stream data in real-time to clients without waiting for the entire workflow to complete. This enables progress updates, AI-generated content, log messages, and other incremental data to be delivered as workflows execute.
 
----
-
 ## Getting Started with `getWritable()`
 
 Every workflow run has a default writable stream that steps can write to using [`getWritable()`](/docs/api-reference/workflow/get-writable). Data written to this stream becomes immediately available to clients consuming the workflow's output.
@@ -81,8 +79,6 @@ export async function GET(
 
 This allows clients to reconnect and continue receiving data from where they left off, rather than restarting from the beginning.
 
----
-
 ## Streams as Data Types
 
 [`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow DevKit makes serializable. These are not custom types - they follow the web standard - but Workflow DevKit adds the ability to pass them between functions while maintaining their streaming capabilities.
@@ -147,8 +143,6 @@ async function processInputStream(input: ReadableStream<Uint8Array>) {
 }
 ```
 
----
-
 ## Important Limitation
 
 <Callout type="info">
@@ -191,8 +185,6 @@ async function writeToStream(data: string) {
   writer.releaseLock();
 }
 ```
-
----
 
 ## Namespaced Streams
 
@@ -268,8 +260,6 @@ export async function POST(request: Request) {
   });
 }
 ```
-
----
 
 ## Common Patterns
 
@@ -479,8 +469,6 @@ async function uploadResult(stream: ReadableStream<Uint8Array>) {
 }
 ```
 
----
-
 ## Best Practices
 
 **Release locks properly:**
@@ -521,8 +509,6 @@ const writable = getWritable<MyDataType>();
 const writer = writable.getWriter();
 await writer.write({ /* typed data */ });
 ```
-
----
 
 ## Stream Failures
 
@@ -569,8 +555,6 @@ export async function streamErrorWorkflow() {
 <Callout type="info">
 Stream errors don't trigger automatic retries for the producer step. Design your stream consumers to handle errors appropriately. Since the stream is already in an errored state, retrying the consumer won't help - use `FatalError` to fail the workflow immediately.
 </Callout>
-
----
 
 ## Related Documentation
 

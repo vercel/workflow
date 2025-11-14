@@ -9,8 +9,6 @@ Consider a payment API that charges the user $10, but due to network failures, t
 
 To prevent this, many external APIs support idempotency keys. An idempotency key is a unique identifier for an operation that can be used to deduplicate requests.
 
----
-
 ## The core pattern: use the step ID as your idempotency key
 
 Every step invocation has a stable `stepId` that stays the same across retries.
@@ -44,16 +42,12 @@ Why this works:
 - **Stable across retries**: `stepId` does not change between attempts.
 - **Globally unique per step**: Fulfills the uniqueness requirement for an idempotency key.
 
----
-
 ## Best practices
 
 - **Always provide idempotency keys to external side effects that are not idempotent** inside steps (payments, emails, SMS, queues).
 - **Prefer `stepId` as your key**; it is stable across retries and unique per step.
 - **Keep keys deterministic**; avoid including timestamps or attempt counters.
 - **Handle 409/conflict responses** gracefully; treat them as success if the prior attempt completed.
-
----
 
 ## Related docs
 
