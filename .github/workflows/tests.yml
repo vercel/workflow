@@ -74,7 +74,7 @@ jobs:
           - name: "hono"
             project-id: "prj_p0GIEsfl53L7IwVbosPvi9rPSOYW"
           - name: "astro"
-            project-id: "prj_DvOcT5MdgZo3mw8lpkSXcr7XM7pv"
+            project-id: "prj_YDAXj3K8LM0hgejuIMhioz2yLgTI"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
