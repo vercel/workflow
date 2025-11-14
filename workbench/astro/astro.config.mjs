@@ -14,4 +14,7 @@ const adapter = process.env.VERCEL_DEPLOYMENT_ID
 export default defineConfig({
   vite: { plugins: [workflowPlugin()] },
   adapter: adapter,
+  security: {
+    checkOrigin: false,
+  },
 });
