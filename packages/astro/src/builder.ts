@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder, type AstroConfig } from '@workflow/builders';
 
@@ -15,6 +15,12 @@ async function normalizeRequestConverter(request) {
   return new Request(request.url, options);
 }
 `;
+
+const DEBUG_FILES = [
+  'flow.js.debug.json',
+  'manifest.debug.json',
+  'step.js.debug.json',
+];
 
 export class AstroBuilder extends BaseBuilder {
   constructor(config?: Partial<AstroConfig>) {
@@ -58,6 +64,13 @@ export class AstroBuilder extends BaseBuilder {
     await this.buildStepsRoute(options);
     await this.buildWorkflowsRoute(options);
     await this.buildWebhookRoute({ workflowGeneratedDir });
+
+    // Astro requires non-api routes to be prefixed with _ (debug files)
+    for (const file of DEBUG_FILES) {
+      const filePath = join(workflowGeneratedDir, file);
+      const prefixedFilePath = join(workflowGeneratedDir, `_${file}`);
+      await rename(filePath, prefixedFilePath);
+    }
   }
 
   private async buildStepsRoute({
