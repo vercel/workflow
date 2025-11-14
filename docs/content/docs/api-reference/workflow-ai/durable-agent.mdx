@@ -2,12 +2,13 @@
 title: DurableAgent
 ---
 
-import { ExperimentalPackageCallout } from "@/components/experimental-package-callout"
 import { generateDefinition } from "@/lib/tsdoc"
 
 # `DurableAgent`
 
-<ExperimentalPackageCallout packageName="@workflow/ai" />
+<Callout type="warn">
+The `@workflow/ai` package is currently in active development and should be considered experimental.
+</Callout>
 
 The `DurableAgent` class enables you to create AI-powered agents that can maintain state across workflow steps, call tools, and gracefully handle interruptions and resumptions.
 
