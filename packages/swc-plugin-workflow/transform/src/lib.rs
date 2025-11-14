@@ -174,6 +174,8 @@ pub struct StepTransform {
     workflow_exports_to_expand: Vec<(String, Expr, swc_core::common::Span)>,
     // Track workflow functions that need workflowId property in client mode
     workflow_functions_needing_id: Vec<(String, swc_core::common::Span)>,
+    // Track step function exports that need to be converted to const declarations in workflow mode
+    step_exports_to_convert: Vec<(String, String, swc_core::common::Span)>, // (fn_name, step_id, span)
 }
 
 // Structure to track variable names and their access patterns
@@ -256,6 +258,7 @@ impl StepTransform {
             in_workflow_function: false,
             workflow_exports_to_expand: Vec::new(),
             workflow_functions_needing_id: Vec::new(),
+            step_exports_to_convert: Vec::new(),
         }
     }
 
@@ -757,6 +760,57 @@ impl StepTransform {
                 type_args: None,
             }))),
             args: vec![],
+            type_args: None,
+        })
+    }
+
+    // Create an initializer for a step function in workflow mode
+    // Produces: globalThis[Symbol.for("WORKFLOW_USE_STEP")](step_id)
+    fn create_step_initializer(&self, step_id: &str) -> Expr {
+        Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(Expr::Ident(Ident::new(
+                    "globalThis".into(),
+                    DUMMY_SP,
+                    SyntaxContext::empty(),
+                ))),
+                prop: MemberProp::Computed(ComputedPropName {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Call(CallExpr {
+                        span: DUMMY_SP,
+                        ctxt: SyntaxContext::empty(),
+                        callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                            span: DUMMY_SP,
+                            obj: Box::new(Expr::Ident(Ident::new(
+                                "Symbol".into(),
+                                DUMMY_SP,
+                                SyntaxContext::empty(),
+                            ))),
+                            prop: MemberProp::Ident(IdentName::new("for".into(), DUMMY_SP)),
+                        }))),
+                        args: vec![ExprOrSpread {
+                            spread: None,
+                            expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                span: DUMMY_SP,
+                                value: "WORKFLOW_USE_STEP".into(),
+                                raw: None,
+                            }))),
+                        }],
+                        type_args: None,
+                    })),
+                }),
+            }))),
+            args: vec![ExprOrSpread {
+                spread: None,
+                expr: Box::new(Expr::Lit(Lit::Str(Str {
+                    span: DUMMY_SP,
+                    value: step_id.into(),
+                    raw: None,
+                }))),
+            }],
             type_args: None,
         })
     }
@@ -2133,6 +2187,12 @@ impl VisitMut for StepTransform {
             }
         }
 
+        // Step function marking is now handled inside the useStep() function
+        // No need to add Object.defineProperty statements in the output
+
+        // Clear the workflow_functions_needing_id since we've already processed them
+        self.workflow_functions_needing_id.clear();
+
         // In workflow mode, mark all step functions with the STEP_FUNCTION_NAME_SYMBOL
         if self.mode == TransformMode::Workflow {
             let step_functions: Vec<_> = self.step_function_names.iter().cloned().collect();
@@ -2173,12 +2233,29 @@ impl VisitMut for StepTransform {
                                                 _ => declarator.span,
                                             };
                                             step_marking_statements.push(
-                                                self.create_step_function_marking(
-                                                    &name,
-                                                    span,
-                                                ),
+                                                self.create_step_function_marking(&name, span),
                                             );
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
+                        // Handle non-exported variable declarations like `const stepArrow = async () => {}`
+                        for declarator in &var_decl.decls {
+                            if let Pat::Ident(binding) = &declarator.name {
+                                let name = binding.id.sym.to_string();
+                                if step_functions.contains(&name) {
+                                    if let Some(init) = &declarator.init {
+                                        let span = match &**init {
+                                            Expr::Fn(fn_expr) => fn_expr.function.span,
+                                            Expr::Arrow(arrow_expr) => arrow_expr.span,
+                                            _ => declarator.span,
+                                        };
+                                        step_marking_statements.push(
+                                            self.create_step_function_marking(&name, span),
+                                        );
                                     }
                                 }
                             }
@@ -2194,8 +2271,169 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // Clear the workflow_functions_needing_id since we've already processed them
-        self.workflow_functions_needing_id.clear();
+        // In workflow mode, convert step functions to const declarations
+        // (Must be after visit_mut_children_with so step_function_names is populated)
+        if self.mode == TransformMode::Workflow {
+            let mut items_to_replace: Vec<(usize, ModuleItem)> = Vec::new();
+
+            for (idx, item) in items.iter_mut().enumerate() {
+                match item {
+                    // Handle exported function declarations
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
+                        if let Decl::Fn(fn_decl) = &export_decl.decl {
+                            let fn_name = fn_decl.ident.sym.to_string();
+                            if self.step_function_names.contains(&fn_name) {
+                                // This is a step function - convert to var declaration (for named functions)
+                                let step_id =
+                                    self.create_id(Some(&fn_name), fn_decl.function.span, false);
+                                let initializer = self.create_step_initializer(&step_id);
+                                // Preserve the original identifier's syntax context to avoid SWC renaming
+                                let orig_ctxt = fn_decl.ident.ctxt;
+                                export_decl.decl = Decl::Var(Box::new(VarDecl {
+                                    span: fn_decl.function.span,
+                                    ctxt: orig_ctxt,
+                                    kind: VarDeclKind::Var,
+                                    decls: vec![VarDeclarator {
+                                        span: fn_decl.function.span,
+                                        name: Pat::Ident(BindingIdent {
+                                            id: Ident::new(
+                                                fn_name.as_str().into(),
+                                                fn_decl.ident.span,
+                                                orig_ctxt,
+                                            ),
+                                            type_ann: None,
+                                        }),
+                                        init: Some(Box::new(initializer)),
+                                        definite: false,
+                                    }],
+                                    declare: false,
+                                }));
+                            }
+                        } else if let Decl::Var(var_decl) = &mut export_decl.decl {
+                            // Handle exported variable declarations (arrow functions)
+                            // Check if any declarators are step functions
+                            let has_step_functions = var_decl.decls.iter().any(|declarator| {
+                                if let Pat::Ident(binding) = &declarator.name {
+                                    let name = binding.id.sym.to_string();
+                                    self.step_function_names.contains(&name)
+                                } else {
+                                    false
+                                }
+                            });
+
+                            if has_step_functions {
+                                let mut new_var_decl = (**var_decl).clone();
+                                // Preserve the original variable kind (let/const)
+                                let original_kind = var_decl.kind;
+                                // Process all step functions in this VarDecl
+                                for declarator in &mut new_var_decl.decls {
+                                    if let Pat::Ident(binding) = &declarator.name {
+                                        let name = binding.id.sym.to_string();
+                                        if self.step_function_names.contains(&name) {
+                                            // This is an exported step function variable - convert to assignment
+                                            let step_id =
+                                                self.create_id(Some(&name), declarator.span, false);
+                                            let initializer = self.create_step_initializer(&step_id);
+                                            // Preserve the original identifier's syntax context to avoid SWC renaming
+                                            let orig_ctxt = binding.id.ctxt;
+                                            declarator.init = Some(Box::new(initializer));
+                                            // Update the identifier's syntax context
+                                            let new_ident = Ident::new(
+                                                name.as_str().into(),
+                                                binding.id.span,
+                                                orig_ctxt,
+                                            );
+                                            if let Pat::Ident(ref mut new_binding) = declarator.name {
+                                                new_binding.id = new_ident;
+                                            }
+                                        }
+                                    }
+                                }
+                                new_var_decl.kind = original_kind;
+                                export_decl.decl = Decl::Var(Box::new(new_var_decl));
+                            }
+                        }
+                    }
+                    // Handle non-exported function declarations
+                    ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fn_decl))) => {
+                        let fn_name = fn_decl.ident.sym.to_string();
+                        if self.step_function_names.contains(&fn_name) {
+                            // This is a non-exported step function - convert to var declaration (for named functions)
+                            let step_id =
+                                self.create_id(Some(&fn_name), fn_decl.function.span, false);
+                            let initializer = self.create_step_initializer(&step_id);
+                            // Preserve the original identifier's syntax context to avoid SWC renaming
+                            let orig_ctxt = fn_decl.ident.ctxt;
+                            let var_decl = Decl::Var(Box::new(VarDecl {
+                                span: fn_decl.function.span,
+                                ctxt: orig_ctxt,
+                                kind: VarDeclKind::Var,
+                                decls: vec![VarDeclarator {
+                                    span: fn_decl.function.span,
+                                    name: Pat::Ident(BindingIdent {
+                                        id: Ident::new(
+                                            fn_name.as_str().into(),
+                                            fn_decl.ident.span,
+                                            orig_ctxt,
+                                        ),
+                                        type_ann: None,
+                                    }),
+                                    init: Some(Box::new(initializer)),
+                                    definite: false,
+                                }],
+                                declare: false,
+                            }));
+
+                            items_to_replace.push((idx, ModuleItem::Stmt(Stmt::Decl(var_decl))));
+                        }
+                    }
+                    // Handle non-exported variable declarations (arrow functions)
+                    ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
+                        // Check if any declarators are step functions
+                        let has_step_functions = var_decl.decls.iter().any(|declarator| {
+                            if let Pat::Ident(binding) = &declarator.name {
+                                let name = binding.id.sym.to_string();
+                                self.step_function_names.contains(&name)
+                            } else {
+                                false
+                            }
+                        });
+
+                        if has_step_functions {
+                            let mut new_var_decl = (**var_decl).clone();
+                            // Preserve the original variable kind (let/const)
+                            let original_kind = var_decl.kind;
+                            // Process all step functions in this VarDecl
+                            for declarator in &mut new_var_decl.decls {
+                                if let Pat::Ident(binding) = &declarator.name {
+                                    let name = binding.id.sym.to_string();
+                                    if self.step_function_names.contains(&name) {
+                                        // This is a non-exported step function variable - convert to assignment
+                                        let step_id =
+                                            self.create_id(Some(&name), declarator.span, false);
+                                        let initializer = self.create_step_initializer(&step_id);
+                                        declarator.init = Some(Box::new(initializer));
+                                    }
+                                }
+                            }
+                            new_var_decl.kind = original_kind;
+                            items_to_replace.push((
+                                idx,
+                                ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(
+                                    new_var_decl,
+                                )))),
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Apply replacements in reverse order to maintain indices
+            for (idx, new_item) in items_to_replace.iter().rev() {
+                items[*idx] = new_item.clone();
+            }
+        }
 
         // Perform dead code elimination in workflow and client mode
         self.remove_dead_code(items);
@@ -2408,40 +2646,15 @@ impl VisitMut for StepTransform {
                                 export_decl.visit_mut_children_with(self);
                             }
                             TransformMode::Workflow => {
-                                // Keep the function declaration but replace its body with a proxy call
+                                // Collect for later conversion in visit_mut_module_items
                                 self.remove_use_step_directive(&mut fn_decl.function.body);
-                                if let Some(body) = &mut fn_decl.function.body {
-                                    let step_id = self.create_id(
-                                        Some(&fn_name),
-                                        fn_decl.function.span,
-                                        false,
-                                    );
-                                    let mut proxy_call = self.create_step_proxy(&step_id);
-                                    // Add function arguments to the proxy call
-                                    if let Expr::Call(call) = &mut proxy_call {
-                                        call.args = fn_decl
-                                            .function
-                                            .params
-                                            .iter()
-                                            .map(|param| {
-                                                // Check if this is a rest parameter
-                                                let is_rest = matches!(param.pat, Pat::Rest(_));
-                                                ExprOrSpread {
-                                                    spread: if is_rest {
-                                                        Some(DUMMY_SP)
-                                                    } else {
-                                                        None
-                                                    },
-                                                    expr: Box::new(self.pat_to_expr(&param.pat)),
-                                                }
-                                            })
-                                            .collect();
-                                    }
-                                    body.stmts = vec![Stmt::Return(ReturnStmt {
-                                        span: DUMMY_SP,
-                                        arg: Some(Box::new(proxy_call)),
-                                    })];
-                                }
+                                let step_id =
+                                    self.create_id(Some(&fn_name), fn_decl.function.span, false);
+                                self.step_exports_to_convert.push((
+                                    fn_name.clone(),
+                                    step_id,
+                                    fn_decl.function.span,
+                                ));
                             }
                             TransformMode::Client => {
                                 // In client mode, just remove the directive and keep the function as-is
@@ -2522,51 +2735,20 @@ impl VisitMut for StepTransform {
                                                     );
                                                 }
                                                 TransformMode::Workflow => {
-                                                    // Keep the function expression but replace its body with a proxy call
+                                                    // Replace the function expression with an initializer call
                                                     self.remove_use_step_directive(
                                                         &mut fn_expr.function.body,
                                                     );
-                                                    if let Some(body) = &mut fn_expr.function.body {
-                                                        let step_id = self.create_id(
-                                                            Some(&name),
-                                                            fn_expr.function.span,
-                                                            false,
-                                                        );
-                                                        let mut proxy_call =
-                                                            self.create_step_proxy(&step_id);
-                                                        // Add function arguments to the proxy call
-                                                        if let Expr::Call(call) = &mut proxy_call {
-                                                            call.args = fn_expr
-                                                                .function
-                                                                .params
-                                                                .iter()
-                                                                .map(|param| {
-                                                                    // Check if this is a rest parameter
-                                                                    let is_rest = matches!(
-                                                                        param.pat,
-                                                                        Pat::Rest(_)
-                                                                    );
-                                                                    ExprOrSpread {
-                                                                        spread: if is_rest {
-                                                                            Some(DUMMY_SP)
-                                                                        } else {
-                                                                            None
-                                                                        },
-                                                                        expr: Box::new(
-                                                                            self.pat_to_expr(
-                                                                                &param.pat,
-                                                                            ),
-                                                                        ),
-                                                                    }
-                                                                })
-                                                                .collect();
-                                                        }
-                                                        body.stmts =
-                                                            vec![Stmt::Return(ReturnStmt {
-                                                                span: DUMMY_SP,
-                                                                arg: Some(Box::new(proxy_call)),
-                                                            })];
-                                                    }
+                                                    let step_id = self.create_id(
+                                                        Some(&name),
+                                                        fn_expr.function.span,
+                                                        false,
+                                                    );
+                                                    // Replace the entire function expression with the initializer
+                                                    *init =
+                                                        Box::new(self.create_step_initializer(
+                                                            &step_id,
+                                                        ));
                                                 }
                                                 TransformMode::Client => {
                                                     // In client mode, just remove the directive and keep the function as-is
@@ -2640,7 +2822,7 @@ impl VisitMut for StepTransform {
                                                     );
                                                 }
                                                 TransformMode::Workflow => {
-                                                    // Keep the arrow function but replace its body with a proxy call
+                                                    // Replace the arrow function with an initializer call
                                                     self.remove_use_step_directive_arrow(
                                                         &mut arrow_expr.body,
                                                     );
@@ -2649,33 +2831,11 @@ impl VisitMut for StepTransform {
                                                         arrow_expr.span,
                                                         false,
                                                     );
-                                                    let mut proxy_call =
-                                                        self.create_step_proxy(&step_id);
-                                                    // Add function arguments to the proxy call
-                                                    if let Expr::Call(call) = &mut proxy_call {
-                                                        call.args = arrow_expr
-                                                            .params
-                                                            .iter()
-                                                            .map(|param| {
-                                                                // Check if this is a rest parameter
-                                                                let is_rest =
-                                                                    matches!(param, Pat::Rest(_));
-                                                                ExprOrSpread {
-                                                                    spread: if is_rest {
-                                                                        Some(DUMMY_SP)
-                                                                    } else {
-                                                                        None
-                                                                    },
-                                                                    expr: Box::new(
-                                                                        self.pat_to_expr(param),
-                                                                    ),
-                                                                }
-                                                            })
-                                                            .collect();
-                                                    }
-                                                    arrow_expr.body = Box::new(
-                                                        BlockStmtOrExpr::Expr(Box::new(proxy_call)),
-                                                    );
+                                                    // Replace the entire arrow function with the initializer
+                                                    *init =
+                                                        Box::new(self.create_step_initializer(
+                                                            &step_id,
+                                                        ));
                                                 }
                                                 TransformMode::Client => {
                                                     // In client mode, just remove the directive and keep the function as-is

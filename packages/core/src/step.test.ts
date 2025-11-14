@@ -175,4 +175,28 @@ describe('createUseStep', () => {
       ]
     `);
   });
+
+  it('should set the step function .name property correctly', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_completed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          result: [undefined],
+        },
+        createdAt: new Date(),
+      },
+    ]);
+    const useStep = createUseStep(ctx);
+    const myStepFunction = useStep('step//input.js//my_step_function');
+
+    // Verify the .name property is set to the extracted function name from the step name
+    expect(myStepFunction.name).toBe('my_step_function');
+
+    // Also verify it works when called
+    await myStepFunction();
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
 });

@@ -11,7 +11,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
     stepName: string
   ) {
-    return (...args: Args): Promise<Result> => {
+    const stepFunction = (...args: Args): Promise<Result> => {
       const { promise, resolve, reject } = withResolvers<Result>();
 
       const correlationId = `step_${ctx.generateUlid()}`;
@@ -124,5 +124,13 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
 
       return promise;
     };
+
+    // Ensure the "name" property matches the original step function name
+    const functionName = stepName.split('//').pop();
+    Object.defineProperty(stepFunction, 'name', {
+      value: functionName,
+    });
+
+    return stepFunction;
   };
 }
