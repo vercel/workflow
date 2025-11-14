@@ -548,7 +548,7 @@ impl StepTransform {
                                         ));
 
                                         let span = arrow_expr.span;
-                                        drop(arrow_expr); // Drop the mutable reference
+                                        let _ = arrow_expr; // Drop the mutable reference
 
                                         self.apply_object_property_transformation(
                                             kv_prop,
@@ -608,7 +608,7 @@ impl StepTransform {
                                             span,
                                         ));
 
-                                        drop(fn_expr); // Drop the mutable reference
+                                        let _ = fn_expr; // Drop the mutable reference
 
                                         self.apply_object_property_transformation(
                                             kv_prop,
@@ -739,7 +739,7 @@ impl StepTransform {
         kv_prop: &mut KeyValueProp,
         parent_var_name: &str,
         prop_key: &str,
-        span: swc_core::common::Span,
+        _span: swc_core::common::Span,
     ) {
         let step_id = self.create_object_property_id(parent_var_name, prop_key, false);
 
@@ -4213,7 +4213,7 @@ impl VisitMut for StepTransform {
 
                     match &mut **boxed_prop {
                         Prop::KeyValue(kv_prop) => {
-                            if let Some(prop_name) = &prop_key {
+                            if let Some(_prop_name) = &prop_key {
                                 match &mut *kv_prop.value {
                                     Expr::Arrow(arrow_expr) => {
                                         if self.has_step_directive_arrow(arrow_expr, false) {
@@ -4224,16 +4224,22 @@ impl VisitMut for StepTransform {
                                                 });
                                             } else {
                                                 // Generate a unique name
-                                                let generated_name = format!("_anonymousStep{}", self.anonymous_fn_counter);
+                                                let generated_name = format!(
+                                                    "_anonymousStep{}",
+                                                    self.anonymous_fn_counter
+                                                );
                                                 self.anonymous_fn_counter += 1;
-                                                self.step_function_names.insert(generated_name.clone());
+                                                self.step_function_names
+                                                    .insert(generated_name.clone());
 
                                                 match self.mode {
                                                     TransformMode::Step => {
                                                         // Hoist to module scope
                                                         let mut cloned_arrow = arrow_expr.clone();
-                                                        self.remove_use_step_directive_arrow(&mut cloned_arrow.body);
-                                                        
+                                                        self.remove_use_step_directive_arrow(
+                                                            &mut cloned_arrow.body,
+                                                        );
+
                                                         // Convert to function expression
                                                         let fn_expr = FnExpr {
                                                             ident: Some(Ident::new(
@@ -4242,38 +4248,59 @@ impl VisitMut for StepTransform {
                                                                 SyntaxContext::empty(),
                                                             )),
                                                             function: Box::new(Function {
-                                                                params: cloned_arrow.params.iter().map(|pat| Param {
-                                                                    span: DUMMY_SP,
-                                                                    decorators: vec![],
-                                                                    pat: pat.clone(),
-                                                                }).collect(),
+                                                                params: cloned_arrow
+                                                                    .params
+                                                                    .iter()
+                                                                    .map(|pat| Param {
+                                                                        span: DUMMY_SP,
+                                                                        decorators: vec![],
+                                                                        pat: pat.clone(),
+                                                                    })
+                                                                    .collect(),
                                                                 decorators: vec![],
                                                                 span: cloned_arrow.span,
                                                                 ctxt: SyntaxContext::empty(),
                                                                 body: match *cloned_arrow.body {
-                                                                    BlockStmtOrExpr::BlockStmt(block) => Some(block),
-                                                                    BlockStmtOrExpr::Expr(expr) => Some(BlockStmt {
-                                                                        span: DUMMY_SP,
-                                                                        ctxt: SyntaxContext::empty(),
-                                                                        stmts: vec![Stmt::Return(ReturnStmt {
+                                                                    BlockStmtOrExpr::BlockStmt(
+                                                                        block,
+                                                                    ) => Some(block),
+                                                                    BlockStmtOrExpr::Expr(expr) => {
+                                                                        Some(BlockStmt {
                                                                             span: DUMMY_SP,
-                                                                            arg: Some(expr),
-                                                                        })],
-                                                                    }),
+                                                                            ctxt:
+                                                                                SyntaxContext::empty(
+                                                                                ),
+                                                                            stmts: vec![
+                                                                                Stmt::Return(
+                                                                                    ReturnStmt {
+                                                                                        span:
+                                                                                            DUMMY_SP,
+                                                                                        arg: Some(
+                                                                                            expr,
+                                                                                        ),
+                                                                                    },
+                                                                                ),
+                                                                            ],
+                                                                        })
+                                                                    }
                                                                 },
                                                                 is_generator: false,
                                                                 is_async: cloned_arrow.is_async,
-                                                                type_params: cloned_arrow.type_params.clone(),
-                                                                return_type: cloned_arrow.return_type.clone(),
+                                                                type_params: cloned_arrow
+                                                                    .type_params
+                                                                    .clone(),
+                                                                return_type: cloned_arrow
+                                                                    .return_type
+                                                                    .clone(),
                                                             }),
                                                         };
-                                                        
+
                                                         self.nested_step_functions.push((
                                                             generated_name.clone(),
                                                             fn_expr,
                                                             arrow_expr.span,
                                                         ));
-                                                        
+
                                                         // Replace with identifier reference
                                                         *kv_prop.value = Expr::Ident(Ident::new(
                                                             generated_name.into(),
@@ -4283,13 +4310,22 @@ impl VisitMut for StepTransform {
                                                     }
                                                     TransformMode::Workflow => {
                                                         // Replace with step proxy reference
-                                                        self.remove_use_step_directive_arrow(&mut arrow_expr.body);
-                                                        let step_id = self.create_id(Some(&generated_name), arrow_expr.span, false);
-                                                        *kv_prop.value = self.create_step_proxy_reference(&step_id);
+                                                        self.remove_use_step_directive_arrow(
+                                                            &mut arrow_expr.body,
+                                                        );
+                                                        let step_id = self.create_id(
+                                                            Some(&generated_name),
+                                                            arrow_expr.span,
+                                                            false,
+                                                        );
+                                                        *kv_prop.value = self
+                                                            .create_step_proxy_reference(&step_id);
                                                     }
                                                     TransformMode::Client => {
                                                         // Just remove directive
-                                                        self.remove_use_step_directive_arrow(&mut arrow_expr.body);
+                                                        self.remove_use_step_directive_arrow(
+                                                            &mut arrow_expr.body,
+                                                        );
                                                     }
                                                 }
                                             }
@@ -4304,16 +4340,22 @@ impl VisitMut for StepTransform {
                                                 });
                                             } else {
                                                 // Generate a unique name
-                                                let generated_name = format!("_anonymousStep{}", self.anonymous_fn_counter);
+                                                let generated_name = format!(
+                                                    "_anonymousStep{}",
+                                                    self.anonymous_fn_counter
+                                                );
                                                 self.anonymous_fn_counter += 1;
-                                                self.step_function_names.insert(generated_name.clone());
+                                                self.step_function_names
+                                                    .insert(generated_name.clone());
 
                                                 match self.mode {
                                                     TransformMode::Step => {
                                                         // Hoist to module scope
                                                         let mut cloned_fn = fn_expr.clone();
-                                                        self.remove_use_step_directive(&mut cloned_fn.function.body);
-                                                        
+                                                        self.remove_use_step_directive(
+                                                            &mut cloned_fn.function.body,
+                                                        );
+
                                                         let hoisted_fn_expr = FnExpr {
                                                             ident: Some(Ident::new(
                                                                 generated_name.clone().into(),
@@ -4322,13 +4364,13 @@ impl VisitMut for StepTransform {
                                                             )),
                                                             function: cloned_fn.function,
                                                         };
-                                                        
+
                                                         self.nested_step_functions.push((
                                                             generated_name.clone(),
                                                             hoisted_fn_expr,
                                                             fn_expr.function.span,
                                                         ));
-                                                        
+
                                                         // Replace with identifier reference
                                                         *kv_prop.value = Expr::Ident(Ident::new(
                                                             generated_name.into(),
@@ -4338,13 +4380,22 @@ impl VisitMut for StepTransform {
                                                     }
                                                     TransformMode::Workflow => {
                                                         // Replace with step proxy reference
-                                                        self.remove_use_step_directive(&mut fn_expr.function.body);
-                                                        let step_id = self.create_id(Some(&generated_name), fn_expr.function.span, false);
-                                                        *kv_prop.value = self.create_step_proxy_reference(&step_id);
+                                                        self.remove_use_step_directive(
+                                                            &mut fn_expr.function.body,
+                                                        );
+                                                        let step_id = self.create_id(
+                                                            Some(&generated_name),
+                                                            fn_expr.function.span,
+                                                            false,
+                                                        );
+                                                        *kv_prop.value = self
+                                                            .create_step_proxy_reference(&step_id);
                                                     }
                                                     TransformMode::Client => {
                                                         // Just remove directive
-                                                        self.remove_use_step_directive(&mut fn_expr.function.body);
+                                                        self.remove_use_step_directive(
+                                                            &mut fn_expr.function.body,
+                                                        );
                                                     }
                                                 }
                                             }
@@ -4355,7 +4406,7 @@ impl VisitMut for StepTransform {
                             }
                         }
                         Prop::Method(method_prop) => {
-                            if let Some(prop_name) = &prop_key {
+                            if let Some(_prop_name) = &prop_key {
                                 if self.has_step_directive(&method_prop.function, false) {
                                     if !method_prop.function.is_async {
                                         emit_error(WorkflowErrorKind::NonAsyncFunction {
@@ -4364,16 +4415,20 @@ impl VisitMut for StepTransform {
                                         });
                                     } else {
                                         // Generate a unique name
-                                        let generated_name = format!("_anonymousStep{}", self.anonymous_fn_counter);
+                                        let generated_name =
+                                            format!("_anonymousStep{}", self.anonymous_fn_counter);
                                         self.anonymous_fn_counter += 1;
                                         self.step_function_names.insert(generated_name.clone());
 
                                         match self.mode {
                                             TransformMode::Step => {
                                                 // Convert method to function and hoist
-                                                let mut cloned_function = method_prop.function.clone();
-                                                self.remove_use_step_directive(&mut cloned_function.body);
-                                                
+                                                let mut cloned_function =
+                                                    method_prop.function.clone();
+                                                self.remove_use_step_directive(
+                                                    &mut cloned_function.body,
+                                                );
+
                                                 let fn_expr = FnExpr {
                                                     ident: Some(Ident::new(
                                                         generated_name.clone().into(),
@@ -4382,37 +4437,51 @@ impl VisitMut for StepTransform {
                                                     )),
                                                     function: cloned_function,
                                                 };
-                                                
+
                                                 self.nested_step_functions.push((
                                                     generated_name.clone(),
                                                     fn_expr,
                                                     method_prop.function.span,
                                                 ));
-                                                
+
                                                 // Replace method with property pointing to identifier
-                                                *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
-                                                    key: method_prop.key.clone(),
-                                                    value: Box::new(Expr::Ident(Ident::new(
-                                                        generated_name.into(),
-                                                        DUMMY_SP,
-                                                        SyntaxContext::empty(),
-                                                    ))),
-                                                }));
+                                                *boxed_prop =
+                                                    Box::new(Prop::KeyValue(KeyValueProp {
+                                                        key: method_prop.key.clone(),
+                                                        value: Box::new(Expr::Ident(Ident::new(
+                                                            generated_name.into(),
+                                                            DUMMY_SP,
+                                                            SyntaxContext::empty(),
+                                                        ))),
+                                                    }));
                                             }
                                             TransformMode::Workflow => {
                                                 // Replace with step proxy reference
-                                                self.remove_use_step_directive(&mut method_prop.function.body);
-                                                let step_id = self.create_id(Some(&generated_name), method_prop.function.span, false);
-                                                
+                                                self.remove_use_step_directive(
+                                                    &mut method_prop.function.body,
+                                                );
+                                                let step_id = self.create_id(
+                                                    Some(&generated_name),
+                                                    method_prop.function.span,
+                                                    false,
+                                                );
+
                                                 // Replace method with property pointing to proxy
-                                                *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
-                                                    key: method_prop.key.clone(),
-                                                    value: Box::new(self.create_step_proxy_reference(&step_id)),
-                                                }));
+                                                *boxed_prop =
+                                                    Box::new(Prop::KeyValue(KeyValueProp {
+                                                        key: method_prop.key.clone(),
+                                                        value: Box::new(
+                                                            self.create_step_proxy_reference(
+                                                                &step_id,
+                                                            ),
+                                                        ),
+                                                    }));
                                             }
                                             TransformMode::Client => {
                                                 // Just remove directive
-                                                self.remove_use_step_directive(&mut method_prop.function.body);
+                                                self.remove_use_step_directive(
+                                                    &mut method_prop.function.body,
+                                                );
                                             }
                                         }
                                     }
