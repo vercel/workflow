@@ -33,5 +33,9 @@ export const GET = () => {
 
   const rss = feed.rss2();
 
-  return new Response(rss);
+  return new Response(rss, {
+    headers: {
+      'Content-Type': 'application/rss+xml',
+    },
+  });
 };
