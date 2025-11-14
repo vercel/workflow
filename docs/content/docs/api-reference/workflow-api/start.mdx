@@ -2,8 +2,6 @@
 title: start
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 Start/enqueue a new workflow run.
 
 ```typescript lineNumbers
@@ -18,22 +16,18 @@ const run = await start(myWorkflow); // [!code highlight]
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { start } from "workflow/api";
-export default start;`
-})}
+export default start;`}
 showSections={['parameters']}
 />
 
 #### StartOptions
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { StartOptions } from "workflow/api";
-export default StartOptions;`
-})}
+export default StartOptions;`}
 />
 
 ### Returns
@@ -41,11 +35,9 @@ export default StartOptions;`
 Returns a `Run` object:
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { Run } from 'workflow/api';
-export default Run;`
-})}
+export default Run;`}
 showSections={['returns']}
 />
 

@@ -2,8 +2,6 @@
 title: RetryableError
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 When a `RetryableError` is thrown in a step, it indicates that the workflow should retry a step. Additionally, it contains a parameter `retryAfter` indicating when the step should be retried after.
 
 You should use this when you want to retry a step or retry after a certain duration.
@@ -31,26 +29,22 @@ The difference between `Error` and `RetryableError` may not be entirely obvious,
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { type RetryableErrorOptions } from "workflow";
 interface RetryableError {
     options?: RetryableErrorOptions;
     message: string;
 }
 
-export default RetryableError;`
-})}
+export default RetryableError;`}
 />
 
 #### RetryableErrorOptions
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { type RetryableErrorOptions } from "workflow";
-export default RetryableErrorOptions;`
-})}
+export default RetryableErrorOptions;`}
 />
 
 ## Examples

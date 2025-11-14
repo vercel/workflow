@@ -2,8 +2,6 @@
 title: getStepMetadata
 ---
 
-import { generateDefinition } from "@/lib/tsdoc";
-
 Returns metadata available in the current step function.
 
 You may want to use this function when you need to:
@@ -63,20 +61,16 @@ async function chargeUser(userId: string, amount: number) {
 ### Parameters
 
 <TSDoc
-  definition={generateDefinition({
-    code: `
+  definition={`
 import { getStepMetadata } from "workflow";
-export default getStepMetadata;`,
-  })}
+export default getStepMetadata;`}
   showSections={["parameters"]}
 />
 
 ### Returns
 
 <TSDoc
-  definition={generateDefinition({
-    code: `
+  definition={`
 import type { StepMetadata } from "workflow";
-export default StepMetadata;`,
-  })}
+export default StepMetadata;`}
 />

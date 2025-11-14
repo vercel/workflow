@@ -2,8 +2,6 @@
 title: getWorkflowMetadata
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 Returns additional metadata available in the current workflow function.
 
 You may want to use this function when you need to:
@@ -31,20 +29,16 @@ async function testWorkflow() {
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { getWorkflowMetadata } from "workflow";
-export default getWorkflowMetadata;`
-})}
+export default getWorkflowMetadata;`}
 showSections={['parameters']}
 />
 
 ### Returns
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { WorkflowMetadata } from "workflow";
-export default WorkflowMetadata;`
-})}
+export default WorkflowMetadata;`}
 />

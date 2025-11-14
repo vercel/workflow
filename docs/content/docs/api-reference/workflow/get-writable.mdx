@@ -2,8 +2,6 @@
 title: getWritable
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 Retrieves the current workflow run's default writable stream. The writable stream can be used in both workflow and step functions to write data that can be read outside the workflow by using the `readable` property of the [`Run` object](/docs/api-reference/workflow-api/get-run).
 
 Use this function in your workflows and steps to produce streaming output that can be consumed by clients in real-time.
@@ -31,22 +29,18 @@ export async function myWorkflow() {
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { getWritable } from 'workflow';
-export default getWritable;`
-})}
+export default getWritable;`}
 showSections={['parameters']}
 />
 
 ### Returns
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { getWritable } from 'workflow';
-export default getWritable;`
-})}
+export default getWritable;`}
 showSections={['returns']}
 />
 

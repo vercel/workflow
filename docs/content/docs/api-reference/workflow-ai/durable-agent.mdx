@@ -2,8 +2,6 @@
 title: DurableAgent
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 <Callout type="warn">
 The `@workflow/ai` package is currently in active development and should be considered experimental.
 </Callout>
@@ -48,31 +46,25 @@ async function myAgent() {
 ### Class
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { DurableAgent } from "@workflow/ai/agent";
-export default DurableAgent;`
-})}
+export default DurableAgent;`}
 />
 
 ### DurableAgentOptions
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { DurableAgentOptions } from "@workflow/ai/agent";
-export default DurableAgentOptions;`
-})}
+export default DurableAgentOptions;`}
 />
 
 ### DurableAgentStreamOptions
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { DurableAgentStreamOptions } from "@workflow/ai/agent";
-export default DurableAgentStreamOptions;`
-})}
+export default DurableAgentStreamOptions;`}
 />
 
 ## Key Features

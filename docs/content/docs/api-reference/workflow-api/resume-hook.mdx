@@ -2,8 +2,6 @@
 title: resumeHook
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 Resumes a workflow run by sending a payload to a hook identified by its token.
 
 It creates a `hook_received` event and re-triggers the workflow to continue execution.
@@ -34,11 +32,9 @@ export async function POST(request: Request) {
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { resumeHook } from "workflow/api";
-export default resumeHook;`
-})}
+export default resumeHook;`}
 showSections={['parameters']}
 />
 
@@ -47,11 +43,9 @@ showSections={['parameters']}
 Returns a `Promise<Hook>` that resolves to:
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { Hook } from '@workflow/world';
-export default Hook;`
-})}
+export default Hook;`}
 showSections={['returns']}
 />
 

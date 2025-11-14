@@ -2,8 +2,6 @@
 title: WorkflowChatTransport
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 <Callout type="warn">
 The `@workflow/ai` package is currently in active development and should be considered experimental.
 </Callout>
@@ -38,21 +36,17 @@ export default function Chat() {
 ### Class
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { WorkflowChatTransport } from "@workflow/ai";
-export default WorkflowChatTransport;`
-})}
+export default WorkflowChatTransport;`}
 />
 
 ### WorkflowChatTransportOptions
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { WorkflowChatTransportOptions } from "@workflow/ai";
-export default WorkflowChatTransportOptions;`
-})}
+export default WorkflowChatTransportOptions;`}
 />
 
 ## Key Features

@@ -2,8 +2,6 @@
 title: createHook
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 Creates a low-level hook primitive that can be used to resume a workflow run with arbitrary payloads.
 
 Hooks allow external systems to send data to a paused workflow without the HTTP-specific constraints of webhooks. They're identified by a token and can receive any serializable payload.
@@ -23,43 +21,37 @@ export async function hookWorkflow() {
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { createHook } from "workflow";
 export default createHook;`
-})}
+}
 showSections={['parameters']}
 />
 
 #### HookOptions
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { HookOptions } from "workflow";
 export default HookOptions;`
-})}
+}
 />
 
 ### Returns
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { createHook } from "workflow";
-export default createHook;`
-})}
+export default createHook;`}
 showSections={['returns']}
 />
 
 #### Hook
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { Hook } from "workflow";
-export default Hook;`
-})}
+export default Hook;`}
 />
 
 The returned `Hook` object also implements `AsyncIterable<T>`, which allows you to iterate over incoming payloads using `for await...of` syntax.

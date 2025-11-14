@@ -2,8 +2,6 @@
 title: sleep
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 Suspends a workflow for a specified duration or until an end date without consuming any resources. Once the duration or end date has passed, the workflow will resume execution.
 
 This is useful when you want to resume a workflow after some duration or date.
@@ -26,11 +24,9 @@ async function testWorkflow() {
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { sleep } from "workflow";
-export default sleep;`
-})}
+export default sleep;`}
 showSections={['parameters']}
 />
 

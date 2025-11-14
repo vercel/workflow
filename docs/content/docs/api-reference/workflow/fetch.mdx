@@ -2,8 +2,6 @@
 title: fetch
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
 Makes HTTP requests from within a workflow. This is a special step function that wraps the standard `fetch` API, automatically handling serialization and providing retry semantics.
 
 This is useful when you need to call external APIs or services from within your workflow.
@@ -31,11 +29,9 @@ async function apiWorkflow() {
 Accepts the same arguments as web [`fetch`](https://developer.mozilla.org/en-US/docs/Web/API/Window/fetch)
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { fetch } from "workflow";
-export default fetch;`
-})}
+export default fetch;`}
 showSections={['parameters']}
 />
 
@@ -44,11 +40,9 @@ showSections={['parameters']}
 Returns the same response as web [`fetch`](https://developer.mozilla.org/en-US/docs/Web/API/Window/fetch)
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { fetch } from "workflow";
-export default fetch;`
-})}
+export default fetch;`}
 showSections={['returns']}
 />
 
