@@ -35,7 +35,7 @@ export const weatherTool2 = tool({
     inputSchema: z.object({
         location: z.string().describe('The location to get the weather for')
     }),
-    weatherTool2$execute
+    execute: weatherTool2$execute
 });
 registerStepFunction("step//input.js//weatherTool/execute", weatherTool$execute);
 registerStepFunction("step//input.js//timeTool/execute", timeTool$execute);

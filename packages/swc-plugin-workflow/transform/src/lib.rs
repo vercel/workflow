@@ -497,7 +497,7 @@ impl StepTransform {
                                 // Now handle the transformation based on mode
                                 match self.mode {
                                     TransformMode::Step => {
-                                        // In step mode, replace method with reference to hoisted variable
+                                        // In step mode, replace method with key-value property referencing the hoisted variable
                                         let hoist_var_name =
                                             format!("{}${}", parent_var_name, prop_key);
                                         let step_id = self.create_object_property_id(
@@ -505,12 +505,15 @@ impl StepTransform {
                                             &prop_key,
                                             false,
                                         );
-                                        // Replace the method with a shorthand property referencing the hoisted function
-                                        *boxed_prop = Box::new(Prop::Shorthand(Ident::new(
-                                            hoist_var_name.into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        )));
+                                        // Replace the method with a key-value property referencing the hoisted function
+                                        *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
+                                            key: method_prop.key.clone(),
+                                            value: Box::new(Expr::Ident(Ident::new(
+                                                hoist_var_name.into(),
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                            ))),
+                                        }));
                                         self.object_property_workflow_conversions.push((
                                             parent_var_name.to_string(),
                                             prop_key,
