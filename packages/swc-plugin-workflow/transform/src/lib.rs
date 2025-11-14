@@ -4190,5 +4190,243 @@ impl VisitMut for StepTransform {
         }
     }
 
+    fn visit_mut_object_lit(&mut self, obj_lit: &mut ObjectLit) {
+        // When inside a workflow function, check each property for step functions
+        if self.in_workflow_function {
+            for prop in &mut obj_lit.props {
+                if let PropOrSpread::Prop(boxed_prop) = prop {
+                    // Get the property key first for naming
+                    let prop_key = match &**boxed_prop {
+                        Prop::KeyValue(kv) => match &kv.key {
+                            PropName::Ident(ident) => Some(ident.sym.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string()),
+                            _ => None,
+                        },
+                        Prop::Method(m) => match &m.key {
+                            PropName::Ident(ident) => Some(ident.sym.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+
+                    match &mut **boxed_prop {
+                        Prop::KeyValue(kv_prop) => {
+                            if let Some(prop_name) = &prop_key {
+                                match &mut *kv_prop.value {
+                                    Expr::Arrow(arrow_expr) => {
+                                        if self.has_step_directive_arrow(arrow_expr, false) {
+                                            if !arrow_expr.is_async {
+                                                emit_error(WorkflowErrorKind::NonAsyncFunction {
+                                                    span: arrow_expr.span,
+                                                    directive: "use step",
+                                                });
+                                            } else {
+                                                // Generate a unique name
+                                                let generated_name = format!("_anonymousStep{}", self.anonymous_fn_counter);
+                                                self.anonymous_fn_counter += 1;
+                                                self.step_function_names.insert(generated_name.clone());
+
+                                                match self.mode {
+                                                    TransformMode::Step => {
+                                                        // Hoist to module scope
+                                                        let mut cloned_arrow = arrow_expr.clone();
+                                                        self.remove_use_step_directive_arrow(&mut cloned_arrow.body);
+                                                        
+                                                        // Convert to function expression
+                                                        let fn_expr = FnExpr {
+                                                            ident: Some(Ident::new(
+                                                                generated_name.clone().into(),
+                                                                DUMMY_SP,
+                                                                SyntaxContext::empty(),
+                                                            )),
+                                                            function: Box::new(Function {
+                                                                params: cloned_arrow.params.iter().map(|pat| Param {
+                                                                    span: DUMMY_SP,
+                                                                    decorators: vec![],
+                                                                    pat: pat.clone(),
+                                                                }).collect(),
+                                                                decorators: vec![],
+                                                                span: cloned_arrow.span,
+                                                                ctxt: SyntaxContext::empty(),
+                                                                body: match *cloned_arrow.body {
+                                                                    BlockStmtOrExpr::BlockStmt(block) => Some(block),
+                                                                    BlockStmtOrExpr::Expr(expr) => Some(BlockStmt {
+                                                                        span: DUMMY_SP,
+                                                                        ctxt: SyntaxContext::empty(),
+                                                                        stmts: vec![Stmt::Return(ReturnStmt {
+                                                                            span: DUMMY_SP,
+                                                                            arg: Some(expr),
+                                                                        })],
+                                                                    }),
+                                                                },
+                                                                is_generator: false,
+                                                                is_async: cloned_arrow.is_async,
+                                                                type_params: cloned_arrow.type_params.clone(),
+                                                                return_type: cloned_arrow.return_type.clone(),
+                                                            }),
+                                                        };
+                                                        
+                                                        self.nested_step_functions.push((
+                                                            generated_name.clone(),
+                                                            fn_expr,
+                                                            arrow_expr.span,
+                                                        ));
+                                                        
+                                                        // Replace with identifier reference
+                                                        *kv_prop.value = Expr::Ident(Ident::new(
+                                                            generated_name.into(),
+                                                            DUMMY_SP,
+                                                            SyntaxContext::empty(),
+                                                        ));
+                                                    }
+                                                    TransformMode::Workflow => {
+                                                        // Replace with step proxy reference
+                                                        self.remove_use_step_directive_arrow(&mut arrow_expr.body);
+                                                        let step_id = self.create_id(Some(&generated_name), arrow_expr.span, false);
+                                                        *kv_prop.value = self.create_step_proxy_reference(&step_id);
+                                                    }
+                                                    TransformMode::Client => {
+                                                        // Just remove directive
+                                                        self.remove_use_step_directive_arrow(&mut arrow_expr.body);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Expr::Fn(fn_expr) => {
+                                        if self.has_step_directive(&fn_expr.function, false) {
+                                            if !fn_expr.function.is_async {
+                                                emit_error(WorkflowErrorKind::NonAsyncFunction {
+                                                    span: fn_expr.function.span,
+                                                    directive: "use step",
+                                                });
+                                            } else {
+                                                // Generate a unique name
+                                                let generated_name = format!("_anonymousStep{}", self.anonymous_fn_counter);
+                                                self.anonymous_fn_counter += 1;
+                                                self.step_function_names.insert(generated_name.clone());
+
+                                                match self.mode {
+                                                    TransformMode::Step => {
+                                                        // Hoist to module scope
+                                                        let mut cloned_fn = fn_expr.clone();
+                                                        self.remove_use_step_directive(&mut cloned_fn.function.body);
+                                                        
+                                                        let hoisted_fn_expr = FnExpr {
+                                                            ident: Some(Ident::new(
+                                                                generated_name.clone().into(),
+                                                                DUMMY_SP,
+                                                                SyntaxContext::empty(),
+                                                            )),
+                                                            function: cloned_fn.function,
+                                                        };
+                                                        
+                                                        self.nested_step_functions.push((
+                                                            generated_name.clone(),
+                                                            hoisted_fn_expr,
+                                                            fn_expr.function.span,
+                                                        ));
+                                                        
+                                                        // Replace with identifier reference
+                                                        *kv_prop.value = Expr::Ident(Ident::new(
+                                                            generated_name.into(),
+                                                            DUMMY_SP,
+                                                            SyntaxContext::empty(),
+                                                        ));
+                                                    }
+                                                    TransformMode::Workflow => {
+                                                        // Replace with step proxy reference
+                                                        self.remove_use_step_directive(&mut fn_expr.function.body);
+                                                        let step_id = self.create_id(Some(&generated_name), fn_expr.function.span, false);
+                                                        *kv_prop.value = self.create_step_proxy_reference(&step_id);
+                                                    }
+                                                    TransformMode::Client => {
+                                                        // Just remove directive
+                                                        self.remove_use_step_directive(&mut fn_expr.function.body);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Prop::Method(method_prop) => {
+                            if let Some(prop_name) = &prop_key {
+                                if self.has_step_directive(&method_prop.function, false) {
+                                    if !method_prop.function.is_async {
+                                        emit_error(WorkflowErrorKind::NonAsyncFunction {
+                                            span: method_prop.function.span,
+                                            directive: "use step",
+                                        });
+                                    } else {
+                                        // Generate a unique name
+                                        let generated_name = format!("_anonymousStep{}", self.anonymous_fn_counter);
+                                        self.anonymous_fn_counter += 1;
+                                        self.step_function_names.insert(generated_name.clone());
+
+                                        match self.mode {
+                                            TransformMode::Step => {
+                                                // Convert method to function and hoist
+                                                let mut cloned_function = method_prop.function.clone();
+                                                self.remove_use_step_directive(&mut cloned_function.body);
+                                                
+                                                let fn_expr = FnExpr {
+                                                    ident: Some(Ident::new(
+                                                        generated_name.clone().into(),
+                                                        DUMMY_SP,
+                                                        SyntaxContext::empty(),
+                                                    )),
+                                                    function: cloned_function,
+                                                };
+                                                
+                                                self.nested_step_functions.push((
+                                                    generated_name.clone(),
+                                                    fn_expr,
+                                                    method_prop.function.span,
+                                                ));
+                                                
+                                                // Replace method with property pointing to identifier
+                                                *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
+                                                    key: method_prop.key.clone(),
+                                                    value: Box::new(Expr::Ident(Ident::new(
+                                                        generated_name.into(),
+                                                        DUMMY_SP,
+                                                        SyntaxContext::empty(),
+                                                    ))),
+                                                }));
+                                            }
+                                            TransformMode::Workflow => {
+                                                // Replace with step proxy reference
+                                                self.remove_use_step_directive(&mut method_prop.function.body);
+                                                let step_id = self.create_id(Some(&generated_name), method_prop.function.span, false);
+                                                
+                                                // Replace method with property pointing to proxy
+                                                *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
+                                                    key: method_prop.key.clone(),
+                                                    value: Box::new(self.create_step_proxy_reference(&step_id)),
+                                                }));
+                                            }
+                                            TransformMode::Client => {
+                                                // Just remove directive
+                                                self.remove_use_step_directive(&mut method_prop.function.body);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Always continue visiting children
+        obj_lit.visit_mut_children_with(self);
+    }
+
     noop_visit_mut_type!();
 }
