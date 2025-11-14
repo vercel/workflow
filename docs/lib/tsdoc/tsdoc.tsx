@@ -2,7 +2,7 @@ import cn from 'clsx';
 import Slugger from 'github-slugger';
 import Link from 'next/link';
 import type { FC, ReactElement, ReactNode } from 'react';
-import { Callout } from '@/components/ui/callout';
+import { Callout } from '@/components/geistdocs/callout';
 import type { generateDefinition } from './base';
 import type { GeneratedFunction, TypeField } from './types';
 
