@@ -189,6 +189,11 @@ export default class Init extends BaseCommand {
                 `npm create nuxt@latest ${projectName} -- --packageManager ${packageManager} --gitInit --no-modules`
               );
               return `Created Nuxt app in ${chalk.cyan(projectPath)}`;
+            case 'sveltekit':
+              await execAsync(
+                `npx sv create ${projectName} --template=minimal --types=ts --no-add-ons`
+              );
+              return `Created SvelteKit app in ${chalk.cyan(projectPath)}`;
             default:
               throw new Error(`Unsupported template: ${template}`);
           }
@@ -196,7 +201,10 @@ export default class Init extends BaseCommand {
       },
       {
         title:
-          template === 'next' || template === 'nitro' || template === 'nuxt'
+          template === 'next' ||
+          template === 'nitro' ||
+          template === 'nuxt' ||
+          template === 'sveltekit'
             ? 'Installing `workflow` package'
             : 'Installing `workflow` and `nitro` package',
         task: async (message) => {
@@ -205,6 +213,7 @@ export default class Init extends BaseCommand {
             case 'next':
             case 'nitro':
             case 'nuxt':
+            case 'sveltekit':
               await execAsync(
                 `cd ${projectPath} && ${packageManager} i workflow`
               );
@@ -259,6 +268,27 @@ export default defineNuxtConfig({
         },
       },
       {
+        title: 'Configuring Vite config',
+        enabled: template === 'sveltekit',
+        task: async (message) => {
+          message('Configuring Vite config');
+          let viteConfig = readFileSync(
+            path.join(projectPath, 'vite.config.ts'),
+            'utf8'
+          );
+          viteConfig = viteConfig.replace(
+            /import { sveltekit } from ['"]@sveltejs\/kit\/vite['"];/g,
+            `import { sveltekit } from '@sveltejs/kit/vite';\nimport { workflowPlugin } from 'workflow/sveltekit';`
+          );
+          viteConfig = viteConfig.replace(
+            /plugins: \[sveltekit\(\)\]/g,
+            'plugins: [sveltekit(), workflowPlugin()]'
+          );
+          writeFileSync(path.join(projectPath, 'vite.config.ts'), viteConfig);
+          return 'Configured Vite config';
+        },
+      },
+      {
         title: 'Configuring TypeScript intellisense',
         enabled: useTsPlugin && template !== 'nuxt',
         task: async (message) => {
@@ -307,15 +337,20 @@ export default defineNuxtConfig({
         title: 'Creating example workflow',
         task: async (message) => {
           message(`Creating example workflow`);
-          const workflowsPath =
-            template === 'nitro' || template === 'nuxt'
-              ? path.join(projectPath, 'server', 'workflows')
-              : path.join(projectPath, 'workflows');
+          let workflowsPath: string;
+          if (template === 'nitro' || template === 'nuxt') {
+            workflowsPath = path.join(projectPath, 'server', 'workflows');
+          } else if (template === 'sveltekit') {
+            // TODO: Should be src/workflows (waiting on new workflow release)
+            workflowsPath = path.join(projectPath, 'workflows');
+          } else {
+            workflowsPath = path.join(projectPath, 'workflows');
+          }
           mkdirSync(workflowsPath, { recursive: true });
           const workflowContent = `import { FatalError, sleep } from "workflow";
 
 export async function handleUserSignup(email: string) {
- "use workflow"; 
+ "use workflow";
 
  const user = await createUser(email);
  await sendWelcomeEmail(user);
@@ -325,15 +360,15 @@ export async function handleUserSignup(email: string) {
 
  return { userId: user.id, status: "onboarded" };
 }
- 
+
 async function createUser(email: string) {
-  "use step"; 
+  "use step";
   console.log(\`Creating user with email: \${email}\`);
   // Full Node.js access - database calls, APIs, etc.
   return { id: crypto.randomUUID(), email };
 }
 async function sendWelcomeEmail(user: { id: string; email: string; }) {
-  "use step"; 
+  "use step";
   console.log(\`Sending welcome email to user: \${user.id}\`);
   if (Math.random() < 0.3) {
   // By default, steps will be retried for unhandled errors
@@ -341,7 +376,7 @@ async function sendWelcomeEmail(user: { id: string; email: string; }) {
   }
 }
 async function sendOnboardingEmail(user: { id: string; email: string}) {
- "use step"; 
+ "use step";
   if (!user.email.includes("@")) {
     // To skip retrying, throw a FatalError instead
     throw new FatalError("Invalid Email");
@@ -427,6 +462,36 @@ export default defineEventHandler(async (event) => {
               );
               return `Created API route handler in ${chalk.cyan(path.join(projectPath, 'server', 'api', 'signup.post.ts'))}`;
             }
+            case 'sveltekit': {
+              const apiPath = path.join(
+                projectPath,
+                'src',
+                'routes',
+                'api',
+                'signup'
+              );
+              mkdirSync(apiPath, { recursive: true });
+              writeFileSync(
+                path.join(apiPath, '+server.ts'),
+                `import { start } from "workflow/api";
+import { handleUserSignup } from "../../../../workflows/user-signup";
+import { json, type RequestHandler } from "@sveltejs/kit";
+
+export const POST: RequestHandler = async ({
+  request,
+}: {
+  request: Request;
+}) => {
+  const { email } = await request.json();
+
+  // Executes asynchronously and doesn't block your app
+  await start(handleUserSignup, [email]);
+
+  return json({ message: "User signup workflow started" });
+};`
+              );
+              return `Created API route handler in ${chalk.cyan(path.join(projectPath, 'src', 'routes', 'api', 'signup', '+server.ts'))}`;
+            }
             default:
               throw new Error(`Unsupported template: ${template}`);
           }
@@ -436,10 +501,12 @@ export default defineEventHandler(async (event) => {
 
     cancel('Cancelled workflow setup');
 
+    const port = template === 'sveltekit' ? '5173' : '3000';
+
     outro(
       `${chalk.green('Success!')} Next steps:
      Run ${chalk.dim(`${createNewProject ? `cd ${projectName} && ` : ''}${packageManager} run dev`)} to start the development server
-     Trigger the workflow: ${chalk.dim('curl -X POST --json \'{"email":"hello@example.com"}\' http://localhost:3000/api/signup')}`
+     Trigger the workflow: ${chalk.dim(`curl -X POST --json '{"email":"hello@example.com"}' http://localhost:${port}/api/signup`)}`
     );
   }
 }
