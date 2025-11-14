@@ -33,7 +33,7 @@ export class LocalBuilder extends BaseBuilder {
 
     super({
       ...config,
-      dirs: ['src/pages'],
+      dirs: ['src/pages', 'src/workflows'],
       buildTarget: 'astro' as const,
       stepsBundlePath: '', // unused in base
       workflowsBundlePath: '', // unused in base
@@ -212,7 +212,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     super({
       ...createBaseBuilderConfig({
         workingDir,
-        dirs: ['src/pages'],
+        dirs: ['src/pages', 'src/workflows'],
       }),
       buildTarget: 'vercel-build-output-api',
     });
