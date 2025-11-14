@@ -1,0 +1,189 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { BaseBuilder, type AstroConfig } from '@workflow/builders';
+
+// NOTE: This is the same as SvelteKit request converter, should merge
+const NORMALIZE_REQUEST_CONVERTER = `
+async function normalizeRequestConverter(request) {
+  const options = {
+    method: request.method,
+    headers: new Headers(request.headers)
+  };
+  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
+    options.body = await request.arrayBuffer();
+  }
+  return new Request(request.url, options);
+}
+`;
+
+export class AstroBuilder extends BaseBuilder {
+  constructor(config?: Partial<AstroConfig>) {
+    const workingDir = config?.workingDir || process.cwd();
+
+    super({
+      ...config,
+      dirs: ['src/pages'],
+      buildTarget: 'astro' as const,
+      stepsBundlePath: '', // unused in base
+      workflowsBundlePath: '', // unused in base
+      webhookBundlePath: '', // unused in base
+      workingDir,
+    });
+  }
+
+  override async build(): Promise<void> {
+    const pagesDir = resolve(this.config.workingDir, 'src/pages');
+    const workflowGeneratedDir = join(pagesDir, '.well-known/workflow/v1');
+
+    // Ensure output directories exist
+    await mkdir(workflowGeneratedDir, { recursive: true });
+
+    // Add .gitignore to exclude generated files from version control
+    if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
+      await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+    }
+
+    // Get workflow and step files to bundle
+    const inputFiles = await this.getInputFiles();
+    const tsConfig = await this.getTsConfigOptions();
+
+    const options = {
+      inputFiles,
+      workflowGeneratedDir,
+      tsBaseUrl: tsConfig.baseUrl,
+      tsPaths: tsConfig.paths,
+    };
+
+    // Generate the three Astro route handlers
+    await this.buildStepsRoute(options);
+    await this.buildWorkflowsRoute(options);
+    await this.buildWebhookRoute({ workflowGeneratedDir });
+  }
+
+  private async buildStepsRoute({
+    inputFiles,
+    workflowGeneratedDir,
+    tsPaths,
+    tsBaseUrl,
+  }: {
+    inputFiles: string[];
+    workflowGeneratedDir: string;
+    tsBaseUrl?: string;
+    tsPaths?: Record<string, string[]>;
+  }) {
+    // Create steps route: .well-known/workflow/v1/step.js
+    const stepsRouteFile = join(workflowGeneratedDir, 'step.js');
+    await this.createStepsBundle({
+      format: 'esm',
+      inputFiles,
+      outfile: stepsRouteFile,
+      externalizeNonSteps: true,
+      tsBaseUrl,
+      tsPaths,
+    });
+
+    // Post-process the generated file to wrap with SvelteKit request converter
+    let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
+    stepsRouteContent = stepsRouteContent.replace(
+      /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
+      `${NORMALIZE_REQUEST_CONVERTER}
+export const POST = async ({request}) => {
+  const normalRequest = await normalizeRequestConverter(request);
+  return stepEntrypoint(normalRequest);
+}
+
+export const prerender = false;`
+    );
+    await writeFile(stepsRouteFile, stepsRouteContent);
+  }
+
+  private async buildWorkflowsRoute({
+    inputFiles,
+    workflowGeneratedDir,
+    tsPaths,
+    tsBaseUrl,
+  }: {
+    inputFiles: string[];
+    workflowGeneratedDir: string;
+    tsBaseUrl?: string;
+    tsPaths?: Record<string, string[]>;
+  }) {
+    // Create workflows route: .well-known/workflow/v1/flow.js
+    const workflowsRouteFile = join(workflowGeneratedDir, 'flow.js');
+    await this.createWorkflowsBundle({
+      format: 'esm',
+      outfile: workflowsRouteFile,
+      bundleFinalOutput: false,
+      inputFiles,
+      tsBaseUrl,
+      tsPaths,
+    });
+
+    // Post-process the generated file to wrap with SvelteKit request converter
+    let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
+    workflowsRouteContent = workflowsRouteContent.replace(
+      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
+      `${NORMALIZE_REQUEST_CONVERTER}
+export const POST = async ({request}) => {
+  const normalRequest = await normalizeRequestConverter(request);
+  return workflowEntrypoint(workflowCode)(normalRequest);
+}
+
+export const prerender = false;`
+    );
+    await writeFile(workflowsRouteFile, workflowsRouteContent);
+  }
+
+  private async buildWebhookRoute({
+    workflowGeneratedDir,
+  }: {
+    workflowGeneratedDir: string;
+  }) {
+    // Create webhook route: .well-known/workflow/v1/webhook/[token].js
+    const webhookRouteFile = join(workflowGeneratedDir, 'webhook/[token].js');
+
+    await this.createWebhookBundle({
+      outfile: webhookRouteFile,
+      bundle: false,
+      suppressUndefinedRejections: true,
+    });
+
+    // // Post-process the gen    // Post-process the generated file to wrap with SvelteKit request converter
+    let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
+
+    // Update handler signature to accept token as parameter
+    webhookRouteContent = webhookRouteContent.replace(
+      /async function handler\(request\) \{[\s\S]*?const token = decodeURIComponent\(pathParts\[pathParts\.length - 1\]\);/,
+      `async function handler(request, token) {`
+    );
+
+    // Remove the URL parsing code since we get token from params
+    webhookRouteContent = webhookRouteContent.replace(
+      /const url = new URL\(request\.url\);[\s\S]*?const pathParts = url\.pathname\.split\('\/'\);[\s\S]*?\n/,
+      ''
+    );
+
+    // Replace all HTTP method exports with SvelteKit-compatible handlers
+    webhookRouteContent = webhookRouteContent.replace(
+      /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
+      `${NORMALIZE_REQUEST_CONVERTER}
+const createHandler = (method) => async ({ request, params, platform }) => {
+  const normalRequest = await normalizeRequestConverter(request);
+  const response = await handler(normalRequest, params.token);
+  return response;
+};
+
+export const GET = createHandler('GET');
+export const POST = createHandler('POST');
+export const PUT = createHandler('PUT');
+export const PATCH = createHandler('PATCH');
+export const DELETE = createHandler('DELETE');
+export const HEAD = createHandler('HEAD');
+export const OPTIONS = createHandler('OPTIONS');
+
+export const prerender = false;`
+    );
+
+    await writeFile(webhookRouteFile, webhookRouteContent);
+  }
+}

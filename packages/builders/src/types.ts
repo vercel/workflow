@@ -3,6 +3,7 @@ export const validBuildTargets = [
   'vercel-build-output-api',
   'next',
   'sveltekit',
+  'astro',
 ] as const;
 export type BuildTarget = (typeof validBuildTargets)[number];
 
@@ -67,13 +68,25 @@ export interface SvelteKitConfig extends BaseWorkflowConfig {
 }
 
 /**
+ * Configuration for Astro builds.
+ */
+export interface AstroConfig extends BaseWorkflowConfig {
+  buildTarget: 'astro';
+  // Astro builder computes paths dynamically, so these are not used
+  stepsBundlePath: string;
+  workflowsBundlePath: string;
+  webhookBundlePath: string;
+}
+
+/**
  * Discriminated union of all builder configuration types.
  */
 export type WorkflowConfig =
   | StandaloneConfig
   | VercelBuildOutputConfig
   | NextConfig
-  | SvelteKitConfig;
+  | SvelteKitConfig
+  | AstroConfig;
 
 export function isValidBuildTarget(
   target: string | undefined

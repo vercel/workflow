@@ -332,6 +332,40 @@ importers:
         specifier: workspace:*
         version: link:../workflow
 
+  packages/astro:
+    dependencies:
+      '@swc/core':
+        specifier: 1.11.24
+        version: 1.11.24
+      '@workflow/builders':
+        specifier: workspace:*
+        version: link:../builders
+      '@workflow/swc-plugin':
+        specifier: workspace:*
+        version: link:../swc-plugin-workflow
+      exsolve:
+        specifier: ^1.0.7
+        version: 1.0.7
+      fs-extra:
+        specifier: ^11.3.2
+        version: 11.3.2
+      pathe:
+        specifier: ^2.0.3
+        version: 2.0.3
+    devDependencies:
+      '@types/fs-extra':
+        specifier: 11.0.4
+        version: 11.0.4
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.19.0
+      '@workflow/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      vite:
+        specifier: 7.1.11
+        version: 7.1.11(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
+
   packages/builders:
     dependencies:
       '@swc/core':
@@ -921,6 +955,9 @@ importers:
       '@opentelemetry/api':
         specifier: '1'
         version: 1.9.0
+      '@workflow/astro':
+        specifier: workspace:*
+        version: link:../astro
       '@workflow/cli':
         specifier: workspace:*
         version: link:../cli
@@ -9030,6 +9067,10 @@ packages:
     resolution: {integrity: sha512-wpxZs9NoxZaJESJGIZTyDEaYpl0FKSA+FB9aJiyemKhMwkxQg63h4T1KJgUGHpTqPDNRcmmYLugrRjJlBtWvRA==}
     hasBin: true
 
+  js-yaml@4.1.1:
+    resolution: {integrity: sha512-qQKT4zQxXl8lLwBtHMWwaTcGfFOZviOJet3Oy/xmGk2gZH677CJM9EvtfdSkgWcATZhj/55JZ0rmy3myCT5lsA==}
+    hasBin: true
+
   jsesc@3.1.0:
     resolution: {integrity: sha512-/sM3dO2FOzXjKQhJuo0Q173wf2KOo8t4I8vHy6lF9poUp7bKT0/NHE8fPX23PwfhnykfqnC2xRxOnVw5XuGIaA==}
     engines: {node: '>=6'}
@@ -13755,7 +13796,7 @@ snapshots:
       globals: 14.0.0
       ignore: 5.3.2
       import-fresh: 3.3.1
-      js-yaml: 4.1.0
+      js-yaml: 4.1.1
       minimatch: 3.1.2
       strip-json-comments: 3.1.1
     transitivePeerDependencies:
@@ -21028,6 +21069,11 @@ snapshots:
   js-yaml@4.1.0:
     dependencies:
       argparse: 2.0.1
+
+  js-yaml@4.1.1:
+    dependencies:
+      argparse: 2.0.1
+    optional: true
 
   jsesc@3.1.0: {}
 

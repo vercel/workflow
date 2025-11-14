@@ -8,6 +8,7 @@ export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 export { StandaloneBuilder } from './standalone.js';
 export { createSwcPlugin } from './swc-esbuild-plugin.js';
 export type {
+  AstroConfig,
   BuildTarget,
   NextConfig,
   StandaloneConfig,
