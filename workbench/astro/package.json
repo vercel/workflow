@@ -14,8 +14,11 @@
   "dependencies": {
     "@astrojs/node": "9.5.0",
     "@astrojs/vercel": "^9.0.0",
+    "ai": "catalog:",
     "astro": "^5.15.6",
-    "nitro": "catalog:",
-    "workflow": "workspace:*"
+    "lodash.chunk": "^4.2.0",
+    "openai": "6.9.0",
+    "workflow": "workspace:*",
+    "zod": "catalog:"
   }
 }
