@@ -1,4 +1,5 @@
 import type {
+  LanguageModelV2,
   LanguageModelV2CallOptions,
   LanguageModelV2Prompt,
   LanguageModelV2StreamPart,
@@ -10,13 +11,23 @@ type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 
 export async function doStreamStep(
   conversationPrompt: LanguageModelV2Prompt,
-  modelId: string,
+  modelInit: string | (() => Promise<LanguageModelV2>),
   writable: WritableStream<UIMessageChunk>,
   tools?: LanguageModelV2CallOptions['tools']
 ) {
   'use step';
 
-  const model = gateway(modelId);
+  let model: LanguageModelV2 | undefined;
+  if (typeof modelInit === 'string') {
+    model = gateway(modelInit);
+  } else if (typeof modelInit === 'function') {
+    model = await modelInit();
+  } else {
+    throw new Error(
+      'Invalid "model initialization" argument. Must be a string or a function that returns a LanguageModelV2 instance.'
+    );
+  }
+
   const result = await model.doStream({
     prompt: conversationPrompt,
     tools,
