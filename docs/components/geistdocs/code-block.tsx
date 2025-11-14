@@ -64,6 +64,7 @@ export const CodeBlock = ({
       <pre
         className={cn(
           'not-prose flex-1 overflow-x-auto rounded-sm border bg-background py-3 text-sm outline-none',
+          '[&>code]:grid',
           className,
           props.className
         )}
