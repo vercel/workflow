@@ -106,4 +106,10 @@ matrix.app.push({
   ...DEV_TEST_CONFIGS.vite,
 });
 
+matrix.app.push({
+  name: 'astro',
+  project: 'workbench-astro-workflow',
+  ...DEV_TEST_CONFIGS.vite,
+});
+
 console.log(JSON.stringify(matrix));
