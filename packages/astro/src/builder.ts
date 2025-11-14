@@ -1,6 +1,11 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { BaseBuilder, type AstroConfig } from '@workflow/builders';
+import {
+  BaseBuilder,
+  VercelBuildOutputAPIBuilder,
+  createBaseBuilderConfig,
+  type AstroConfig,
+} from '@workflow/builders';
 
 // NOTE: This is the same as SvelteKit request converter, should merge
 const NORMALIZE_REQUEST_CONVERTER = `
@@ -22,7 +27,7 @@ const DEBUG_FILES = [
   'step.js.debug.json',
 ];
 
-export class AstroBuilder extends BaseBuilder {
+export class LocalBuilder extends BaseBuilder {
   constructor(config?: Partial<AstroConfig>) {
     const workingDir = config?.workingDir || process.cwd();
 
@@ -198,5 +203,30 @@ export const prerender = false;`
     );
 
     await writeFile(webhookRouteFile, webhookRouteContent);
+  }
+}
+
+export class VercelBuilder extends VercelBuildOutputAPIBuilder {
+  constructor(config?: Partial<AstroConfig>) {
+    const workingDir = config?.workingDir || process.cwd();
+    super({
+      ...createBaseBuilderConfig({
+        workingDir,
+        dirs: ['src/pages'],
+      }),
+      buildTarget: 'vercel-build-output-api',
+    });
+  }
+  override async build(): Promise<void> {
+    // const configPath = join(
+    //   this.config.workingDir,
+    //   ".vercel/output/config.json",
+    // );
+    // const originalConfig = JSON.parse(await readFile(configPath, "utf-8"));
+    await super.build();
+    console.log('built vercel build output api');
+    // const newConfig = JSON.parse(await readFile(configPath, "utf-8"));
+    // originalConfig.routes.unshift(...newConfig.routes);
+    // await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
   }
 }
