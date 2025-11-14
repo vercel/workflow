@@ -3,7 +3,7 @@ import { type NextRequest, NextResponse } from 'next/server';
 
 const { rewrite: rewriteLLM } = rewritePath('/docs/*path', '/llms.mdx/*path');
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const response = NextResponse.next();
 
   if (isMarkdownPreferred(request)) {
