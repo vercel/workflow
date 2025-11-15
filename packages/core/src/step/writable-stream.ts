@@ -1,7 +1,6 @@
 import {
   getExternalReducers,
   getSerializeStream,
-  resolveStreamOpsForRun,
   WorkflowServerWritableStream,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
@@ -36,10 +35,8 @@ export function getWritable<W = any>(
 
   // Create a transform stream that serializes chunks and pipes to the workflow server
   const serialize = getSerializeStream(
-    getExternalReducers(globalThis, ctx.ops)
+    getExternalReducers(globalThis, ctx.ops, runId)
   );
-
-  ctx.ops = resolveStreamOpsForRun(ctx.ops, runId);
 
   // Pipe the serialized data to the workflow server stream
   // Register this async operation with the runtime's ops array so it's awaited via waitUntil
