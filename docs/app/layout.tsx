@@ -5,7 +5,7 @@ import { mono, sans } from '@/lib/geistdocs/fonts';
 import { cn } from '@/lib/utils';
 
 const Logo = () => (
-  <span className="flex items-center gap-1.5 font-semibold text-foreground tracking-tight">
+  <span className="flex items-center gap-1.5 font-semibold text-foreground tracking-tight text-xl">
     <svg
       className="hidden sm:block"
       fill="none"
