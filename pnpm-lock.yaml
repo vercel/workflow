@@ -552,6 +552,9 @@ importers:
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
+      '@workflow/swc-plugin':
+        specifier: workspace:*
+        version: link:../swc-plugin-workflow
       exsolve:
         specifier: 1.0.7
         version: 1.0.7
