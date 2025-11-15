@@ -6,6 +6,9 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js ./src/workflows ./src/lib/_workflows.ts",
+    "predev": "pnpm generate:workflows",
+    "prebuild": "pnpm generate:workflows",
     "build": "nitro build",
     "dev": "nitro dev",
     "start": "node .output/server/index.mjs"
