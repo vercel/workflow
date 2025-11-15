@@ -1,5 +1,4 @@
 import { waitUntil } from '@vercel/functions';
-import { PromiseWithResolvers } from '@workflow/utils';
 
 /**
  * Builds a workflow suspension log message based on the counts of steps, hooks, and waits.

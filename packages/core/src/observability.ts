@@ -44,7 +44,7 @@ const streamPrintRevivers: Record<string, (value: any) => any> = {
 };
 
 const hydrateStepIO = <
-  T extends { stepId?: string; input?: any; output?: any },
+  T extends { stepId?: string; input?: any; output?: any; runId?: string },
 >(
   step: T
 ): T => {
@@ -52,7 +52,13 @@ const hydrateStepIO = <
     ...step,
     input:
       step.input && Array.isArray(step.input) && step.input.length
-        ? hydrateStepArguments(step.input, [], globalThis, streamPrintRevivers)
+        ? hydrateStepArguments(
+            step.input,
+            [],
+            step.runId as string,
+            globalThis,
+            streamPrintRevivers
+          )
         : step.input,
     output: step.output
       ? hydrateStepReturnValue(step.output, globalThis, streamPrintRevivers)
@@ -79,6 +85,7 @@ const hydrateWorkflowIO = <
       ? hydrateWorkflowReturnValue(
           workflow.output,
           [],
+          workflow.runId as string,
           globalThis,
           streamPrintRevivers
         )
@@ -86,7 +93,9 @@ const hydrateWorkflowIO = <
   };
 };
 
-const hydrateEventData = <T extends { eventId?: string; eventData?: any }>(
+const hydrateEventData = <
+  T extends { eventId?: string; eventData?: any; runId?: string },
+>(
   event: T
 ): T => {
   if (!event.eventData) {
@@ -99,7 +108,13 @@ const hydrateEventData = <T extends { eventId?: string; eventData?: any }>(
     eventData: Object.fromEntries(
       Object.entries(event.eventData).map(([key, value]) => [
         key,
-        hydrateStepArguments(value as any, [], globalThis, streamPrintRevivers),
+        hydrateStepArguments(
+          value as any,
+          [],
+          event.runId as string,
+          globalThis,
+          streamPrintRevivers
+        ),
       ])
     ),
   };
@@ -110,9 +125,16 @@ const hydrateHookMetadata = <T extends { hookId?: string; metadata?: any }>(
 ): T => {
   return {
     ...hook,
-    metadata: hook.metadata
-      ? hydrateStepArguments(hook.metadata, [], globalThis, streamPrintRevivers)
-      : hook.metadata,
+    metadata:
+      hook.metadata && 'runId' in hook
+        ? hydrateStepArguments(
+            hook.metadata,
+            [],
+            hook.runId as string,
+            globalThis,
+            streamPrintRevivers
+          )
+        : hook.metadata,
   };
 };
 

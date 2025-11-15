@@ -197,13 +197,7 @@ export class Run<TResult> {
         const run = await this.world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          return hydrateWorkflowReturnValue(
-            run.output,
-            [],
-            globalThis,
-            {},
-            this.runId
-          );
+          return hydrateWorkflowReturnValue(run.output, [], this.runId);
         }
 
         if (run.status === 'cancelled') {
@@ -677,13 +671,7 @@ export const stepEntrypoint =
             }
             // Hydrate the step input arguments
             const ops: Promise<void>[] = [];
-            const args = hydrateStepArguments(
-              step.input,
-              ops,
-              globalThis,
-              {},
-              workflowRunId
-            );
+            const args = hydrateStepArguments(step.input, ops, workflowRunId);
 
             span?.setAttributes({
               ...Attribute.StepArgumentsCount(args.length),
@@ -710,12 +698,7 @@ export const stepEntrypoint =
               () => stepFn(...args)
             );
 
-            result = dehydrateStepReturnValue(
-              result,
-              ops,
-              globalThis,
-              workflowRunId
-            );
+            result = dehydrateStepReturnValue(result, ops, workflowRunId);
 
             waitUntil(Promise.all(ops));
 
