@@ -1,7 +1,7 @@
-import { constants } from "node:fs";
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { BaseBuilder, type SvelteKitConfig } from "@workflow/builders";
+import { constants } from 'node:fs';
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { BaseBuilder, type SvelteKitConfig } from '@workflow/builders';
 
 // Helper function code for converting SvelteKit requests to standard Request objects
 const SVELTEKIT_REQUEST_CONVERTER = `
@@ -23,11 +23,11 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     super({
       ...config,
-      dirs: ["workflows", "src/workflows", "routes", "src/routes"],
-      buildTarget: "sveltekit" as const,
-      stepsBundlePath: "", // unused in base
-      workflowsBundlePath: "", // unused in base
-      webhookBundlePath: "", // unused in base
+      dirs: ['workflows', 'src/workflows', 'routes', 'src/routes'],
+      buildTarget: 'sveltekit' as const,
+      stepsBundlePath: '', // unused in base
+      workflowsBundlePath: '', // unused in base
+      webhookBundlePath: '', // unused in base
       workingDir,
     });
   }
@@ -35,14 +35,14 @@ export class SvelteKitBuilder extends BaseBuilder {
   override async build(): Promise<void> {
     // Find SvelteKit routes directory (src/routes or routes)
     const routesDir = await this.findRoutesDirectory();
-    const workflowGeneratedDir = join(routesDir, ".well-known/workflow/v1");
+    const workflowGeneratedDir = join(routesDir, '.well-known/workflow/v1');
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
 
     // Add .gitignore to exclude generated files from version control
     if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
-      await writeFile(join(workflowGeneratedDir, ".gitignore"), "*");
+      await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
     }
 
     // Get workflow and step files to bundle
@@ -74,21 +74,21 @@ export class SvelteKitBuilder extends BaseBuilder {
     tsPaths?: Record<string, string[]>;
   }) {
     // Create steps route: .well-known/workflow/v1/step/+server.js
-    const stepsRouteDir = join(workflowGeneratedDir, "step");
+    const stepsRouteDir = join(workflowGeneratedDir, 'step');
     await mkdir(stepsRouteDir, { recursive: true });
 
     await this.createStepsBundle({
-      format: "esm",
+      format: 'esm',
       inputFiles,
-      outfile: join(stepsRouteDir, "+server.js"),
+      outfile: join(stepsRouteDir, '+server.js'),
       externalizeNonSteps: true,
       tsBaseUrl,
       tsPaths,
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter
-    const stepsRouteFile = join(stepsRouteDir, "+server.js");
-    let stepsRouteContent = await readFile(stepsRouteFile, "utf-8");
+    const stepsRouteFile = join(stepsRouteDir, '+server.js');
+    let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
 
     // Replace the default export with SvelteKit-compatible handler
     stepsRouteContent = stepsRouteContent.replace(
@@ -97,7 +97,7 @@ export class SvelteKitBuilder extends BaseBuilder {
 export const POST = async ({request}) => {
   const normalRequest = await convertSvelteKitRequest(request);
   return stepEntrypoint(normalRequest);
-}`,
+}`
     );
 
     await writeFile(stepsRouteFile, stepsRouteContent);
@@ -115,12 +115,12 @@ export const POST = async ({request}) => {
     tsPaths?: Record<string, string[]>;
   }) {
     // Create workflows route: .well-known/workflow/v1/flow/+server.js
-    const workflowsRouteDir = join(workflowGeneratedDir, "flow");
+    const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
     await mkdir(workflowsRouteDir, { recursive: true });
 
     await this.createWorkflowsBundle({
-      format: "esm",
-      outfile: join(workflowsRouteDir, "+server.js"),
+      format: 'esm',
+      outfile: join(workflowsRouteDir, '+server.js'),
       bundleFinalOutput: false,
       inputFiles,
       tsBaseUrl,
@@ -128,8 +128,8 @@ export const POST = async ({request}) => {
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter
-    const workflowsRouteFile = join(workflowsRouteDir, "+server.js");
-    let workflowsRouteContent = await readFile(workflowsRouteFile, "utf-8");
+    const workflowsRouteFile = join(workflowsRouteDir, '+server.js');
+    let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
 
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = workflowsRouteContent.replace(
@@ -138,7 +138,7 @@ export const POST = async ({request}) => {
 export const POST = async ({request}) => {
   const normalRequest = await convertSvelteKitRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
-}`,
+}`
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
   }
@@ -151,7 +151,7 @@ export const POST = async ({request}) => {
     // Create webhook route: .well-known/workflow/v1/webhook/[token]/+server.js
     const webhookRouteFile = join(
       workflowGeneratedDir,
-      "webhook/[token]/+server.js",
+      'webhook/[token]/+server.js'
     );
 
     await this.createWebhookBundle({
@@ -161,18 +161,18 @@ export const POST = async ({request}) => {
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter
-    let webhookRouteContent = await readFile(webhookRouteFile, "utf-8");
+    let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
 
     // Update handler signature to accept token as parameter
     webhookRouteContent = webhookRouteContent.replace(
       /async function handler\(request\) \{[\s\S]*?const token = decodeURIComponent\(pathParts\[pathParts\.length - 1\]\);/,
-      `async function handler(request, token) {`,
+      `async function handler(request, token) {`
     );
 
     // Remove the URL parsing code since we get token from params
     webhookRouteContent = webhookRouteContent.replace(
       /const url = new URL\(request\.url\);[\s\S]*?const pathParts = url\.pathname\.split\('\/'\);[\s\S]*?\n/,
-      "",
+      ''
     );
 
     // Replace all HTTP method exports with SvelteKit-compatible handlers
@@ -191,15 +191,15 @@ export const PUT = createSvelteKitHandler('PUT');
 export const PATCH = createSvelteKitHandler('PATCH');
 export const DELETE = createSvelteKitHandler('DELETE');
 export const HEAD = createSvelteKitHandler('HEAD');
-export const OPTIONS = createSvelteKitHandler('OPTIONS');`,
+export const OPTIONS = createSvelteKitHandler('OPTIONS');`
     );
 
     await writeFile(webhookRouteFile, webhookRouteContent);
   }
 
   private async findRoutesDirectory(): Promise<string> {
-    const routesDir = resolve(this.config.workingDir, "src/routes");
-    const rootRoutesDir = resolve(this.config.workingDir, "routes");
+    const routesDir = resolve(this.config.workingDir, 'src/routes');
+    const rootRoutesDir = resolve(this.config.workingDir, 'routes');
 
     // Try src/routes first (standard SvelteKit convention)
     try {
@@ -216,13 +216,13 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`,
         const rootRoutesStats = await stat(rootRoutesDir);
         if (!rootRoutesStats.isDirectory()) {
           throw new Error(
-            `Path exists but is not a directory: ${rootRoutesDir}`,
+            `Path exists but is not a directory: ${rootRoutesDir}`
           );
         }
         return rootRoutesDir;
       } catch {
         throw new Error(
-          'Could not find SvelteKit routes directory. Expected either "src/routes" or "routes" to exist.',
+          'Could not find SvelteKit routes directory. Expected either "src/routes" or "routes" to exist.'
         );
       }
     }
