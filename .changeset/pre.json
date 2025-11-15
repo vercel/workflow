@@ -30,6 +30,7 @@
     "@workflow/example-nuxt": "0.0.0",
     "@workflow/example-vite": "0.0.0",
     "@workflow/example-sveltekit": "0.0.0",
+    "@workflow/example-astro": "0.0.0",
     "@workflow/builders": "4.0.1-beta.3",
     "@workflow/sveltekit": "4.0.0-beta.1",
     "@workflow/nuxt": "4.0.1-beta.6"
