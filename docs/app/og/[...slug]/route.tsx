@@ -1,25 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ImageResponse } from 'next/og';
 import type { NextRequest } from 'next/server';
 import { getPageImage, source } from '@/lib/geistdocs/source';
-
-const fontRegex = /src: url\((.+)\) format\('(opentype|truetype)'\)/;
-
-const loadGoogleFont = async (font: string, text: string, weights: string) => {
-  const url = `https://fonts.googleapis.com/css2?family=${font}:wght@${weights}&text=${encodeURIComponent(text)}`;
-  const css = await (await fetch(url)).text();
-  const resource = css.match(fontRegex);
-
-  if (resource) {
-    const response = await fetch(resource[1]);
-    if (response.status === 200) {
-      return await response.arrayBuffer();
-    }
-  }
-
-  throw new Error('failed to load font data');
-};
 
 export const GET = async (
   _request: NextRequest,
@@ -34,14 +17,21 @@ export const GET = async (
 
   const { title, description } = page.data;
 
-  const backgroundImagePath = join(
-    process.cwd(),
-    'app/og/[...slug]/background.png'
+  const regularFont = await readFile(
+    join(process.cwd(), 'app/og/[...slug]/geist-sans-regular.ttf')
   );
-  const backgroundImageBuffer = readFileSync(backgroundImagePath);
-  const backgroundImageData = backgroundImageBuffer.buffer.slice(
-    backgroundImageBuffer.byteOffset,
-    backgroundImageBuffer.byteOffset + backgroundImageBuffer.byteLength
+
+  const semiboldFont = await readFile(
+    join(process.cwd(), 'app/og/[...slug]/geist-sans-semibold.ttf')
+  );
+
+  const backgroundImage = await readFile(
+    join(process.cwd(), 'app/og/[...slug]/background.png')
+  );
+
+  const backgroundImageData = backgroundImage.buffer.slice(
+    backgroundImage.byteOffset,
+    backgroundImage.byteOffset + backgroundImage.byteLength
   );
 
   return new ImageResponse(
@@ -80,12 +70,12 @@ export const GET = async (
       fonts: [
         {
           name: 'Geist',
-          data: await loadGoogleFont('Geist', `${title} ${description}`, '400'),
+          data: regularFont,
           weight: 400,
         },
         {
           name: 'Geist',
-          data: await loadGoogleFont('Geist', `${title} ${description}`, '500'),
+          data: semiboldFont,
           weight: 500,
         },
       ],
