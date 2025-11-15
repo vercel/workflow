@@ -1,7 +1,7 @@
 {
-  "name": "astro",
+  "name": "@workflow/example-astro",
   "type": "module",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "scripts": {
     "generate:workflows": "node ../scripts/generate-workflows-registry.js ./src/workflows src/lib/_workflows.ts",
     "predev": "pnpm generate:workflows",
