@@ -10,15 +10,3 @@ export async function normalFunction(a, b) {
     return a * b;
 }
 workflowFunction.workflowId = "workflow//input.js//workflowFunction";
-Object.defineProperty(stepFunction, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
-    value: "step//input.js//stepFunction",
-    writable: false,
-    enumerable: false,
-    configurable: false
-});
-Object.defineProperty(stepFunctionWithoutExport, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
-    value: "step//input.js//stepFunctionWithoutExport",
-    writable: false,
-    enumerable: false,
-    configurable: false
-});
