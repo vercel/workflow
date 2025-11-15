@@ -34,6 +34,7 @@ export class LocalBuilder extends BaseBuilder {
   #outDir: string;
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');
+
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
@@ -74,7 +75,8 @@ export class LocalBuilder extends BaseBuilder {
 }
 
 export function getWorkflowDirs(nitro: Nitro) {
-  const srcDir = nitro.options.srcDir || nitro.options.rootDir;
+  // srcDir same as rootDir unless user specified
+  const srcDir = nitro.options.srcDir;
 
   return unique(
     [
