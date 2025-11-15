@@ -20,10 +20,10 @@ export function workflowPlugin(): AstroIntegration {
         });
       },
       'astro:build:done': async () => {
-        // if (process.env.VERCEL_DEPLOYMENT_URL) {
-        const vercelBuilder = new VercelBuilder();
-        await vercelBuilder.build();
-        // }
+        if (process.env.VERCEL_DEPLOYMENT_ID) {
+          const vercelBuilder = new VercelBuilder();
+          await vercelBuilder.build();
+        }
       },
     },
   };
