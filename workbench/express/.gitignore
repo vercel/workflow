@@ -4,3 +4,6 @@ manifest.js
 .output
 .data
 .vercel
+
+# Workflows
+src/lib/_workflows.ts

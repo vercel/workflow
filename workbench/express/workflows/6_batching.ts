@@ -1,1 +1,0 @@
-../../example/workflows/6_batching.ts
