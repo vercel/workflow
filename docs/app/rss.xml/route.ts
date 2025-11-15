@@ -9,6 +9,8 @@ export const revalidate = false;
 export const GET = () => {
   const feed = new Feed({
     title: 'Workflow DevKit Documentation',
+    description:
+      'use workflow brings durability, reliability, and observability to async JavaScript. Build apps and AI Agents that can suspend, resume, and maintain state with ease.',
     id: baseUrl,
     link: baseUrl,
     language: 'en',
