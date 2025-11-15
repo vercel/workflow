@@ -43,17 +43,14 @@ const WORKFLOW_ROUTES = [
 ];
 
 export class LocalBuilder extends BaseBuilder {
-  constructor(config?: Partial<AstroConfig>) {
-    const workingDir = config?.workingDir || process.cwd();
-
+  constructor() {
     super({
-      ...config,
       dirs: ['src/pages', 'src/workflows'],
       buildTarget: 'astro' as const,
       stepsBundlePath: '', // unused in base
       workflowsBundlePath: '', // unused in base
       webhookBundlePath: '', // unused in base
-      workingDir,
+      workingDir: process.cwd(),
     });
   }
 
@@ -115,8 +112,9 @@ export class LocalBuilder extends BaseBuilder {
       tsPaths,
     });
 
-    // Post-process the generated file to wrap with SvelteKit request converter
     let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
+
+    // Normalize request, needed for preserving request through astro
     stepsRouteContent = stepsRouteContent.replace(
       /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
       `${NORMALIZE_REQUEST_CONVERTER}
@@ -152,8 +150,9 @@ export const prerender = false;`
       tsPaths,
     });
 
-    // Post-process the generated file to wrap with SvelteKit request converter
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
+
+    // Normalize request, needed for preserving request through astro
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
       `${NORMALIZE_REQUEST_CONVERTER}
@@ -196,7 +195,7 @@ export const prerender = false;`
       ''
     );
 
-    // Replace all HTTP method exports with SvelteKit-compatible handlers
+    // Normalize request, needed for preserving request through astro
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
       `${NORMALIZE_REQUEST_CONVERTER}
@@ -264,10 +263,10 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     // Insert workflow routes right after
     config.routes.splice(insertIndex + 1, 0, ...WORKFLOW_ROUTES);
 
-    // Bundles workflows for vercel but overwrites vercel's astro config
+    // Bundles workflows for vercel
     await super.build();
 
-    // Use old astro config
+    // Use old astro config with updated routes
     await writeFile(configPath, JSON.stringify(config, null, 2));
   }
 }
