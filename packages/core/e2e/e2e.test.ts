@@ -1,5 +1,9 @@
+import { withResolvers } from '@workflow/utils';
 import { assert, describe, expect, test } from 'vitest';
-import { dehydrateWorkflowArguments } from '../src/serialization';
+import {
+  dehydrateWorkflowArguments,
+  type StreamOperationPromise,
+} from '../src/serialization';
 import { cliInspectJson, isLocalDeployment } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -21,9 +25,15 @@ async function triggerWorkflow(
 
   url.searchParams.set('workflowFile', workflowFile);
   url.searchParams.set('workflowFn', workflowFn);
+
+  const ops: StreamOperationPromise[] = [];
+  const { promise: runIdPromise, resolve: resolveRunId } =
+    withResolvers<string>();
+  const dehydratedArgs = dehydrateWorkflowArguments(args, ops, runIdPromise);
+
   const res = await fetch(url, {
     method: 'POST',
-    body: JSON.stringify(dehydrateWorkflowArguments(args, [], globalThis)),
+    body: JSON.stringify(dehydratedArgs),
   });
   if (!res.ok) {
     throw new Error(
@@ -33,6 +43,11 @@ async function triggerWorkflow(
     );
   }
   const run = await res.json();
+  resolveRunId(run.runId);
+
+  // Resolve and wait for any stream operations
+  await Promise.all(ops);
+
   return run;
 }
 
