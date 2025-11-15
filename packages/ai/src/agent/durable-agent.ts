@@ -30,7 +30,7 @@ export interface DurableAgentOptions {
    * Tools can be implemented as workflow steps for automatic retries and persistence,
    * or as regular workflow-level logic using core library features like sleep() and Hooks.
    */
-  tools: ToolSet;
+  tools?: ToolSet;
 
   /**
    * Optional system prompt to guide the agent's behavior.
@@ -98,7 +98,7 @@ export class DurableAgent {
 
   constructor(options: DurableAgentOptions) {
     this.model = options.model;
-    this.tools = options.tools;
+    this.tools = options.tools ?? {};
     this.system = options.system;
   }
 
