@@ -12,7 +12,10 @@ export function workflowPlugin(): AstroIntegration {
     name: 'workflow:astro',
     hooks: {
       'astro:config:setup': async ({ updateConfig }) => {
-        // await builder.build();
+        // Use local builder
+        if (!process.env.VERCEL_DEPLOYMENT_ID) {
+          await builder.build();
+        }
         updateConfig({
           vite: {
             plugins: [createVitePlugin(builder) as any],
