@@ -4,7 +4,6 @@ import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import {
   BODY_INIT_SYMBOL,
-  STEP_FUNCTION_NAME_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
@@ -280,8 +279,8 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
     Set: (value) => value instanceof global.Set && Array.from(value),
     StepFunction: (value) => {
       if (typeof value !== 'function') return false;
-      const stepName = value[STEP_FUNCTION_NAME_SYMBOL];
-      return typeof stepName === 'string' ? stepName : false;
+      const stepId = (value as any).stepId;
+      return typeof stepId === 'string' ? stepId : false;
     },
     URL: (value) => value instanceof global.URL && value.href,
     URLSearchParams: (value) => {
