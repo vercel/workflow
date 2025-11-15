@@ -41,7 +41,7 @@ export function getWritable<W = any>(
   // Pipe the serialized data to the workflow server stream
   // Register this async operation with the runtime's ops array so it's awaited via waitUntil
   ctx.ops.push(
-    serialize.readable.pipeTo(new WorkflowServerWritableStream(runId, name))
+    serialize.readable.pipeTo(new WorkflowServerWritableStream(name, runId))
   );
 
   // Return the writable side of the transform stream
