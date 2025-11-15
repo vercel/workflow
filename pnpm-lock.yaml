@@ -288,7 +288,7 @@ importers:
         specifier: ^1.0.7
         version: 1.0.7
       fs-extra:
-        specifier: ^11.3.2
+        specifier: 11.3.2
         version: 11.3.2
       pathe:
         specifier: ^2.0.3
@@ -304,7 +304,7 @@ importers:
         specifier: workspace:*
         version: link:../tsconfig
       astro:
-        specifier: ^5.15.6
+        specifier: 5.15.6
         version: 5.15.6(@netlify/blobs@9.1.2)(@types/node@22.19.0)(@vercel/functions@3.1.4(@aws-sdk/credential-provider-web-identity@3.844.0))(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)))(ioredis@5.8.2)(jiti@2.6.1)(lightningcss@1.30.1)(rollup@4.52.5)(terser@5.44.0)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.1)
       vite:
         specifier: 7.1.11
