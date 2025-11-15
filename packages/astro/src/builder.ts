@@ -248,10 +248,21 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         !route.src?.includes('.well-known/workflow')
     );
 
-    // Add new workflow routes
-    for (const route of WORKFLOW_ROUTES) {
-      config.routes.push(route);
+    // Find the index right after the "filesystem" handler and "continue: true" routes
+    let insertIndex = config.routes.findIndex(
+      (route: any) => route.handle === 'filesystem'
+    );
+
+    // Move past any routes with "continue: true" (like _astro cache headers)
+    while (
+      insertIndex < config.routes.length - 1 &&
+      config.routes[insertIndex + 1]?.continue === true
+    ) {
+      insertIndex++;
     }
+
+    // Insert workflow routes right after
+    config.routes.splice(insertIndex + 1, 0, ...WORKFLOW_ROUTES);
 
     // Bundles workflows for vercel but overwrites vercel's astro config
     await super.build();

@@ -3,7 +3,7 @@ import { transform } from '@swc/core';
 import { resolveModulePath } from 'exsolve';
 import type { HotUpdateOptions, PluginOption } from 'vite';
 import type { AstroIntegration } from 'astro';
-import { LocalBuilder } from './builder.js';
+import { LocalBuilder, VercelBuilder } from './builder.js';
 
 export function workflowPlugin(): AstroIntegration {
   const builder = new LocalBuilder();
@@ -19,12 +19,12 @@ export function workflowPlugin(): AstroIntegration {
           },
         });
       },
-      // "astro:build:done": async () => {
-      // if (process.env.VERCEL_DEPLOYMENT_URL) {
-      //   const vercelBuilder = new VercelBuilder();
-      //   await vercelBuilder.build();
-      // }
-      // },
+      'astro:build:done': async () => {
+        // if (process.env.VERCEL_DEPLOYMENT_URL) {
+        const vercelBuilder = new VercelBuilder();
+        await vercelBuilder.build();
+        // }
+      },
     },
   };
 }
