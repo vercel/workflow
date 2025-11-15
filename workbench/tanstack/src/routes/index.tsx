@@ -54,7 +54,7 @@ function App() {
       };
 
       const { runId } = await fetchAndLog(
-        '/api/trigger?workflowFile=workflows/0_calc.ts&workflowFn=calc&args=2',
+        '/api/trigger?workflowFile=workflows/0_demo.ts&workflowFn=calc&args=2',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
