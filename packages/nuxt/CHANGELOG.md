@@ -1,5 +1,14 @@
 # @workflow/nuxt
 
+## 4.0.1-beta.3
+
+### Patch Changes
+
+- b97b6bf: Lock all dependencies in our packages
+- Updated dependencies [945a946]
+- Updated dependencies [b97b6bf]
+  - @workflow/nitro@4.0.1-beta.14
+
 ## 4.0.1-beta.2
 
 ### Patch Changes

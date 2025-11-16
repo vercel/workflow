@@ -1,5 +1,23 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.8
+
+### Patch Changes
+
+- 945a946: Fix SvelteKit plugin reading deleted files on HMR
+- b97b6bf: Lock all dependencies in our packages
+- Updated dependencies [5eb588a]
+- Updated dependencies [0b848cd]
+- Updated dependencies [8e96134]
+- Updated dependencies [b97b6bf]
+- Updated dependencies [45b7b41]
+- Updated dependencies [f8e5d10]
+- Updated dependencies [8002e0f]
+- Updated dependencies [f07b2da]
+- Updated dependencies [aecdcdf]
+  - @workflow/swc-plugin@4.0.1-beta.6
+  - @workflow/builders@4.0.1-beta.10
+
 ## 4.0.0-beta.7
 
 ### Patch Changes

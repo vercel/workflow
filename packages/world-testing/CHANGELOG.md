@@ -1,5 +1,18 @@
 # @workflow/world-testing
 
+## 4.0.1-beta.15
+
+### Patch Changes
+
+- b97b6bf: Lock all dependencies in our packages
+- Updated dependencies [b97b6bf]
+- Updated dependencies [6419962]
+- Updated dependencies [9335026]
+- Updated dependencies [00b0bb9]
+  - workflow@4.0.1-beta.14
+  - @workflow/cli@4.0.1-beta.14
+  - @workflow/world@4.0.1-beta.5
+
 ## 4.0.1-beta.14
 
 ### Patch Changes

@@ -1,5 +1,23 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- 00b0bb9: Support structured error rendering
+- b97b6bf: Lock all dependencies in our packages
+- c1ccdc8: [web-shared] Cache world instantiation in server actions (#304)
+- Updated dependencies [5eb588a]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [85ce8e0]
+- Updated dependencies [b97b6bf]
+- Updated dependencies [f8e5d10]
+- Updated dependencies [6be03f3]
+- Updated dependencies [f07b2da]
+- Updated dependencies [00b0bb9]
+  - @workflow/core@4.0.1-beta.12
+  - @workflow/world@4.0.1-beta.5
+
 ## 4.0.1-beta.12
 
 ### Patch Changes

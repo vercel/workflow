@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- 00b0bb9: Add error stack propogation to steps and runs
+
 ## 4.0.1-beta.4
 
 ### Patch Changes

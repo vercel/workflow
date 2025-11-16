@@ -1,5 +1,16 @@
 # @workflow/ai
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- 45b7b41: Add support for defining `model` as a step function initializer
+- 23f5c1d: Make `tools` optional in DurableAgent
+- Updated dependencies [b97b6bf]
+- Updated dependencies [6419962]
+- Updated dependencies [9335026]
+  - workflow@4.0.1-beta.14
+
 ## 4.0.1-beta.13
 
 ### Patch Changes

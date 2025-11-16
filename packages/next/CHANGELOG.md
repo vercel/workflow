@@ -1,5 +1,25 @@
 # @workflow/next
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- Updated dependencies [5eb588a]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [0b848cd]
+- Updated dependencies [85ce8e0]
+- Updated dependencies [8e96134]
+- Updated dependencies [b97b6bf]
+- Updated dependencies [45b7b41]
+- Updated dependencies [f8e5d10]
+- Updated dependencies [6be03f3]
+- Updated dependencies [8002e0f]
+- Updated dependencies [f07b2da]
+- Updated dependencies [aecdcdf]
+  - @workflow/swc-plugin@4.0.1-beta.6
+  - @workflow/core@4.0.1-beta.12
+  - @workflow/builders@4.0.1-beta.10
+
 ## 4.0.1-beta.13
 
 ### Patch Changes
