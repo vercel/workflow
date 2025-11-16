@@ -21,8 +21,16 @@ export interface Span {
   links: Record<string, unknown>[];
   events: SpanEvent[];
   startTime: [number, number];
-  endTime: [number, number];
-  duration: [number, number];
+  /**
+   * End time can be a normal time tuple or the special string "now"
+   * which will be dynamically calculated by the trace viewer
+   */
+  endTime: [number, number] | 'now';
+  /**
+   * Duration can be a normal time tuple or the special string "now"
+   * which will be dynamically calculated by the trace viewer
+   */
+  duration: [number, number] | 'now';
 }
 
 export interface SpanEvent {

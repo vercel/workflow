@@ -26,7 +26,7 @@ import { parseTrace } from './util/tree';
 import { useStreamingSpans } from './util/use-streaming-spans';
 
 interface TraceViewerProps {
-  trace?: Trace;
+  trace: Trace;
   className?: string;
   scrollLock?: boolean;
   height?: string | number;
@@ -55,65 +55,56 @@ interface LastClickRef {
   spanId: string;
 }
 
-const skeletonTrace: Trace = {
-  traceId: 'skeleton',
-  spans: [
-    {
-      parentSpanId: '',
-      spanId: 'root',
-      name: 'root span',
-      kind: 1,
-      resource: 'vercel.runtime',
-      startTime: [5000, 0],
-      endTime: [6000, 0],
-      duration: [1000, 0],
-      library: {
-        name: 'vercel-site',
-      },
-      status: {
-        code: 1,
-      },
-      attributes: {
-        'vercel.ownerId': 'team_abc',
-      },
-      traceFlags: 1,
-      events: [],
-      links: [],
-    },
-  ],
-  resources: [
-    {
-      name: 'vercel.runtime',
-      attributes: {},
-    },
-  ],
-  rootSpanId: 'root',
-};
-
 export function TraceViewerTimeline({
-  trace = skeletonTrace,
+  trace,
   className = '',
   scrollLock = false,
   height,
   withPanel = false,
   highlightedSpans,
 }: Omit<TraceViewerProps, 'getQuickLinks'>): ReactNode {
-  const isSkeleton = trace === skeletonTrace;
   const { state, dispatch } = useTraceViewer();
   const { timelineRef, scrollSnapshotRef } = state;
   const memoCache = state.memoCacheRef.current;
-  const hideSearchBar =
-    (highlightedSpans?.length ?? 0) > 0 || trace.spans.length <= 10;
+  const hideSearchBar = true;
 
   useEffect(() => {
-    const { root, map: spanMap } = parseTrace(trace);
+    const { root, map: spanMap } = parseTrace(trace, state.now);
     dispatch({
       type: 'setRoot',
       root,
       spanMap,
       resources: trace.resources || [],
     });
-  }, [dispatch, trace]);
+  }, [dispatch, trace, state.now]);
+
+  // Set up interval to update "now" for spans with dynamic end times
+  useEffect(() => {
+    // Check if any spans have "now" as endTime - if so, set up interval
+    const hasNowSpans = trace.spans.some(
+      (span) => span.endTime === 'now' || span.duration === 'now'
+    );
+
+    if (!hasNowSpans) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      // Re-check on each tick if we still have "now" spans
+      const stillHasNowSpans = trace.spans.some(
+        (span) => span.endTime === 'now' || span.duration === 'now'
+      );
+
+      if (stillHasNowSpans) {
+        dispatch({
+          type: 'updateNow',
+          now: Date.now(),
+        });
+      }
+    }, 2000); // Update every 2s - balances smooth animation with preserving hover states
+
+    return () => clearInterval(interval);
+  }, [dispatch, trace.spans]);
 
   const { rows, spans, events, scale } = useStreamingSpans(highlightedSpans);
 
@@ -311,11 +302,7 @@ export function TraceViewerTimeline({
 
   return (
     <div
-      className={clsx(
-        styles.traceViewer,
-        isSkeleton && styles.skeleton,
-        className
-      )}
+      className={clsx(styles.traceViewer, className)}
       onClickCapture={onClick}
       ref={ref}
       style={

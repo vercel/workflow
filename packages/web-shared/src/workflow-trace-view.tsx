@@ -1,5 +1,5 @@
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { toast } from 'sonner';
 import type { EnvMap } from './api/workflow-server-actions';
 import { Skeleton } from './components/ui/skeleton';
@@ -21,8 +21,6 @@ import {
 } from './workflow-traces/trace-span-construction';
 import { otelTimeToMs } from './workflow-traces/trace-time-utils';
 
-const RE_RENDER_INTERVAL_MS = 2000;
-
 export const WorkflowTraceViewer = ({
   run,
   steps,
@@ -40,18 +38,6 @@ export const WorkflowTraceViewer = ({
   isLoading?: boolean;
   error?: Error | null;
 }) => {
-  const [now, setNow] = useState(() => new Date());
-
-  useEffect(() => {
-    if (!run?.completedAt) {
-      const interval = setInterval(() => {
-        setNow(new Date());
-      }, RE_RENDER_INTERVAL_MS);
-      return () => clearInterval(interval);
-    }
-    return undefined;
-  }, [run?.completedAt]);
-
   const trace = useMemo(() => {
     if (!run) {
       return undefined;
@@ -100,21 +86,21 @@ export const WorkflowTraceViewer = ({
     // First step is child of root, each subsequent step is child of previous
     const stepSpans = steps.map((step) => {
       const stepEvents = eventsByStepId.get(step.stepId) || [];
-      return stepToSpan(step, stepEvents, now);
+      return stepToSpan(step, stepEvents);
     });
 
     const hookSpans = hooks.map((hook) => {
       const hookEvents = eventsByHookId.get(hook.hookId) || [];
-      return hookToSpan(hook, hookEvents, now);
+      return hookToSpan(hook, hookEvents);
     });
 
     const waitSpans = Array.from(timerEvents.entries()).map(
       ([correlationId, events]) => {
-        return waitToSpan(correlationId, events, now);
+        return waitToSpan(correlationId, events);
       }
     );
 
-    const runSpan = runToSpan(run, runLevelEvents, now);
+    const runSpan = runToSpan(run, runLevelEvents);
     const spans = [...stepSpans, ...hookSpans, ...waitSpans];
     const sortedSpans = [
       runSpan,
@@ -147,7 +133,7 @@ export const WorkflowTraceViewer = ({
         },
       ],
     };
-  }, [run, steps, hooks, events, now]);
+  }, [run, steps, hooks, events]);
 
   useEffect(() => {
     if (error && !isLoading) {
