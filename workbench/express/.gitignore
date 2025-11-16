@@ -1,0 +1,9 @@
+manifest.js
+.well-known/
+.nitro
+.output
+.data
+.vercel
+
+# Workflows
+src/lib/_workflows.ts

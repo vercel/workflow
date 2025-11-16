@@ -23,6 +23,7 @@
     "docs": "4.0.0",
     "@workflow/example-app": "0.0.2-alpha.18",
     "@workflow/example-hono": "0.0.0",
+    "@workflow/example-express": "0.0.0",
     "nextjs-turbopack": "0.0.2-alpha.5",
     "nextjs-webpack": "0.0.2-alpha.5",
     "@workflow/example-nitro-v3": "0.0.0",

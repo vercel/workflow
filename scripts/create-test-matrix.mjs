@@ -100,4 +100,9 @@ matrix.app.push({
   ...DEV_TEST_CONFIGS.vite,
 });
 
+matrix.app.push({
+  name: 'express',
+  project: 'workbench-express-workflow',
+});
+
 console.log(JSON.stringify(matrix));
