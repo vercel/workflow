@@ -43,6 +43,13 @@ const DEV_TEST_CONFIGS = {
     apiFilePath: 'server.ts',
     apiFileImportPath: '.',
   },
+  astro: {
+    generatedStepPath: 'src/pages/.well-known/workflow/v1/step.js',
+    generatedWorkflowPath: 'src/pages/.well-known/workflow/v1/flow.js',
+    apiFilePath: 'src/pages/api/chat.ts',
+    apiFileImportPath: '../..',
+    workflowsDir: 'src/workflows',
+  },
 };
 
 const matrix = {
@@ -98,6 +105,12 @@ matrix.app.push({
   name: 'vite',
   project: 'workbench-vite-workflow',
   ...DEV_TEST_CONFIGS.vite,
+});
+
+matrix.app.push({
+  name: 'astro',
+  project: 'workbench-astro-workflow',
+  ...DEV_TEST_CONFIGS.astro,
 });
 
 console.log(JSON.stringify(matrix));

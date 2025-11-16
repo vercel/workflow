@@ -41,6 +41,7 @@
     "./nitro": "./dist/nitro.js",
     "./nuxt": "./dist/nuxt.js",
     "./sveltekit": "./dist/sveltekit.js",
+    "./astro": "./dist/astro.js",
     "./rollup": "./dist/rollup.js",
     "./vite": "./dist/vite.js",
     "./runtime": "./dist/runtime.js"
@@ -53,6 +54,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@workflow/astro": "workspace:*",
     "@workflow/cli": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",

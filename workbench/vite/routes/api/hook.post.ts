@@ -1,4 +1,4 @@
-import { getHookByToken, resumeHook } from 'workflow/api';
+import { getHookByToken, resumeHook } from "workflow/api";
 
 export default async ({ req }: { req: Request }) => {
   const { token, data } = await req.json();
@@ -6,9 +6,9 @@ export default async ({ req }: { req: Request }) => {
   let hook: Awaited<ReturnType<typeof getHookByToken>>;
   try {
     hook = await getHookByToken(token);
-    console.log('hook', hook);
+    console.log("hook", hook);
   } catch (error) {
-    console.log('error during getHookByToken', error);
+    console.log("error during getHookByToken", error);
     // TODO: `WorkflowAPIError` is not exported, so for now
     // we'll return 422 assuming it's the "invalid" token test case
     // NOTE: Need to return 422 because Nitro passes 404 requests to the dev server to handle.
