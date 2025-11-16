@@ -640,12 +640,14 @@ export const stepEntrypoint =
           let result: unknown;
           const attempt = step.attempt + 1;
           try {
-            if (step.status !== 'pending') {
-              // We should only be running the step if it's pending
-              // (initial state, or state set on re-try), so the step has been
+            if (!['pending', 'running'].includes(step.status)) {
+              // We should only be running the step if it's either
+              // a) pending - initial state, or state set on re-try
+              // b) running - if a step fails mid-execution, like a function timeout
+              // so the step has been
               // invoked erroneously.
               console.error(
-                `[Workflows] "${workflowRunId}" - Step invoked erroneously, expected status "pending", got "${step.status}" instead, skipping execution`
+                `[Workflows] "${workflowRunId}" - Step invoked erroneously, expected status "pending" or "running", got "${step.status}" instead, skipping execution`
               );
               span?.setAttributes({
                 ...Attribute.StepSkipped(true),
@@ -698,22 +700,30 @@ export const stepEntrypoint =
               () => stepFn(...args)
             );
 
+            // NOTE: None of the code from this point is guaranteed to run
+            // Since the step might fail or cause a function timeout and the process might be SIGKILL'd
+            // The workflow runtime must be resilient to the below code not executing on a failed step
+
             result = dehydrateStepReturnValue(result, ops);
 
             waitUntil(Promise.all(ops));
 
-            // Update the event log with the step result
+            // Mark the step as completed first. This order is important. If a concurrent
+            // execution marked the step as complete, this request should throw, and
+            // this prevent the step_completed event in the event log
+            // TODO: this should really be atomic and handled by the world
+            await world.steps.update(workflowRunId, stepId, {
+              status: 'completed',
+              output: result as Serializable,
+            });
+
+            // Then, append the event log with the step result
             await world.events.create(workflowRunId, {
               eventType: 'step_completed',
               correlationId: stepId,
               eventData: {
                 result: result as Serializable,
               },
-            });
-
-            await world.steps.update(workflowRunId, stepId, {
-              status: 'completed',
-              output: result as Serializable,
             });
 
             span?.setAttributes({
