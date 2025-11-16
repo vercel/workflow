@@ -1,5 +1,34 @@
 # @workflow/core
 
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- 5eb588a: Remove step function identifier transform out of swc-plugin and into `useStep()` runtime function
+- 00b0bb9: Implement the world's structured error interface
+- 85ce8e0: add waitUntil wrapping for toplevel commands for transaction-like behavior
+
+  when deployed on Vercel or other serverless providers, we must signal that we need to wait until operations are done before the function can halt the request.
+
+  This means that we can't rely on discrete operations (like Queue.queue or Storage calls), and instead wrap the entire `start` function (which calls multiple discrete operations) in a single `await waitUntil` call.
+
+- b97b6bf: Lock all dependencies in our packages
+- f8e5d10: Support serializing step function references
+- 6be03f3: Use "stepId" instead of `Symbol.for("STEP_FUNCTION_NAME_SYMBOL")` for annotating step functions
+- f07b2da: Transform step functions to single `useStep()` calls
+- Updated dependencies [aa015af]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [b97b6bf]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [79480f2]
+  - @workflow/world-local@5.0.0-beta.8
+  - @workflow/world-vercel@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.5
+  - @workflow/utils@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.5
+
 ## 4.0.1-beta.11
 
 ### Patch Changes

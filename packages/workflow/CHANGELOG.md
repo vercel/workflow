@@ -1,5 +1,31 @@
 # workflow
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- b97b6bf: Lock all dependencies in our packages
+- 6419962: Update readme
+- 9335026: stub `workflow/api` in a workflow context with functions that fail immediately, so they can be referenced in workflow-related code but not invoked
+- Updated dependencies [945a946]
+- Updated dependencies [945a946]
+- Updated dependencies [5eb588a]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [85ce8e0]
+- Updated dependencies [b97b6bf]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [f8e5d10]
+- Updated dependencies [6be03f3]
+- Updated dependencies [f07b2da]
+  - @workflow/nitro@4.0.1-beta.14
+  - @workflow/sveltekit@4.0.0-beta.8
+  - @workflow/core@4.0.1-beta.12
+  - @workflow/errors@4.0.1-beta.5
+  - @workflow/nuxt@4.0.1-beta.3
+  - @workflow/cli@4.0.1-beta.14
+  - @workflow/next@4.0.1-beta.14
+  - @workflow/typescript-plugin@4.0.1-beta.4
+
 ## 4.0.1-beta.13
 
 ### Patch Changes

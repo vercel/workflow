@@ -1,5 +1,30 @@
 # @workflow/world-local
 
+## 5.0.0-beta.8
+
+### Major Changes
+
+- aa015af: BREAKING: Change `createEmbeddedWorld` API signature from positional parameters to config object. Add baseUrl configuration support.
+
+  **Breaking change:**
+
+  - `createEmbeddedWorld(dataDir?, port?)` → `createEmbeddedWorld(args?: Partial<Config>)`
+
+  **New features:**
+
+  - Add `baseUrl` config option for HTTPS and custom hostnames (via config or `WORKFLOW_EMBEDDED_BASE_URL` env var)
+  - Support for port 0 (OS-assigned port)
+
+### Patch Changes
+
+- 00b0bb9: Support for structured errors
+- b97b6bf: Lock all dependencies in our packages
+- 79480f2: Clean up Hook entities after a workflow run has completed
+- Updated dependencies [b97b6bf]
+- Updated dependencies [00b0bb9]
+  - @workflow/utils@4.0.1-beta.3
+  - @workflow/world@4.0.1-beta.5
+
 ## 4.0.1-beta.7
 
 ### Patch Changes

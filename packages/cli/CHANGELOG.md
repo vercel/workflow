@@ -1,5 +1,37 @@
 # @workflow/cli
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- b97b6bf: Lock all dependencies in our packages
+- Updated dependencies [aa015af]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [5eb588a]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [0b848cd]
+- Updated dependencies [85ce8e0]
+- Updated dependencies [8e96134]
+- Updated dependencies [b97b6bf]
+- Updated dependencies [45b7b41]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [f8e5d10]
+- Updated dependencies [6be03f3]
+- Updated dependencies [8002e0f]
+- Updated dependencies [f07b2da]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [79480f2]
+- Updated dependencies [aecdcdf]
+  - @workflow/world-local@5.0.0-beta.8
+  - @workflow/swc-plugin@4.0.1-beta.6
+  - @workflow/core@4.0.1-beta.12
+  - @workflow/builders@4.0.1-beta.10
+  - @workflow/world-vercel@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.5
+  - @workflow/web@4.0.1-beta.11
+  - @workflow/world@4.0.1-beta.5
+
 ## 4.0.1-beta.13
 
 ### Patch Changes

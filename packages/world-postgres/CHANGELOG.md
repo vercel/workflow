@@ -1,5 +1,24 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.10
+
+### Patch Changes
+
+- 5790cb2: Use drizzle migrator
+- b97b6bf: Lock all dependencies in our packages
+- 00b0bb9: Support structured errors for steps and runs
+- a6f5545: Update migration and parse data through schemas
+- 79480f2: Clean up Hook entities after a workflow run has completed
+- Updated dependencies [aa015af]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [b97b6bf]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [79480f2]
+  - @workflow/world-local@5.0.0-beta.8
+  - @workflow/errors@4.0.1-beta.5
+  - @workflow/world@4.0.1-beta.5
+
 ## 4.1.0-beta.9
 
 ### Patch Changes
