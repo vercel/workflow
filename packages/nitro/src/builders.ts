@@ -74,7 +74,7 @@ export class LocalBuilder extends BaseBuilder {
 }
 
 export function getWorkflowDirs(nitro: Nitro) {
-  const srcDir = nitro.options.srcDir || nitro.options.rootDir;
+  const srcDir = nitro.options.serverDir || nitro.options.rootDir;
 
   return unique(
     [
