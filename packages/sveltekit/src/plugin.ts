@@ -4,7 +4,7 @@ import { resolveModulePath } from 'exsolve';
 import type { HotUpdateOptions, Plugin } from 'vite';
 import { SvelteKitBuilder } from './builder.js';
 
-export function workflowPlugin(): Plugin {
+export function workflowPlugin(options?: WorkflowPluginOptions): Plugin {
   let builder: SvelteKitBuilder;
 
   return {

@@ -28,9 +28,9 @@
   },
   "dependencies": {
     "@swc/core": "1.11.24",
-    "@workflow/swc-plugin": "workspace:*",
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
     "exsolve": "1.0.7",
     "pathe": "2.0.3"
   },
@@ -38,6 +38,6 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "nitro": "catalog:",
-    "vite": "7.1.12"
+    "vite": "catalog:"
   }
 }
