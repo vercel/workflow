@@ -340,7 +340,9 @@ export function workflowEntrypoint(workflowCode: string) {
             const now = Date.now();
             for (const event of events) {
               if (event.eventType === 'wait_created') {
-                const resumeAt = event.eventData.resumeAt as Date;
+                const resumeAt = event.eventData.resumeAt
+                  ? new Date(event.eventData.resumeAt)
+                  : undefined;
                 const hasCompleted = events.some(
                   (e) =>
                     e.eventType === 'wait_completed' &&
@@ -348,7 +350,7 @@ export function workflowEntrypoint(workflowCode: string) {
                 );
 
                 // If wait has elapsed and hasn't been completed yet
-                if (!hasCompleted && now >= resumeAt.getTime()) {
+                if (!hasCompleted && resumeAt && now >= resumeAt.getTime()) {
                   const completedEvent = await world.events.create(runId, {
                     eventType: 'wait_completed',
                     correlationId: event.correlationId,
