@@ -1,4 +1,5 @@
 import type {
+  LanguageModelV2,
   LanguageModelV2Prompt,
   LanguageModelV2ToolCall,
   LanguageModelV2ToolResultPart,
@@ -17,7 +18,7 @@ export async function* streamTextIterator({
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
   writable: WritableStream<UIMessageChunk>;
-  model: string;
+  model: string | (() => Promise<LanguageModelV2>);
 }): AsyncGenerator<
   LanguageModelV2ToolCall[],
   void,
