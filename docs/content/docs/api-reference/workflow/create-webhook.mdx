@@ -2,10 +2,6 @@
 title: createWebhook
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
-# `createWebhook()`
-
 Creates a webhook that can be used to suspend and resume a workflow run upon receiving an HTTP request.
 
 Webhooks provide a way for external systems to send HTTP requests directly to your workflow. Unlike hooks which accept arbitrary payloads, webhooks work with standard HTTP `Request` objects and can return HTTP `Response` objects.
@@ -28,22 +24,18 @@ export async function webhookWorkflow() {
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { createWebhook } from "workflow";
-export default createWebhook;`
-})}
+export default createWebhook;`}
 showSections={['parameters']}
 />
 
 ### Returns
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { createWebhook } from "workflow";
-export default createWebhook;`
-})}
+export default createWebhook;`}
 showSections={['returns']}
 />
 

@@ -2,12 +2,12 @@ import cn from 'clsx';
 import Slugger from 'github-slugger';
 import Link from 'next/link';
 import type { FC, ReactElement, ReactNode } from 'react';
-import { Callout } from '@/components/ui/callout';
-import type { generateDefinition } from './base';
+import { Callout } from '@/components/geistdocs/callout';
+import { generateDefinition } from './base';
 import type { GeneratedFunction, TypeField } from './types';
 
 type TSDocProps = {
-  definition: ReturnType<typeof generateDefinition>;
+  definition: string;
   typeLinkMap?: Record<string, string>;
   noParametersContent?: ReactNode;
   showSections: ('parameters' | 'returns' | 'throws')[];
@@ -23,7 +23,7 @@ const classes = {
 };
 
 export const TSDoc: FC<TSDocProps> = ({
-  definition,
+  definition: rawDefinition,
   typeLinkMap = {},
   noParametersContent = (
     <p className="text-muted-foreground">
@@ -32,6 +32,9 @@ export const TSDoc: FC<TSDocProps> = ({
   ),
   showSections = ['parameters', 'returns'],
 }) => {
+  const definition = generateDefinition({
+    code: rawDefinition,
+  });
   const showParameters = showSections.includes('parameters');
   const showReturns = showSections.includes('returns');
   const showThrows = showSections.includes('throws');

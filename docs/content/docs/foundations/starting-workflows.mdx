@@ -2,11 +2,7 @@
 title: Starting Workflows
 ---
 
-# Starting Workflows
-
 Once you've defined your workflow functions, you need to trigger them to begin execution. This is done using the `start()` function from `workflow/api`, which enqueues a new workflow run and returns a `Run` object that you can use to track its progress.
-
----
 
 ## The `start()` Function
 
@@ -37,8 +33,6 @@ export async function POST(request: Request) {
 - All arguments must be [serializable](/docs/foundations/serialization)
 
 **Learn more:** [`start()` API Reference](/docs/api-reference/workflow-api/start)
-
----
 
 ## The `Run` Object
 
@@ -72,8 +66,6 @@ Most `Run` properties are async getters that return promises. You need to `await
 </Callout>
 
 **Learn more:** [`Run` API Reference](/docs/api-reference/workflow-api/start#returns)
-
----
 
 ## Common Patterns
 
@@ -209,8 +201,6 @@ export async function GET(request: Request) {
   return Response.json({ status });
 }
 ```
-
----
 
 ## Next Steps
 

@@ -2,10 +2,6 @@
 title: FatalError
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
-# `FatalError`
-
 When a `FatalError` is thrown in a step, it indicates that the workflow should not retry a step, marking it as failure.
 
 You should use this when you don't want a specific step to retry.
@@ -29,8 +25,7 @@ async function fallibleStep() {
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 interface Error {
   /**
 
@@ -38,6 +33,5 @@ interface Error {
    */
   message: string;
 }
-export default Error;`
-})}
+export default Error;`}
 />

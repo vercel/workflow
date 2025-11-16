@@ -23,22 +23,24 @@ export const metadata: Metadata = {
 };
 
 const Home = () => (
-  <>
-    <Hero title={title} description={description} />
-    <div className="grid divide-y border-y sm:border-x">
-      <Intro />
-      <Implementation />
-      <div className="grid lg:grid-cols-2 divide-y md:divide-y-0 md:divide-x">
-        <Observability />
-        <Frameworks />
+  <div className="bg-sidebar [&_h1]:tracking-tighter [&_h2]:tracking-tighter [&_h3]:tracking-tighter [&_h4]:tracking-tighter [&_h5]:tracking-tighter [&_h6]:tracking-tighter">
+    <div className="mx-auto w-full max-w-[1080px]">
+      <Hero title={title} description={description} />
+      <div className="grid divide-y border-y sm:border-x">
+        <Intro />
+        <Implementation />
+        <div className="grid lg:grid-cols-2 divide-y md:divide-y-0 md:divide-x">
+          <Observability />
+          <Frameworks />
+        </div>
+        <Features />
+        <RunAnywhere />
+        <UseCases />
+        <Templates />
+        <CTA />
       </div>
-      <Features />
-      <RunAnywhere />
-      <UseCases />
-      <Templates />
-      <CTA />
     </div>
-  </>
+  </div>
 );
 
 export default Home;

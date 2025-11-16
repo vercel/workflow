@@ -2,8 +2,6 @@
 title: Framework Integrations
 ---
 
-# Building Framework Integrations
-
 <Callout>
   **For users:** If you just want to use Workflow DevKit with an existing framework, check out the [Getting Started](/docs/getting-started) guide instead. This page is for framework authors who want to integrate Workflow DevKit with their framework or runtime.
 </Callout>
@@ -13,8 +11,6 @@ This guide walks you through building a framework integration for Workflow DevKi
 <Callout type="info">
   **Prerequisites:** Before building a framework integration, we recommend reading [How the Directives Work](/docs/how-it-works/code-transform) to understand the transformation system that powers Workflow DevKit.
 </Callout>
-
----
 
 ## What You'll Build
 
@@ -44,8 +40,6 @@ flowchart TD
 ```
 
 The purple boxes are what you implement—everything else is provided by Workflow DevKit.
-
----
 
 ## Example: Bun Integration
 
@@ -172,8 +166,6 @@ console.log(`Server listening on http://localhost:${server.port}`);
 
 **That's it!** Your Bun integration is complete.
 
----
-
 ## Understanding the Endpoints
 
 Your integration must expose three HTTP endpoints. The generated handlers manage all protocol details—you just route requests.
@@ -206,8 +198,6 @@ Delivers webhook data to running workflows via [`createWebhook()`](/docs/api-ref
 <Callout type="info">
   The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to leverage App Router's dynamic routing, while other frameworks generate a single `webhook.js` handler.
 </Callout>
-
----
 
 ## Adapting to Other Frameworks
 
@@ -342,8 +332,6 @@ Production framework integrations should handle this routing in the plugin inste
 Check the Workflow DevKit source code for examples of production framework implementations.
 In the future, the Workflow DevKit will emit more routes under the `.well-known/workflow` namespace.
 
----
-
 ## Security
 
 **How are these HTTP endpoints secured?**
@@ -364,8 +352,6 @@ Security is handled by the **world abstraction** you're using:
 - Rate limiting and request validation
 
 Learn more about [world abstractions](/docs/deploying/world).
-
----
 
 ## Testing Your Integration
 

@@ -4,8 +4,6 @@ title: Understanding Directives
 
 import { File, Folder, Files } from 'fumadocs-ui/components/files';
 
-# Understanding Directives
-
 <Callout>
 This guide explores how JavaScript directives enable the Workflow DevKit's execution model. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
@@ -15,8 +13,6 @@ The Workflow Development Kit uses JavaScript directives (`"use workflow"` and `"
 This page explores how directives enable this execution model and the design principles that led us here.
 
 To understand how directives work, let's first understand what workflows and steps are in the Workflow DevKit.
-
----
 
 ## Workflows and Steps Primer
 
@@ -62,8 +58,6 @@ This replay mechanism requires deterministic code. If `Math.random()` weren't se
 For a deeper dive into workflows and steps, see [Workflows and Steps](/docs/foundations/workflows-and-steps).
 </Callout>
 
----
-
 ## The Core Challenge
 
 This execution model enables powerful durability features - workflows can suspend for days, survive restarts, and resume from any point. However, it also requires a semantic boundary in the code that tells **the compiler, runtime, and developer** that execution semantics have changed.
@@ -76,8 +70,6 @@ The challenge: how do we mark this boundary in a way that:
 4. Feels natural to JavaScript developers
 
 Let's look at where directives have been used before, and the alternatives we considered:
-
----
 
 ## Prior art on directives
 
@@ -103,8 +95,6 @@ The `"use workflow"` directive is also used by the Language Server Plugin shippe
 </Callout>
 
 But we didn't get here immediately. This took some discovery to arrive at:
-
----
 
 ## Alternatives We Explored
 
@@ -421,8 +411,6 @@ To detect that `processOrder` is actually a workflow, the compiler would need wh
 
 This level of cross-function analysis is impractical for build tools - it would require analyzing every function call chain in your entire codebase and all dependencies. The compiler can only reliably detect direct `useWorkflow` calls, not calls hidden behind abstractions.
 
----
-
 ## How Directives Solve These Problems
 
 Directives address all the issues we encountered with previous approaches:
@@ -573,8 +561,6 @@ By requiring explicit `"use step"` directives, developers have fine-grained cont
 To understand how directives are transformed at compile time, see [How the Code Transform Works](/docs/how-it-works/code-transform).
 </Callout>
 
----
-
 ## What Directives Enable
 
 Because `"use workflow"` defines a compile-time semantic boundary, we can provide:
@@ -594,8 +580,6 @@ Because `"use workflow"` defines a compile-time semantic boundary, we can provid
   </Card>
 </Cards>
 
----
-
 ## Directives as a JavaScript Pattern
 
 Directives in JavaScript have always been contracts between the developer and the execution environment. `"use strict"` made this pattern familiar - it's a string literal that changes how code is interpreted.
@@ -603,8 +587,6 @@ Directives in JavaScript have always been contracts between the developer and th
 While JavaScript doesn't yet have first-class support for custom directives (like Rust's `#[attribute]` or C++'s `#pragma`), string literal directives are the most pragmatic tool available today.
 
 As TC39 members, we at Vercel are actively working with the standards body and broader ecosystem to explore formal specifications for pragma-like syntax or macro annotations that can express execution semantics.
-
----
 
 ## Closing Thoughts
 

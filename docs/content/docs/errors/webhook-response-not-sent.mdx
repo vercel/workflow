@@ -2,11 +2,7 @@
 title: webhook-response-not-sent
 ---
 
-# `webhook-response-not-sent`
-
 This error occurs when a webhook is configured with `respondWith: "manual"` but the workflow does not send a response using `request.respondWith()` before the webhook execution completes.
-
----
 
 ## Error Message
 
@@ -14,15 +10,11 @@ This error occurs when a webhook is configured with `respondWith: "manual"` but 
 Workflow run did not send a response
 ```
 
----
-
 ## Why This Happens
 
 When you create a webhook with `respondWith: "manual"`, you are responsible for calling `request.respondWith()` to send the HTTP response back to the caller. If the workflow execution completes without sending a response, this error will be thrown.
 
 The webhook infrastructure waits for a response to be sent, and if none is provided, it cannot complete the HTTP request properly.
-
----
 
 ## Common Causes
 
@@ -159,8 +151,6 @@ export async function webhookWorkflow() {
 }
 ```
 
----
-
 ## Alternative: Use Default Response Mode
 
 If you don't need custom response control, consider using the default response mode which automatically returns a `202 Accepted` response:
@@ -179,8 +169,6 @@ export async function webhookWorkflow() {
   // No need to call request.respondWith()
 }
 ```
-
----
 
 ## Learn More
 

@@ -38,5 +38,3 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Docs Linting
-        run: pnpm --filter docs lint:links
