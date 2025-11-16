@@ -6,7 +6,7 @@ import { File, Folder, Files } from 'fumadocs-ui/components/files';
 
 # Workflows and Steps
 
-Workflows (a.k.a. *durable functions*) are a programming model for building long-running, stateful application logic that can maintain their execution state across restarts, failures, or user events. Unlike traditional serverless functions that lose all state when they terminate, workflows persist their progress and can resume exactly where they left off.
+Workflows (a.k.a. *durable functions*) are a programming model for building long-running, stateful application logic that can maintain its execution state across restarts, failures, or user events. Unlike traditional serverless functions that lose all state when they terminate, workflows persist their progress and can resume exactly where they left off.
 
 Moreover, workflows let you easily model complex multi-step processes in simple, elegant code. To do this, we introduce two fundamental entities:
 
@@ -23,7 +23,7 @@ Workflow functions define the entrypoint of a workflow and organize how step fun
 
 Although this may seem limiting initially, this feature is important in order to suspend and accurately resume execution of workflows.
 
-It helps to think of the workflow function less like a full JavaScript runtime, and more like "stitching together" various steps using conditionals, loops, try/catch handlers, `Promise.all`, and other language primitives.
+It helps to think of the workflow function less like a full JavaScript runtime and more like "stitching together" various steps using conditionals, loops, try/catch handlers, `Promise.all`, and other language primitives.
 
 ```typescript lineNumbers
 export async function processOrderWorkflow(orderId: string) {
@@ -43,10 +43,9 @@ export async function processOrderWorkflow(orderId: string) {
 - All step results are persisted to the event log
 - Must be **deterministic** to allow resuming after failures
 
-Determinism in the workflow is required in order to resume the workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle,
-each time using an event log to resume the workflow to the correct spot.
+Determinism in the workflow is required to resume the workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle, each time using an event log to resume the workflow to the correct spot.
 
-The sandboxed environment that workflows run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them and the framework ensures that the values don't change across replays.
+The sandboxed environment that workflows run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them, and the framework ensures that the values don't change across replays.
 
 ## Step Functions
 
@@ -77,7 +76,7 @@ async function chargePayment(order: Order) {
 - Automatic retry on errors
 - Results persisted for replay
 
-By default, steps have a maximum of 3 retry attempts before they fail and propagate the error over to the workflow. Learn more about errors and retrying in the [Errors & Retrying](/docs/foundations/errors-and-retries) page.
+By default, steps have a maximum of 3 retry attempts before they fail and propagate the error to the workflow. Learn more about errors and retrying in the [Errors & Retrying](/docs/foundations/errors-and-retries) page.
 
 <Callout type="warning">
 **Important:** Due to serialization, parameters are passed by **value, not by reference**. If you pass an object or array to a step and mutate it, those changes will **not** be visible in the workflow context. Always return modified data from your step functions instead. See [Pass-by-Value Semantics](/docs/foundations/serialization#pass-by-value-semantics) for details and examples.
@@ -87,7 +86,7 @@ By default, steps have a maximum of 3 retry attempts before they fail and propag
 Step functions are primarily meant to be used inside a workflow.
 </Callout>
 
-Calling a step from outside a workflow, or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op). This means you can reuse step functions in other parts of your codebase without needing to duplicate business logic.
+Calling a step from outside a workflow or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op). This means you can reuse step functions in other parts of your codebase without needing to duplicate business logic.
 
 
 ```typescript lineNumbers
@@ -111,7 +110,7 @@ export async function POST() {
 ```
 
 <Callout type="info">
-Keep in mind that calling a step function outside of a workflow function will not have retry semantics nor will it be observable. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
+Keep in mind that calling a step function outside of a workflow function will not have retry semantics, nor will it be observable. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
 </Callout>
 
 ---

@@ -4,7 +4,7 @@ title: Control Flow Patterns
 
 # Control Flow Patterns
 
-Common distributed control flow patterns are really simple to implement in workflows and require learning no new syntax. You can just use familiar async/await patterns.
+Common distributed control flow patterns are simple to implement in workflows and require learning no new syntax. You can just use familiar async/await patterns.
 
 ---
 
@@ -28,7 +28,7 @@ export async function dataPipelineWorkflow(data: any) {
 
 ## Parallel Execution
 
-When needing to execute multiple steps in parallel, you can use `Promise.all` to run them all at the same time.
+When you need to execute multiple steps in parallel, you can use `Promise.all` to run them all at the same time.
 
 ```typescript lineNumbers
 export async function fetchUserData(userId: string) {
@@ -44,8 +44,8 @@ export async function fetchUserData(userId: string) {
 }
 ```
 
-This not only applies to steps - since [`sleep()`](/docs/api-reference/workflow/sleep) and [`webhook`](/docs/api-reference/workflow/create-webhook) are also just promises, we can await those in parallel too.
-We can also use `Promise.race` instead of `Promise.all` to stop executing the promises after the first one completes.
+This not only applies to steps—since [`sleep()`](/docs/api-reference/workflow/sleep) and [`webhook`](/docs/api-reference/workflow/create-webhook) are also just promises, we can await those in parallel too.
+We can also use `Promise.race` instead of `Promise.all` to stop executing promises after the first one completes.
 
 ```typescript lineNumbers
 
@@ -57,7 +57,7 @@ export async function runExternalTask(userId: string) {
   const webhook = createWebhook();
   await executeExternalTask(webhook.url); // Send the webhook somewhere
 
-  // Wait for the external webhook to hit, with a timeout of 1 day,
+  // Wait for the external webhook to be hit, with a timeout of 1 day,
   // whichever comes first
   await Promise.race([ // [!code highlight]
     webhook, // [!code highlight]
