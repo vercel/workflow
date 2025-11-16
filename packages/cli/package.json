@@ -46,6 +46,7 @@
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/errors": "workspace:*",
+    "@clack/prompts": "1.0.0-alpha.6",
     "@workflow/core": "workspace:*",
     "@workflow/web": "workspace:*",
     "@workflow/world": "workspace:*",
