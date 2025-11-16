@@ -1,9 +1,15 @@
 import type { Storage, World } from '@workflow/world';
-import PgBoss from 'pg-boss';
 import createPostgres from 'postgres';
-import type { PostgresWorldConfig } from './config.js';
+import { loadWorldConfig, type PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
+import { createFunctionProxy } from './proxies/function-proxy.js';
+import { createHttpProxy } from './proxies/http-proxy.js';
 import { createQueue } from './queue.js';
+import {
+  createPgBossFunctionProxyQueue,
+  createPgBossHttpProxyQueue,
+} from './queue-drivers/factories.js';
+import { createPgBossQueue } from './queue-drivers/pgboss.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -11,6 +17,32 @@ import {
   createStepsStorage,
 } from './storage.js';
 import { createStreamer } from './streamer.js';
+
+export function createWorld(
+  opts: PostgresWorldConfig = {}
+): World & { start(): Promise<void> } {
+  const config = loadWorldConfig(opts);
+
+  const queueDriver = opts.queueFactory
+    ? opts.queueFactory()
+    : createPgBossHttpProxyQueue();
+
+  const postgres = createPostgres(config.connectionString);
+  const drizzle = createClient(postgres);
+
+  const storage = createStorage(drizzle);
+  const queue = createQueue(queueDriver, config.securityToken);
+  const streamer = createStreamer(postgres, drizzle);
+
+  return {
+    ...storage,
+    ...streamer,
+    ...queue,
+    async start() {
+      await queueDriver.start();
+    },
+  };
+}
 
 function createStorage(drizzle: Drizzle): Storage {
   return {
@@ -21,36 +53,13 @@ function createStorage(drizzle: Drizzle): Storage {
   };
 }
 
-export function createWorld(
-  config: PostgresWorldConfig = {
-    connectionString:
-      process.env.WORKFLOW_POSTGRES_URL ||
-      'postgres://world:world@localhost:5432/world',
-    jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
-    queueConcurrency:
-      parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '10', 10) ||
-      10,
-  }
-): World & { start(): Promise<void> } {
-  const boss = new PgBoss({
-    connectionString: config.connectionString,
-  });
-  const postgres = createPostgres(config.connectionString);
-  const drizzle = createClient(postgres);
-  const queue = createQueue(boss, config);
-  const storage = createStorage(drizzle);
-  const streamer = createStreamer(postgres, drizzle);
-
-  return {
-    ...storage,
-    ...streamer,
-    ...queue,
-    async start() {
-      await queue.start();
-    },
-  };
-}
-
-// Re-export schema for users who want to extend or inspect the database schema
 export type { PostgresWorldConfig } from './config.js';
+// Re-export schema for users who want to extend or inspect the database schema
 export * from './drizzle/schema.js';
+
+export { createFunctionProxy, createHttpProxy };
+export {
+  createPgBossQueue,
+  createPgBossFunctionProxyQueue,
+  createPgBossHttpProxyQueue,
+};
