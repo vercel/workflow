@@ -72,3 +72,23 @@ export class LocalBuilder extends BaseBuilder {
     });
   }
 }
+<<<<<<< HEAD
+=======
+
+export function getWorkflowDirs(nitro: Nitro) {
+  const srcDir = nitro.options.serverDir || nitro.options.rootDir;
+
+  return unique(
+    [
+      ...(nitro.options.workflow?.dirs ?? []),
+      join(srcDir, 'workflows'),
+      join(srcDir, nitro.options.routesDir || 'routes'),
+      join(srcDir, nitro.options.apiDir || 'api'),
+    ].map((dir) => resolve(nitro.options.rootDir, dir))
+  ).sort();
+}
+
+function unique<T>(array: T[]): T[] {
+  return Array.from(new Set(array));
+}
+>>>>>>> 243e126a (fix(nitro): nitro builder using deprecated srcDir)
