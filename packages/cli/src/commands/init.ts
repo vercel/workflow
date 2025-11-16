@@ -86,7 +86,7 @@ export default class Init extends BaseCommand {
 
     intro('workflow init');
 
-    let template = flags.template ?? 'next';
+    let template = flags.template;
 
     const isNextApp = this.isNextApp();
 
@@ -94,6 +94,8 @@ export default class Init extends BaseCommand {
 
     if (isNextApp) {
       log.info('Detected Next.js app');
+
+      // TODO: Add setup in already existing project
 
       createNewProject = (await confirm({
         message: 'Create a new project?',
