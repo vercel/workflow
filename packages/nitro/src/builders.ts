@@ -76,15 +76,10 @@ export class LocalBuilder extends BaseBuilder {
 =======
 
 export function getWorkflowDirs(nitro: Nitro) {
-  const srcDir = nitro.options.serverDir || nitro.options.rootDir;
-
   return unique(
-    [
-      ...(nitro.options.workflow?.dirs ?? []),
-      join(srcDir, 'workflows'),
-      join(srcDir, nitro.options.routesDir || 'routes'),
-      join(srcDir, nitro.options.apiDir || 'api'),
-    ].map((dir) => resolve(nitro.options.rootDir, dir))
+    [...(nitro.options.workflow?.dirs ?? []), 'workflows'].map((dir) =>
+      resolve(nitro.options.rootDir, dir)
+    )
   ).sort();
 }
 
