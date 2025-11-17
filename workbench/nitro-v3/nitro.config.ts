@@ -1,6 +1,6 @@
-import { defineConfig } from "nitro";
+import { defineConfig } from 'nitro';
 
 export default defineConfig({
-  modules: ["workflow/nitro"],
-  serverDir: "./",
+  modules: ['workflow/nitro'],
+  serverDir: './',
 });
