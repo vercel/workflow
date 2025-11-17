@@ -17,12 +17,12 @@ export default {
       (config.plugins as Array<unknown>).push(workflowRollupPlugin());
     });
 
-    // Temporary workaround for debug unenv mock
+    // NOTE: Temporary workaround for debug unenv mock
     if (!nitro.options.workflow?._vite) {
       nitro.options.alias['debug'] ??= 'debug';
     }
 
-    // Externalize .nitro/workflow to prevent dev reloads
+    // NOTE: Externalize .nitro/workflow to prevent dev reloads
     if (nitro.options.dev) {
       nitro.options.externals ||= {};
       nitro.options.externals.external ||= [];
