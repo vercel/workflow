@@ -22,6 +22,7 @@ export default {
       nitro.options.alias['debug'] ??= 'debug';
     }
 
+<<<<<<< HEAD
     // NOTE: Externalize .nitro/workflow to prevent dev reloads
     if (nitro.options.dev) {
       nitro.options.externals ||= {};
@@ -29,6 +30,22 @@ export default {
       const outDir = join(nitro.options.buildDir, 'workflow');
       nitro.options.externals.external.push((id) => id.startsWith(outDir));
     }
+=======
+    // Externalize .nitro/workflow
+    // Virtual handlers import from node_modules/.nitro/workflow causing Rollup to try and bundle
+    if (!nitro.options.externals) {
+      nitro.options.externals = {};
+    }
+    if (!nitro.options.externals.external) {
+      nitro.options.externals.external = [];
+    }
+    if (!Array.isArray(nitro.options.externals.external)) {
+      nitro.options.externals.external = [nitro.options.externals.external];
+    }
+    nitro.options.externals.external.push((id) =>
+      id.includes('.nitro/workflow')
+    );
+>>>>>>> b7c8f566 (fix(nitro): externalize .nitro/workflow folder)
 
     // Add tsConfig plugin
     if (nitro.options.workflow?.typescriptPlugin) {
