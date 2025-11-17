@@ -1,6 +1,6 @@
 # @workflow/world-postgres
 
-A PostgreSQL-backed workflow runtime for durable, long-running workflows in JavaScript/TypeScript. Designed for multi-host self-hosted solutions with flexible queue and execution strategies.
+An embedded worker/workflow system backed by PostgreSQL for multi-host self-hosted solutions
 
 ## Installation
 
@@ -12,52 +12,54 @@ pnpm add @workflow/world-postgres
 yarn add @workflow/world-postgres
 ```
 
-## Quick Start (Next.js)
+## Usage
 
-Get started in seconds by adding this to your Next.js project:
+### Basic Setup
 
-```typescript
-// instrumentation.ts
-export async function register() {
-  if (process.env.NEXT_RUNTIME !== 'edge') {
-    const { createWorld } = await import("@workflow/world-postgres");
-
-    const world = createWorld();
-    await world.start();
-  }
-}
-```
-
-Set these environment variables:
+The postgres world can be configured by setting the WORKFLOW_TARGET_WORLD environment variable to the package name.
 
 ```bash
-export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
-export WORKFLOW_POSTGRES_URL="postgres://username:password@localhost:5432/database"
-export WORKFLOW_POSTGRES_SECURITY_TOKEN="your-secret-token-here"
-export WORKFLOW_POSTGRES_APP_URL="http://localhost:3000"
+WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+```
+
+### Configuration
+
+Configure the PostgreSQL world using environment variables:
+
+```bash
+WORKFLOW_POSTGRES_URL="postgres://username:password@localhost:5432/database"
+WORKFLOW_POSTGRES_SECURITY_TOKEN="your-secret-token-here"
+WORKFLOW_POSTGRES_APP_URL="http://localhost:3000"
+```
+
+### Programmatic Usage
+
+You can also create a PostgreSQL world directly in your code:
+
+```typescript
+import { createWorld, createPgBossQueue } from "@workflow/world-postgres";
+
+const world = createWorld({
+  connectionString: "postgres://username:password@localhost:5432/database",
+  securityToken: "your-secret-token-here",
+  queueFactorya: createPgBossHttpProxyQueue({
+    jobPrefix: "my-app",
+    queueConcurrency: 10,
+  }) 
+});
 ```
 
 **⚠️ IMPORTANT**: Always set a strong `WORKFLOW_POSTGRES_SECURITY_TOKEN` in production. This token authenticates queue workers when they call your workflow endpoints and prevents unauthorized access.
 
-That's it! The world will automatically use pg-boss for queuing and HTTP proxy for executing workflows.
-
 ## Architecture
 
-This package provides a layered architecture with three key components:
-
-- **Storage**: Persists workflow state in PostgreSQL (runs, events, steps, hooks, streaming chunks). All tables are isolated in their own PostgreSQL schema.
-- **Queue Driver**: Manages job queuing and worker orchestration (default: pg-boss, or bring your own)
-- **Proxy Strategy**: Determines how jobs are executed (HTTP calls or direct function invocation)
-
-## Execution Patterns
-
-The package supports flexible execution patterns based on two dimensions:
+The package supports flexible queues and execution patterns, letting you choose how jobs are queued and where the steps and workflows execution will be happen.
 
 ### Queue Strategy
 - **Built-in pg-boss** (default): Reliable PostgreSQL-backed job queue
 - **Custom queue**: Implement your own queue system (Redis, SQS, RabbitMQ, etc.)
 
-### Proxy Strategy
+### Execution Proxy Strategy
 - **HTTP Proxy**: Workers call workflow endpoints over HTTP (`/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`)
 - **Function Proxy**: Workers invoke workflow/step functions directly in-process
 
@@ -66,11 +68,11 @@ The package supports flexible execution patterns based on two dimensions:
 - **Separate Process**: Dedicated worker process(es) for better isolation and scaling
 - **Serverless**: Receive messages from your queue and call a proxy to execute workflows
 
-## Configuration Patterns
+## Advanced Usage
 
-### Pattern 1: pg-boss + HTTP Proxy (Default)
+### pg-boss + HTTP Proxy (Default)
 
-The simplest setup - workers make HTTP calls to your application:
+The simplest setup - jobs are queued usning pg-boss and workers make HTTP calls to your application:
 
 ```typescript
 import { createWorld } from "@workflow/world-postgres";
@@ -100,14 +102,15 @@ const world = createWorld({
 });
 ```
 
-### Pattern 2: pg-boss + Function Proxy
+### pg-boss + Function Proxy
 
-Workers call workflow functions directly in the same process - better performance, simpler deployment:
+Jobs are using pg-boss and workers directly call workflow functions in the same process
 
 ```typescript
+const { setWorld } = await import('workflow/runtime');
 import { createWorld, createPgBossFunctionProxyQueue } from "@workflow/world-postgres";
 
-// Import entrypoints from your Next.js API routes
+// Import entrypoints from your framework API routes
 import { __wkf_entrypoint as workflowEntrypoint } from './app/.well-known/workflow/v1/flow/route';
 import { __wkf_entrypoint as stepEntrypoint } from './app/.well-known/workflow/v1/step/route';
 
@@ -119,34 +122,17 @@ const world = createWorld({
     }),
 });
 
+setWorld(world);
+
 await world.start();
 ```
 
-**Required Environment Variables:**
-```bash
-WORKFLOW_POSTGRES_URL="postgres://username:password@localhost:5432/database"
-WORKFLOW_POSTGRES_SECURITY_TOKEN="your-secret-token-here"
-```
-
-**Optional:**
-All configuration can be passed programmatically:
-
-```typescript
-createPgBossFunctionProxyQueue({
-  stepEntrypoint,
-  workflowEntrypoint,
-  connectionString: "postgres://...",
-  securityToken: "your-secret-token",
-  jobPrefix: "myapp_",
-  queueConcurrency: 10,
-})
-```
-
-### Pattern 3: Custom Queue Driver
+### Custom Queue Driver + HTTP Proxy
 
 Implement your own queue system for maximum flexibility:
 
 ```typescript
+const { setWorld } = await import('workflow/runtime');
 import { createWorld } from "@workflow/world-postgres";
 import type { QueueDriver, MessageData } from "@workflow/world-postgres/queue-drivers/types";
 
@@ -182,67 +168,12 @@ const world = createWorld({
   queueFactory: () => myCustomQueue,
 });
 
-await world.start();
-```
-
-You can use the helper proxies:
-- `createHttpProxy({ baseUrl, securityToken })` - for HTTP execution
-- `createFunctionProxy({ stepEntrypoint, workflowEntrypoint, securityToken })` - for in-process execution
-
-See `src/queue-drivers/types.ts` for the full `QueueDriver` interface and `MessageData` structure.
-
-## Execution Environment Examples
-
-### Same Process (Next.js instrumentation.ts)
-
-Run workers in the same process as your Next.js application:
-
-```typescript
-// instrumentation.ts
-export async function register() {
-  if (process.env.NEXT_RUNTIME !== 'edge') {
-    const { createWorld, createPgBossFunctionProxyQueue } =
-      await import("@workflow/world-postgres");
-
-    const { __wkf_entrypoint: workflowEntrypoint } =
-      await import('./app/.well-known/workflow/v1/flow/route');
-    const { __wkf_entrypoint: stepEntrypoint } =
-      await import('./app/.well-known/workflow/v1/step/route');
-
-    const world = createWorld({
-      queueFactory: () =>
-        createPgBossFunctionProxyQueue({
-          stepEntrypoint,
-          workflowEntrypoint,
-        }),
-    });
-
-    await world.start();
-  }
-}
-```
-
-### Separate Worker Process
-
-Run workers in a dedicated process for better isolation:
-
-```typescript
-// worker.ts
-import { createWorld, createPgBossHttpProxyQueue } from "@workflow/world-postgres";
-
-const world = createWorld({
-  queueFactory: () =>
-    createPgBossHttpProxyQueue({
-      baseUrl: "http://localhost:3000", // Your app URL
-    }),
-});
+setWorld(world);
 
 await world.start();
 ```
 
-Then run: `node worker.ts`
-
-### Serverless
+### Serverless execution
 
 In a serverless environment, receive messages from your queue and execute them via proxy:
 
@@ -332,78 +263,6 @@ All environment variables can be overridden by passing configuration programmati
 - **Health Checks**: Built-in connection health monitoring
 - **Configurable Concurrency**: Adjustable worker concurrency for queue processing
 - **Type-Safe**: Full TypeScript support with exported types
-
-## API Reference
-
-### `createWorld(options)`
-
-Creates a workflow world instance with PostgreSQL storage.
-
-**Options:**
-- `connectionString?: string` - PostgreSQL connection string (default: `process.env.WORKFLOW_POSTGRES_URL`)
-- `securityToken?: string` - Token for authenticating queue workers (default: `process.env.WORKFLOW_POSTGRES_SECURITY_TOKEN`)
-- `queueFactory?: () => QueueDriver` - Factory function to create queue driver (default: `createPgBossHttpProxyQueue()`)
-
-**Returns:** World instance with `start()` method
-
-### Built-in Queue Factories
-
-#### `createPgBossHttpProxyQueue(options)`
-
-Creates a pg-boss queue driver with HTTP proxy execution.
-
-**Options:**
-- `connectionString?: string`
-- `securityToken?: string`
-- `jobPrefix?: string`
-- `queueConcurrency?: number`
-- `port?: number`
-- `baseUrl?: string`
-
-#### `createPgBossFunctionProxyQueue(options)`
-
-Creates a pg-boss queue driver with direct function call execution.
-
-**Options:**
-- `stepEntrypoint: (request: Request) => Promise<Response>` - Required
-- `workflowEntrypoint: (request: Request) => Promise<Response>` - Required
-- `connectionString?: string`
-- `securityToken?: string`
-- `jobPrefix?: string`
-- `queueConcurrency?: number`
-
-### Proxy Helpers
-
-#### `createHttpProxy(options)`
-
-Creates an HTTP proxy for executing workflows via HTTP calls.
-
-**Options:**
-- `baseUrl?: string` - Base URL of your application
-- `port?: number` - Port (if baseUrl not provided)
-- `securityToken: string` - Security token for authentication
-
-#### `createFunctionProxy(options)`
-
-Creates a function proxy for executing workflows via direct function calls.
-
-**Options:**
-- `stepEntrypoint: (request: Request) => Promise<Response>` - Required
-- `workflowEntrypoint: (request: Request) => Promise<Response>` - Required
-- `securityToken: string` - Security token for authentication
-
-## TypeScript Support
-
-All public APIs are fully typed. Import types from the package:
-
-```typescript
-import type {
-  QueueDriver,
-  MessageData,
-  WkfProxy,
-  PostgresWorldConfig
-} from "@workflow/world-postgres";
-```
 
 ## Development
 
