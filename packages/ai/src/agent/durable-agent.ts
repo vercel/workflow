@@ -67,7 +67,6 @@ export interface DurableAgentStreamOptions {
   /**
    * Condition for stopping the generation when there are tool results in the last step.
    * When the condition is an array, any of the conditions can be met to stop the generation.
-   * @default stepCountIs(1)
    */
   stopWhen?:
     | StopCondition<NoInfer<ToolSet>>
