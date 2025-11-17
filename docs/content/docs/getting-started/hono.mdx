@@ -206,9 +206,7 @@ app.post("/api/signup", async (c) => {
   return c.json({ message: "User signup workflow started" });
 });
 
-export default async (event: { req: Request }) => {
-  return app.fetch(event.req);
-};
+export default app;
 ```
 
 This route handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.
