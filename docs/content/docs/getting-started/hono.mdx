@@ -29,16 +29,16 @@ cd my-workflow-app
 
 <Tabs items={['npm', 'pnpm', 'yarn', 'bun']}>
   <Tab value="npm">
-    <CodeBlock>npm i workflow nitro</CodeBlock>
+    <CodeBlock>npm i workflow nitro rollup</CodeBlock>
   </Tab>
   <Tab value="pnpm">
-    <CodeBlock>pnpm i workflow nitro</CodeBlock>
+    <CodeBlock>pnpm i workflow nitro rollup</CodeBlock>
   </Tab>
   <Tab value="yarn">
-    <CodeBlock>yarn add workflow nitro</CodeBlock>
+    <CodeBlock>yarn add workflow nitro rollup</CodeBlock>
   </Tab>
   <Tab value="bun">
-    <CodeBlock>bun add workflow nitro</CodeBlock>
+    <CodeBlock>bun add workflow nitro rollup</CodeBlock>
   </Tab>
 </Tabs>
 
@@ -51,16 +51,13 @@ By default, Hono doesn't include a build system. Nitro adds one which enables co
 Create a new file `nitro.config.ts` for your Nitro configuration with module `workflow/nitro`. This enables usage of the `"use workflow"` and `"use step"` directives.
 
 ```typescript title="nitro.config.ts" lineNumbers
-import { defineNitroConfig } from "nitro/config";
+import { defineConfig } from 'nitro';
 
-export default defineNitroConfig({
-  handlers: [
-    {
-      route: "/**",
-      handler: "./src/index.ts",
-    },
-  ],
-  modules: ["workflow/nitro"],
+export default defineConfig({
+  modules: ['workflow/nitro'],
+  routes: {
+    '/**': './src/index.ts'
+  }
 });
 ```
 
@@ -209,9 +206,7 @@ app.post("/api/signup", async (c) => {
   return c.json({ message: "User signup workflow started" });
 });
 
-export default async (event: { req: Request }) => {
-  return app.fetch(event.req);
-};
+export default app;
 ```
 
 This route handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.

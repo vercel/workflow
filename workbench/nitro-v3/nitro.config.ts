@@ -1,11 +1,6 @@
-import { defineNitroConfig } from 'nitro/config';
+import { defineConfig } from 'nitro';
 
-export default defineNitroConfig({
-  serverDir: './',
+export default defineConfig({
   modules: ['workflow/nitro'],
-  rollupConfig: {
-    watch: {
-      exclude: ['**/.workflow-data/**', '**/node_modules/**'],
-    },
-  },
+  serverDir: './',
 });
