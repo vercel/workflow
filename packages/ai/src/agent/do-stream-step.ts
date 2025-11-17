@@ -381,6 +381,8 @@ export async function doStreamStep(
   return { toolCalls, finish, step };
 }
 
+// This is a stand-in for logic in the AI-SDK streamText code which aggregates
+// chunks into a single step result.
 function chunksToStep(
   chunks: LanguageModelV2StreamPart[],
   toolCalls: LanguageModelV2ToolCall[],
