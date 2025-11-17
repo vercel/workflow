@@ -38,10 +38,17 @@ const DEV_TEST_CONFIGS = {
     apiFileImportPath: "../..",
   },
   hono: {
+<<<<<<< HEAD
     generatedStepPath: "node_modules/.nitro/workflow/steps.mjs",
     generatedWorkflowPath: "node_modules/.nitro/workflow/workflows.mjs",
     apiFilePath: "./src/index.ts",
     apiFileImportPath: "..",
+=======
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
+    apiFilePath: '../src/index.ts',
+    apiFileImportPath: '..',
+>>>>>>> a1244538 (test: fix hono dev config)
   },
 };
 
