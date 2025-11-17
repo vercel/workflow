@@ -301,7 +301,7 @@ jobs:
         run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Setup PostgreSQL Database
-        run: cd packages/world-postgres && pnpm exec workflow-postgres-setup
+        run: ./packages/world-postgres/bin/setup.js
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts

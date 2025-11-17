@@ -37,7 +37,7 @@
     "./migrations/*.sql": "./src/drizzle/migrations/*.sql"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x bin/setup.js",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
     "test": "vitest run",
