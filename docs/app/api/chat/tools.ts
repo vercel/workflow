@@ -142,7 +142,7 @@ const search_docs = (writer: UIMessageStreamWriter) =>
 
 const get_doc_page = tool({
   description:
-    'Get the full content of a specific documentation page or guide by slug. Use the exact URL path from search results (e.g., "/docs/vercel-blob/client-upload" or "/guides/how-to-build-ai-app")',
+    'Get the full content of a specific documentation page or guide by slug. Use the exact URL path from search results (e.g., "/docs/foundations/workflows-and-steps")',
   inputSchema: z.object({
     slug: z
       .string()
