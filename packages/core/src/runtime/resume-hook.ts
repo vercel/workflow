@@ -23,7 +23,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
   const world = getWorld();
   const hook = await world.hooks.getByToken(token);
   if (typeof hook.metadata !== 'undefined') {
-    hook.metadata = hydrateStepArguments(hook.metadata as any, [], globalThis);
+    hook.metadata = hydrateStepArguments(hook.metadata as any, [], hook.runId);
   }
   return hook;
 }
@@ -79,7 +79,7 @@ export async function resumeHook<T = any>(
         const dehydratedPayload = dehydrateStepReturnValue(
           payload,
           ops,
-          globalThis
+          hook.runId
         );
         waitUntil(Promise.all(ops));
 
