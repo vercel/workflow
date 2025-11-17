@@ -1,30 +1,30 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   BaseBuilder,
   createBaseBuilderConfig,
   VercelBuildOutputAPIBuilder,
-} from '@workflow/builders';
-import type { Nitro } from 'nitro/types';
-import { join } from 'pathe';
+} from "@workflow/builders";
+import type { Nitro } from "nitro/types";
+import { join } from "pathe";
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
-        dirs: ['.'], // Different apps that use nitro have different directories
+        dirs: ["."],
       }),
-      buildTarget: 'vercel-build-output-api',
+      buildTarget: "vercel-build-output-api",
     });
   }
   override async build(): Promise<void> {
     const configPath = join(
       this.config.workingDir,
-      '.vercel/output/config.json'
+      ".vercel/output/config.json",
     );
-    const originalConfig = JSON.parse(await readFile(configPath, 'utf-8'));
+    const originalConfig = JSON.parse(await readFile(configPath, "utf-8"));
     await super.build();
-    const newConfig = JSON.parse(await readFile(configPath, 'utf-8'));
+    const newConfig = JSON.parse(await readFile(configPath, "utf-8"));
     originalConfig.routes.unshift(...newConfig.routes);
     await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
   }
@@ -33,14 +33,14 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
   constructor(nitro: Nitro) {
-    const outDir = join(nitro.options.buildDir, 'workflow');
+    const outDir = join(nitro.options.buildDir, "workflow");
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
         watch: nitro.options.dev,
-        dirs: ['.'], // Different apps that use nitro have different directories
+        dirs: ["."], // Different apps that use nitro have different directories
       }),
-      buildTarget: 'next', // Placeholder, not actually used
+      buildTarget: "next", // Placeholder, not actually used
     });
     this.#outDir = outDir;
   }
@@ -50,20 +50,20 @@ export class LocalBuilder extends BaseBuilder {
     await mkdir(this.#outDir, { recursive: true });
 
     await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
+      outfile: join(this.#outDir, "workflows.mjs"),
       bundleFinalOutput: false,
-      format: 'esm',
+      format: "esm",
       inputFiles,
     });
 
     await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
+      outfile: join(this.#outDir, "steps.mjs"),
       externalizeNonSteps: true,
-      format: 'esm',
+      format: "esm",
       inputFiles,
     });
 
-    const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
+    const webhookRouteFile = join(this.#outDir, "webhook.mjs");
 
     await this.createWebhookBundle({
       outfile: webhookRouteFile,
@@ -72,18 +72,3 @@ export class LocalBuilder extends BaseBuilder {
     });
   }
 }
-<<<<<<< HEAD
-=======
-
-export function getWorkflowDirs(nitro: Nitro) {
-  return unique(
-    [...(nitro.options.workflow?.dirs ?? []), 'workflows'].map((dir) =>
-      resolve(nitro.options.rootDir, dir)
-    )
-  ).sort();
-}
-
-function unique<T>(array: T[]): T[] {
-  return Array.from(new Set(array));
-}
->>>>>>> 243e126a (fix(nitro): nitro builder using deprecated srcDir)
