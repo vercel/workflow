@@ -30,32 +30,39 @@ cd my-workflow-app
 <Tabs items={['npm', 'pnpm', 'yarn']}>
   <Tab value="npm">
     <CodeBlock>
-        npm i workflow nitro@npm:nitro-nightly@3.0.1-20251031-202656-883af4f9
+        npm i workflow nitro
     </CodeBlock>
   </Tab>
   <Tab value="pnpm">
     <CodeBlock>
-        pnpm i workflow nitro@npm:nitro-nightly@3.0.1-20251031-202656-883af4f9
+        pnpm i workflow nitro
     </CodeBlock>
   </Tab>
   <Tab value="yarn">
     <CodeBlock>
-        yarn add workflow nitro@npm:nitro-nightly@3.0.1-20251031-202656-883af4f9
+        yarn add workflow nitro
     </CodeBlock>
   </Tab>
 </Tabs>
+
+<Callout>
+While Vite provides the build tooling and development server, Nitro adds the server framework needed for API routes and deployment. Together they enable building full-stack applications with workflow support. Learn more about Nitro [here](https://v3.nitro.build).
+</Callout>
 
 ### Configure Vite
 
 Add `workflow()` to your Vite config. This enables usage of the `"use workflow"` and `"use step"` directives.
 
 ```typescript title="vite.config.ts" lineNumbers
+import { defineConfig } from "import { nitro } from "nitro/vite";
 import { defineConfig } from "vite";
-import { nitro } from "nitro/vite";
-import { workflow } from "workflow/vite"; // [!code highlight]
+import { workflow } from "workflow/vite";
 
 export default defineConfig({
- plugins: [nitro(), workflow()], // [!code highlight]
+  plugins: [nitro(), workflow()], // [!code highlight]
+  nitro: { // [!code highlight]
+    serverDir: "./", // [!code highlight]
+  }, // [!code highlight]
 });
 ```
 
