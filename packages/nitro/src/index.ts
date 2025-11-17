@@ -22,6 +22,21 @@ export default {
       nitro.options.alias['debug'] ??= 'debug';
     }
 
+    // Externalize .nitro/workflow
+    // Virtual handlers import from node_modules/.nitro/workflow causing Rollup to try and bundle
+    if (!nitro.options.externals) {
+      nitro.options.externals = {};
+    }
+    if (!nitro.options.externals.external) {
+      nitro.options.externals.external = [];
+    }
+    if (!Array.isArray(nitro.options.externals.external)) {
+      nitro.options.externals.external = [nitro.options.externals.external];
+    }
+    nitro.options.externals.external.push((id) =>
+      id.includes('.nitro/workflow')
+    );
+
     // Add tsConfig plugin
     if (nitro.options.workflow?.typescriptPlugin) {
       nitro.options.typescript.tsConfig ||= {};
