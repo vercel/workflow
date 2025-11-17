@@ -5,6 +5,6 @@ import { workflow } from 'workflow/vite';
 export default defineConfig({
   plugins: [nitro(), workflow()],
   nitro: {
-    serverDir: "./",
-  }
+    serverDir: './',
+  },
 });
