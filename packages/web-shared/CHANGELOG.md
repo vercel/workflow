@@ -1,5 +1,15 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- 4b70739: Require specifying runId when writing to stream
+- Updated dependencies [2fde24e]
+- Updated dependencies [4b70739]
+  - @workflow/core@4.0.1-beta.13
+  - @workflow/world@4.0.1-beta.6
+
 ## 4.0.1-beta.13
 
 ### Patch Changes

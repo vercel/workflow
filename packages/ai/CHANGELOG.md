@@ -1,5 +1,12 @@
 # @workflow/ai
 
+## 4.0.1-beta.15
+
+### Patch Changes
+
+- 566681a: Add stopCondition argument to DurableAgent and emit error parts to writeable stream
+  - workflow@4.0.1-beta.15
+
 ## 4.0.1-beta.14
 
 ### Patch Changes
