@@ -5,14 +5,14 @@ import {
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
-import { join, resolve } from 'pathe';
+import { join } from 'pathe';
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
-        dirs: getWorkflowDirs(nitro),
+        dirs: ['.'],
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -38,7 +38,7 @@ export class LocalBuilder extends BaseBuilder {
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
         watch: nitro.options.dev,
-        dirs: getWorkflowDirs(nitro),
+        dirs: ['.'],
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });
@@ -71,16 +71,4 @@ export class LocalBuilder extends BaseBuilder {
       suppressUndefinedRejections: true,
     });
   }
-}
-
-export function getWorkflowDirs(nitro: Nitro) {
-  return unique(
-    [...(nitro.options.workflow?.dirs ?? []), 'workflows'].map((dir) =>
-      resolve(nitro.options.rootDir, dir)
-    )
-  ).sort();
-}
-
-function unique<T>(array: T[]): T[] {
-  return Array.from(new Set(array));
 }
