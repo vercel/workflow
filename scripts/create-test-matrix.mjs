@@ -40,8 +40,8 @@ const DEV_TEST_CONFIGS = {
   hono: {
     generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
-    apiFilePath: 'server.ts',
-    apiFileImportPath: '.',
+    apiFilePath: '../src/index.ts',
+    apiFileImportPath: '..',
   },
 };
 
