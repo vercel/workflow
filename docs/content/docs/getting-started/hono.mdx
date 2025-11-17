@@ -54,8 +54,12 @@ Create a new file `nitro.config.ts` for your Nitro configuration with module `wo
 import { defineNitroConfig } from "nitro/config";
 
 export default defineNitroConfig({
-  srcDir: "src",
-  serverEntry: "index.ts",
+  handlers: [
+    {
+      route: "/**",
+      handler: "./src/index.ts",
+    },
+  ],
   modules: ["workflow/nitro"],
 });
 ```
@@ -200,12 +204,14 @@ import { handleUserSignup } from "../workflows/user-signup.js";
 const app = new Hono();
 
 app.post("/api/signup", async (c) => {
-    const { email } = await c.req.json();
-    await start(handleUserSignup, [email]);
-    return c.json({ message: "User signup workflow started" });
+  const { email } = await c.req.json();
+  await start(handleUserSignup, [email]);
+  return c.json({ message: "User signup workflow started" });
 });
 
-export default app;
+export default async (event: { req: Request }) => {
+  return app.fetch(event.req);
+};
 ```
 
 This route handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.
