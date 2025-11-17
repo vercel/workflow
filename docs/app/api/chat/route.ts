@@ -83,11 +83,9 @@ User question: ${userQuestion}`,
       originalMessages: messages,
       execute: ({ writer }) => {
         const result = streamText({
-          model: 'openai/gpt-5',
+          model: 'openai/gpt-5.1',
           providerOptions: {
             openai: {
-              reasoningEffort: 'minimal',
-              reasoningSummary: 'auto',
               textVerbosity: 'medium',
               serviceTier: 'priority',
             },
