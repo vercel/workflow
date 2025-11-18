@@ -110,6 +110,7 @@ matrix.app.push({
 matrix.app.push({
   name: 'express',
   project: 'workbench-express-workflow',
+  ...DEV_TEST_CONFIGS.express,
 });
 
 console.log(JSON.stringify(matrix));
