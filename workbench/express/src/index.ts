@@ -3,25 +3,29 @@ import { toFetchHandler } from 'srvx/node';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from './lib/_workflows.js';
+import {
+  WorkflowRunFailedError,
+  WorkflowRunNotCompletedError,
+} from 'workflow/internal/errors';
 
 const app = express();
 
 app.use(express.json());
 app.use(express.text({ type: 'text/*' }));
 
-app.post('/api/hook', async (req, res, _) => {
-  const parsedBody =
-    typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-  const { token, data } = parsedBody ?? {};
+app.post('/api/hook', async (req, res) => {
+  const { token, data } = req.body;
 
   let hook: Awaited<ReturnType<typeof getHookByToken>>;
   try {
     hook = await getHookByToken(token);
+    console.log('hook', hook);
   } catch (error) {
     console.log('error during getHookByToken', error);
     // TODO: `WorkflowAPIError` is not exported, so for now
-    // we'll return 404 assuming it's the "invalid" token test case
-    return res.status(404).json(null);
+    // we'll return 422 assuming it's the "invalid" token test case
+    // NOTE: Need to return 422 because Nitro passes 404 requests to the dev server to handle.
+    return res.status(422).json(null);
   }
 
   await resumeHook(hook.token, {
@@ -33,16 +37,65 @@ app.post('/api/hook', async (req, res, _) => {
   return res.json(hook);
 });
 
-app.get('/api/trigger', async (req, res, _) => {
-  const runId = req.query.runId as string;
-  if (!runId) {
-    return res.status(400).json({
-      error: 'No runId provided',
-      status: 400,
-    });
+app.post('/api/trigger', async (req, res) => {
+  const workflowFile =
+    (req.query.workflowFile as string) || 'workflows/99_e2e.ts';
+  if (!workflowFile) {
+    return res.status(400).send('No workflowFile query parameter provided');
+  }
+  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
+  if (!workflows) {
+    return res.status(400).send(`Workflow file "${workflowFile}" not found`);
   }
 
-  const outputStreamParam = req.query['output-stream'] as string;
+  const workflowFn = (req.query.workflowFn as string) || 'simple';
+  if (!workflowFn) {
+    return res.status(400).send('No workflow query parameter provided');
+  }
+  const workflow = workflows[workflowFn as keyof typeof workflows];
+  if (!workflow) {
+    return res.status(400).send('Workflow not found');
+  }
+
+  let args: any[] = [];
+
+  // Args from query string
+  const argsParam = req.query.args as string;
+  if (argsParam) {
+    args = argsParam.split(',').map((arg) => {
+      const num = parseFloat(arg);
+      return Number.isNaN(num) ? arg.trim() : num;
+    });
+  } else {
+    // Args from body
+    const body = req.body;
+    if (body && typeof body === 'string') {
+      args = hydrateWorkflowArguments(JSON.parse(body), globalThis);
+    } else if (body && typeof body === 'object') {
+      args = hydrateWorkflowArguments(body, globalThis);
+    } else {
+      args = [42];
+    }
+  }
+  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
+
+  try {
+    const run = await start(workflow as any, args as any);
+    console.log('Run:', run);
+    return res.json(run);
+  } catch (err) {
+    console.error(`Failed to start!!`, err);
+    throw err;
+  }
+});
+
+app.get('/api/trigger', async (req, res) => {
+  const runId = req.query.runId as string | undefined;
+  if (!runId) {
+    return res.status(400).send('No runId provided');
+  }
+
+  const outputStreamParam = req.query['output-stream'] as string | undefined;
   if (outputStreamParam) {
     const namespace = outputStreamParam === '1' ? undefined : outputStreamParam;
     const run = getRun(runId);
@@ -59,49 +112,27 @@ app.get('/api/trigger', async (req, res, _) => {
         controller.enqueue(`${JSON.stringify(data)}\n`);
       },
     });
-    const transformedStream = stream.pipeThrough(streamWithFraming);
-    res.setHeader('Content-Type', 'application/octet-stream');
-
-    const reader = transformedStream.getReader();
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(value);
-      }
-      res.end();
-    } catch (error) {
-      reader.releaseLock();
-      throw error;
-    }
-    return;
+    return new Response(stream.pipeThrough(streamWithFraming), {
+      headers: {
+        'Content-Type': 'application/octet-stream',
+      },
+    });
   }
 
   try {
     const run = getRun(runId);
     const returnValue = await run.returnValue;
     console.log('Return value:', returnValue);
-    if (returnValue instanceof ReadableStream) {
-      res.setHeader('Content-Type', 'application/octet-stream');
-
-      const reader = returnValue.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(value);
-        }
-        res.end();
-      } catch (error) {
-        reader.releaseLock();
-        throw error;
-      }
-      return;
-    }
-    return res.json(returnValue);
+    return returnValue instanceof ReadableStream
+      ? new Response(returnValue, {
+          headers: {
+            'Content-Type': 'application/octet-stream',
+          },
+        })
+      : res.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'WorkflowRunNotCompletedError') {
+      if (WorkflowRunNotCompletedError.is(error)) {
         return res.status(202).json({
           ...error,
           name: error.name,
@@ -109,11 +140,17 @@ app.get('/api/trigger', async (req, res, _) => {
         });
       }
 
-      if (error.name === 'WorkflowRunFailedError') {
+      if (WorkflowRunFailedError.is(error)) {
+        const cause = error.cause;
         return res.status(400).json({
           ...error,
           name: error.name,
           message: error.message,
+          cause: {
+            message: cause.message,
+            stack: cause.stack,
+            code: cause.code,
+          },
         });
       }
     }
@@ -128,64 +165,21 @@ app.get('/api/trigger', async (req, res, _) => {
   }
 });
 
-app.post('/api/trigger', async (req, res, _) => {
-  const workflowFile =
-    (req.query.workflowFile as string) || 'workflows/99_e2e.ts';
-  if (!workflowFile) {
-    return res.status(400).json({
-      error: 'No workflowFile query parameter provided',
-      status: 400,
-    });
-  }
-  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
-  if (!workflows) {
-    return res.status(400).json({
-      error: `Workflow file "${workflowFile}" not found`,
-      status: 400,
-    });
-  }
+app.post('/api/test-direct-step-call', async (req, res) => {
+  // This route tests calling step functions directly outside of any workflow context
+  // After the SWC compiler changes, step functions in client mode have their directive removed
+  // and keep their original implementation, allowing them to be called as regular async functions
+  const { add } = await import('../src/workflows/99_e2e.js');
 
-  const workflowFn = (req.query.workflowFn as string) || 'simple';
-  if (!workflowFn) {
-    return res.status(400).json({
-      error: 'No workflow query parameter provided',
-      status: 400,
-    });
-  }
-  const workflow = workflows[workflowFn as keyof typeof workflows];
-  if (!workflow) {
-    return res.status(400).json({
-      error: `Workflow "${workflowFn}" not found`,
-      status: 400,
-    });
-  }
+  const { x, y } = req.body;
 
-  let args: any[] = [];
+  console.log(`Calling step function directly with x=${x}, y=${y}`);
 
-  // Args from query string
-  const argsParam = req.query.args as string;
-  if (argsParam) {
-    args = argsParam.split(',').map((arg) => {
-      const num = parseFloat(arg);
-      return Number.isNaN(num) ? arg.trim() : num;
-    });
-  } else if (req.body) {
-    const parsedBody =
-      typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-    args = hydrateWorkflowArguments(parsedBody, globalThis);
-  } else {
-    args = [42];
-  }
-  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
+  // Call step function directly as a regular async function (no workflow context)
+  const result = await add(x, y);
+  console.log(`add(${x}, ${y}) = ${result}`);
 
-  try {
-    const run = await start(workflow as any, args as any);
-    console.log('Run:', run);
-    return res.json(run);
-  } catch (err) {
-    console.error(`Failed to start!!`, err);
-    throw err;
-  }
+  return res.json({ result });
 });
 
 export default toFetchHandler(app as any);
