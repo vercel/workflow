@@ -35,13 +35,13 @@ npm init --y
 
 <Tabs items={["npm", "pnpm", "yarn"]}>
   <Tab value="npm">
-    <CodeBlock>npm i workflow express nitro</CodeBlock>
+    <CodeBlock>npm i workflow express nitro rollup</CodeBlock>
   </Tab>
   <Tab value="pnpm">
-    <CodeBlock>pnpm i workflow express nitro</CodeBlock>
+    <CodeBlock>pnpm i workflow express nitro rollup</CodeBlock>
   </Tab>
   <Tab value="yarn">
-    <CodeBlock>yarn add workflow express nitro</CodeBlock>
+    <CodeBlock>yarn add workflow express nitro rollup</CodeBlock>
   </Tab>
 </Tabs>
 
@@ -202,7 +202,7 @@ Taking a look at this code:
 To invoke your new workflow, we'll create both the Express app and a new API route handler at `src/index.ts` with the following code:
 
 ```typescript title="src/index.ts"
-import express from "express";
+import exprimport express from "express";
 import { fromNodeHandler, type NodeMiddleware } from "nitro/h3";
 import { start } from "workflow/api";
 import { handleUserSignup } from "../workflows/user-signup.js";
