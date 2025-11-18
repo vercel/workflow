@@ -4,15 +4,9 @@ import { registerStepFunction } from "workflow/internal/private";
 async function step(a, b) {
     return a + b;
 }
-async function arrowStep(x, y) {
-    return x * y;
-}
-async function letArrowStep(x, y) {
-    return x - y;
-}
-async function varArrowStep(x, y) {
-    return x / y;
-}
+var arrowStep = async (x, y)=>x * y;
+var letArrowStep = async (x, y)=>x - y;
+var varArrowStep = async (x, y)=>x / y;
 var helpers$objectStep = async (x, y)=>{
     return x + y + 10;
 };

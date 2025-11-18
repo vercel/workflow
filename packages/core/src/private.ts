@@ -29,6 +29,12 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
   return registeredSteps.get(stepId);
 }
 
+/**
+ * Get closure variables for the current step function
+ * @internal
+ */
+export { __private_getClosureVars } from './step/get-closure-vars.js';
+
 export interface WorkflowOrchestratorContext {
   globalThis: typeof globalThis;
   eventsConsumer: EventsConsumer;

@@ -737,4 +737,18 @@ describe('e2e', () => {
       expect(stepCompletedEvents).toHaveLength(1);
     }
   );
+
+  test(
+    'closureVariableWorkflow - nested step functions with closure variables',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow uses a nested step function that references closure variables
+      // from the parent workflow scope (multiplier, prefix, baseValue)
+      const run = await triggerWorkflow('closureVariableWorkflow', [7]);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // Expected: baseValue (7) * multiplier (3) = 21, prefixed with "Result: "
+      expect(returnValue).toBe('Result: 21');
+    }
+  );
 });

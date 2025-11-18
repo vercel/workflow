@@ -199,4 +199,75 @@ describe('createUseStep', () => {
     await myStepFunction();
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
+
+  it('should capture closure variables when provided', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_completed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          result: ['Result: 42'],
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const useStep = createUseStep(ctx);
+    const count = 42;
+    const prefix = 'Result: ';
+
+    // Create step with closure variables function
+    const calculate = useStep('calculate', () => ({ count, prefix }));
+
+    // Call the step
+    const result = await calculate();
+
+    // Verify result
+    expect(result).toBe('Result: 42');
+
+    // Verify closure variables were added to invocation queue
+    expect(ctx.invocationsQueue).toHaveLength(1);
+    expect(ctx.invocationsQueue[0]).toMatchObject({
+      type: 'step',
+      stepName: 'calculate',
+      args: [],
+      closureVars: { count: 42, prefix: 'Result: ' },
+    });
+  });
+
+  it('should handle empty closure variables', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_completed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          result: [5],
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const useStep = createUseStep(ctx);
+
+    // Create step without closure variables
+    const add = useStep('add');
+
+    // Call the step
+    const result = await add(2, 3);
+
+    // Verify result
+    expect(result).toBe(5);
+
+    // Verify empty closure variables were added to invocation queue
+    expect(ctx.invocationsQueue).toHaveLength(1);
+    expect(ctx.invocationsQueue[0]).toMatchObject({
+      type: 'step',
+      stepName: 'add',
+      args: [2, 3],
+    });
+  });
 });

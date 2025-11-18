@@ -512,3 +512,21 @@ async function doubleNumber(x: number) {
   'use step';
   return x * 2;
 }
+
+//////////////////////////////////////////////////////////
+
+export async function closureVariableWorkflow(baseValue: number) {
+  'use workflow';
+  let multiplier = 3;
+  const prefix = 'Result: ';
+
+  // Nested step function that uses closure variables
+  const calculate = async () => {
+    'use step';
+    const result = baseValue * multiplier;
+    return `${prefix}${result}`;
+  };
+
+  const output = await calculate();
+  return output;
+}

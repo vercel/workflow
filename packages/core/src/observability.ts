@@ -49,18 +49,20 @@ const hydrateStepIO = <
 >(
   step: T
 ): T => {
+  const hydratedInput = step.input
+    ? hydrateStepArguments(
+        step.input,
+        [],
+        step.runId as string,
+        globalThis,
+        streamPrintRevivers
+      )
+    : step.input;
+
   return {
     ...step,
-    input:
-      step.input && Array.isArray(step.input) && step.input.length
-        ? hydrateStepArguments(
-            step.input,
-            [],
-            step.runId as string,
-            globalThis,
-            streamPrintRevivers
-          )
-        : step.input,
+    input: 'args' in hydratedInput ? hydratedInput.args : hydratedInput,
+    // TODO: should we also render the closure vars for o11y?
     output: step.output
       ? hydrateStepReturnValue(step.output, globalThis, streamPrintRevivers)
       : step.output,

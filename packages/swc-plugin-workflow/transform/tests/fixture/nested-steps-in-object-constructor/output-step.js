@@ -3,12 +3,8 @@ import { DurableAgent } from '@workflow/ai/agent';
 import { gateway, tool } from 'ai';
 import * as z from 'zod';
 /**__internal_workflows{"workflows":{"input.js":{"test":{"workflowId":"workflow//input.js//test"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//input.js//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//input.js//_anonymousStep1"}}}}*/;
-async function _anonymousStep0() {
-    return gateway('openai/gpt-5');
-}
-async function _anonymousStep1({ location }) {
-    return `Weather in ${location}: Sunny, 72°F`;
-}
+var _anonymousStep0 = async ()=>gateway('openai/gpt-5');
+var _anonymousStep1 = async ({ location })=>`Weather in ${location}: Sunny, 72°F`;
 export async function test() {
     'use workflow';
     const agent = new DurableAgent({
