@@ -6,7 +6,7 @@ manifest.js
 .vercel
 
 # Workflows
-src/lib/_workflows.ts
+_workflows.ts
 
 # Nitro
 .output
