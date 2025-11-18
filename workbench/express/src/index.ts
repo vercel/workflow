@@ -2,7 +2,7 @@ import express from 'express';
 import { toFetchHandler } from 'srvx/node';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from './lib/_workflows.js';
+import { allWorkflows } from '../_workflows.js';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
@@ -102,34 +102,60 @@ app.get('/api/trigger', async (req, res) => {
     const stream = run.getReadable({
       namespace,
     });
-    // Add JSON framing to the stream, wrapping binary data in base64
-    const streamWithFraming = new TransformStream({
-      transform(chunk, controller) {
+
+    // Set headers
+    res.setHeader('Content-Type', 'application/octet-stream');
+
+    // Read from the stream and write to Express response
+    const reader = stream.getReader();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Add JSON framing to each chunk, wrapping binary data in base64
         const data =
-          chunk instanceof Uint8Array
-            ? { data: Buffer.from(chunk).toString('base64') }
-            : chunk;
-        controller.enqueue(`${JSON.stringify(data)}\n`);
-      },
-    });
-    return new Response(stream.pipeThrough(streamWithFraming), {
-      headers: {
-        'Content-Type': 'application/octet-stream',
-      },
-    });
+          value instanceof Uint8Array
+            ? { data: Buffer.from(value).toString('base64') }
+            : value;
+        res.write(`${JSON.stringify(data)}\n`);
+      }
+      res.end();
+    } catch (error) {
+      console.error('Error streaming data:', error);
+      res.end();
+    }
+    return;
   }
 
   try {
     const run = getRun(runId);
     const returnValue = await run.returnValue;
     console.log('Return value:', returnValue);
-    return returnValue instanceof ReadableStream
-      ? new Response(returnValue, {
-          headers: {
-            'Content-Type': 'application/octet-stream',
-          },
-        })
-      : res.json(returnValue);
+
+    if (returnValue instanceof ReadableStream) {
+      // Set headers for streaming response
+      res.setHeader('Content-Type', 'application/octet-stream');
+
+      // Read from the stream and write to Express response
+      const reader = returnValue.getReader();
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
+        }
+        res.end();
+      } catch (streamError) {
+        console.error('Error streaming return value:', streamError);
+        res.end();
+      }
+      return;
+    }
+
+    return res.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
       if (WorkflowRunNotCompletedError.is(error)) {
@@ -169,7 +195,7 @@ app.post('/api/test-direct-step-call', async (req, res) => {
   // This route tests calling step functions directly outside of any workflow context
   // After the SWC compiler changes, step functions in client mode have their directive removed
   // and keep their original implementation, allowing them to be called as regular async functions
-  const { add } = await import('../src/workflows/99_e2e.js');
+  const { add } = await import('../workflows/99_e2e.js');
 
   const { x, y } = req.body;
 
