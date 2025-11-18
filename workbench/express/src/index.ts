@@ -14,7 +14,7 @@ app.use(express.json());
 app.use(express.text({ type: 'text/*' }));
 
 app.post('/api/hook', async (req, res) => {
-  const { token, data } = req.body;
+  const { token, data } = JSON.parse(req.body);
 
   let hook: Awaited<ReturnType<typeof getHookByToken>>;
   try {
