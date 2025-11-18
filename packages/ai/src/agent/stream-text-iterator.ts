@@ -23,7 +23,7 @@ export async function* streamTextIterator({
   stopConditions?: ModelStopCondition[] | ModelStopCondition;
 }): AsyncGenerator<
   LanguageModelV2ToolCall[],
-  void,
+  LanguageModelV2Prompt,
   LanguageModelV2ToolResultPart[]
 > {
   const conversationPrompt = [...prompt]; // Create a mutable copy
@@ -70,11 +70,25 @@ export async function* streamTextIterator({
         }
       }
     } else if (finish?.finishReason === 'stop') {
+      // Add assistant message with text content to the conversation
+      const textContent = step.content.filter(
+        (item) => item.type === 'text'
+      ) as Array<{ type: 'text'; text: string }>;
+
+      if (textContent.length > 0) {
+        conversationPrompt.push({
+          role: 'assistant',
+          content: textContent,
+        });
+      }
+
       done = true;
     } else {
       throw new Error(`Unexpected finish reason: ${finish?.finishReason}`);
     }
   }
+
+  return conversationPrompt;
 }
 
 async function writeToolOutputToUI(

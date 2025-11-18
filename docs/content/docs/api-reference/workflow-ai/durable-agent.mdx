@@ -86,6 +86,7 @@ export default DurableAgentStreamOptions;`}
 - Tools can be implemented as workflow steps (using `"use step"` for automatic retries), or as regular workflow-level logic
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
 - The agent processes tool calls iteratively until completion
+- The `stream()` method returns `{ messages }` containing the full conversation history, including initial messages, assistant responses, and tool results
 
 ## Examples
 
@@ -119,7 +120,7 @@ async function weatherAgentWorkflow(userQuery: string) {
     system: 'You are a helpful weather assistant. Always provide accurate weather information.',
   });
 
-  await agent.stream({
+  const { messages } = await agent.stream({
     messages: [
       {
         role: 'user',
@@ -128,6 +129,12 @@ async function weatherAgentWorkflow(userQuery: string) {
     ],
     writable: getWritable<UIMessageChunk>(),
   });
+
+  // messages now contains the full conversation history including:
+  // - initial user message
+  // - assistant responses (text and tool calls)
+  // - tool results
+  console.log('Conversation history:', messages);
 }
 ```
 
@@ -177,6 +184,52 @@ async function multiToolAgentWorkflow(userQuery: string) {
     ],
     writable: getWritable<UIMessageChunk>(),
   });
+}
+```
+
+### Multi-turn Conversation
+
+```typescript
+import { DurableAgent } from '@workflow/ai/agent';
+import { z } from 'zod';
+
+async function searchProducts({ query }: { query: string }) {
+  "use step";
+  // Search product database
+  return `Found 3 products matching "${query}"`;
+}
+
+async function multiTurnAgentWorkflow() {
+  'use workflow';
+
+  const agent = new DurableAgent({
+    model: 'anthropic/claude-haiku-4.5',
+    tools: {
+      searchProducts: {
+        description: 'Search for products',
+        inputSchema: z.object({ query: z.string() }),
+        execute: searchProducts,
+      },
+    },
+  });
+
+  // First user message
+  let { messages } = await agent.stream({
+    messages: [
+      { role: 'user', content: 'Find me some laptops' }
+    ],
+  });
+
+  // Continue the conversation with the accumulated message history
+  const result = await agent.stream({
+    messages: [
+      ...messages,
+      { role: 'user', content: 'Which one has the best battery life?' }
+    ],
+  });
+
+  // result.messages now contains the complete conversation history
+  return result.messages;
 }
 ```
 
