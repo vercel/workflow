@@ -1,7 +1,7 @@
 # Workflows with Express (Nitro v3)
 
-- Learn more about Express: https://expressjs.com
-- Learn more about Nitro: https://v3.nitro.build/
+- Learn more about [Express](https://expressjs.com)
+- Learn more about [Nitro](https://v3.nitro.build)
 
 ## Commands
 
