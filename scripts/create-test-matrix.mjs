@@ -43,6 +43,12 @@ const DEV_TEST_CONFIGS = {
     apiFilePath: "./src/index.ts",
     apiFileImportPath: "..",
   },
+  express: {
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
+    apiFilePath: './src/index.ts',
+    apiFileImportPath: '..',
+  },
 };
 
 const matrix = {
