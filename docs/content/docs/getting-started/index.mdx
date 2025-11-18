@@ -3,7 +3,7 @@ title: Getting Started
 description: Start by choosing your framework. Each guide will walk you through the steps to install the dependencies and start running your first workflow.
 ---
 
-import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStack, Vite } from '@/app/(home)/components/frameworks';
+import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStack, Vite, Express } from '@/app/(home)/components/frameworks';
 
 <Cards>
     <Card href="/docs/getting-started/next" className="flex flex-col items-center justify-center text-center gap-2">
@@ -14,6 +14,10 @@ import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStac
         <Vite className="size-16" />
         <span className="font-medium">Vite</span>
     </Card>
+    <Card href="/docs/getting-started/express" className="flex flex-col items-center justify-center text-center gap-2">
+        <Express className="size-16 dark:invert" />
+        <span className="font-medium">Express</span>
+    </Card>
     <Card href="/docs/getting-started/hono" className="flex flex-col items-center justify-center text-center gap-2">
         <Hono className="size-16" />
         <span className="font-medium">Hono</span>
@@ -22,14 +26,14 @@ import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStac
         <Nitro className="size-16" />
         <span className="font-medium">Nitro</span>
     </Card>
-    <Card href="/docs/getting-started/sveltekit" className="flex flex-col items-center justify-center text-center gap-2">
-        <SvelteKit className="size-16" />
-        <span className="font-medium">SvelteKit</span>
-    </Card>
     <Card href="/docs/getting-started/nuxt" className="flex flex-col items-center justify-center text-center gap-2">
         <Nuxt className="size-16" />
         <span className="font-medium">Nuxt</span>
     </Card>
+        <Card href="/docs/getting-started/sveltekit" className="flex flex-col items-center justify-center text-center gap-2">
+            <SvelteKit className="size-16" />
+            <span className="font-medium">SvelteKit</span>
+        </Card>
     <Card href="/docs/getting-started/astro" disabled className="flex flex-col items-center justify-center text-center gap-2">
         <AstroLight className="size-16 dark:hidden" />
         <AstroDark className="size-16 hidden dark:block" />
