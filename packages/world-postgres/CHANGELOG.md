@@ -1,5 +1,15 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.11
+
+### Patch Changes
+
+- 4b70739: Require specifying runId when writing to stream
+- Updated dependencies [4b70739]
+  - @workflow/world-local@5.0.0-beta.9
+  - @workflow/world@4.0.1-beta.6
+  - @workflow/errors@4.0.1-beta.5
+
 ## 4.1.0-beta.10
 
 ### Patch Changes

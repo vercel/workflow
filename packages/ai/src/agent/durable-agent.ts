@@ -6,6 +6,7 @@ import type {
 import {
   asSchema,
   type ModelMessage,
+  type StopCondition,
   type ToolSet,
   type UIMessageChunk,
 } from 'ai';
@@ -62,6 +63,14 @@ export interface DurableAgentStreamOptions {
    * Defaults to false (stream will be closed).
    */
   preventClose?: boolean;
+
+  /**
+   * Condition for stopping the generation when there are tool results in the last step.
+   * When the condition is an array, any of the conditions can be met to stop the generation.
+   */
+  stopWhen?:
+    | StopCondition<NoInfer<ToolSet>>
+    | Array<StopCondition<NoInfer<ToolSet>>>;
 }
 
 /**
@@ -125,6 +134,7 @@ export class DurableAgent {
       tools: this.tools,
       writable,
       prompt: modelPrompt,
+      stopConditions: options.stopWhen,
     });
 
     let result = await iterator.next();

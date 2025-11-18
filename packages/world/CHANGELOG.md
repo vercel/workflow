@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 4b70739: Require specifying runId when writing to stream
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

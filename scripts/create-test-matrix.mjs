@@ -13,8 +13,8 @@ const DEV_TEST_CONFIGS = {
     apiFileImportPath: '../../..',
   },
   nitro: {
-    generatedStepPath: '.nitro/workflow/steps.mjs',
-    generatedWorkflowPath: '.nitro/workflow/workflows.mjs',
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
@@ -32,16 +32,16 @@ const DEV_TEST_CONFIGS = {
     workflowsDir: 'src/workflows',
   },
   vite: {
-    generatedStepPath: '.nitro/workflow/steps.mjs',
-    generatedWorkflowPath: '.nitro/workflow/workflows.mjs',
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: 'routes/api/trigger.post.ts',
     apiFileImportPath: '../..',
   },
   hono: {
-    generatedStepPath: '.nitro/workflow/steps.mjs',
-    generatedWorkflowPath: '.nitro/workflow/workflows.mjs',
-    apiFilePath: 'server.ts',
-    apiFileImportPath: '.',
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
+    apiFilePath: './src/index.ts',
+    apiFileImportPath: '..',
   },
 };
 

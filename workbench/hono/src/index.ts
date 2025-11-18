@@ -5,7 +5,7 @@ import {
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from './_workflows.js';
+import { allWorkflows } from '../_workflows.js';
 
 const app = new Hono();
 
@@ -181,7 +181,7 @@ app.post('/api/test-direct-step-call', async ({ req }) => {
   // This route tests calling step functions directly outside of any workflow context
   // After the SWC compiler changes, step functions in client mode have their directive removed
   // and keep their original implementation, allowing them to be called as regular async functions
-  const { add } = await import('./workflows/99_e2e.js');
+  const { add } = await import('../workflows/99_e2e.js');
 
   const body = await req.json();
   const { x, y } = body;
@@ -195,6 +195,4 @@ app.post('/api/test-direct-step-call', async ({ req }) => {
   return Response.json({ result });
 });
 
-export default async (event: { req: Request }) => {
-  return app.fetch(event.req);
-};
+export default app;

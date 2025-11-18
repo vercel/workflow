@@ -1,5 +1,6 @@
 import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import { Run } from '../runtime.js';
 import type { Serializable, WorkflowInvokePayload } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
@@ -87,7 +88,14 @@ export async function start<TArgs extends unknown[], TResult>(
       const world = getWorld();
       const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
       const ops: Promise<void>[] = [];
-      const workflowArguments = dehydrateWorkflowArguments(args, ops);
+      const { promise: runIdPromise, resolve: resolveRunId } =
+        withResolvers<string>();
+
+      const workflowArguments = dehydrateWorkflowArguments(
+        args,
+        ops,
+        runIdPromise
+      );
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
@@ -97,6 +105,9 @@ export async function start<TArgs extends unknown[], TResult>(
         input: workflowArguments,
         executionContext: { traceCarrier },
       });
+
+      resolveRunId(runResponse.runId);
+
       waitUntil(Promise.all(ops));
 
       span?.setAttributes({

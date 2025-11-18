@@ -1,5 +1,13 @@
 # @workflow/world-local
 
+## 5.0.0-beta.9
+
+### Patch Changes
+
+- 4b70739: Require specifying runId when writing to stream
+- Updated dependencies [4b70739]
+  - @workflow/world@4.0.1-beta.6
+
 ## 5.0.0-beta.8
 
 ### Major Changes
