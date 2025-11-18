@@ -864,7 +864,40 @@ impl StepTransform {
                     stmt.visit_mut_children_with(self);
                 }
             }
-            Stmt::Decl(Decl::Var(_)) => {
+            Stmt::Decl(Decl::Var(var_decl)) => {
+                // Check if any declarators contain arrow functions with object literal bodies
+                for declarator in &mut var_decl.decls {
+                    if let Some(init) = &mut declarator.init {
+                        if let Pat::Ident(binding) = &declarator.name {
+                            let name = binding.id.sym.to_string();
+                            
+                            // Check if the initializer is an arrow function with object literal body
+                            if let Expr::Arrow(arrow_expr) = &mut **init {
+                                match &mut *arrow_expr.body {
+                                    BlockStmtOrExpr::Expr(expr) => {
+                                        // Handle both direct object literals and parenthesized ones
+                                        let obj_lit_mut = match &mut **expr {
+                                            Expr::Object(obj) => Some(obj),
+                                            Expr::Paren(paren) => {
+                                                if let Expr::Object(obj) = &mut *paren.expr {
+                                                    Some(obj)
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            _ => None,
+                                        };
+                                        
+                                        if let Some(obj_lit) = obj_lit_mut {
+                                            self.process_object_properties_for_step_functions(obj_lit, &name);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
                 stmt.visit_mut_children_with(self);
             }
             _ => {
