@@ -28,9 +28,11 @@ export const config = once<Config>(() => {
  * Resolves the base URL for queue requests following the priority order:
  * 1. config.baseUrl (highest priority - full override from args or WORKFLOW_EMBEDDED_BASE_URL env var)
  * 2. config.port (explicit port override from args)
- * 3. Auto-detected port via pid-port (primary approach)
- * 4. PORT env var (fallback)
- * 5. Fallback to 3000
+ * 3. PORT env var (set by dev servers like Nitro, Next.js, Vite)
+ * 4. Default to 3000 (standard dev server port)
+ *
+ * Note: Port detection via pid-port is intentionally not used as it often detects
+ * internal service ports (HMR, metrics) instead of the HTTP server port.
  */
 export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   if (config.baseUrl) {
@@ -41,7 +43,9 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
     return `http://localhost:${config.port}`;
   }
 
+  console.log('[world-local]: Getting port');
   const detectedPort = await getPort();
+  console.log('[world-local]: Detected port:', detectedPort);
   if (detectedPort) {
     return `http://localhost:${detectedPort}`;
   }

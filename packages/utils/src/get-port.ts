@@ -8,7 +8,9 @@ import { pidToPorts } from 'pid-port';
 export async function getPort(): Promise<number | undefined> {
   try {
     const pid = process.pid;
+    console.log(pid);
     const ports = await pidToPorts(pid);
+    console.log('Process ports:', ports);
     if (!ports || ports.size === 0) {
       return undefined;
     }
