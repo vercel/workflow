@@ -7,3 +7,6 @@ manifest.js
 
 # Workflows
 src/lib/_workflows.ts
+
+# Nitro
+.output
