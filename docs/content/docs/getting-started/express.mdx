@@ -60,12 +60,14 @@ npm i -D @types/express
 Create a new file `nitro.config.ts` for your Nitro configuration with module `workflow/nitro`. This enables usage of the `"use workflow"` and `"use step"` directives.
 
 ```typescript title="nitro.config.ts" lineNumbers
-import { defineNitroConfig } from "nitro/config";
+import { defineNitroConfig } from 'nitro/config';
 
 export default defineNitroConfig({
-  srcDir: "src",
-  serverEntry: "index.ts",
-  modules: ["workflow/nitro"],
+  modules: ['workflow/nitro'],
+  vercel: { entryFormat: 'node' },
+  routes: {
+    '/**': './src/index.ts',
+  },
 });
 ```
 
