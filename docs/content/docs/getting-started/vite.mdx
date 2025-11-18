@@ -182,20 +182,17 @@ We'll dive deeper into workflows, steps, and other ways to suspend or handle eve
 To invoke your new workflow, we'll have to add your workflow to a `POST` API route handler, `api/signup.post.ts` with the following code:
 
 ```typescript title="api/signup.post.ts"
-import { defineHandler, readBody } from "nitro/h3";
-import { start } from "workflow/api";
+import { start } from 'workflow/api';
+import { defineEventHandler } from 'nitro/h3';
 import { handleUserSignup } from "../workflows/user-signup";
 
-export default defineHandler(async (event) => {
-  const body = await readBody(event);
-  const { email } = body as { email: string };
-
+export default defineEventHandler(async ({ req }) => {
+  const { email } = await req.json() as { email: string };
   // Executes asynchronously and doesn't block your app
   await start(handleUserSignup, [email]);
-
-  return Response.json({
+  return {
     message: "User signup workflow started",
-  });
+  }
 });
 ```
 
