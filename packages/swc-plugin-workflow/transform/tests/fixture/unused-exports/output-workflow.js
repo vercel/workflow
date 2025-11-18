@@ -10,9 +10,7 @@ export function formatData(data) {
     return unusedHelper(data);
 }
 // This step function uses the helper
-export async function processData(input) {
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//processData")(input);
-}
+export var processData = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//processData");
 // This is used internally
 function internalHelper(value) {
     return value * 2;
@@ -21,9 +19,3 @@ function internalHelper(value) {
 export function calculate(x) {
     return internalHelper(x);
 }
-Object.defineProperty(processData, Symbol.for("WORKFLOW_STEP_FUNCTION_NAME"), {
-    value: "step//input.js//processData",
-    writable: false,
-    enumerable: false,
-    configurable: false
-});

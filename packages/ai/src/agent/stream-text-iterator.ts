@@ -1,10 +1,11 @@
 import type {
+  LanguageModelV2,
   LanguageModelV2Prompt,
   LanguageModelV2ToolCall,
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
-import type { ToolSet, UIMessageChunk } from 'ai';
-import { doStreamStep } from './do-stream-step.js';
+import type { StepResult, ToolSet, UIMessageChunk } from 'ai';
+import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
 // This runs in the workflow context
@@ -13,11 +14,13 @@ export async function* streamTextIterator({
   tools = {},
   writable,
   model,
+  stopConditions,
 }: {
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
   writable: WritableStream<UIMessageChunk>;
-  model: string;
+  model: string | (() => Promise<LanguageModelV2>);
+  stopConditions?: ModelStopCondition[] | ModelStopCondition;
 }): AsyncGenerator<
   LanguageModelV2ToolCall[],
   void,
@@ -25,14 +28,16 @@ export async function* streamTextIterator({
 > {
   const conversationPrompt = [...prompt]; // Create a mutable copy
 
+  const steps: StepResult<any>[] = [];
   let done = false;
   while (!done) {
-    const { toolCalls, finish } = await doStreamStep(
+    const { toolCalls, finish, step } = await doStreamStep(
       conversationPrompt,
       model,
       writable,
       toolsToModelTools(tools)
     );
+    steps.push(step);
 
     if (finish?.finishReason === 'tool-calls') {
       // Add assistant message with tool calls to the conversation
@@ -55,6 +60,15 @@ export async function* streamTextIterator({
         role: 'tool',
         content: toolResults,
       });
+
+      if (stopConditions) {
+        const stopConditionList = Array.isArray(stopConditions)
+          ? stopConditions
+          : [stopConditions];
+        if (stopConditionList.some((test) => test({ steps }))) {
+          done = true;
+        }
+      }
     } else if (finish?.finishReason === 'stop') {
       done = true;
     } else {
@@ -69,7 +83,6 @@ async function writeToolOutputToUI(
 ) {
   'use step';
 
-  // need to write to the ui message stream here
   const writer = writable.getWriter();
   try {
     for (const result of toolResults) {

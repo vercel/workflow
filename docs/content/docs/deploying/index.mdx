@@ -22,7 +22,7 @@ Worlds are automatically configured depending on the scenario:
 - **Local development** - Automatically uses the Local World
 - **Vercel deployments** - Automatically uses the Vercel World
 
-When using other worlds, you can explicitly set configuration through environment variables. Reference the documentation for the appropriate world for configuration details.
+When using other worlds, you can explicitly set the configuration through environment variables. Reference the documentation for the appropriate world for configuration details.
 
 ## Built-in Worlds
 
@@ -46,7 +46,7 @@ On top of the default Worlds provided by Workflow DevKit, you can also build new
 - Custom queue systems
 - Third-party platforms
 
-To build a custom world, use a community-implemented `World`, or implement the `World` interface yourself, the following interfaces are required:
+To build a custom world, use a community-implemented `World`, or implement the `World` interface yourself. The following interfaces are required:
 
 - **Storage** - Persisting workflow runs, steps, hooks, and metadata
 - **Queue** - Enqueuing and processing workflow steps asynchronously

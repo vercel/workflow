@@ -9,6 +9,3 @@ export const BODY_INIT_SYMBOL = Symbol.for('BODY_INIT');
 export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
   'WEBHOOK_RESPONSE_WRITABLE'
 );
-export const STEP_FUNCTION_NAME_SYMBOL = Symbol.for(
-  'WORKFLOW_STEP_FUNCTION_NAME'
-);

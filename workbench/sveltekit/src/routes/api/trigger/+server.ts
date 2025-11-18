@@ -1,47 +1,37 @@
-import { json, type RequestHandler } from '@sveltejs/kit';
+import type { RequestHandler } from '@sveltejs/kit';
 import { getRun, start } from 'workflow/api';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import * as calcWorkflow from '../../../../workflows/0_calc';
-import * as batchingWorkflow from '../../../../workflows/6_batching';
-import * as duplicateE2e from '../../../../workflows/98_duplicate_case';
-import * as e2eWorkflows from '../../../../workflows/99_e2e';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
-
-const WORKFLOW_MODULES = {
-  'workflows/0_calc.ts': calcWorkflow,
-  'workflows/6_batching.ts': batchingWorkflow,
-  'workflows/98_duplicate_case.ts': duplicateE2e,
-  'workflows/99_e2e.ts': e2eWorkflows,
-} as const;
+import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { allWorkflows } from '$lib/_workflows.js';
 
 export const POST: RequestHandler = async ({ request }) => {
   const url = new URL(request.url);
   const workflowFile =
     url.searchParams.get('workflowFile') || 'workflows/99_e2e.ts';
-  const workflowFn = url.searchParams.get('workflowFn') || 'simple';
-
-  console.log('calling workflow', { workflowFile, workflowFn });
-
-  const workflows =
-    WORKFLOW_MODULES[workflowFile as keyof typeof WORKFLOW_MODULES];
+  if (!workflowFile) {
+    return new Response('No workflowFile query parameter provided', {
+      status: 400,
+    });
+  }
+  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
   if (!workflows) {
-    return json(
-      { error: `Workflow file "${workflowFile}" not found` },
-      { status: 404 }
-    );
+    return new Response(`Workflow file "${workflowFile}" not found`, {
+      status: 400,
+    });
   }
 
+  const workflowFn = url.searchParams.get('workflowFn') || 'simple';
+  if (!workflowFn) {
+    return new Response('No workflow query parameter provided', {
+      status: 400,
+    });
+  }
   const workflow = workflows[workflowFn as keyof typeof workflows];
   if (!workflow) {
-    return json(
-      {
-        error: `Workflow "${workflowFn}" not found in "${workflowFile}"`,
-      },
-      { status: 404 }
-    );
+    return new Response(`Workflow "${workflowFn}" not found`, { status: 400 });
   }
 
   let args: any[] = [];
@@ -62,14 +52,12 @@ export const POST: RequestHandler = async ({ request }) => {
       args = [42];
     }
   }
-  console.log(
-    `Starting "${workflowFile}/${workflowFn}" workflow with args: ${args}`
-  );
+  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
 
   try {
-    const run = await start(workflow as any, args);
+    const run = await start(workflow as any, args as any);
     console.log('Run:', run);
-    return json(run);
+    return Response.json(run);
   } catch (err) {
     console.error(`Failed to start!!`, err);
     throw err;
@@ -117,11 +105,11 @@ export const GET: RequestHandler = async ({ request }) => {
             'Content-Type': 'application/octet-stream',
           },
         })
-      : json(returnValue);
+      : Response.json(returnValue);
   } catch (error) {
     if (error instanceof Error) {
       if (WorkflowRunNotCompletedError.is(error)) {
-        return json(
+        return Response.json(
           {
             ...error,
             name: error.name,
@@ -133,7 +121,7 @@ export const GET: RequestHandler = async ({ request }) => {
 
       if (WorkflowRunFailedError.is(error)) {
         const cause = error.cause;
-        return json(
+        return Response.json(
           {
             ...error,
             name: error.name,
@@ -153,7 +141,7 @@ export const GET: RequestHandler = async ({ request }) => {
       'Unexpected error while getting workflow return value:',
       error
     );
-    return json(
+    return Response.json(
       {
         error: 'Internal server error',
       },

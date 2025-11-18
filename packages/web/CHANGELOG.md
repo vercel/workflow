@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- b97b6bf: Lock all dependencies in our packages
+
 ## 4.0.1-beta.10
 
 ### Patch Changes

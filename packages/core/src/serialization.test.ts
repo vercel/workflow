@@ -12,8 +12,10 @@ import {
   getWorkflowReducers,
   hydrateWorkflowArguments,
 } from './serialization.js';
-import { STEP_FUNCTION_NAME_SYMBOL, STREAM_NAME_SYMBOL } from './symbols.js';
+import { STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
+
+const mockRunId = 'wrun_mockidnumber0001';
 
 describe('getStreamType', () => {
   it('should return `undefined` for a regular stream', () => {
@@ -41,7 +43,7 @@ describe('workflow arguments', () => {
 
   it('should work with Date', () => {
     const date = new Date('2025-07-17T04:30:34.824Z');
-    const serialized = dehydrateWorkflowArguments(date, []);
+    const serialized = dehydrateWorkflowArguments(date, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -61,7 +63,7 @@ describe('workflow arguments', () => {
 
   it('should work with invalid Date', () => {
     const date = new Date('asdf');
-    const serialized = dehydrateWorkflowArguments(date, []);
+    const serialized = dehydrateWorkflowArguments(date, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -81,7 +83,7 @@ describe('workflow arguments', () => {
 
   it('should work with BigInt', () => {
     const bigInt = BigInt('9007199254740992');
-    const serialized = dehydrateWorkflowArguments(bigInt, []);
+    const serialized = dehydrateWorkflowArguments(bigInt, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -99,7 +101,7 @@ describe('workflow arguments', () => {
 
   it('should work with BigInt negative', () => {
     const bigInt = BigInt('-12345678901234567890');
-    const serialized = dehydrateWorkflowArguments(bigInt, []);
+    const serialized = dehydrateWorkflowArguments(bigInt, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -120,7 +122,7 @@ describe('workflow arguments', () => {
       [2, 'foo'],
       [6, 'bar'],
     ]);
-    const serialized = dehydrateWorkflowArguments(map, []);
+    const serialized = dehydrateWorkflowArguments(map, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -154,7 +156,7 @@ describe('workflow arguments', () => {
 
   it('should work with Set', () => {
     const set = new Set([1, '2', true]);
-    const serialized = dehydrateWorkflowArguments(set, []);
+    const serialized = dehydrateWorkflowArguments(set, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -180,7 +182,7 @@ describe('workflow arguments', () => {
 
   it('should work with WritableStream', () => {
     const stream = new WritableStream();
-    const serialized = dehydrateWorkflowArguments(stream, []);
+    const serialized = dehydrateWorkflowArguments(stream, [], mockRunId);
     const uuid = serialized[2];
     expect(serialized).toMatchInlineSnapshot(`
       [
@@ -205,7 +207,7 @@ describe('workflow arguments', () => {
 
   it('should work with ReadableStream', () => {
     const stream = new ReadableStream();
-    const serialized = dehydrateWorkflowArguments(stream, []);
+    const serialized = dehydrateWorkflowArguments(stream, [], mockRunId);
     const uuid = serialized[2];
     expect(serialized).toMatchInlineSnapshot(`
       [
@@ -233,7 +235,7 @@ describe('workflow arguments', () => {
     headers.set('foo', 'bar');
     headers.append('set-cookie', 'a');
     headers.append('set-cookie', 'b');
-    const serialized = dehydrateWorkflowArguments(headers, []);
+    const serialized = dehydrateWorkflowArguments(headers, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -281,7 +283,7 @@ describe('workflow arguments', () => {
         ['set-cookie', 'b'],
       ]),
     });
-    const serialized = dehydrateWorkflowArguments(response, []);
+    const serialized = dehydrateWorkflowArguments(response, [], mockRunId);
     const bodyUuid = serialized[serialized.length - 3];
     expect(serialized).toMatchInlineSnapshot(`
       [
@@ -372,7 +374,7 @@ describe('workflow arguments', () => {
   it('should work with URLSearchParams', () => {
     const params = new URLSearchParams('a=1&b=2&a=3');
 
-    const serialized = dehydrateWorkflowArguments(params, []);
+    const serialized = dehydrateWorkflowArguments(params, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -399,7 +401,7 @@ describe('workflow arguments', () => {
   it('should work with empty URLSearchParams', () => {
     const params = new URLSearchParams();
 
-    const serialized = dehydrateWorkflowArguments(params, []);
+    const serialized = dehydrateWorkflowArguments(params, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -420,7 +422,7 @@ describe('workflow arguments', () => {
   it('should work with empty ArrayBuffer', () => {
     const buffer = new ArrayBuffer(0);
 
-    const serialized = dehydrateWorkflowArguments(buffer, []);
+    const serialized = dehydrateWorkflowArguments(buffer, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -440,7 +442,7 @@ describe('workflow arguments', () => {
   it('should work with empty Uint8Array', () => {
     const array = new Uint8Array(0);
 
-    const serialized = dehydrateWorkflowArguments(array, []);
+    const serialized = dehydrateWorkflowArguments(array, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -461,7 +463,7 @@ describe('workflow arguments', () => {
   it('should work with empty Int32Array', () => {
     const array = new Int32Array(0);
 
-    const serialized = dehydrateWorkflowArguments(array, []);
+    const serialized = dehydrateWorkflowArguments(array, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -482,7 +484,7 @@ describe('workflow arguments', () => {
   it('should work with empty Float64Array', () => {
     const array = new Float64Array(0);
 
-    const serialized = dehydrateWorkflowArguments(array, []);
+    const serialized = dehydrateWorkflowArguments(array, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -517,7 +519,7 @@ describe('workflow arguments', () => {
         duplex: 'half',
       } as RequestInit);
 
-      const serialized = dehydrateWorkflowArguments(request, []);
+      const serialized = dehydrateWorkflowArguments(request, [], mockRunId);
       expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -625,7 +627,7 @@ describe('workflow arguments', () => {
       const responseWritable = new WritableStream();
       request[Symbol.for('WEBHOOK_RESPONSE_WRITABLE')] = responseWritable;
 
-      const serialized = dehydrateWorkflowArguments(request, []);
+      const serialized = dehydrateWorkflowArguments(request, [], mockRunId);
       expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -727,7 +729,7 @@ describe('workflow arguments', () => {
     class Foo {}
     let err: WorkflowRuntimeError | undefined;
     try {
-      dehydrateWorkflowArguments(new Foo(), []);
+      dehydrateWorkflowArguments(new Foo(), [], mockRunId);
     } catch (err_) {
       err = err_ as WorkflowRuntimeError;
     }
@@ -775,7 +777,7 @@ describe('step return value', () => {
     class Foo {}
     let err: WorkflowRuntimeError | undefined;
     try {
-      dehydrateStepReturnValue(new Foo(), []);
+      dehydrateStepReturnValue(new Foo(), [], mockRunId);
     } catch (err_) {
       err = err_ as WorkflowRuntimeError;
     }
@@ -793,27 +795,27 @@ describe('step function serialization', () => {
     fixedTimestamp: 1714857600000,
   });
 
-  it('should detect step function by checking for STEP_FUNCTION_NAME_SYMBOL', () => {
+  it('should detect step function by checking for stepId property', () => {
     const stepName = 'myStep';
     const stepFn = async (x: number) => x * 2;
 
-    // Attach the symbol like useStep() does
-    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+    // Attach stepId like useStep() does
+    Object.defineProperty(stepFn, 'stepId', {
       value: stepName,
       writable: false,
       enumerable: false,
       configurable: false,
     });
 
-    // Verify the symbol is attached correctly
-    expect((stepFn as any)[STEP_FUNCTION_NAME_SYMBOL]).toBe(stepName);
+    // Verify the property is attached correctly
+    expect((stepFn as any).stepId).toBe(stepName);
   });
 
-  it('should not have STEP_FUNCTION_NAME_SYMBOL on regular functions', () => {
+  it('should not have stepId on regular functions', () => {
     const regularFn = async (x: number) => x * 2;
 
-    // Regular functions should not have the symbol
-    expect((regularFn as any)[STEP_FUNCTION_NAME_SYMBOL]).toBeUndefined();
+    // Regular functions should not have stepId
+    expect((regularFn as any).stepId).toBeUndefined();
   });
 
   it('should lookup registered step function by name', () => {
@@ -869,8 +871,8 @@ describe('step function serialization', () => {
     // Register the step function
     registerStepFunction(stepName, stepFn);
 
-    // Attach the symbol to the function (like the SWC compiler would)
-    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+    // Attach stepId to the function (like useStep() does)
+    Object.defineProperty(stepFn, 'stepId', {
       value: stepName,
       writable: false,
       enumerable: false,
@@ -897,8 +899,8 @@ describe('step function serialization', () => {
     const stepName = 'step//workflows/test.ts//anotherStep';
     const stepFn = async () => 'result';
 
-    // Attach the symbol to the function (like the SWC compiler would)
-    Object.defineProperty(stepFn, STEP_FUNCTION_NAME_SYMBOL, {
+    // Attach stepId to the function (like useStep() does)
+    Object.defineProperty(stepFn, 'stepId', {
       value: stepName,
       writable: false,
       enumerable: false,

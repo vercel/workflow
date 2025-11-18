@@ -5,5 +5,5 @@ import type { StepMetadata } from './get-step-metadata.js';
 export const contextStorage = /* @__PURE__ */ new AsyncLocalStorage<{
   stepMetadata: StepMetadata;
   workflowMetadata: WorkflowMetadata;
-  ops: Promise<any>[];
+  ops: Promise<void>[];
 }>();

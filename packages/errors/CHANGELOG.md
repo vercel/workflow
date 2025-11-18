@@ -1,5 +1,14 @@
 # @workflow/errors
 
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- b97b6bf: Lock all dependencies in our packages
+- 00b0bb9: Wire through world's structured errors in WorkflowRunFailedError
+- Updated dependencies [b97b6bf]
+  - @workflow/utils@4.0.1-beta.3
+
 ## 4.0.1-beta.4
 
 ### Patch Changes

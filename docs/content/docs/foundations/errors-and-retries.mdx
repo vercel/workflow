@@ -10,7 +10,7 @@ By default, errors thrown inside steps are retried. Additionally, Workflow DevKi
 
 ## Default Retrying
 
-By default, steps retry up to 3 times on arbitrary errors. You can customize the number of retries by adding a maxRetries property to the step function
+By default, steps retry up to 3 times on arbitrary errors. You can customize the number of retries by adding a `maxRetries` property to the step function.
 
 ```typescript lineNumbers
 async function callApi(endpoint: string) {
@@ -29,7 +29,7 @@ async function callApi(endpoint: string) {
 callApi.maxRetries = 5; // Set a custom number of retries
 ```
 
-Steps get enqueued immediately after the failure. Read on to see how this can be customized.
+Steps get enqueued immediately after a failure. Read on to see how this can be customized.
 
 <Callout type="info">
   When a retried step performs external side effects (payments, emails, API
@@ -65,7 +65,7 @@ async function callApi(endpoint: string) {
 
 ## Customize Retry Behavior
 
-When you need to customize the delay on the retry, use [`RetryableError`](/docs/api-reference/workflow/retryable-error) and set the retryAfter property.
+When you need to customize the delay on a retry, use [`RetryableError`](/docs/api-reference/workflow/retryable-error) and set the `retryAfter` property.
 
 ```typescript lineNumbers
 import { FatalError, RetryableError } from "workflow";

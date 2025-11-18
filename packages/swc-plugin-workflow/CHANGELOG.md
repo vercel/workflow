@@ -1,5 +1,17 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- 5eb588a: Remove step function identifier transform out of swc-plugin and into `useStep()` runtime function
+- 0b848cd: Fix compiler warnings
+- 45b7b41: Support nested anonymous step functions
+- f8e5d10: Support serializing step function references
+- 8002e0f: Add support for step functions defined as object properties
+- f07b2da: Transform step functions to single `useStep()` calls
+- aecdcdf: Add support for step functions nested inside of workflow functions
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

@@ -180,7 +180,7 @@ export class Run<TResult> {
   ): ReadableStream<R> {
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    return getExternalRevivers(global, ops).ReadableStream({
+    return getExternalRevivers(global, ops, this.runId).ReadableStream({
       name,
       startIndex,
     }) as ReadableStream<R>;
@@ -197,7 +197,7 @@ export class Run<TResult> {
         const run = await this.world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          return hydrateWorkflowReturnValue(run.output, [], globalThis);
+          return hydrateWorkflowReturnValue(run.output, [], this.runId);
         }
 
         if (run.status === 'cancelled') {
@@ -672,7 +672,7 @@ export const stepEntrypoint =
             }
             // Hydrate the step input arguments
             const ops: Promise<void>[] = [];
-            const args = hydrateStepArguments(step.input, ops);
+            const args = hydrateStepArguments(step.input, ops, workflowRunId);
 
             span?.setAttributes({
               ...Attribute.StepArgumentsCount(args.length),
@@ -702,8 +702,7 @@ export const stepEntrypoint =
             // NOTE: None of the code from this point is guaranteed to run
             // Since the step might fail or cause a function timeout and the process might be SIGKILL'd
             // The workflow runtime must be resilient to the below code not executing on a failed step
-
-            result = dehydrateStepReturnValue(result, ops);
+            result = dehydrateStepReturnValue(result, ops, workflowRunId);
 
             waitUntil(Promise.all(ops));
 

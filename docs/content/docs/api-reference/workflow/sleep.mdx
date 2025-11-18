@@ -6,12 +6,12 @@ import { generateDefinition } from "@/lib/tsdoc"
 
 # `sleep()`
 
-Suspends a workflow for a specified duration or until an end date without consuming any resources. Once the duration or end date has passed, the workflow will resume execution.
+Suspends a workflow for a specified duration or until an end date without consuming any resources. Once the duration or end date passes, the workflow will resume execution.
 
 This is useful when you want to resume a workflow after some duration or date.
 
 <Callout>
-`sleep` is a *special* type of step function provided and should be called directly inside workflow functions.
+`sleep` is a *special* type of step function and should be called directly inside workflow functions.
 </Callout>
 
 ```typescript lineNumbers

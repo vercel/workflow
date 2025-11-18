@@ -8,9 +8,9 @@ Hooks provide a powerful mechanism for pausing workflow execution and resuming i
 
 ## Understanding Hooks
 
-At their core, **Hooks** are a low-level primitive that allow you to pause a workflow and resume it later with arbitrary [serializable data](/docs/foundations/serialization). Think of them as a suspension point in your workflow where you're waiting for external input.
+At their core, **Hooks** are a low-level primitive that allows you to pause a workflow and resume it later with arbitrary [serializable data](/docs/foundations/serialization). Think of them as suspension points in your workflow where you're waiting for external input.
 
-When you create a hook, it generates a unique token that external systems use to send data back to your workflow. This makes hooks perfect for scenarios like:
+When you create a hook, it generates a unique token that external systems can use to send data back to your workflow. This makes hooks perfect for scenarios like:
 
 - Waiting for approval from a user or admin
 - Receiving data from an external system or service
@@ -79,7 +79,7 @@ The key points:
 
 ### Custom Tokens for Deterministic Hooks
 
-By default, hooks generate a random token. However, you often want to use a **custom token** that the external system can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.
+By default, hooks generate a random token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.
 
 For example, imagine a Slack bot where each channel should have its own workflow instance:
 
@@ -163,7 +163,7 @@ Each time you call `resumeHook()` with the same token, the loop receives another
 
 ## Understanding Webhooks
 
-While hooks are powerful, they require you to manually handle HTTP requests and route them to the workflow. **Webhooks** solve this by providing a higher-level abstraction built on top of hooks that:
+While hooks are powerful, they require you to manually handle HTTP requests and route them to workflows. **Webhooks** solve this by providing a higher-level abstraction built on top of hooks that:
 
 1. Automatically serializes the entire HTTP [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) object
 2. Provides an automatically addressable `url` property pointing to the generated webhook endpoint

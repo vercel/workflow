@@ -13,8 +13,8 @@ const DEV_TEST_CONFIGS = {
     apiFileImportPath: '../../..',
   },
   nitro: {
-    generatedStepPath: '.nitro/workflow/steps.mjs',
-    generatedWorkflowPath: '.nitro/workflow/workflows.mjs',
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
@@ -29,11 +29,18 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'src/routes/.well-known/workflow/v1/flow/+server.js',
     apiFilePath: 'src/routes/api/chat/+server.ts',
     apiFileImportPath: '../../../..',
+    workflowsDir: 'src/workflows',
   },
   vite: {
-    generatedStepPath: 'dist/workflow/steps.mjs',
-    generatedWorkflowPath: 'dist/workflow/workflows.mjs',
-    apiFilePath: 'src/main.ts',
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
+    apiFilePath: 'routes/api/trigger.post.ts',
+    apiFileImportPath: '../..',
+  },
+  hono: {
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
+    apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
   },
 };
@@ -79,6 +86,18 @@ matrix.app.push({
   name: 'nuxt',
   project: 'workbench-nuxt-workflow',
   ...DEV_TEST_CONFIGS.nuxt,
+});
+
+matrix.app.push({
+  name: 'hono',
+  project: 'workbench-hono-workflow',
+  ...DEV_TEST_CONFIGS.hono,
+});
+
+matrix.app.push({
+  name: 'vite',
+  project: 'workbench-vite-workflow',
+  ...DEV_TEST_CONFIGS.vite,
 });
 
 console.log(JSON.stringify(matrix));

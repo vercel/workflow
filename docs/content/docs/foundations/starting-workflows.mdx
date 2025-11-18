@@ -36,7 +36,7 @@ export async function POST(request: Request) {
 - The second argument is an array of arguments to pass to the workflow (optional if the workflow takes no arguments)
 - All arguments must be [serializable](/docs/foundations/serialization)
 
-**Learn more:** [`start()` API Reference](/docs/api-reference/workflow-api/start)
+**Learn more**: [`start()` API Reference](/docs/api-reference/workflow-api/start)
 
 ---
 
@@ -68,10 +68,10 @@ const result = await run.returnValue;
 - `readable` - ReadableStream for streaming updates from the workflow
 
 <Callout type="info">
-Most `Run` properties are async getters that return promises. You need to `await` them to get their values. For the complete list of properties and methods, see the API reference below.
+Most `Run` properties are async getters that return promises. You need to `await` them to get their values. For a complete list of properties and methods, see the API reference below.
 </Callout>
 
-**Learn more:** [`Run` API Reference](/docs/api-reference/workflow-api/start#returns)
+**Learn more**: [`Run` API Reference](/docs/api-reference/workflow-api/start#returns)
 
 ---
 
@@ -182,7 +182,7 @@ async function streamContentToClient(
 Streams are particularly useful for AI workflows where you want to show progress to users in real-time, or for long-running processes that produce intermediate results.
 </Callout>
 
-**Learn more:** [Streaming in Workflows](/docs/foundations/serialization#streaming)
+**Learn more**: [Streaming in Workflows](/docs/foundations/serialization#streaming)
 
 ### Check Status Later
 

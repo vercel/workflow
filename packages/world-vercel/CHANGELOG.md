@@ -1,5 +1,26 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.9
+
+### Patch Changes
+
+- 4b70739: Require specifying runId when writing to stream
+- Updated dependencies [4b70739]
+  - @workflow/world@4.0.1-beta.6
+  - @workflow/errors@4.0.1-beta.5
+
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- b97b6bf: Lock all dependencies in our packages
+- 00b0bb9: Support structured errors for steps and runs
+- Updated dependencies [b97b6bf]
+- Updated dependencies [00b0bb9]
+- Updated dependencies [00b0bb9]
+  - @workflow/errors@4.0.1-beta.5
+  - @workflow/world@4.0.1-beta.5
+
 ## 4.0.1-beta.7
 
 ### Patch Changes

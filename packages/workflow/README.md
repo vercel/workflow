@@ -16,17 +16,17 @@
 
 ## Getting Started
 
-The **Workflow Development Kit** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI Agents that can suspend, resume, and maintain state with ease.
+The **Workflow Development Kit** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
 
 Visit [https://useworkflow.dev](https://useworkflow.dev) to view the full documentation.
 
 ## Community
 
-The Workflow DevKit community can be found on [GitHub Discussions](https://github.com/vercel/workflow/discussions) where you can ask questions, voice ideas, and share your projects with other people.
+The Workflow DevKit community can be found on [GitHub Discussions](https://github.com/vercel/workflow/discussions), where you can ask questions, voice ideas, and share your projects with other people.
 
 ## Contributing
 
-Contributions to Workflow DevKit are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and the wider community.
+Contributions to Workflow DevKit are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and wider community.
 
 ## Authors
 
@@ -48,6 +48,6 @@ The Workflow DevKit logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com
 
 ## Security
 
-If you believe you have found a security vulnerability in Workflow DevKit, we encourage you to **_responsibly disclose this and NOT open a public issue_**.
+If you believe you have found a security vulnerability in Workflow DevKit, we encourage you to **_responsibly disclose this and not open a public issue_**.
 
 To participate in our Open Source Software Bug Bounty program, please email [responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com). We will add you to the program and provide further instructions for submitting your report.

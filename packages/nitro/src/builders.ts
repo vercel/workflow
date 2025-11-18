@@ -5,14 +5,14 @@ import {
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
-import { join, resolve } from 'pathe';
+import { join } from 'pathe';
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
-        dirs: getWorkflowDirs(nitro),
+        dirs: ['.'], // Different apps that use nitro have different directories
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -38,7 +38,7 @@ export class LocalBuilder extends BaseBuilder {
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
         watch: nitro.options.dev,
-        dirs: getWorkflowDirs(nitro),
+        dirs: ['.'], // Different apps that use nitro have different directories
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });
@@ -63,23 +63,12 @@ export class LocalBuilder extends BaseBuilder {
       inputFiles,
     });
 
+    const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
+
     await this.createWebhookBundle({
-      outfile: join(this.#outDir, 'webhook.mjs'),
+      outfile: webhookRouteFile,
       bundle: false,
+      suppressUndefinedRejections: true,
     });
   }
-}
-
-export function getWorkflowDirs(nitro: Nitro) {
-  return unique(
-    [
-      ...(nitro.options.workflow?.dirs ?? []),
-      join(nitro.options.rootDir, 'workflows'),
-      ...nitro.options.scanDirs.map((dir) => join(dir, 'workflows')),
-    ].map((dir) => resolve(nitro.options.rootDir, dir))
-  ).sort();
-}
-
-function unique<T>(array: T[]): T[] {
-  return Array.from(new Set(array));
 }

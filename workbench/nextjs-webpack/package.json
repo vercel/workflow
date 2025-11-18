@@ -4,9 +4,12 @@
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js",
+    "predev": "pnpm generate:workflows",
+    "prebuild": "pnpm generate:workflows",
     "dev": "next dev --webpack",
     "build": "next build --webpack",
-    "clean": "rm -rf .next .swc app/.well-known/workflow",
+    "clean": "rm -rf .next .swc app/.well-known/workflow _workflows.ts",
     "start": "next start",
     "lint": "next lint"
   },

@@ -72,25 +72,63 @@ export WORKFLOW_EMBEDDED_DATA_DIR=./custom-workflow-data
 ```typescript
 import { createEmbeddedWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld('./custom-workflow-data');
+const world = createEmbeddedWorld({ dataDir: './custom-workflow-data' });
 ```
 
 ### Port
 
-The local world automatically detects your server port from the `PORT` environment variable:
+By default, the embedded world **automatically detects** which port your application is listening on using process introspection. This works seamlessly with frameworks like SvelteKit, Vite, and others that use non-standard ports.
 
-```bash
-export PORT=3000
-
-npm run dev
-```
-
-You can also specify it explicitly when creating the world programmatically:
+**Auto-detection example** (recommended):
 
 ```typescript
 import { createEmbeddedWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld(undefined, 3000);
+// Port is automatically detected - no configuration needed!
+const world = createEmbeddedWorld();
+```
+
+If auto-detection fails, the world will fall back to the `PORT` environment variable, then to port `3000`.
+
+**Manual port override** (when needed):
+
+You can override the auto-detected port by specifying it explicitly:
+
+```typescript
+import { createEmbeddedWorld } from '@workflow/world-local';
+
+const world = createEmbeddedWorld({ port: 3000 });
+```
+
+### Base URL
+
+For advanced use cases like HTTPS or custom hostnames, you can override the entire base URL. When set, this takes precedence over all port detection and configuration.
+
+**Use cases:**
+- HTTPS dev servers (e.g., `next dev --experimental-https`)
+- Custom hostnames (e.g., `local.example.com`)
+- Non-localhost development
+
+**Environment variable:**
+
+```bash
+export WORKFLOW_EMBEDDED_BASE_URL=https://local.example.com:3000
+```
+
+**Programmatically:**
+
+```typescript
+import { createEmbeddedWorld } from '@workflow/world-local';
+
+// HTTPS
+const world = createEmbeddedWorld({
+  baseUrl: 'https://localhost:3000'
+});
+
+// Custom hostname
+const world = createEmbeddedWorld({
+  baseUrl: 'https://local.example.com:3000'
+});
 ```
 
 ## Usage
@@ -172,26 +210,49 @@ Creates a local world instance:
 
 ```typescript
 function createEmbeddedWorld(
-  dataDir?: string,
-  port?: number
+  args?: Partial<{
+    dataDir: string;
+    port: number;
+    baseUrl: string;
+  }>
 ): World
 ```
 
 **Parameters:**
 
-- `dataDir` - Directory for storing workflow data (default: `.workflow-data/`)
-- `port` - Server port for queue transport (default: from `PORT` env var)
+- `args` - Optional configuration object:
+  - `dataDir` - Directory for storing workflow data (default: `.workflow-data/` or `WORKFLOW_EMBEDDED_DATA_DIR` env var)
+  - `port` - Port override for queue transport (default: auto-detected → `PORT` env var → `3000`)
+  - `baseUrl` - Full base URL override for queue transport (default: `http://localhost:{port}` or `WORKFLOW_EMBEDDED_BASE_URL` env var)
 
 **Returns:**
 
 - `World` - A world instance implementing the World interface
 
-**Example:**
+**Examples:**
 
 ```typescript
 import { createEmbeddedWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld('./my-data', 3000);
+// Use all defaults (recommended - auto-detects port)
+const world = createEmbeddedWorld();
+
+// Custom data directory
+const world = createEmbeddedWorld({ dataDir: './my-data' });
+
+// Override port
+const world = createEmbeddedWorld({ port: 3000 });
+
+// HTTPS with custom hostname
+const world = createEmbeddedWorld({
+  baseUrl: 'https://local.example.com:3000'
+});
+
+// Multiple options
+const world = createEmbeddedWorld({
+  dataDir: './my-data',
+  baseUrl: 'https://localhost:3000'
+});
 ```
 
 ## Learn More

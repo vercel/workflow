@@ -13,13 +13,13 @@ This guide will walk through setting up your first workflow in a Hono app. Along
 <Step>
 ## Create Your Hono Project
 
-Start by creating a new Hono project. This command will create a new directory named `my-workflow-app` and setup a Hono project inside it.
+Start by creating a new Hono project. This command will create a new directory named `my-workflow-app` and set up a Hono project inside it.
 
 ```bash
 npm create hono@latest my-workflow-app -- --template=nodejs
 ```
 
-Enter the newly made directory:
+Enter the newly created directory:
 
 ```bash
 cd my-workflow-app
@@ -29,16 +29,16 @@ cd my-workflow-app
 
 <Tabs items={['npm', 'pnpm', 'yarn', 'bun']}>
   <Tab value="npm">
-    <CodeBlock>npm i workflow nitro</CodeBlock>
+    <CodeBlock>npm i workflow nitro rollup</CodeBlock>
   </Tab>
   <Tab value="pnpm">
-    <CodeBlock>pnpm i workflow nitro</CodeBlock>
+    <CodeBlock>pnpm i workflow nitro rollup</CodeBlock>
   </Tab>
   <Tab value="yarn">
-    <CodeBlock>yarn add workflow nitro</CodeBlock>
+    <CodeBlock>yarn add workflow nitro rollup</CodeBlock>
   </Tab>
   <Tab value="bun">
-    <CodeBlock>bun add workflow nitro</CodeBlock>
+    <CodeBlock>bun add workflow nitro rollup</CodeBlock>
   </Tab>
 </Tabs>
 
@@ -51,12 +51,13 @@ By default, Hono doesn't include a build system. Nitro adds one which enables co
 Create a new file `nitro.config.ts` for your Nitro configuration with module `workflow/nitro`. This enables usage of the `"use workflow"` and `"use step"` directives.
 
 ```typescript title="nitro.config.ts" lineNumbers
-import { defineNitroConfig } from "nitro/config";
+import { defineConfig } from "nitro";
 
-export default defineNitroConfig({
-  srcDir: "src",
-  serverEntry: "index.ts",
+export default defineConfig({
   modules: ["workflow/nitro"],
+  routes: {
+    "/**": "./src/index.ts"
+  }
 });
 ```
 
@@ -200,9 +201,9 @@ import { handleUserSignup } from "../workflows/user-signup.js";
 const app = new Hono();
 
 app.post("/api/signup", async (c) => {
-    const { email } = await c.req.json();
-    await start(handleUserSignup, [email]);
-    return c.json({ message: "User signup workflow started" });
+  const { email } = await c.req.json();
+  await start(handleUserSignup, [email]);
+  return c.json({ message: "User signup workflow started" });
 });
 
 export default app;

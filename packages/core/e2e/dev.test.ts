@@ -10,6 +10,8 @@ export interface DevTestConfig {
   apiFileImportPath: string;
   /** The workflow file to modify for testing HMR. Defaults to '3_streams.ts' */
   testWorkflowFile?: string;
+  /** The workflows directory relative to appPath. Defaults to 'workflows' */
+  workflowsDir?: string;
 }
 
 function getConfigFromEnv(): DevTestConfig | null {
@@ -39,6 +41,7 @@ export function createDevTests(config?: DevTestConfig) {
       finalConfig.generatedWorkflowPath
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
+    const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     afterEach(async () => {
@@ -55,7 +58,7 @@ export function createDevTests(config?: DevTestConfig) {
     });
 
     test('should rebuild on workflow change', { timeout: 10_000 }, async () => {
-      const workflowFile = path.join(appPath, 'workflows', testWorkflowFile);
+      const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(workflowFile, 'utf8');
 
@@ -83,7 +86,7 @@ export async function myNewWorkflow() {
     });
 
     test('should rebuild on step change', { timeout: 10_000 }, async () => {
-      const stepFile = path.join(appPath, 'workflows', testWorkflowFile);
+      const stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(stepFile, 'utf8');
 
@@ -114,7 +117,11 @@ export async function myNewStep() {
       'should rebuild on adding workflow file',
       { timeout: 10_000 },
       async () => {
-        const workflowFile = path.join(appPath, 'workflows', 'new-workflow.ts');
+        const workflowFile = path.join(
+          appPath,
+          workflowsDir,
+          'new-workflow.ts'
+        );
 
         await fs.writeFile(
           workflowFile,
@@ -132,7 +139,7 @@ export async function myNewStep() {
 
         await fs.writeFile(
           apiFile,
-          `import '${finalConfig.apiFileImportPath}/workflows/new-workflow';
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/new-workflow';
 ${apiFileContent}`
         );
 

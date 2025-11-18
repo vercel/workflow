@@ -1,22 +1,41 @@
 import type {
+  LanguageModelV2,
   LanguageModelV2CallOptions,
   LanguageModelV2Prompt,
   LanguageModelV2StreamPart,
   LanguageModelV2ToolCall,
 } from '@ai-sdk/provider';
-import { gateway, type UIMessageChunk } from 'ai';
+import {
+  gateway,
+  type StepResult,
+  type StopCondition,
+  type ToolSet,
+  type UIMessageChunk,
+} from 'ai';
 
 type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 
+export type ModelStopCondition = StopCondition<NoInfer<ToolSet>>;
+
 export async function doStreamStep(
   conversationPrompt: LanguageModelV2Prompt,
-  modelId: string,
+  modelInit: string | (() => Promise<LanguageModelV2>),
   writable: WritableStream<UIMessageChunk>,
   tools?: LanguageModelV2CallOptions['tools']
 ) {
   'use step';
 
-  const model = gateway(modelId);
+  let model: LanguageModelV2 | undefined;
+  if (typeof modelInit === 'string') {
+    model = gateway(modelInit);
+  } else if (typeof modelInit === 'function') {
+    model = await modelInit();
+  } else {
+    throw new Error(
+      'Invalid "model initialization" argument. Must be a string or a function that returns a LanguageModelV2 instance.'
+    );
+  }
+
   const result = await model.doStream({
     prompt: conversationPrompt,
     tools,
@@ -24,6 +43,7 @@ export async function doStreamStep(
 
   let finish: FinishPart | undefined;
   const toolCalls: LanguageModelV2ToolCall[] = [];
+  const chunks: LanguageModelV2StreamPart[] = [];
 
   await result.stream
     .pipeThrough(
@@ -37,6 +57,7 @@ export async function doStreamStep(
           } else if (chunk.type === 'finish') {
             finish = chunk;
           }
+          chunks.push(chunk);
           controller.enqueue(chunk);
         },
       })
@@ -225,7 +246,6 @@ export async function doStreamStep(
                 // ...(dynamic != null ? { dynamic } : {}),
               });
               // }
-
               break;
             }
 
@@ -279,13 +299,16 @@ export async function doStreamStep(
             //   break;
             // }
 
-            // case "error": {
-            //   controller.enqueue({
-            //     type: "error",
-            //     errorText: onError(part.error),
-            //   });
-            //   break;
-            // }
+            case 'error': {
+              const error = part.error;
+              controller.enqueue({
+                type: 'error',
+                errorText:
+                  error instanceof Error ? error.message : String(error),
+              });
+
+              break;
+            }
 
             // case "start-step": {
             //   controller.enqueue({ type: "start-step" });
@@ -354,5 +377,106 @@ export async function doStreamStep(
   //   throw new Error('LLM stream ended without a "finish" chunk');
   // }
 
-  return { toolCalls, finish };
+  const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
+  return { toolCalls, finish, step };
+}
+
+// This is a stand-in for logic in the AI-SDK streamText code which aggregates
+// chunks into a single step result.
+function chunksToStep(
+  chunks: LanguageModelV2StreamPart[],
+  toolCalls: LanguageModelV2ToolCall[],
+  conversationPrompt: LanguageModelV2Prompt,
+  finish?: FinishPart
+): StepResult<any> {
+  // Transform chunks to a single step result
+  const text = chunks
+    .filter(
+      (chunk): chunk is Extract<typeof chunk, { type: 'text-delta' }> =>
+        chunk.type === 'text-delta'
+    )
+    .map((chunk) => chunk.delta)
+    .join('');
+
+  const reasoning = chunks.filter(
+    (chunk): chunk is Extract<typeof chunk, { type: 'reasoning-delta' }> =>
+      chunk.type === 'reasoning-delta'
+  );
+
+  const reasoningText = reasoning.map((chunk) => chunk.delta).join('');
+
+  // Extract warnings from stream-start chunk
+  const streamStart = chunks.find(
+    (chunk): chunk is Extract<typeof chunk, { type: 'stream-start' }> =>
+      chunk.type === 'stream-start'
+  );
+
+  // Extract response metadata from response-metadata chunk
+  const responseMetadata = chunks.find(
+    (chunk): chunk is Extract<typeof chunk, { type: 'response-metadata' }> =>
+      chunk.type === 'response-metadata'
+  );
+
+  const stepResult: StepResult<any> = {
+    content: [
+      ...(text ? [{ type: 'text' as const, text }] : []),
+      ...toolCalls.map((toolCall) => ({
+        type: 'tool-call' as const,
+        toolCallId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+        input: JSON.parse(toolCall.input),
+        dynamic: true as const,
+      })),
+    ],
+    text,
+    reasoning: reasoning.map((chunk) => ({
+      type: 'reasoning' as const,
+      text: chunk.delta,
+    })),
+    reasoningText: reasoningText || undefined,
+    files: [],
+    sources: [],
+    toolCalls: toolCalls.map((toolCall) => ({
+      type: 'tool-call' as const,
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      input: JSON.parse(toolCall.input),
+      dynamic: true as const,
+    })),
+    staticToolCalls: [],
+    dynamicToolCalls: toolCalls.map((toolCall) => ({
+      type: 'tool-call' as const,
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      input: JSON.parse(toolCall.input),
+      dynamic: true as const,
+    })),
+    toolResults: [],
+    staticToolResults: [],
+    dynamicToolResults: [],
+    finishReason: finish?.finishReason || 'unknown',
+    usage: finish?.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    warnings: streamStart?.warnings,
+    request: {
+      body: JSON.stringify({
+        prompt: conversationPrompt,
+        tools: toolCalls.map((toolCall) => ({
+          type: 'tool-call' as const,
+          toolCallId: toolCall.toolCallId,
+          toolName: toolCall.toolName,
+          input: JSON.parse(toolCall.input),
+          dynamic: true as const,
+        })),
+      }),
+    },
+    response: {
+      id: responseMetadata?.id ?? 'unknown',
+      timestamp: responseMetadata?.timestamp ?? new Date(),
+      modelId: responseMetadata?.modelId ?? 'unknown',
+      messages: [],
+    },
+    providerMetadata: finish?.providerMetadata || {},
+  };
+
+  return stepResult;
 }
