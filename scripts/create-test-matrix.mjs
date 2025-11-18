@@ -48,7 +48,6 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
-    workflowsDir: 'src/workflows',
   },
 };
 
