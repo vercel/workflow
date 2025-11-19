@@ -6,12 +6,16 @@ import { generateDefinition } from "@/lib/tsdoc"
 
 # `getWritable()`
 
-Retrieves the current workflow run's default writable stream. The writable stream can be used in both workflow and step functions to write data that can be read outside the workflow by using the `readable` property of the [`Run` object](/docs/api-reference/workflow-api/get-run).
+Retrieves the current workflow run's default writable stream. The writable stream can be obtained in workflow functions and passed to steps, or called directly within step functions to write data that can be read outside the workflow by using the `readable` property of the [`Run` object](/docs/api-reference/workflow-api/get-run).
 
 Use this function in your workflows and steps to produce streaming output that can be consumed by clients in real-time.
 
 <Callout type="warn">
 This function can only be called inside a workflow or step function (functions with `"use workflow"` or `"use step"` directive)
+</Callout>
+
+<Callout type="error">
+**Important:** While you can call `getWritable()` inside a workflow function to obtain the stream, you **cannot interact with the stream directly** in the workflow context (e.g., calling `getWriter()`, `write()`, or `close()`). The stream must be passed to step functions as arguments, or steps can call `getWritable()` directly themselves.
 </Callout>
 
 ```typescript lineNumbers
@@ -20,11 +24,20 @@ import { getWritable } from 'workflow';
 export async function myWorkflow() {
   "use workflow";
 
+  // Get the writable stream
   const writable = getWritable(); // [!code highlight]
-  const writer = writable.getWriter();
 
+  // Pass it to a step function to interact with it
+  await writeToStream(writable); // [!code highlight]
+}
+
+async function writeToStream(writable: WritableStream) {
+  "use step";
+
+  const writer = writable.getWriter();
   await writer.write(new TextEncoder().encode('Hello from workflow!'));
-  await writer.close();
+  writer.releaseLock();
+  await writable.close();
 }
 ```
 
@@ -56,8 +69,9 @@ Returns a `WritableStream<W>` where `W` is the type of data you plan to write to
 
 ## Good to Know
 
-- The stream can be obtained from either workflow or step functions using the same `getWritable()` call.
-- When called from a workflow, the stream can be passed as an argument to steps.
+- **Workflow functions can only obtain the stream** - Call `getWritable()` in a workflow to get the stream reference, but you cannot call methods like `getWriter()`, `write()`, or `close()` directly in the workflow context.
+- **Step functions can interact with streams** - Steps can receive the stream as an argument or call `getWritable()` directly, and they can freely interact with it (write, close, etc.).
+- When called from a workflow, the stream must be passed as an argument to steps for interaction.
 - When called from a step, it retrieves the same workflow-scoped stream directly.
 - Always release the writer lock after writing to prevent resource leaks.
 - The stream can write binary data (using `TextEncoder`) or structured objects.
@@ -235,7 +249,10 @@ async function startStream(writable: WritableStream<UIMessageChunk>) {
   writer.releaseLock();
 }
 
-async function streamTextStep(writable: WritableStream<UIMessageChunk>) {
+async function streamTextStep(
+  messages: UIMessage[],
+  writable: WritableStream<UIMessageChunk>
+) {
   'use step';
 
   const writer = writable.getWriter();
@@ -269,11 +286,7 @@ async function streamTextStep(writable: WritableStream<UIMessageChunk>) {
 async function endStream(writable: WritableStream<UIMessageChunk>) {
   'use step';
 
-  const writer = writable.getWriter();
-
-  // Close the stream
-  writer.close();
-  writer.releaseLock();
+  // Close the stream to signal completion
+  await writable.close();
 }
-
 ```
