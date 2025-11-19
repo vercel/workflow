@@ -1,5 +1,14 @@
 # @vercel/workflow-nitro
 
+## 4.0.1-beta.16
+
+### Patch Changes
+
+- ee25bd9: Upgrade to nitro@3.0.1-alpha.1
+- Updated dependencies [6e41c90]
+  - @workflow/core@4.0.1-beta.14
+  - @workflow/builders@4.0.1-beta.12
+
 ## 4.0.1-beta.15
 
 ### Patch Changes

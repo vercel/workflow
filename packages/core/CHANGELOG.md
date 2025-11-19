@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- 6e41c90: Allow step retrying if it fails without proper cleanup
+
 ## 4.0.1-beta.13
 
 ### Patch Changes
