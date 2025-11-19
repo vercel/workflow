@@ -38,15 +38,17 @@ export async function getPort(): Promise<number | undefined> {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 100);
 
-        await fetch(`http://localhost:${testPort}`, {
-          signal: controller.signal,
-        });
+        try {
+          await fetch(`http://localhost:${testPort}`, {
+            signal: controller.signal,
+          });
 
-        clearTimeout(timeoutId);
-
-        // If fetch succeeds, cache and return the port
-        port = testPort;
-        return port;
+          // If fetch succeeds, cache and return the port
+          port = testPort;
+          return port;
+        } finally {
+          clearTimeout(timeoutId);
+        }
       } catch (error) {
         seenPorts.add(testPort);
         // Continue to next port
