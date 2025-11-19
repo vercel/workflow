@@ -43,9 +43,7 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
     return `http://localhost:${config.port}`;
   }
 
-  console.log('[world-local]: Getting port');
   const detectedPort = await getPort();
-  console.log('[world-local]: Detected port:', detectedPort);
   if (detectedPort) {
     return `http://localhost:${detectedPort}`;
   }

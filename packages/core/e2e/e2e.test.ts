@@ -79,12 +79,6 @@ async function getWorkflowReturnValue(runId: string) {
 // NOTE: Temporarily disabling concurrent tests to avoid flakiness.
 // TODO: Re-enable concurrent tests after conf when we have more time to investigate.
 describe('e2e', () => {
-  test.only('addTenWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('addTenWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
-    expect(returnValue).toBe(133);
-  });
-
   test.each([
     {
       workflowFile: 'workflows/99_e2e.ts',
