@@ -30,25 +30,6 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
       nuxt.options.nitro.workflow.typescriptPlugin = options.typescriptPlugin;
       nuxt.options.nitro.modules.push('@workflow/nitro');
     }
-
-    // Exclude .nuxt/workflow from Vite's file watcher to prevent HMR on generated files
-    nuxt.options.vite ||= {};
-    nuxt.options.vite.server ||= {};
-    nuxt.options.vite.server.watch ||= {};
-    nuxt.options.vite.server.watch.ignored ||= [];
-
-    const ignored = nuxt.options.vite.server.watch.ignored;
-    if (Array.isArray(ignored)) {
-      ignored.push('**/.nuxt/workflow/**');
-    } else if (typeof ignored === 'function') {
-      const originalIgnored = ignored;
-      nuxt.options.vite.server.watch.ignored = (file: string) => {
-        if (file.includes('.nuxt/workflow')) {
-          return true;
-        }
-        return originalIgnored(file);
-      };
-    }
   },
 });
 
