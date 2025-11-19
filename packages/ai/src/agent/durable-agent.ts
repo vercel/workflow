@@ -11,7 +11,6 @@ import {
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
-import { getWritable } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
 
 /**
@@ -54,9 +53,9 @@ export interface DurableAgentStreamOptions {
   system?: string;
 
   /**
-   * Optional custom writable stream for handling message chunks. If not provided, a default writable stream will be created using getWritable().
+   * The writable stream for handling message chunks. Use `getWritable<UIMessageChunk>()` to get the workflow's default output stream.
    */
-  writable?: WritableStream<UIMessageChunk>;
+  writable: WritableStream<UIMessageChunk>;
 
   /**
    * If true, prevents the writable stream from being closed after streaming completes.
@@ -97,6 +96,7 @@ export interface DurableAgentStreamOptions {
  *
  * await agent.stream({
  *   messages: [{ role: 'user', content: 'What is the weather?' }],
+ *   writable: getWritable<UIMessageChunk>(),
  * });
  * ```
  */
@@ -127,12 +127,10 @@ export class DurableAgent {
       download: undefined,
     });
 
-    const writable = options.writable || getWritable();
-
     const iterator = streamTextIterator({
       model: this.model,
       tools: this.tools,
-      writable,
+      writable: options.writable,
       prompt: modelPrompt,
       stopConditions: options.stopWhen,
     });
@@ -150,7 +148,7 @@ export class DurableAgent {
     }
 
     if (!options.preventClose) {
-      await closeStream(writable);
+      await closeStream(options.writable);
     }
   }
 }

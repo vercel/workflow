@@ -15,7 +15,9 @@ Tool calls can be implemented as workflow steps for automatic retries, or as reg
 
 ```typescript lineNumbers
 import { DurableAgent } from '@workflow/ai/agent';
+import { getWritable } from 'workflow';
 import { z } from 'zod';
+import type { UIMessageChunk } from 'ai';
 
 async function getWeather({ city }: { city: string }) {
   "use step";
@@ -38,8 +40,13 @@ async function myAgent() {
     },
   });
 
+  // The agent will stream its output to the workflow
+  // run's default output stream
+  const writable = getWritable<UIMessageChunk>();
+
   await agent.stream({
     messages: [{ role: 'user', content: 'How is the weather in San Francisco?' }],
+    writable,
   });
 }
 ```
@@ -88,7 +95,6 @@ export default DurableAgentStreamOptions;`
 - Tools can be implemented as workflow steps (using `"use step"` for automatic retries), or as regular workflow-level logic
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
 - The agent processes tool calls iteratively until completion
-- When no custom `writable` stream is provided, the agent uses the workflow's default writable stream
 
 ## Examples
 
@@ -96,7 +102,9 @@ export default DurableAgentStreamOptions;`
 
 ```typescript
 import { DurableAgent } from '@workflow/ai/agent';
+import { getWritable } from 'workflow';
 import { z } from 'zod';
+import type { UIMessageChunk } from 'ai';
 
 async function getWeather({ location }: { location: string }) {
   "use step";
@@ -127,6 +135,7 @@ async function weatherAgentWorkflow(userQuery: string) {
         content: userQuery,
       },
     ],
+    writable: getWritable<UIMessageChunk>(),
   });
 }
 ```
@@ -135,7 +144,9 @@ async function weatherAgentWorkflow(userQuery: string) {
 
 ```typescript
 import { DurableAgent } from '@workflow/ai/agent';
+import { getWritable } from 'workflow';
 import { z } from 'zod';
+import type { UIMessageChunk } from 'ai';
 
 async function getWeather({ location }: { location: string }) {
   "use step";
@@ -173,6 +184,7 @@ async function multiToolAgentWorkflow(userQuery: string) {
         content: userQuery,
       },
     ],
+    writable: getWritable<UIMessageChunk>(),
   });
 }
 ```
@@ -181,8 +193,9 @@ async function multiToolAgentWorkflow(userQuery: string) {
 
 ```typescript
 import { DurableAgent } from '@workflow/ai/agent';
-import { sleep, defineHook } from 'workflow';
+import { sleep, defineHook, getWritable } from 'workflow';
 import { z } from 'zod';
+import type { UIMessageChunk } from 'ai';
 
 // Define a reusable hook type
 const approvalHook = defineHook<{ approved: boolean; reason: string }>();
@@ -238,6 +251,7 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
 
   await agent.stream({
     messages: [{ role: 'user', content: userRequest }],
+    writable: getWritable<UIMessageChunk>(),
   });
 }
 ```
