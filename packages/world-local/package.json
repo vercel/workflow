@@ -30,7 +30,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@vercel/queue": "0.0.0-alpha.23",
+    "@vercel/queue": "catalog:",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "ulid": "3.0.1",

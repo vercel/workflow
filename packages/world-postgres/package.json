@@ -45,7 +45,7 @@
     "db:push": "node dist/cli.js"
   },
   "dependencies": {
-    "@vercel/queue": "0.0.0-alpha.23",
+    "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",

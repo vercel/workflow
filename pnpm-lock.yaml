@@ -16,8 +16,11 @@ catalogs:
       specifier: ^3.1.4
       version: 3.1.4
     '@vercel/oidc':
-      specifier: ^3.0.3
-      version: 3.0.3
+      specifier: 3.0.5
+      version: 3.0.5
+    '@vercel/queue':
+      specifier: 0.0.0-alpha.29
+      version: 0.0.0-alpha.29
     '@vitest/coverage-v8':
       specifier: ^3.2.4
       version: 3.2.4
@@ -886,8 +889,8 @@ importers:
   packages/world-local:
     dependencies:
       '@vercel/queue':
-        specifier: 0.0.0-alpha.23
-        version: 0.0.0-alpha.23
+        specifier: 'catalog:'
+        version: 0.0.0-alpha.29
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
@@ -929,8 +932,8 @@ importers:
   packages/world-postgres:
     dependencies:
       '@vercel/queue':
-        specifier: 0.0.0-alpha.23
-        version: 0.0.0-alpha.23
+        specifier: 'catalog:'
+        version: 0.0.0-alpha.29
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1022,10 +1025,10 @@ importers:
     dependencies:
       '@vercel/oidc':
         specifier: 'catalog:'
-        version: 3.0.3
+        version: 3.0.5
       '@vercel/queue':
-        specifier: 0.0.0-alpha.28
-        version: 0.0.0-alpha.28
+        specifier: 'catalog:'
+        version: 0.0.0-alpha.29
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -5853,6 +5856,10 @@ packages:
     resolution: {integrity: sha512-yNEQvPcVrK9sIe637+I0jD6leluPxzwJKx/Haw6F4H77CdDsszUn5V3o96LPziXkSNE2B83+Z3mjqGKBK/R6Gg==}
     engines: {node: '>= 20'}
 
+  '@vercel/oidc@3.0.5':
+    resolution: {integrity: sha512-fnYhv671l+eTTp48gB4zEsTW/YtRgRPnkI2nT7x6qw5rkI1Lq2hTmQIpHPgyThI0znLK+vX2n9XxKdXZ7BUbbw==}
+    engines: {node: '>= 20'}
+
   '@vercel/otel@1.13.0':
     resolution: {integrity: sha512-esRkt470Y2jRK1B1g7S1vkt4Csu44gp83Zpu8rIyPoqy2BKgk4z7ik1uSMswzi45UogLHFl6yR5TauDurBQi4Q==}
     engines: {node: '>=18'}
@@ -5865,13 +5872,8 @@ packages:
       '@opentelemetry/sdk-metrics': '>=1.19.0 <2.0.0'
       '@opentelemetry/sdk-trace-base': '>=1.19.0 <2.0.0'
 
-  '@vercel/queue@0.0.0-alpha.23':
-    resolution: {integrity: sha512-1JuRZ4U3nLUisu9sP++J9Y12/p1J1NDPcpDGBFJ+sjc7DfGZAqEzCIUypnC7ymbfkEFaVnSznmrBs8wkVeTMpQ==}
-    engines: {node: '>=20.0.0'}
-    hasBin: true
-
-  '@vercel/queue@0.0.0-alpha.28':
-    resolution: {integrity: sha512-EPFrBQPJrGjt8lr9kTmio5G57CGILnf4+pKalQNt88cAinXxaWLrvpBTzwG0esx+yreaUoqkFzpgWxTjsgZtlg==}
+  '@vercel/queue@0.0.0-alpha.29':
+    resolution: {integrity: sha512-legz939klri0R3JVIA3Wxnvt6usJcSxutIlZdnKCtfmhnDrti79ZdGLtJZTjX6AnfSxwCJshGbqEOWRgLCer2A==}
     engines: {node: '>=20.0.0'}
     hasBin: true
 
@@ -8859,10 +8861,6 @@ packages:
 
   mixpart@0.0.4:
     resolution: {integrity: sha512-RAoaOSXnMLrfUfmFbNynRYjeMru/bhgAYRy/GQVI8gmRq7vm9V9c2gGVYnYoQ008X6YTmRIu5b0397U7vb0bIA==}
-    engines: {node: '>=22.0.0'}
-
-  mixpart@0.0.5-alpha.0:
-    resolution: {integrity: sha512-XS3bfxqdHsxqLoK0DnkGiM++KZGhXFj8KrzfNND/4d0DDBkbVdmlEajIAOQ+2+tHVw2zFI1ng8SnJSOfVZg0HA==}
     engines: {node: '>=22.0.0'}
 
   mixpart@0.0.5-alpha.1:
@@ -16622,6 +16620,8 @@ snapshots:
 
   '@vercel/oidc@3.0.3': {}
 
+  '@vercel/oidc@3.0.5': {}
+
   '@vercel/otel@1.13.0(@opentelemetry/api-logs@0.57.2)(@opentelemetry/api@1.9.0)(@opentelemetry/instrumentation@0.57.2(@opentelemetry/api@1.9.0))(@opentelemetry/resources@1.30.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.57.2(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@1.30.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.9.0))':
     dependencies:
       '@opentelemetry/api': 1.9.0
@@ -16632,13 +16632,9 @@ snapshots:
       '@opentelemetry/sdk-metrics': 1.30.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/sdk-trace-base': 1.30.1(@opentelemetry/api@1.9.0)
 
-  '@vercel/queue@0.0.0-alpha.23':
+  '@vercel/queue@0.0.0-alpha.29':
     dependencies:
-      mixpart: 0.0.5-alpha.0
-
-  '@vercel/queue@0.0.0-alpha.28':
-    dependencies:
-      '@vercel/oidc': 3.0.3
+      '@vercel/oidc': 3.0.5
       mixpart: 0.0.5-alpha.1
 
   '@vitejs/plugin-vue-jsx@5.1.1(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))(vue@3.5.22(typescript@5.9.3))':
@@ -20079,8 +20075,6 @@ snapshots:
   mitt@3.0.1: {}
 
   mixpart@0.0.4: {}
-
-  mixpart@0.0.5-alpha.0: {}
 
   mixpart@0.0.5-alpha.1: {}
 

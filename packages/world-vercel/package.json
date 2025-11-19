@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@vercel/oidc": "catalog:",
-    "@vercel/queue": "0.0.0-alpha.28",
+    "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
     "zod": "catalog:"
