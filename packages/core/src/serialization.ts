@@ -2,6 +2,7 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import * as devalue from 'devalue';
 import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
+import { contextStorage } from './step/context-storage.js';
 import {
   BODY_INIT_SYMBOL,
   STREAM_NAME_SYMBOL,
@@ -181,7 +182,10 @@ export interface SerializableSpecial {
     redirected: boolean;
   };
   Set: any[];
-  StepFunction: string; // step function name/ID
+  StepFunction: {
+    stepId: string;
+    closureVars?: Record<string, any>;
+  };
   URL: string;
   URLSearchParams: string;
   Uint8Array: string; // base64 string
@@ -294,7 +298,18 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
     StepFunction: (value) => {
       if (typeof value !== 'function') return false;
       const stepId = (value as any).stepId;
-      return typeof stepId === 'string' ? stepId : false;
+      if (typeof stepId !== 'string') return false;
+
+      // Check if the step function has closure variables
+      const closureVarsFn = (value as any).__closureVarsFn;
+      if (closureVarsFn && typeof closureVarsFn === 'function') {
+        // Invoke the closure variables function and serialize along with stepId
+        const closureVars = closureVarsFn();
+        return { stepId, closureVars };
+      }
+
+      // No closure variables - return object with just stepId
+      return { stepId };
     },
     URL: (value) => value instanceof global.URL && value.href,
     URLSearchParams: (value) => {
@@ -559,12 +574,56 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     RegExp: (value) => new global.RegExp(value.source, value.flags),
     Set: (value) => new global.Set(value),
     StepFunction: (value) => {
-      const stepFn = getStepFunction(value);
+      const stepId = value.stepId;
+      const closureVars = value.closureVars;
+
+      const stepFn = getStepFunction(stepId);
       if (!stepFn) {
         throw new Error(
-          `Step function "${value}" not found. Make sure the step function is registered.`
+          `Step function "${stepId}" not found. Make sure the step function is registered.`
         );
       }
+
+      // If closure variables were serialized, return a wrapper function
+      // that sets up AsyncLocalStorage context when invoked
+      if (closureVars) {
+        const wrappedStepFn = ((...args: any[]) => {
+          // Get the current context from AsyncLocalStorage
+          const currentContext = contextStorage.getStore();
+
+          if (!currentContext) {
+            throw new Error(
+              'Cannot call step function with closure variables outside step context'
+            );
+          }
+
+          // Create a new context with the closure variables merged in
+          const newContext = {
+            ...currentContext,
+            closureVars,
+          };
+
+          // Run the step function with the new context that includes closure vars
+          return contextStorage.run(newContext, () => stepFn(...args));
+        }) as any;
+
+        // Copy properties from original step function
+        Object.defineProperty(wrappedStepFn, 'name', {
+          value: stepFn.name,
+        });
+        Object.defineProperty(wrappedStepFn, 'stepId', {
+          value: stepId,
+          writable: false,
+          enumerable: false,
+          configurable: false,
+        });
+        if (stepFn.maxRetries !== undefined) {
+          wrappedStepFn.maxRetries = stepFn.maxRetries;
+        }
+
+        return wrappedStepFn;
+      }
+
       return stepFn;
     },
     URL: (value) => new global.URL(value),

@@ -150,6 +150,16 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       configurable: false,
     });
 
+    // Store the closure variables function for serialization
+    if (closureVarsFn) {
+      Object.defineProperty(stepFunction, '__closureVarsFn', {
+        value: closureVarsFn,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      });
+    }
+
     return stepFunction;
   };
 }
