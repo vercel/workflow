@@ -1,7 +1,7 @@
 import { defineEventHandler, getRequestURL, readRawBody } from 'h3';
 import { start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
-import { allWorkflows } from '../_workflows.js';
+import { allWorkflows } from '../../_workflows.js';
 
 export default defineEventHandler(async (event) => {
   const url = getRequestURL(event);

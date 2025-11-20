@@ -41,6 +41,7 @@ const streamPrintRevivers: Record<string, (value: any) => any> = {
   ReadableStream: streamToStreamId,
   WritableStream: streamToStreamId,
   TransformStream: streamToStreamId,
+  StepFunction: (value) => `<fn:${value}>`,
 };
 
 const hydrateStepIO = <
@@ -109,7 +110,7 @@ const hydrateEventData = <
       Object.entries(event.eventData).map(([key, value]) => [
         key,
         hydrateStepArguments(
-          value as any,
+          [value] as any,
           [],
           event.runId as string,
           globalThis,

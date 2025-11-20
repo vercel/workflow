@@ -134,7 +134,15 @@ function getUserFacingMessage(error: Error): string {
   return error.message || 'An unexpected error occurred';
 }
 
+const toJSONCompatible = <T>(data: T): T => {
+  if (data && typeof data === 'object') {
+    return JSON.parse(JSON.stringify(data)) as T;
+  }
+  return data;
+};
+
 const hydrate = <T>(data: T): T => {
+  data = toJSONCompatible(data);
   try {
     return hydrateResourceIO(data as any) as T;
   } catch (error) {
@@ -148,16 +156,7 @@ const hydrate = <T>(data: T): T => {
  * @returns ServerActionResult with success=true and the data
  */
 function createResponse<T>(data: T): ServerActionResult<T> {
-  if (data && typeof data === 'object') {
-    // We can't pass non-serializable objects from client to server. To ensure
-    // we don't accidentally do this, we convert the object to JSON.
-    try {
-      data = JSON.parse(JSON.stringify(data)) as T;
-    } catch {
-      // If we can't serialize the data, we'll leave it to the API layer to
-      // throw an error if the data isn't transportable.
-    }
-  }
+  data = toJSONCompatible(data);
   return {
     success: true,
     data,
