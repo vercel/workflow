@@ -24,7 +24,7 @@ describe('getPort', () => {
     servers.push(server);
 
     // Listen on a specific port instead of 0
-    const specificPort = 8080;
+    const specificPort = 3000;
     server.listen(specificPort);
 
     const port = await getPort();
@@ -139,10 +139,10 @@ describe('getPort', () => {
   it('should handle server restart on same port', async () => {
     const server1 = http.createServer();
     servers.push(server1);
-    server1.listen(8081);
+    server1.listen(3000);
 
     const port1 = await getPort();
-    expect(port1).toEqual(8081);
+    expect(port1).toEqual(3000);
 
     server1.close();
     servers = servers.filter((s) => s !== server1);
@@ -152,10 +152,10 @@ describe('getPort', () => {
 
     const server2 = http.createServer();
     servers.push(server2);
-    server2.listen(8081);
+    server2.listen(3000);
 
     const port2 = await getPort();
-    expect(port2).toEqual(8081);
+    expect(port2).toEqual(3000);
   });
 
   it('should handle concurrent getPort calls', async () => {
