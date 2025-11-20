@@ -2917,10 +2917,11 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // In workflow mode, handle default workflow exports
+        // Handle default workflow exports (workflow and client modes)
         // We need to: 1) find the export default position, 2) replace it with const declaration,
         // 3) add workflowId assignment, 4) add export default at the end
-        if self.mode == TransformMode::Workflow && !self.default_workflow_exports.is_empty() {
+        if (self.mode == TransformMode::Workflow || self.mode == TransformMode::Client) 
+            && !self.default_workflow_exports.is_empty() {
             let default_workflows: Vec<_> = self.default_workflow_exports.drain(..).collect();
             let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
 
@@ -4338,8 +4339,33 @@ impl VisitMut for StepTransform {
                                         arg: Box::new(error_expr),
                                     })];
                                 }
-                                self.workflow_functions_needing_id
-                                    .push((actual_name, fn_expr.function.span));
+                                
+                                // For anonymous functions, convert to const declaration so we can assign workflowId
+                                if fn_name == "default" {
+                                    // Generate unique name to avoid collisions
+                                    let unique_name = self.generate_unique_name("defaultWorkflow");
+                                    
+                                    // Track for const declaration and workflowId assignment
+                                    self.default_workflow_exports.push((
+                                        unique_name.clone(),
+                                        Expr::Fn(fn_expr.clone()),
+                                        fn_expr.function.span,
+                                    ));
+                                    
+                                    // Track for replacement with identifier
+                                    self.default_exports_to_replace.push((
+                                        fn_name.clone(),
+                                        Expr::Ident(Ident::new(
+                                            unique_name.into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        )),
+                                    ));
+                                } else {
+                                    // Named function can be referenced directly
+                                    self.workflow_functions_needing_id
+                                        .push((actual_name, fn_expr.function.span));
+                                }
                             }
                         }
                     }
@@ -4521,7 +4547,7 @@ impl VisitMut for StepTransform {
                                 ));
                             }
                             TransformMode::Client => {
-                                // In client mode, replace workflow function body with error throw
+                                // In client mode, convert to const declaration so we can assign workflowId
                                 self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
                                 let error_msg = "You attempted to execute workflow defaultWorkflow function directly. To start a workflow, use start(defaultWorkflow) from workflow/api";
                                 let error_expr = Expr::New(NewExpr {
@@ -4542,7 +4568,35 @@ impl VisitMut for StepTransform {
                                     }]),
                                     type_args: None,
                                 });
-                                arrow_expr.body = Box::new(BlockStmtOrExpr::Expr(Box::new(error_expr)));
+                                // Replace arrow body with block containing throw statement
+                                arrow_expr.body = Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
+                                    span: DUMMY_SP,
+                                    ctxt: SyntaxContext::empty(),
+                                    stmts: vec![Stmt::Throw(ThrowStmt {
+                                        span: DUMMY_SP,
+                                        arg: Box::new(error_expr),
+                                    })],
+                                }));
+
+                                // Generate unique name to avoid collisions
+                                let unique_name = self.generate_unique_name("defaultWorkflow");
+                                
+                                // Track for const declaration and workflowId assignment
+                                self.default_workflow_exports.push((
+                                    unique_name.clone(),
+                                    Expr::Arrow(arrow_expr.clone()),
+                                    arrow_expr.span,
+                                ));
+                                
+                                // Track for replacement with identifier
+                                self.default_exports_to_replace.push((
+                                    "default".to_string(),
+                                    Expr::Ident(Ident::new(
+                                        unique_name.into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    )),
+                                ));
                             }
                         }
                     }
