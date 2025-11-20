@@ -9,7 +9,7 @@ const execAsync = promisify(exec);
  * @returns The port number that the process is listening on, or undefined if the process is not listening on any port.
  * NOTE: Can't move this to @workflow/utils because it's being imported into @workflow/errors for RetryableError (inside workflow runtime)
  */
-export async function getPort(): Promise<number> {
+export async function getPort(): Promise<number | undefined> {
   const pid = process.pid;
   const platform = process.platform;
 
