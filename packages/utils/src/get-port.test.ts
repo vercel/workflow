@@ -60,6 +60,19 @@ describe('getPort', () => {
     expect(port).toEqual(addr1.port);
   });
 
+  it('should return consistent results when called multiple times', async () => {
+    const server = http.createServer();
+    servers.push(server);
+    server.listen(0);
+
+    const port1 = await getPort();
+    const port2 = await getPort();
+    const port3 = await getPort();
+
+    expect(port1).toEqual(port2);
+    expect(port2).toEqual(port3);
+  });
+
   it('should handle servers listening on different interfaces', async () => {
     const server1 = http.createServer();
     const server2 = http.createServer();
@@ -121,5 +134,48 @@ describe('getPort', () => {
 
     // Port should not be the closed server's port
     expect(port).not.toEqual(serverPort);
+  });
+
+  it('should handle server restart on same port', async () => {
+    const server1 = http.createServer();
+    servers.push(server1);
+    server1.listen(8081);
+
+    const port1 = await getPort();
+    expect(port1).toEqual(8081);
+
+    server1.close();
+    servers = servers.filter((s) => s !== server1);
+
+    // Small delay to ensure port is released
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const server2 = http.createServer();
+    servers.push(server2);
+    server2.listen(8081);
+
+    const port2 = await getPort();
+    expect(port2).toEqual(8081);
+  });
+
+  it('should handle concurrent getPort calls', async () => {
+    // Workflow makes lots of concurrent getPort calls
+    const server = http.createServer();
+    servers.push(server);
+    server.listen(0);
+
+    const addr = server.address() as AddressInfo;
+
+    // Call getPort concurrently 10 times
+    const results = await Promise.all(
+      Array(10)
+        .fill(0)
+        .map(() => getPort())
+    );
+
+    // All should return the same port without errors
+    results.forEach((port) => {
+      expect(port).toEqual(addr.port);
+    });
   });
 });
