@@ -29,6 +29,7 @@ export async function getPort(): Promise<number | undefined> {
       case 'win32': {
         const result = await execAsync(`netstat -ano`);
         const lines = result.stdout.trim().split('\n');
+        const ports: number[] = [];
 
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
@@ -42,10 +43,17 @@ export async function getPort(): Promise<number | undefined> {
             const portMatch = localAddress.match(/:(\d+)$/);
 
             if (portMatch && portMatch[1]) {
-              port = parseInt(portMatch[1], 10);
-              break;
+              const foundPort = parseInt(portMatch[1], 10);
+              if (!Number.isNaN(foundPort)) {
+                ports.push(foundPort);
+              }
             }
           }
+        }
+
+        // Return the lowest port for consistency
+        if (ports.length > 0) {
+          port = Math.min(...ports);
         }
         break;
       }
