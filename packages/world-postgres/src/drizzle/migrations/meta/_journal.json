@@ -15,6 +15,13 @@
       "when": 1762968119388,
       "tag": "0001_handy_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1763679632642,
+      "tag": "0002_striped_lifeguard",
+      "breakpoints": true
     }
   ]
 }

@@ -51,10 +51,17 @@ function serializeRunError(data: UpdateWorkflowRunRequest): any {
  * - If errorStack/errorCode exist (legacy) → combine into StructuredError
  */
 function deserializeRunError(run: any): WorkflowRun {
-  const { error, errorStack, errorCode, ...rest } = run;
+  const { error, errorStack, errorCode, input, output, ...rest } = run;
+
+  const deserializedInput = fromBuffer(input);
+  const deserializedOutput = fromBuffer(output);
 
   if (!error && !errorStack && !errorCode) {
-    return run as WorkflowRun;
+    return {
+      ...run,
+      input: deserializedInput,
+      output: deserializedOutput,
+    } as WorkflowRun;
   }
 
   // Try to parse as structured error JSON
@@ -64,6 +71,8 @@ function deserializeRunError(run: any): WorkflowRun {
       if (typeof parsed === 'object' && parsed.message !== undefined) {
         return {
           ...rest,
+          input: deserializedInput,
+          output: deserializedOutput,
           error: {
             message: parsed.message,
             stack: parsed.stack,
@@ -79,6 +88,8 @@ function deserializeRunError(run: any): WorkflowRun {
   // Backwards compatibility: handle legacy separate fields or plain string error
   return {
     ...rest,
+    input: deserializedInput,
+    output: deserializedOutput,
     error: {
       message: error || '',
       stack: errorStack,
@@ -110,10 +121,17 @@ function serializeStepError(data: UpdateStepRequest): any {
  * Deserialize error JSON string (or legacy flat fields) into a StructuredError object for steps
  */
 function deserializeStepError(step: any): Step {
-  const { error, ...rest } = step;
+  const { error, input, output, ...rest } = step;
+
+  const deserializedInput = fromBuffer(input);
+  const deserializedOutput = fromBuffer(output);
 
   if (!error) {
-    return step as Step;
+    return {
+      ...step,
+      input: deserializedInput,
+      output: deserializedOutput,
+    } as Step;
   }
 
   // Try to parse as structured error JSON
@@ -123,6 +141,8 @@ function deserializeStepError(step: any): Step {
       if (typeof parsed === 'object' && parsed.message !== undefined) {
         return {
           ...rest,
+          input: deserializedInput,
+          output: deserializedOutput,
           error: {
             message: parsed.message,
             stack: parsed.stack,
@@ -138,6 +158,8 @@ function deserializeStepError(step: any): Step {
   // Backwards compatibility: handle legacy separate fields or plain string error
   return {
     ...rest,
+    input: deserializedInput,
+    output: deserializedOutput,
     error: {
       message: error || '',
     },
@@ -267,11 +289,18 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
     },
     async create(data) {
       const runId = `wrun_${ulid()}`;
+      const inputBuffer = toBuffer(data.input);
+      if (!inputBuffer) {
+        throw new WorkflowAPIError(`Invalid input data`, {
+          status: 400,
+        });
+      }
+
       const [value] = await drizzle
         .insert(runs)
         .values({
           runId,
-          input: data.input,
+          input: inputBuffer,
           executionContext: data.executionContext as Record<
             string,
             unknown
@@ -306,7 +335,7 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
 
       const updates: Partial<typeof runs._.inferInsert> = {
         ...serialized,
-        output: data.output as SerializedContent,
+        output: toBuffer(data.output),
       };
 
       // Only set startedAt the first time transitioning to 'running'
@@ -360,7 +389,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           eventId,
           correlationId: data.correlationId,
           eventType: data.eventType,
-          eventData: 'eventData' in data ? data.eventData : undefined,
+          eventData: 'eventData' in data ? toBuffer(data.eventData) : undefined,
         })
         .returning({ createdAt: events.createdAt });
       if (!value) {
@@ -399,7 +428,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
-          const parsed = EventSchema.parse(compact(v));
+          const deserialized = deserializeEvent(compact(v));
+          const parsed = EventSchema.parse(deserialized);
           return filterEventData(parsed, resolveData);
         }),
         cursor: values.at(-1)?.eventId ?? null,
@@ -432,7 +462,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
-          const parsed = EventSchema.parse(compact(v));
+          const deserialized = deserializeEvent(compact(v));
+          const parsed = EventSchema.parse(deserialized);
           return filterEventData(parsed, resolveData);
         }),
         cursor: values.at(-1)?.eventId ?? null,
@@ -458,7 +489,8 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         .from(hooks)
         .where(eq(hooks.hookId, hookId))
         .limit(1);
-      const parsed = HookSchema.parse(compact(value));
+      const deserialized = deserializeHook(compact(value));
+      const parsed = HookSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
     },
@@ -469,7 +501,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           runId,
           hookId: data.hookId,
           token: data.token,
-          metadata: data.metadata as any,
+          metadata: toBuffer(data.metadata),
           ownerId: '', // TODO: get from context
           projectId: '', // TODO: get from context
           environment: '', // TODO: get from context
@@ -481,7 +513,8 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           status: 409,
         });
       }
-      const parsed = HookSchema.parse(compact(value));
+      const deserialized = deserializeHook(compact(value));
+      const parsed = HookSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
     },
@@ -492,7 +525,8 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           status: 404,
         });
       }
-      const parsed = HookSchema.parse(compact(value));
+      const deserialized = deserializeHook(compact(value));
+      const parsed = HookSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
     },
@@ -516,7 +550,8 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
-          const parsed = HookSchema.parse(compact(v));
+          const deserialized = deserializeHook(compact(v));
+          const parsed = HookSchema.parse(deserialized);
           return filterHookData(parsed, resolveData);
         }),
         cursor: values.at(-1)?.hookId ?? null,
@@ -533,7 +568,8 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           status: 404,
         });
       }
-      const parsed = HookSchema.parse(compact(value));
+      const deserialized = deserializeHook(compact(value));
+      const parsed = HookSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
     },
@@ -545,13 +581,20 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
 
   return {
     async create(runId, data) {
+      const inputBuffer = toBuffer(data.input);
+      if (!inputBuffer) {
+        throw new WorkflowAPIError(`Invalid input data`, {
+          status: 400,
+        });
+      }
+
       const [value] = await drizzle
         .insert(steps)
         .values({
           runId,
           stepId: data.stepId,
           stepName: data.stepName,
-          input: data.input as SerializedContent,
+          input: inputBuffer,
           status: 'pending',
           attempt: 1,
         })
@@ -607,7 +650,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
 
       const updates: Partial<typeof steps._.inferInsert> = {
         ...serialized,
-        output: data.output as SerializedContent,
+        output: toBuffer(data.output),
       };
       const now = new Date();
       // Only set startedAt the first time the step transitions to 'running'
@@ -691,6 +734,22 @@ function filterHookData(hook: Hook, resolveData: ResolveData): Hook {
   return hook;
 }
 
+function deserializeEvent(event: any): Event {
+  const { eventData, ...rest } = event;
+  return {
+    ...rest,
+    eventData: eventData ? fromBuffer(eventData) : undefined,
+  } as Event;
+}
+
+function deserializeHook(hook: any): Hook {
+  const { metadata, ...rest } = hook;
+  return {
+    ...rest,
+    metadata: metadata ? fromBuffer(metadata) : undefined,
+  } as Hook;
+}
+
 function filterEventData(event: Event, resolveData: ResolveData): Event {
   if (resolveData === 'none' && 'eventData' in event) {
     const { eventData: _, ...rest } = event;
@@ -698,4 +757,25 @@ function filterEventData(event: Event, resolveData: ResolveData): Event {
     return rest as Event;
   }
   return event;
+}
+
+/**
+ * Convert SerializedContent (array) to Buffer for BYTEA storage.
+ * PostgreSQL BYTEA natively supports null bytes, unlike JSONB.
+ */
+function toBuffer(
+  data: SerializedContent | unknown | undefined | null
+): Buffer | undefined {
+  if (data === undefined || data === null) return undefined;
+  return Buffer.from(JSON.stringify(data), 'utf8');
+}
+
+/**
+ * Convert Buffer from BYTEA storage back to SerializedContent (array).
+ */
+function fromBuffer(
+  buffer: Buffer | undefined | null
+): SerializedContent | undefined {
+  if (!buffer) return undefined;
+  return JSON.parse(buffer.toString('utf8'));
 }

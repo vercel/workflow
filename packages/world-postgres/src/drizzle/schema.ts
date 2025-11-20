@@ -49,18 +49,24 @@ type DrizzlishOfType<T extends object> = {
  */
 export type SerializedContent = any[];
 
+const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
+  dataType() {
+    return 'bytea';
+  },
+});
+
 export const schema = pgSchema('workflow');
 
 export const runs = schema.table(
   'workflow_runs',
   {
     runId: varchar('id').primaryKey(),
-    output: jsonb('output').$type<SerializedContent>(),
+    output: bytea('output'),
     deploymentId: varchar('deployment_id').notNull(),
     status: workflowRunStatus('status').notNull(),
     workflowName: varchar('name').notNull(),
     executionContext: jsonb('execution_context').$type<Record<string, any>>(),
-    input: jsonb('input').$type<SerializedContent>().notNull(),
+    input: bytea('input').notNull(),
     error: text('error'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
@@ -84,7 +90,7 @@ export const events = schema.table(
     correlationId: varchar('correlation_id'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     runId: varchar('run_id').notNull(),
-    eventData: jsonb('payload'),
+    eventData: bytea('payload'),
   } satisfies DrizzlishOfType<Event & { eventData?: undefined }>,
   (tb) => ({
     runFk: index().on(tb.runId),
@@ -99,8 +105,8 @@ export const steps = schema.table(
     stepId: varchar('step_id').primaryKey(),
     stepName: varchar('step_name').notNull(),
     status: stepStatus('status').notNull(),
-    input: jsonb('input').$type<SerializedContent>().notNull(),
-    output: jsonb('output').$type<SerializedContent>(),
+    input: bytea('input').notNull(),
+    output: bytea('output'),
     error: text('error'),
     attempt: integer('attempt').notNull(),
     startedAt: timestamp('started_at'),
@@ -128,19 +134,13 @@ export const hooks = schema.table(
     projectId: varchar('project_id').notNull(),
     environment: varchar('environment').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
-    metadata: jsonb('metadata').$type<SerializedContent>(),
+    metadata: bytea('metadata'),
   } satisfies DrizzlishOfType<Hook>,
   (tb) => ({
     runFk: index().on(tb.runId),
     tokenIdx: index().on(tb.token),
   })
 );
-
-const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
-  dataType() {
-    return 'bytea';
-  },
-});
 
 export const streams = schema.table(
   'workflow_stream_chunks',
