@@ -66,18 +66,12 @@ export async function doStreamStep(
       new TransformStream<LanguageModelV2StreamPart, UIMessageChunk>({
         start: (controller) => {
           controller.enqueue({
-            type: 'start',
-          });
-          controller.enqueue({
             type: 'start-step',
           });
         },
         flush: (controller) => {
           controller.enqueue({
             type: 'finish-step',
-          });
-          controller.enqueue({
-            type: 'finish',
           });
         },
         transform: async (part, controller) => {
