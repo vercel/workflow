@@ -204,7 +204,7 @@ async function executeTool(
         toolName: toolCall.toolName,
         output: {
           type: 'error-text',
-          value: (error as FatalError).message,
+          value: error.message,
         },
       };
     }
