@@ -1,6 +1,6 @@
-import { pidToPorts } from 'pid-port';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { pidToPorts } from 'pid-port';
 
 const execAsync = promisify(exec);
 
@@ -10,34 +10,33 @@ const execAsync = promisify(exec);
  * NOTE: Can't move this to @workflow/utils because it's being imported into @workflow/errors for RetryableError (inside workflow runtime)
  */
 export async function getPort(): Promise<number | undefined> {
-  const pid = process.pid;
-  const platform = process.platform;
+  try {
+    const ports = Array.from(await pidToPorts(process.pid));
 
-  console.log(await pidToPorts(pid));
+    // pid-port failed to detect the server port
+    if (ports.length === 0 || ports.length > 1) {
+      const platform = process.platform;
 
-  let port: number | undefined;
-  switch (platform) {
-    case 'linux':
-    case 'darwin': {
-      try {
-        const result = await execAsync(
-          `lsof -i -P -n | grep -w ${pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://' | head -n 1`
-        );
-        port = parseInt(result.stdout.trim(), 10);
-        console.log(port);
-      } catch {
-        // Port detection may fail in some environments (e.g., serverless)
-        return undefined;
+      // Use our fallback
+      switch (platform) {
+        case 'linux':
+        case 'darwin': {
+          const result = await execAsync(
+            `lsof -i -P -n | grep -w ${process.pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://' | head -n 1`
+          );
+          const port = parseInt(result.stdout.trim(), 10);
+          return Number.isNaN(port) ? undefined : port;
+        }
+        case 'win32':
+          throw new Error('Not implemented');
       }
-      break;
-    }
-    case 'win32':
-      throw new Error('Not implemented');
-  }
 
-  if (!port || Number.isNaN(port)) {
+      return undefined;
+    }
+
+    // Server port most likely to be minimum
+    return Math.min(...ports);
+  } catch {
     return undefined;
   }
-
-  return port;
 }
