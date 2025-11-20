@@ -4450,7 +4450,11 @@ impl VisitMut for StepTransform {
                     if self.validate_async_function(&fn_expr.function, fn_expr.function.span) {
                         // Generate unique name first so we can use it in workflow_function_names
                         let unique_name = self.generate_unique_name("defaultWorkflow");
-                        self.workflow_function_names.insert(unique_name.clone());
+                        // For function expression default exports, track mapping from "default" to actual const name
+                        self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
+                        
+                        // Always use "default" as the metadata key for default exports
+                        self.workflow_function_names.insert("default".to_string());
 
                         match self.mode {
                             TransformMode::Step => {
