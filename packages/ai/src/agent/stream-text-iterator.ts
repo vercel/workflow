@@ -15,12 +15,14 @@ export async function* streamTextIterator({
   writable,
   model,
   stopConditions,
+  sendStart = true,
 }: {
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
   writable: WritableStream<UIMessageChunk>;
   model: string | (() => Promise<LanguageModelV2>);
   stopConditions?: ModelStopCondition[] | ModelStopCondition;
+  sendStart?: boolean;
 }): AsyncGenerator<
   LanguageModelV2ToolCall[],
   void,
@@ -30,13 +32,19 @@ export async function* streamTextIterator({
 
   const steps: StepResult<any>[] = [];
   let done = false;
+  let isFirstIteration = true;
+
   while (!done) {
     const { toolCalls, finish, step } = await doStreamStep(
       conversationPrompt,
       model,
       writable,
-      toolsToModelTools(tools)
+      toolsToModelTools(tools),
+      {
+        sendStart: sendStart && isFirstIteration,
+      }
     );
+    isFirstIteration = false;
     steps.push(step);
 
     if (finish?.finishReason === 'tool-calls') {

@@ -64,6 +64,18 @@ export interface DurableAgentStreamOptions {
   preventClose?: boolean;
 
   /**
+   * If true, sends a 'start' chunk at the beginning of the stream.
+   * Defaults to true.
+   */
+  sendStart?: boolean;
+
+  /**
+   * If true, sends a 'finish' chunk at the end of the stream.
+   * Defaults to true.
+   */
+  sendFinish?: boolean;
+
+  /**
    * Condition for stopping the generation when there are tool results in the last step.
    * When the condition is an array, any of the conditions can be met to stop the generation.
    */
@@ -133,6 +145,7 @@ export class DurableAgent {
       writable: options.writable,
       prompt: modelPrompt,
       stopConditions: options.stopWhen,
+      sendStart: options.sendStart ?? true,
     });
 
     let result = await iterator.next();
@@ -147,16 +160,37 @@ export class DurableAgent {
       result = await iterator.next(toolResults);
     }
 
-    if (!options.preventClose) {
-      await closeStream(options.writable);
+    const sendFinish = options.sendFinish ?? true;
+    const preventClose = options.preventClose ?? false;
+
+    // Only call closeStream if there's something to do
+    if (sendFinish || !preventClose) {
+      await closeStream(options.writable, preventClose, sendFinish);
     }
   }
 }
 
-async function closeStream(writable: WritableStream<UIMessageChunk>) {
+async function closeStream(
+  writable: WritableStream<UIMessageChunk>,
+  preventClose?: boolean,
+  sendFinish?: boolean
+) {
   'use step';
 
-  await writable.close();
+  // Conditionally write the finish chunk
+  if (sendFinish) {
+    const writer = writable.getWriter();
+    try {
+      await writer.write({ type: 'finish' });
+    } finally {
+      writer.releaseLock();
+    }
+  }
+
+  // Conditionally close the stream
+  if (!preventClose) {
+    await writable.close();
+  }
 }
 
 async function executeTool(

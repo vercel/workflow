@@ -21,7 +21,10 @@ export async function doStreamStep(
   conversationPrompt: LanguageModelV2Prompt,
   modelInit: string | (() => Promise<LanguageModelV2>),
   writable: WritableStream<UIMessageChunk>,
-  tools?: LanguageModelV2CallOptions['tools']
+  tools?: LanguageModelV2CallOptions['tools'],
+  options?: {
+    sendStart?: boolean;
+  }
 ) {
   'use step';
 
@@ -65,6 +68,11 @@ export async function doStreamStep(
     .pipeThrough(
       new TransformStream<LanguageModelV2StreamPart, UIMessageChunk>({
         start: (controller) => {
+          if (options?.sendStart) {
+            controller.enqueue({
+              type: 'start',
+            });
+          }
           controller.enqueue({
             type: 'start-step',
           });
