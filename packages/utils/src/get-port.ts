@@ -9,9 +9,27 @@ const seenPorts: Set<number> = new Set();
  * NOTE: Can't move this to @workflow/utils because it's being imported into @workflow/errors for RetryableError (inside workflow runtime)
  */
 export async function getPort(): Promise<number | undefined> {
-  // Return cached successful port
+  // Validate cached port is still listening before returning it
   if (port) {
-    return port;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 100);
+
+      try {
+        await fetch(`http://localhost:${port}`, {
+          signal: controller.signal,
+        });
+
+        // Port is still valid
+        return port;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch {
+      // Cached port is no longer listening, clear it and rediscover
+      port = undefined;
+      seenPorts.clear();
+    }
   }
 
   try {
