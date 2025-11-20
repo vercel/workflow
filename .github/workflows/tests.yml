@@ -354,10 +354,9 @@ jobs:
         run: |
           cd workbench/nextjs-turbopack
           $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 15
           cd ../..
           pnpm vitest run packages/core/e2e/dev.test.ts
-          Start-Sleep -Seconds 5
           pnpm run test:e2e
           Stop-Job $job
         shell: powershell
