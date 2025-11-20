@@ -2,11 +2,7 @@
 title: node-js-module-in-workflow
 ---
 
-# `node-js-module-in-workflow`
-
 This error occurs when you try to import or use Node.js core modules (like `fs`, `http`, `crypto`, `path`, etc.) directly inside a workflow function.
-
----
 
 ## Error Message
 
@@ -14,15 +10,11 @@ This error occurs when you try to import or use Node.js core modules (like `fs`,
 Cannot use Node.js module "fs" in workflow functions. Move this module to a step function.
 ```
 
----
-
 ## Why This Happens
 
 Workflow functions run in a sandboxed environment without full Node.js runtime access. This restriction is important for maintaining **determinism** - the ability to replay workflows exactly and resume from where they left off after suspensions or failures.
 
 Node.js modules have side effects and non-deterministic behavior that could break workflow replay guarantees.
-
----
 
 ## Quick Fix
 
@@ -64,8 +56,6 @@ async function read(filePath: string) {
   return fs.readFileSync(filePath, 'utf-8'); // [!code highlight]
 }
 ```
-
----
 
 ## Common Node.js Modules
 

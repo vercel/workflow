@@ -1,25 +1,27 @@
 ---
 title: getWritable
+description: Retrieves the current workflow run's default writable stream.
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
-# `getWritable()`
-
-Retrieves the current workflow run's default writable stream. The writable stream can be obtained in workflow functions and passed to steps, or called directly within step functions to write data that can be read outside the workflow by using the `readable` property of the [`Run` object](/docs/api-reference/workflow-api/get-run).
+The writable stream can be obtained in workflow functions and passed to steps, or called directly within step functions to write data that can be read outside the workflow by using the `readable` property of the [`Run` object](/docs/api-reference/workflow-api/get-run).
 
 Use this function in your workflows and steps to produce streaming output that can be consumed by clients in real-time.
 
 <Callout type="warn">
-This function can only be called inside a workflow or step function (functions with `"use workflow"` or `"use step"` directive)
+  This function can only be called inside a workflow or step function (functions
+  with `"use workflow"` or `"use step"` directive)
 </Callout>
 
 <Callout type="error">
-**Important:** While you can call `getWritable()` inside a workflow function to obtain the stream, you **cannot interact with the stream directly** in the workflow context (e.g., calling `getWriter()`, `write()`, or `close()`). The stream must be passed to step functions as arguments, or steps can call `getWritable()` directly themselves.
+  **Important:** While you can call `getWritable()` inside a workflow function
+  to obtain the stream, you **cannot interact with the stream directly** in the
+  workflow context (e.g., calling `getWriter()`, `write()`, or `close()`). The
+  stream must be passed to step functions as arguments, or steps can call
+  `getWritable()` directly themselves.
 </Callout>
 
 ```typescript lineNumbers
-import { getWritable } from 'workflow';
+import { getWritable } from "workflow";
 
 export async function myWorkflow() {
   "use workflow";
@@ -35,7 +37,7 @@ async function writeToStream(writable: WritableStream) {
   "use step";
 
   const writer = writable.getWriter();
-  await writer.write(new TextEncoder().encode('Hello from workflow!'));
+  await writer.write(new TextEncoder().encode("Hello from workflow!"));
   writer.releaseLock();
   await writable.close();
 }
@@ -46,23 +48,19 @@ async function writeToStream(writable: WritableStream) {
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+  definition={`
 import { getWritable } from 'workflow';
-export default getWritable;`
-})}
-showSections={['parameters']}
+export default getWritable;`}
+  showSections={["parameters"]}
 />
 
 ### Returns
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+  definition={`
 import { getWritable } from 'workflow';
-export default getWritable;`
-})}
-showSections={['returns']}
+export default getWritable;`}
+  showSections={["returns"]}
 />
 
 Returns a `WritableStream<W>` where `W` is the type of data you plan to write to the stream.
@@ -84,7 +82,7 @@ Returns a `WritableStream<W>` where `W` is the type of data you plan to write to
 Here's a simple example streaming text data:
 
 ```typescript lineNumbers
-import { sleep, getWritable } from 'workflow';
+import { sleep, getWritable } from "workflow";
 
 export async function outputStreamWorkflow() {
   "use workflow";
@@ -96,7 +94,7 @@ export async function outputStreamWorkflow() {
   await sleep("1s");
   await stepCloseOutputStream(writable);
 
-  return 'done';
+  return "done";
 }
 
 async function stepWithOutputStream(writable: WritableStream) {
@@ -104,7 +102,7 @@ async function stepWithOutputStream(writable: WritableStream) {
 
   const writer = writable.getWriter();
   // Write binary data using TextEncoder
-  await writer.write(new TextEncoder().encode('Hello, world!'));
+  await writer.write(new TextEncoder().encode("Hello, world!"));
   writer.releaseLock();
 }
 
@@ -121,7 +119,7 @@ async function stepCloseOutputStream(writable: WritableStream) {
 You can also call `getWritable()` directly inside step functions without passing it as a parameter:
 
 ```typescript lineNumbers
-import { sleep, getWritable } from 'workflow';
+import { sleep, getWritable } from "workflow";
 
 export async function outputStreamFromStepWorkflow() {
   "use workflow";
@@ -132,7 +130,7 @@ export async function outputStreamFromStepWorkflow() {
   await sleep("1s");
   await stepCloseOutputStreamInside();
 
-  return 'done';
+  return "done";
 }
 
 async function stepWithOutputStreamInside() {
@@ -142,7 +140,7 @@ async function stepWithOutputStreamInside() {
   const writable = getWritable(); // [!code highlight]
   const writer = writable.getWriter();
 
-  await writer.write(new TextEncoder().encode('Hello from step!'));
+  await writer.write(new TextEncoder().encode("Hello from step!"));
   writer.releaseLock();
 }
 
@@ -160,7 +158,7 @@ async function stepCloseOutputStreamInside() {
 You can also use namespaced streams when calling `getWritable()` from steps:
 
 ```typescript lineNumbers
-import { getWritable } from 'workflow';
+import { getWritable } from "workflow";
 
 export async function multiStreamWorkflow() {
   "use workflow";
@@ -170,7 +168,7 @@ export async function multiStreamWorkflow() {
   await writeToNamedStream();
   await closeStreams();
 
-  return 'done';
+  return "done";
 }
 
 async function writeToDefaultStream() {
@@ -178,16 +176,16 @@ async function writeToDefaultStream() {
 
   const writable = getWritable(); // Default stream
   const writer = writable.getWriter();
-  await writer.write({ message: 'Default stream data' });
+  await writer.write({ message: "Default stream data" });
   writer.releaseLock();
 }
 
 async function writeToNamedStream() {
   "use step";
 
-  const writable = getWritable({ namespace: 'logs' }); // [!code highlight]
+  const writable = getWritable({ namespace: "logs" }); // [!code highlight]
   const writer = writable.getWriter();
-  await writer.write({ log: 'Named stream data' });
+  await writer.write({ log: "Named stream data" });
   writer.releaseLock();
 }
 
@@ -195,7 +193,7 @@ async function closeStreams() {
   "use step";
 
   await getWritable().close(); // Close default stream
-  await getWritable({ namespace: 'logs' }).close(); // Close named stream
+  await getWritable({ namespace: "logs" }).close(); // Close named stream
 }
 ```
 
@@ -204,11 +202,11 @@ async function closeStreams() {
 Here's a more complex example showing how you might stream AI chat responses:
 
 ```typescript lineNumbers
-import { getWritable } from 'workflow';
-import { generateId, streamText, type UIMessageChunk } from 'ai';
+import { getWritable } from "workflow";
+import { generateId, streamText, type UIMessageChunk } from "ai";
 
 export async function chat(messages: UIMessage[]) {
-  'use workflow';
+  "use workflow";
 
   // Get typed writable stream for UI message chunks
   const writable = getWritable<UIMessageChunk>(); // [!code highlight]
@@ -221,9 +219,9 @@ export async function chat(messages: UIMessage[]) {
   // Process messages in steps
   for (let i = 0; i < MAX_STEPS; i++) {
     const result = await streamTextStep(currentMessages, writable);
-    currentMessages.push(result.messages)
+    currentMessages.push(result.messages);
 
-    if (result.finishReason !== 'tool-calls') {
+    if (result.finishReason !== "tool-calls") {
       break;
     }
   }
@@ -233,13 +231,13 @@ export async function chat(messages: UIMessage[]) {
 }
 
 async function startStream(writable: WritableStream<UIMessageChunk>) {
-  'use step';
+  "use step";
 
   const writer = writable.getWriter();
 
   // Send start message
   writer.write({
-    type: 'start',
+    type: "start",
     messageMetadata: {
       createdAt: Date.now(),
       messageId: generateId(),
@@ -253,13 +251,13 @@ async function streamTextStep(
   messages: UIMessage[],
   writable: WritableStream<UIMessageChunk>
 ) {
-  'use step';
+  "use step";
 
   const writer = writable.getWriter();
 
   // Call streamText from the AI SDK
   const result = streamText({
-    model: 'gpt-4',
+    model: "gpt-4",
     messages,
     /* other options */
   });
@@ -277,14 +275,13 @@ async function streamTextStep(
 
   reader.releaseLock();
 
-
   // Close the stream
   writer.close();
   writer.releaseLock();
 }
 
 async function endStream(writable: WritableStream<UIMessageChunk>) {
-  'use step';
+  "use step";
 
   // Close the stream to signal completion
   await writable.close();

@@ -2,10 +2,6 @@
 title: getRun
 ---
 
-import { generateDefinition } from "@/lib/tsdoc"
-
-# `getRun()`
-
 Retrieves the workflow run metadata and status information for a given run ID. This function provides immediate access to workflow run details without waiting for completion, making it ideal for status checking and monitoring.
 
 Use this function when you need to check workflow status, get timing information, or access workflow metadata without blocking on workflow completion.
@@ -21,11 +17,9 @@ const run = getRun('my-run-id');
 ### Parameters
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { getRun } from 'workflow/api';
-export default getRun;`
-})}
+export default getRun;`}
 showSections={['parameters']}
 />
 
@@ -34,22 +28,18 @@ showSections={['parameters']}
 Returns a `Run` object:
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import { Run } from 'workflow/api';
-export default Run;`
-})}
+export default Run;`}
 showSections={['returns']}
 />
 
 #### WorkflowReadableStreamOptions
 
 <TSDoc
-definition={generateDefinition({
-  code: `
+definition={`
 import type { WorkflowReadableStreamOptions } from 'workflow/api';
-export default WorkflowReadableStreamOptions;`
-})}
+export default WorkflowReadableStreamOptions;`}
 />
 
 ## Examples

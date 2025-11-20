@@ -1,5 +1,13 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.12
+
+### Patch Changes
+
+- 3d99d6d: Update `@vercel/oidc` and `@vercel/queue` to fix expired OIDC token edge case
+- Updated dependencies [3d99d6d]
+  - @workflow/world-local@5.0.0-beta.10
+
 ## 4.1.0-beta.11
 
 ### Patch Changes

@@ -1,4 +1,4 @@
-import { CodeBlock } from '@/components/code-block';
+import { CodeBlock } from '@/app/(home)/components/code-block';
 import { IntroTabs } from './intro-tabs';
 import { NonWorkflowExample } from './non-workflow';
 import { WorkflowExample } from './workflow';

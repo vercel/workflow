@@ -1,109 +1,88 @@
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
-import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { DocsBody, DocsDescription, DocsPage } from '@/components/layout/page';
-import { Tab, Tabs } from '@/components/tabs';
-import { source } from '@/lib/source';
-import { cn } from '@/lib/utils';
-import { getMDXComponents } from '@/mdx-components';
+import { AskAI } from '@/components/geistdocs/ask-ai';
+import { CopyPage } from '@/components/geistdocs/copy-page';
+import {
+  DocsBody,
+  DocsDescription,
+  DocsPage,
+  DocsTitle,
+  generatePageMetadata,
+  generateStaticPageParams,
+} from '@/components/geistdocs/docs-page';
+import { EditSource } from '@/components/geistdocs/edit-source';
+import { Feedback } from '@/components/geistdocs/feedback';
+import { getMDXComponents } from '@/components/geistdocs/mdx-components';
+import { OpenInChat } from '@/components/geistdocs/open-in-chat';
+import { ScrollTop } from '@/components/geistdocs/scroll-top';
+import { TableOfContents } from '@/components/geistdocs/toc';
+import * as AccordionComponents from '@/components/ui/accordion';
+import { Badge } from '@/components/ui/badge';
 
-type CardProps = {
-  title: string;
-  href: string;
-  className?: string;
-  children: React.ReactNode;
-  disabled?: boolean;
-};
+import { getLLMText, source } from '@/lib/geistdocs/source';
+import { TSDoc } from '@/lib/tsdoc';
 
-function Card({ title, href, className, children, disabled }: CardProps) {
-  if (disabled) {
-    return (
-      <div
-        className={cn(
-          '[&_span]:text-muted-foreground cursor-default block rounded-lg border border-border p-6 transition-colors no-underline opacity-75 [&_svg]:grayscale [&_svg]:opacity-25',
-          className
-        )}
-      >
-        {title && <div className="font-semibold text-lg mb-1">{title}</div>}
-        {title ? <div className="text-sm">{children}</div> : children}
-      </div>
-    );
+const Page = async (props: PageProps<'/docs/[[...slug]]'>) => {
+  const params = await props.params;
+
+  const page = source.getPage(params.slug);
+
+  if (!page) {
+    notFound();
   }
 
+  const markdown = await getLLMText(page);
+  const MDX = page.data.body;
+
   return (
-    <a
-      href={href}
-      className={cn(
-        'block rounded-lg border border-border p-6 transition hover:border-primary/25 hover:bg-accent no-underline duration-150 ease-out',
-        className
-      )}
+    <DocsPage
+      slug={params.slug}
+      tableOfContent={{
+        component: (
+          <TableOfContents>
+            <EditSource path={page.path} />
+            <ScrollTop />
+            <Feedback />
+            <CopyPage text={markdown} />
+            <AskAI href={page.url} />
+            <OpenInChat href={page.url} />
+          </TableOfContents>
+        ),
+      }}
+      toc={page.data.toc}
     >
-      {title && <div className="font-semibold text-lg mb-1">{title}</div>}
-      {title ? (
-        <div className="text-muted-foreground text-sm">{children}</div>
-      ) : (
-        children
-      )}
-    </a>
-  );
-}
-
-type CardsProps = {
-  children: React.ReactNode;
-};
-
-function Cards({ children }: CardsProps) {
-  return <div className="grid gap-4 sm:grid-cols-2">{children}</div>;
-}
-
-export default async function Page(props: {
-  params: Promise<{ slug: string[] }>;
-}) {
-  const { params } = props;
-  const { slug } = await params;
-  const page = source.getPage(slug);
-  if (!page) notFound();
-
-  const MDXContent = page.data.body;
-  const icon = (page.data as any).icon || false;
-
-  return (
-    <DocsPage toc={page.data.toc}>
+      <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
-        <MDXContent
+        <MDX
           components={getMDXComponents({
-            // this allows you to link to other pages with relative file paths
             a: createRelativeLink(source, page),
-            Tab,
+
+            // Add your custom components here
+            Badge,
+            TSDoc,
+            Step,
+            Steps,
+            ...AccordionComponents,
             Tabs,
-            Card,
-            Cards,
-            icon: icon,
+            Tab,
           })}
         />
       </DocsBody>
     </DocsPage>
   );
-}
+};
 
-export async function generateStaticParams() {
-  return source.generateParams();
-}
+export const generateStaticParams = generateStaticPageParams;
 
-export async function generateMetadata(props: {
-  params: Promise<{ slug: string[] }>;
-}): Promise<Metadata> {
-  const { params } = props;
-  const { slug } = await params;
-  const page = source.getPage(slug);
-  if (!page) notFound();
+export const generateMetadata = async (
+  props: PageProps<'/docs/[[...slug]]'>
+) => {
+  const params = await props.params;
 
-  return {
-    title: `${page.data.title} - Workflow DevKit`,
-    description: page.data.description,
-    alternates: {
-      canonical: `/docs/${slug.join('/')}`,
-    },
-  };
-}
+  return generatePageMetadata(params.slug);
+};
+
+export default Page;

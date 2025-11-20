@@ -1,5 +1,14 @@
 # @workflow/core
 
+## 4.0.1-beta.15
+
+### Patch Changes
+
+- 3d99d6d: Update `@vercel/oidc` and `@vercel/queue` to fix expired OIDC token edge case
+- Updated dependencies [3d99d6d]
+  - @workflow/world-vercel@4.0.1-beta.10
+  - @workflow/world-local@5.0.0-beta.10
+
 ## 4.0.1-beta.14
 
 ### Patch Changes

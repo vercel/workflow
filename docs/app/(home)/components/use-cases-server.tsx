@@ -1,4 +1,4 @@
-import { CodeBlock } from '@/components/code-block';
+import { CodeBlock } from '@/app/(home)/components/code-block';
 import { UseCasesClient } from './use-cases-client';
 
 const useCases = [

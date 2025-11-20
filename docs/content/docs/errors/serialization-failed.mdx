@@ -2,11 +2,7 @@
 title: serialization-failed
 ---
 
-# `serialization-failed`
-
 This error occurs when you try to pass non-serializable data between execution boundaries in your workflow. All data passed between workflow functions, step functions, and the workflow runtime must be serializable to persist in the event log.
-
----
 
 ## Error Message
 
@@ -22,8 +18,6 @@ This error can appear when:
 - Serializing step arguments
 - Serializing step return values
 
----
-
 ## Why This Happens
 
 Workflows persist their state using an event log. Every value that crosses execution boundaries must be:
@@ -32,8 +26,6 @@ Workflows persist their state using an event log. Every value that crosses execu
 2. **Deserialized** when the workflow resumes
 
 Functions, class instances, symbols, and other non-serializable types cannot be properly reconstructed after serialization, which would break workflow replay.
-
----
 
 ## Common Causes
 
@@ -107,8 +99,6 @@ async function greetStep(userData: { name: string }) {
 }
 ```
 
----
-
 ## Supported Serializable Types
 
 Workflow DevKit supports these types across execution boundaries:
@@ -120,8 +110,6 @@ Workflow DevKit supports these types across execution boundaries:
 - Plain objects with serializable values
 
 To learn more about supported types, see the [Serialization](/docs/foundations/serialization) section.
-
----
 
 ## Debugging Serialization Issues
 

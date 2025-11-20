@@ -43,7 +43,7 @@ export const Hero = ({ title, description }: HeroProps) => {
           <div className="size-2 rounded-full bg-muted-foreground" />
           <p>Workflow DevKit is in beta</p>
         </Badge>
-        <h1 className="text-center font-semibold text-[40px]! leading-[1.1] tracking-tight lg:font-semibold sm:text-5xl! xl:text-6xl! text-balance">
+        <h1 className="text-center font-semibold text-4xl leading-[1.1] tracking-tight lg:font-semibold sm:text-5xl! xl:text-6xl! text-balance">
           {title}
         </h1>
         <p className="text-balance max-w-3xl mx-auto text-muted-foreground sm:text-xl leading-relaxed">

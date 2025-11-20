@@ -1,32 +1,66 @@
 ---
 title: Getting Started
+description: Start by choosing your framework. Each guide will walk you through the steps to install the dependencies and start running your first workflow.
 ---
 
-import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun } from '@/app/(home)/components/frameworks';
-
-# Getting Started
-
-Start by choosing your framework. Each guide will walk you through the steps to install the dependencies and start running your first workflow.
+import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStack, Vite, Express } from '@/app/(home)/components/frameworks';
 
 <Cards>
-    <Card href="/docs/getting-started/next" className="flex flex-col items-center justify-center text-center gap-2">
+    <Card href="/docs/getting-started/next">
+      <div  className="flex flex-col items-center justify-center text-center gap-2">
         <Next className="size-16" />
         <span className="font-medium">Next.js</span>
+      </div>
     </Card>
-    <Card href="/docs/getting-started/hono" className="flex flex-col items-center justify-center text-center gap-2">
+    <Card href="/docs/getting-started/vite">
+     <div className="flex flex-col items-center justify-center text-center gap-2">
+        <Vite className="size-16" />
+        <span className="font-medium">Vite</span>
+     </div>
+    </Card>
+    <Card href="/docs/getting-started/express" >
+    <div className="flex flex-col items-center justify-center text-center gap-2">
+        <Express className="size-16 dark:invert" />
+        <span className="font-medium">Express</span>
+    </div>
+    </Card>
+    <Card href="/docs/getting-started/hono">
+     <div className="flex flex-col items-center justify-center text-center gap-2">
         <Hono className="size-16" />
         <span className="font-medium">Hono</span>
+     </div>
     </Card>
-    <Card href="/docs/getting-started/nitro" className="flex flex-col items-center justify-center text-center gap-2">
+    <Card href="/docs/getting-started/nitro" >
+     <div className="flex flex-col items-center justify-center text-center gap-2">
         <Nitro className="size-16" />
         <span className="font-medium">Nitro</span>
+     </div>
     </Card>
-    <Card href="/docs/getting-started/sveltekit" className="flex flex-col items-center justify-center text-center gap-2">
-        <SvelteKit className="size-16" />
-        <span className="font-medium">SvelteKit</span>
-    </Card>
-    <Card href="/docs/getting-started/nuxt" className="flex flex-col items-center justify-center text-center gap-2">
+    <Card href="/docs/getting-started/nuxt" >
+      <div className="flex flex-col items-center justify-center text-center gap-2">
         <Nuxt className="size-16" />
         <span className="font-medium">Nuxt</span>
+      </div>
+    </Card>
+    <Card href="/docs/getting-started/sveltekit" >
+     <div className="flex flex-col items-center justify-center text-center gap-2">
+        <SvelteKit className="size-16" />
+        <span className="font-medium">SvelteKit</span>
+     </div>
+    </Card>
+    <Card className="opacity-50">
+      <div className="flex flex-col items-center justify-center gap-2">
+        <AstroLight className="size-16 dark:hidden grayscale" />
+        <AstroDark className="size-16 hidden dark:block grayscale" />
+        <span className="font-medium">Astro</span>
+        <Badge variant="secondary">Coming soon</Badge>
+      </div>
+    </Card>
+    <Card className="opacity-50">
+      <div className="flex flex-col items-center justify-center gap-2">
+        <TanStack className="size-16 dark:invert grayscale" />
+        <span className="font-medium">TanStack Start</span>
+        <Badge variant="secondary">Coming soon</Badge>
+      </div>
     </Card>
 </Cards>

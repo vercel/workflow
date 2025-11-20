@@ -2,11 +2,7 @@
 title: fetch-in-workflow
 ---
 
-# `fetch-in-workflow`
-
 This error occurs when you try to use `fetch()` directly in a workflow function, or when a library (like the AI SDK) tries to call `fetch()` under the hood.
-
----
 
 ## Error Message
 
@@ -14,15 +10,11 @@ This error occurs when you try to use `fetch()` directly in a workflow function,
 Global "fetch" is unavailable in workflow functions. Use the "fetch" step function from "workflow" to make HTTP requests.
 ```
 
----
-
 ## Why This Happens
 
 Workflow functions run in a sandboxed environment without direct access to `fetch()`.
 
 Many libraries make HTTP requests under the hood. For example, the AI SDK's `generateText()` function calls `fetch()` to make HTTP requests to AI providers. When these libraries run inside a workflow function, they fail because the global `fetch` is not available.
-
----
 
 ## Quick Fix
 
@@ -68,8 +60,6 @@ export async function chatWorkflow(prompt: string) {
   return result.text;
 }
 ```
-
----
 
 ## Common Scenarios
 
