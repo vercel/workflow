@@ -55,8 +55,12 @@ export function createPgBossQueue(
     start: async () => {
       await ensureStarted();
 
-      const stepWorker = createWorker(proxy.proxyStep);
-      const workflowWorker = createWorker(proxy.proxyWorkflow);
+      const stepWorker = createWorker(boss, stepQueueName, proxy.proxyStep);
+      const workflowWorker = createWorker(
+        boss,
+        workflowQueueName,
+        proxy.proxyWorkflow
+      );
 
       for (let i = 0; i < opts.queueConcurrency; i++) {
         await boss.work(workflowQueueName, workflowWorker);
@@ -66,7 +70,11 @@ export function createPgBossQueue(
   };
 }
 
-function createWorker(proxy: WkfProxy[keyof WkfProxy]) {
+function createWorker(
+  boss: PgBoss,
+  queueName: string,
+  proxy: WkfProxy[keyof WkfProxy]
+) {
   return async ([job]: PgBoss.Job[]) => {
     const message = MessageData.parse(job.data);
 
@@ -75,13 +83,21 @@ function createWorker(proxy: WkfProxy[keyof WkfProxy]) {
     try {
       const response = await proxy(message);
 
-      // TODO: Properly handle 503
       if (response.status === 503) {
-        const body = (await response.json()) as {
-          timeoutSeconds?: number;
-        };
+        const body = (await response.json()) as { timeoutSeconds?: number };
+
         if (body.timeoutSeconds) {
-          throw new Error(`Retry after ${body.timeoutSeconds}s`);
+          await boss.send(queueName, job.data, {
+            startAfter: new Date(Date.now() + body.timeoutSeconds * 1000),
+            singletonKey: message?.idempotencyKey ?? message.messageId,
+            retryLimit: 3,
+          });
+
+          console.log(
+            `[${job.id}] requeued: ${message.queueName} for ${body.timeoutSeconds}s`
+          );
+
+          return;
         }
       }
 

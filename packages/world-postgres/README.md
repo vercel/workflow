@@ -42,7 +42,7 @@ import { createWorld, createPgBossQueue } from "@workflow/world-postgres";
 const world = createWorld({
   connectionString: "postgres://username:password@localhost:5432/database",
   securityToken: "your-secret-token-here",
-  queueFactorya: createPgBossHttpProxyQueue({
+  queueFactory: createPgBossHttpProxyQueue({
     jobPrefix: "my-app",
     queueConcurrency: 10,
   }) 

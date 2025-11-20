@@ -83,7 +83,6 @@ export function createQueue(
           messageId: message.messageId,
         });
 
-        // TODO: Understand what's this?
         let timeoutSeconds: number | null = null;
         if (typeof result?.timeoutSeconds === 'number') {
           timeoutSeconds = Math.min(
