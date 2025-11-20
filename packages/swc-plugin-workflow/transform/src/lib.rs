@@ -176,6 +176,12 @@ pub struct StepTransform {
     workflow_functions_needing_id: Vec<(String, swc_core::common::Span)>,
     // Track step function exports that need to be converted to const declarations in workflow mode
     step_exports_to_convert: Vec<(String, String, swc_core::common::Span)>, // (fn_name, step_id, span)
+    // Track default exports that need to be replaced with expressions
+    default_exports_to_replace: Vec<(String, Expr)>, // (export_name, replacement_expr)
+    // Track default workflow exports that need const declarations in workflow mode
+    default_workflow_exports: Vec<(String, Expr, swc_core::common::Span)>, // (const_name, expr, span)
+    // Track all declared identifiers in module scope to avoid collisions
+    declared_identifiers: HashSet<String>,
     // Track object property step functions for hoisting in step mode
     // (parent_var_name, prop_name, arrow_expr, span)
     object_property_step_functions: Vec<(String, String, ArrowExpr, swc_core::common::Span)>,
@@ -450,6 +456,9 @@ impl StepTransform {
             workflow_exports_to_expand: Vec::new(),
             workflow_functions_needing_id: Vec::new(),
             step_exports_to_convert: Vec::new(),
+            default_exports_to_replace: Vec::new(),
+            default_workflow_exports: Vec::new(),
+            declared_identifiers: HashSet::new(),
             object_property_step_functions: Vec::new(),
             nested_step_functions: Vec::new(),
             anonymous_fn_counter: 0,
@@ -479,6 +488,133 @@ impl StepTransform {
                 let prefix = if is_workflow { "workflow" } else { "step" };
                 naming::format_name(prefix, &self.filename, span.lo.0)
             }
+        }
+    }
+
+    // Generate a unique identifier that doesn't conflict with existing declarations
+    fn generate_unique_name(&self, base_name: &str) -> String {
+        let mut name = base_name.to_string();
+        let mut counter = 0;
+        
+        while self.declared_identifiers.contains(&name) {
+            counter += 1;
+            name = format!("{}${}", base_name, counter);
+        }
+        
+        name
+    }
+
+    // Collect all declared identifiers in the module to avoid naming collisions
+    fn collect_declared_identifiers(&mut self, items: &[ModuleItem]) {
+        for item in items {
+            match item {
+                ModuleItem::Stmt(Stmt::Decl(decl)) => {
+                    match decl {
+                        Decl::Fn(fn_decl) => {
+                            self.declared_identifiers.insert(fn_decl.ident.sym.to_string());
+                        }
+                        Decl::Var(var_decl) => {
+                            for declarator in &var_decl.decls {
+                                self.collect_idents_from_pat(&declarator.name);
+                            }
+                        }
+                        Decl::Class(class_decl) => {
+                            self.declared_identifiers.insert(class_decl.ident.sym.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                ModuleItem::ModuleDecl(module_decl) => {
+                    match module_decl {
+                        ModuleDecl::ExportDecl(export_decl) => {
+                            match &export_decl.decl {
+                                Decl::Fn(fn_decl) => {
+                                    self.declared_identifiers.insert(fn_decl.ident.sym.to_string());
+                                }
+                                Decl::Var(var_decl) => {
+                                    for declarator in &var_decl.decls {
+                                        self.collect_idents_from_pat(&declarator.name);
+                                    }
+                                }
+                                Decl::Class(class_decl) => {
+                                    self.declared_identifiers.insert(class_decl.ident.sym.to_string());
+                                }
+                                _ => {}
+                            }
+                        }
+                        ModuleDecl::ExportDefaultDecl(default_decl) => {
+                            match &default_decl.decl {
+                                DefaultDecl::Fn(fn_expr) => {
+                                    if let Some(ident) = &fn_expr.ident {
+                                        self.declared_identifiers.insert(ident.sym.to_string());
+                                    }
+                                }
+                                DefaultDecl::Class(class_expr) => {
+                                    if let Some(ident) = &class_expr.ident {
+                                        self.declared_identifiers.insert(ident.sym.to_string());
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        ModuleDecl::Import(import_decl) => {
+                            for specifier in &import_decl.specifiers {
+                                match specifier {
+                                    ImportSpecifier::Named(named) => {
+                                        self.declared_identifiers.insert(named.local.sym.to_string());
+                                    }
+                                    ImportSpecifier::Default(default) => {
+                                        self.declared_identifiers.insert(default.local.sym.to_string());
+                                    }
+                                    ImportSpecifier::Namespace(namespace) => {
+                                        self.declared_identifiers.insert(namespace.local.sym.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Helper to collect identifiers from patterns (for destructuring, etc.)
+    fn collect_idents_from_pat(&mut self, pat: &Pat) {
+        match pat {
+            Pat::Ident(ident) => {
+                self.declared_identifiers.insert(ident.id.sym.to_string());
+            }
+            Pat::Array(array_pat) => {
+                for elem in &array_pat.elems {
+                    if let Some(elem) = elem {
+                        self.collect_idents_from_pat(elem);
+                    }
+                }
+            }
+            Pat::Object(obj_pat) => {
+                for prop in &obj_pat.props {
+                    match prop {
+                        ObjectPatProp::KeyValue(kv) => {
+                            self.collect_idents_from_pat(&kv.value);
+                        }
+                        ObjectPatProp::Assign(assign) => {
+                            self.declared_identifiers.insert(assign.key.sym.to_string());
+                        }
+                        ObjectPatProp::Rest(rest) => {
+                            self.collect_idents_from_pat(&rest.arg);
+                        }
+                    }
+                }
+            }
+            Pat::Rest(rest_pat) => {
+                self.collect_idents_from_pat(&rest_pat.arg);
+            }
+            Pat::Assign(assign_pat) => {
+                self.collect_idents_from_pat(&assign_pat.left);
+            }
+            _ => {}
         }
     }
 
@@ -2439,6 +2575,9 @@ impl VisitMut for StepTransform {
     }
 
     fn visit_mut_module_items(&mut self, items: &mut Vec<ModuleItem>) {
+        // Collect all declared identifiers to avoid naming collisions
+        self.collect_declared_identifiers(items);
+        
         // Check for file-level directives
         self.has_file_step_directive = self.check_module_directive(items);
         self.has_file_workflow_directive = self.check_module_workflow_directive(items);
@@ -2775,6 +2914,73 @@ impl VisitMut for StepTransform {
                 items.push(ModuleItem::Stmt(
                     self.create_workflow_id_assignment(&fn_name, span),
                 ));
+            }
+        }
+
+        // In workflow mode, add const declarations for default workflow exports
+        if self.mode == TransformMode::Workflow && !self.default_workflow_exports.is_empty() {
+            // Process default workflow exports to add const declarations and workflowId property
+            let default_workflows: Vec<_> = self.default_workflow_exports.drain(..).collect();
+
+            for (const_name, fn_expr, span) in default_workflows {
+                // Add const declaration: const defaultWorkflow = async function() { ... };
+                items.push(ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    kind: VarDeclKind::Const,
+                    declare: false,
+                    decls: vec![VarDeclarator {
+                        span: DUMMY_SP,
+                        name: Pat::Ident(BindingIdent {
+                            id: Ident::new(const_name.clone().into(), DUMMY_SP, SyntaxContext::empty()),
+                            type_ann: None,
+                        }),
+                        init: Some(Box::new(fn_expr)),
+                        definite: false,
+                    }],
+                })))));
+                
+                // Add workflowId assignment after the const declaration
+                items.push(ModuleItem::Stmt(
+                    self.create_workflow_id_assignment(&const_name, span),
+                ));
+            }
+        }
+
+        // Replace default exports that need to be converted
+        let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
+        for (export_name, replacement_expr) in default_exports {
+            for item in items.iter_mut() {
+                match item {
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(export_default)) => {
+                        // Check if this is the default export we want to replace
+                        // For anonymous arrow functions, we're replacing the expression with an identifier
+                        if export_name == "default" {
+                            // Replace with the new expression (identifier)
+                            *item = ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
+                                ExportDefaultExpr {
+                                    span: export_default.span,
+                                    expr: Box::new(replacement_expr.clone()),
+                                },
+                            ));
+                            break;
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export_default)) => {
+                        // For anonymous functions in default exports
+                        if export_name == "default" {
+                            // Replace with export default expression (identifier)
+                            *item = ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
+                                ExportDefaultExpr {
+                                    span: export_default.span,
+                                    expr: Box::new(replacement_expr.clone()),
+                                },
+                            ));
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -4038,23 +4244,37 @@ impl VisitMut for StepTransform {
                                 // In workflow mode, just remove the directive
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
 
-                                // For named default exports, we can simply add workflowId after:
-                                // export default async function name() { ... }
-                                // name.workflowId = "...";
-                                
-                                // Use the actual function name if available, or "defaultWorkflow" for anonymous
-                                let workflow_name = if fn_name == "default" {
-                                    "defaultWorkflow".to_string()
+                                if fn_name == "default" {
+                                    // Anonymous default export: convert to const declaration
+                                    // Generate unique name to avoid collisions
+                                    let unique_name = self.generate_unique_name("defaultWorkflow");
+                                    
+                                    // Track for const declaration and workflowId assignment
+                                    self.default_workflow_exports.push((
+                                        unique_name.clone(),
+                                        Expr::Fn(fn_expr.clone()),
+                                        fn_expr.function.span,
+                                    ));
+                                    
+                                    // Track for replacement with identifier
+                                    self.default_exports_to_replace.push((
+                                        fn_name.clone(),
+                                        Expr::Ident(Ident::new(
+                                            unique_name.into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        )),
+                                    ));
                                 } else {
-                                    fn_name.clone()
-                                };
-                                
-                                // Track for workflowId assignment
-                                self.workflow_exports_to_expand.push((
-                                    workflow_name,
-                                    Expr::Fn(fn_expr.clone()),
-                                    fn_expr.function.span,
-                                ));
+                                    // Named default export: can reference by name
+                                    // export default async function name() { ... }
+                                    // name.workflowId = "...";
+                                    self.workflow_exports_to_expand.push((
+                                        fn_name.clone(),
+                                        Expr::Fn(fn_expr.clone()),
+                                        fn_expr.function.span,
+                                    ));
+                                }
                             }
                             TransformMode::Client => {
                                 // In client mode, replace workflow function body with error throw
@@ -4155,6 +4375,168 @@ impl VisitMut for StepTransform {
                 decl.visit_mut_children_with(self);
             }
         }
+    }
+
+    // Handle export default expressions (anonymous functions and arrow functions)
+    fn visit_mut_export_default_expr(&mut self, expr: &mut ExportDefaultExpr) {
+        match &mut *expr.expr {
+            Expr::Fn(fn_expr) => {
+                // Anonymous function: export default async function() { ... }
+                if self.should_transform_workflow_function(&fn_expr.function, true) {
+                    if self.validate_async_function(&fn_expr.function, fn_expr.function.span) {
+                        self.workflow_function_names.insert("default".to_string());
+
+                        match self.mode {
+                            TransformMode::Step => {
+                                // Workflow functions are not processed in step mode
+                            }
+                            TransformMode::Workflow => {
+                                // In workflow mode, convert to const declaration
+                                self.remove_use_workflow_directive(&mut fn_expr.function.body);
+                                
+                                // Generate unique name to avoid collisions
+                                let unique_name = self.generate_unique_name("defaultWorkflow");
+                                
+                                // Track for const declaration and workflowId assignment
+                                self.default_workflow_exports.push((
+                                    unique_name.clone(),
+                                    Expr::Fn(fn_expr.clone()),
+                                    fn_expr.function.span,
+                                ));
+                                
+                                // Track for replacement with identifier
+                                self.default_exports_to_replace.push((
+                                    "default".to_string(),
+                                    Expr::Ident(Ident::new(
+                                        unique_name.into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    )),
+                                ));
+                            }
+                            TransformMode::Client => {
+                                // In client mode, replace workflow function body with error throw
+                                self.remove_use_workflow_directive(&mut fn_expr.function.body);
+                                if let Some(body) = &mut fn_expr.function.body {
+                                    let error_msg = "You attempted to execute workflow defaultWorkflow function directly. To start a workflow, use start(defaultWorkflow) from workflow/api";
+                                    let error_expr = Expr::New(NewExpr {
+                                        span: DUMMY_SP,
+                                        ctxt: SyntaxContext::empty(),
+                                        callee: Box::new(Expr::Ident(Ident::new(
+                                            "Error".into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        ))),
+                                        args: Some(vec![ExprOrSpread {
+                                            spread: None,
+                                            expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                                span: DUMMY_SP,
+                                                value: error_msg.into(),
+                                                raw: None,
+                                            }))),
+                                        }]),
+                                        type_args: None,
+                                    });
+                                    body.stmts = vec![Stmt::Throw(ThrowStmt {
+                                        span: DUMMY_SP,
+                                        arg: Box::new(error_expr),
+                                    })];
+                                }
+                                self.workflow_functions_needing_id
+                                    .push(("defaultWorkflow".to_string(), fn_expr.function.span));
+                            }
+                        }
+                    }
+                } else if self.should_transform_function(&fn_expr.function, true) {
+                    // Handle step functions
+                    if self.validate_async_function(&fn_expr.function, fn_expr.function.span) {
+                        self.step_function_names.insert("default".to_string());
+                        // Similar logic for steps...
+                    }
+                }
+            }
+            Expr::Arrow(arrow_expr) => {
+                // Arrow function: export default async () => { ... }
+                if self.has_workflow_directive_arrow(arrow_expr, true) {
+                    if !arrow_expr.is_async {
+                        emit_error(WorkflowErrorKind::NonAsyncFunction {
+                            span: arrow_expr.span,
+                            directive: "use workflow",
+                        });
+                    } else {
+                        self.workflow_function_names.insert("default".to_string());
+
+                        match self.mode {
+                            TransformMode::Step => {
+                                // Workflow functions are not processed in step mode
+                            }
+                            TransformMode::Workflow => {
+                                // In workflow mode, convert to const declaration
+                                self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
+                                
+                                // Generate unique name to avoid collisions
+                                let unique_name = self.generate_unique_name("defaultWorkflow");
+                                
+                                // Track for const declaration and workflowId assignment
+                                self.default_workflow_exports.push((
+                                    unique_name.clone(),
+                                    Expr::Arrow(arrow_expr.clone()),
+                                    arrow_expr.span,
+                                ));
+                                
+                                // Track for replacement with identifier
+                                self.default_exports_to_replace.push((
+                                    "default".to_string(),
+                                    Expr::Ident(Ident::new(
+                                        unique_name.into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    )),
+                                ));
+                            }
+                            TransformMode::Client => {
+                                // In client mode, replace workflow function body with error throw
+                                self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
+                                let error_msg = "You attempted to execute workflow defaultWorkflow function directly. To start a workflow, use start(defaultWorkflow) from workflow/api";
+                                let error_expr = Expr::New(NewExpr {
+                                    span: DUMMY_SP,
+                                    ctxt: SyntaxContext::empty(),
+                                    callee: Box::new(Expr::Ident(Ident::new(
+                                        "Error".into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    ))),
+                                    args: Some(vec![ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                            span: DUMMY_SP,
+                                            value: error_msg.into(),
+                                            raw: None,
+                                        }))),
+                                    }]),
+                                    type_args: None,
+                                });
+                                arrow_expr.body = Box::new(BlockStmtOrExpr::Expr(Box::new(error_expr)));
+                            }
+                        }
+                    }
+                } else if self.has_step_directive_arrow(arrow_expr, true) {
+                    // Handle step arrow functions
+                    if !arrow_expr.is_async {
+                        emit_error(WorkflowErrorKind::NonAsyncFunction {
+                            span: arrow_expr.span,
+                            directive: "use step",
+                        });
+                    } else {
+                        self.step_function_names.insert("default".to_string());
+                        // Similar logic for steps...
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        expr.visit_mut_children_with(self);
     }
 
     fn visit_mut_module_decl(&mut self, decl: &mut ModuleDecl) {
