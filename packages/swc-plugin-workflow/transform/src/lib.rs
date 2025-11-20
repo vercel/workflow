@@ -158,7 +158,7 @@ pub struct StepTransform {
     step_function_names: HashSet<String>,
     // Set of function names that are workflow functions
     workflow_function_names: HashSet<String>,
-    // Map from export name to actual const name for default exports (e.g., "default" -> "defaultWorkflow")
+    // Map from export name to actual const name for default exports (e.g., "default" -> "__default")
     workflow_export_to_const_name: std::collections::HashMap<String, String>,
     // Set of function names that have been registered (to avoid duplicates)
     registered_functions: HashSet<String>,
@@ -1955,7 +1955,7 @@ impl StepTransform {
             let workflow_entries: Vec<String> = sorted_workflow_names
                 .into_iter()
                 .map(|fn_name| {
-                    // Check if this export name has a different const name (e.g., "default" -> "defaultWorkflow")
+                    // Check if this export name has a different const name (e.g., "default" -> "__default")
                     let fn_name_str: &str = fn_name;
                     let actual_name = self.workflow_export_to_const_name
                         .get(fn_name_str)
@@ -4266,7 +4266,7 @@ impl VisitMut for StepTransform {
                         // For ALL default exports, track mapping from "default" to actual const name
                         let const_name = if fn_name == "default" {
                             // Anonymous: generate unique name
-                            let unique_name = self.generate_unique_name("defaultWorkflow");
+                            let unique_name = self.generate_unique_name("__default");
                             self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
                             unique_name
                         } else {
@@ -4443,7 +4443,7 @@ impl VisitMut for StepTransform {
                 if self.should_transform_workflow_function(&fn_expr.function, true) {
                     if self.validate_async_function(&fn_expr.function, fn_expr.function.span) {
                         // Generate unique name first so we can use it in workflow_function_names
-                        let unique_name = self.generate_unique_name("defaultWorkflow");
+                        let unique_name = self.generate_unique_name("__default");
                         // For function expression default exports, track mapping from "default" to actual const name
                         self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
                         
@@ -4544,7 +4544,7 @@ impl VisitMut for StepTransform {
                         });
                     } else {
                         // For arrow function default exports, generate unique name and track mapping
-                        let unique_name = self.generate_unique_name("defaultWorkflow");
+                        let unique_name = self.generate_unique_name("__default");
                         self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
                         
                         // Always use "default" as the metadata key for default exports
