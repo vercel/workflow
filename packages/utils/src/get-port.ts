@@ -25,8 +25,31 @@ export async function getPort(): Promise<number | undefined> {
         port = parseInt(result.stdout.trim(), 10);
         break;
       }
-      case 'win32':
-        throw new Error('Not implemented');
+      case 'win32': {
+        const result = await execAsync('netstat -ano');
+        const lines = result.stdout.trim().split('\n');
+
+        for (const line of lines) {
+          // Windows netstat format: TCP    0.0.0.0:8080    0.0.0.0:0    LISTENING    1234
+          const parts = line.trim().split(/\s+/);
+
+          if (
+            parts.length >= 5 &&
+            parts[3] === 'LISTENING' &&
+            parts[4] === pid.toString()
+          ) {
+            // Extract port from the local address (e.g., "0.0.0.0:8080")
+            const localAddress = parts[1];
+            const portMatch = localAddress.match(/:(\d+)$/);
+
+            if (portMatch && portMatch[1]) {
+              port = parseInt(portMatch[1], 10);
+              break;
+            }
+          }
+        }
+        break;
+      }
     }
   } catch {
     // Unavailable (e.g. Serverless environments)
