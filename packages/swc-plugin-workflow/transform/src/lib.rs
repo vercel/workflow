@@ -1,7 +1,7 @@
 mod naming;
 
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use swc_core::{
     common::{DUMMY_SP, SyntaxContext, errors::HANDLER},
     ecma::{
@@ -158,6 +158,8 @@ pub struct StepTransform {
     step_function_names: HashSet<String>,
     // Set of function names that are workflow functions
     workflow_function_names: HashSet<String>,
+    // Map from export name to actual const name for default exports (e.g., "default" -> "defaultWorkflow")
+    workflow_export_to_const_name: std::collections::HashMap<String, String>,
     // Set of function names that have been registered (to avoid duplicates)
     registered_functions: HashSet<String>,
     // Collect registration calls for step mode
@@ -445,6 +447,7 @@ impl StepTransform {
             has_file_workflow_directive: false,
             step_function_names: HashSet::new(),
             workflow_function_names: HashSet::new(),
+            workflow_export_to_const_name: HashMap::new(),
             registered_functions: HashSet::new(),
             registration_calls: Vec::new(),
             names: Vec::new(),
@@ -1952,8 +1955,14 @@ impl StepTransform {
             let workflow_entries: Vec<String> = sorted_workflow_names
                 .into_iter()
                 .map(|fn_name| {
-                    let workflow_id = self.create_id(Some(fn_name), DUMMY_SP, true);
-                    format!("\"{}\":{{\"workflowId\":\"{}\"}}", fn_name, workflow_id)
+                    // Check if this export name has a different const name (e.g., "default" -> "defaultWorkflow")
+                    let fn_name_str: &str = fn_name;
+                    let actual_name = self.workflow_export_to_const_name
+                        .get(fn_name_str)
+                        .map(|s| s.as_str())
+                        .unwrap_or(fn_name_str);
+                    let workflow_id = self.create_id(Some(actual_name), DUMMY_SP, true);
+                    format!("\"{}\":{{\"workflowId\":\"{}\"}}", fn_name_str, workflow_id)
                 })
                 .collect();
 
@@ -4261,7 +4270,20 @@ impl VisitMut for StepTransform {
 
                 if self.should_transform_workflow_function(&fn_expr.function, true) {
                     if self.validate_async_function(&fn_expr.function, fn_expr.function.span) {
-                        self.workflow_function_names.insert(fn_name.clone());
+                        // For ALL default exports, track mapping from "default" to actual const name
+                        let const_name = if fn_name == "default" {
+                            // Anonymous: generate unique name
+                            let unique_name = self.generate_unique_name("defaultWorkflow");
+                            self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
+                            unique_name
+                        } else {
+                            // Named: use the function name
+                            self.workflow_export_to_const_name.insert("default".to_string(), fn_name.clone());
+                            fn_name.clone()
+                        };
+                        
+                        // Always use "default" as the metadata key for default exports
+                        self.workflow_function_names.insert("default".to_string());
 
                         match self.mode {
                             TransformMode::Step => {
@@ -4273,12 +4295,9 @@ impl VisitMut for StepTransform {
 
                                 if fn_name == "default" {
                                     // Anonymous default export: convert to const declaration
-                                    // Generate unique name to avoid collisions
-                                    let unique_name = self.generate_unique_name("defaultWorkflow");
-                                    
                                     // Track for const declaration and workflowId assignment
                                     self.default_workflow_exports.push((
-                                        unique_name.clone(),
+                                        const_name.clone(),
                                         Expr::Fn(fn_expr.clone()),
                                         fn_expr.function.span,
                                     ));
@@ -4287,7 +4306,7 @@ impl VisitMut for StepTransform {
                                     self.default_exports_to_replace.push((
                                         fn_name.clone(),
                                         Expr::Ident(Ident::new(
-                                            unique_name.into(),
+                                            const_name.into(),
                                             DUMMY_SP,
                                             SyntaxContext::empty(),
                                         )),
@@ -4297,7 +4316,7 @@ impl VisitMut for StepTransform {
                                     // export default async function name() { ... }
                                     // name.workflowId = "...";
                                     self.workflow_exports_to_expand.push((
-                                        fn_name.clone(),
+                                        const_name,
                                         Expr::Fn(fn_expr.clone()),
                                         fn_expr.function.span,
                                     ));
@@ -4306,16 +4325,12 @@ impl VisitMut for StepTransform {
                             TransformMode::Client => {
                                 // In client mode, replace workflow function body with error throw
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
-                                let actual_name = fn_expr
-                                    .ident
-                                    .as_ref()
-                                    .map(|i| i.sym.to_string())
-                                    .unwrap_or_else(|| "defaultWorkflow".to_string());
+                                
+                                let error_msg = format!(
+                                    "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
+                                    const_name, const_name
+                                );
                                 if let Some(body) = &mut fn_expr.function.body {
-                                    let error_msg = format!(
-                                        "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
-                                        actual_name, actual_name
-                                    );
                                     let error_expr = Expr::New(NewExpr {
                                         span: DUMMY_SP,
                                         ctxt: SyntaxContext::empty(),
@@ -4342,12 +4357,9 @@ impl VisitMut for StepTransform {
                                 
                                 // For anonymous functions, convert to const declaration so we can assign workflowId
                                 if fn_name == "default" {
-                                    // Generate unique name to avoid collisions
-                                    let unique_name = self.generate_unique_name("defaultWorkflow");
-                                    
                                     // Track for const declaration and workflowId assignment
                                     self.default_workflow_exports.push((
-                                        unique_name.clone(),
+                                        const_name.clone(),
                                         Expr::Fn(fn_expr.clone()),
                                         fn_expr.function.span,
                                     ));
@@ -4356,7 +4368,7 @@ impl VisitMut for StepTransform {
                                     self.default_exports_to_replace.push((
                                         fn_name.clone(),
                                         Expr::Ident(Ident::new(
-                                            unique_name.into(),
+                                            const_name.into(),
                                             DUMMY_SP,
                                             SyntaxContext::empty(),
                                         )),
@@ -4364,7 +4376,7 @@ impl VisitMut for StepTransform {
                                 } else {
                                     // Named function can be referenced directly
                                     self.workflow_functions_needing_id
-                                        .push((actual_name, fn_expr.function.span));
+                                        .push((const_name, fn_expr.function.span));
                                 }
                             }
                         }
@@ -4436,7 +4448,9 @@ impl VisitMut for StepTransform {
                 // Anonymous function: export default async function() { ... }
                 if self.should_transform_workflow_function(&fn_expr.function, true) {
                     if self.validate_async_function(&fn_expr.function, fn_expr.function.span) {
-                        self.workflow_function_names.insert("default".to_string());
+                        // Generate unique name first so we can use it in workflow_function_names
+                        let unique_name = self.generate_unique_name("defaultWorkflow");
+                        self.workflow_function_names.insert(unique_name.clone());
 
                         match self.mode {
                             TransformMode::Step => {
@@ -4445,9 +4459,6 @@ impl VisitMut for StepTransform {
                             TransformMode::Workflow => {
                                 // In workflow mode, convert to const declaration
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
-                                
-                                // Generate unique name to avoid collisions
-                                let unique_name = self.generate_unique_name("defaultWorkflow");
                                 
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((
@@ -4469,8 +4480,11 @@ impl VisitMut for StepTransform {
                             TransformMode::Client => {
                                 // In client mode, replace workflow function body with error throw
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
+                                let error_msg = format!(
+                                    "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
+                                    unique_name, unique_name
+                                );
                                 if let Some(body) = &mut fn_expr.function.body {
-                                    let error_msg = "You attempted to execute workflow defaultWorkflow function directly. To start a workflow, use start(defaultWorkflow) from workflow/api";
                                     let error_expr = Expr::New(NewExpr {
                                         span: DUMMY_SP,
                                         ctxt: SyntaxContext::empty(),
@@ -4494,8 +4508,23 @@ impl VisitMut for StepTransform {
                                         arg: Box::new(error_expr),
                                     })];
                                 }
-                                self.workflow_functions_needing_id
-                                    .push(("defaultWorkflow".to_string(), fn_expr.function.span));
+                                
+                                // Track for const declaration and workflowId assignment
+                                self.default_workflow_exports.push((
+                                    unique_name.clone(),
+                                    Expr::Fn(fn_expr.clone()),
+                                    fn_expr.function.span,
+                                ));
+                                
+                                // Track for replacement with identifier
+                                self.default_exports_to_replace.push((
+                                    "default".to_string(),
+                                    Expr::Ident(Ident::new(
+                                        unique_name.into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    )),
+                                ));
                             }
                         }
                     }
@@ -4516,8 +4545,13 @@ impl VisitMut for StepTransform {
                             directive: "use workflow",
                         });
                     } else {
+                        // For arrow function default exports, generate unique name and track mapping
+                        let unique_name = self.generate_unique_name("defaultWorkflow");
+                        self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
+                        
+                        // Always use "default" as the metadata key for default exports
                         self.workflow_function_names.insert("default".to_string());
-
+                        
                         match self.mode {
                             TransformMode::Step => {
                                 // Workflow functions are not processed in step mode
@@ -4525,9 +4559,6 @@ impl VisitMut for StepTransform {
                             TransformMode::Workflow => {
                                 // In workflow mode, convert to const declaration
                                 self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
-                                
-                                // Generate unique name to avoid collisions
-                                let unique_name = self.generate_unique_name("defaultWorkflow");
                                 
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((
@@ -4549,7 +4580,10 @@ impl VisitMut for StepTransform {
                             TransformMode::Client => {
                                 // In client mode, convert to const declaration so we can assign workflowId
                                 self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
-                                let error_msg = "You attempted to execute workflow defaultWorkflow function directly. To start a workflow, use start(defaultWorkflow) from workflow/api";
+                                let error_msg = format!(
+                                    "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
+                                    unique_name, unique_name
+                                );
                                 let error_expr = Expr::New(NewExpr {
                                     span: DUMMY_SP,
                                     ctxt: SyntaxContext::empty(),
@@ -4577,9 +4611,6 @@ impl VisitMut for StepTransform {
                                         arg: Box::new(error_expr),
                                     })],
                                 }));
-
-                                // Generate unique name to avoid collisions
-                                let unique_name = self.generate_unique_name("defaultWorkflow");
                                 
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((
