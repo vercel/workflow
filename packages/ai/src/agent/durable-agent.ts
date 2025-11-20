@@ -53,7 +53,7 @@ export interface DurableAgentStreamOptions {
   system?: string;
 
   /**
-   * The writable stream for handling message chunks. Use `getWritable<UIMessageChunk>()` to get the workflow's default output stream.
+   * The stream to which the agent writes message chunks. For example, use `getWritable<UIMessageChunk>()` to write to the workflow's default output stream.
    */
   writable: WritableStream<UIMessageChunk>;
 
