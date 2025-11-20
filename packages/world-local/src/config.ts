@@ -31,8 +31,9 @@ export const config = once<Config>(() => {
  * 3. PORT env var (set by dev servers like Nitro, Next.js, Vite)
  * 4. Default to 3000 (standard dev server port)
  *
- * Note: Port detection via pid-port is intentionally not used as it often detects
- * internal service ports (HMR, metrics) instead of the HTTP server port.
+ * Note: Port detection uses pid-port as a candidate source but validates each candidate
+ * with HTTP requests to ensure only actual HTTP server ports are returned, excluding
+ * internal service ports (HMR, metrics) that pid-port alone would detect.
  */
 export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   if (config.baseUrl) {
