@@ -17,18 +17,23 @@ export async function getPort(): Promise<number | undefined> {
   switch (platform) {
     case 'linux':
     case 'darwin': {
-      const result = await execAsync(
-        `lsof -i -P -n | grep -w ${pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://' | head -n 1`
-      );
-      port = parseInt(result.stdout.trim(), 10);
+      try {
+        const result = await execAsync(
+          `lsof -i -P -n | grep -w ${pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://' | head -n 1`
+        );
+        port = parseInt(result.stdout.trim(), 10);
+      } catch {
+        // Port detection may fail in some environments (e.g., serverless)
+        return undefined;
+      }
       break;
     }
     case 'win32':
       throw new Error('Not implemented');
   }
 
-  if (!port) {
-    throw new Error('Failed to detect port');
+  if (!port || Number.isNaN(port)) {
+    return undefined;
   }
 
   return port;
