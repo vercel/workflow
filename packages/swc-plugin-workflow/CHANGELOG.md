@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- e5c5236: Fix default export workflow function transformation in workflow mode
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

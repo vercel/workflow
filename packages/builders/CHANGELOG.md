@@ -1,5 +1,12 @@
 # @workflow/builders
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- Updated dependencies [e5c5236]
+  - @workflow/swc-plugin@4.0.1-beta.7
+
 ## 4.0.1-beta.13
 
 ### Patch Changes
