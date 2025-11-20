@@ -23,4 +23,4 @@ export function regularFunction() {
 }
 myWorkflow.workflowId = "workflow//input.js//myWorkflow";
 arrowWorkflow.workflowId = "workflow//input.js//arrowWorkflow";
-$$default.workflowId = "workflow//input.js//$$default";
+defaultWorkflow.workflowId = "workflow//input.js//defaultWorkflow";

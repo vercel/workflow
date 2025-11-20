@@ -176,8 +176,6 @@ pub struct StepTransform {
     workflow_functions_needing_id: Vec<(String, swc_core::common::Span)>,
     // Track step function exports that need to be converted to const declarations in workflow mode
     step_exports_to_convert: Vec<(String, String, swc_core::common::Span)>, // (fn_name, step_id, span)
-    // Track default exports that need to be replaced with expressions
-    default_exports_to_replace: Vec<(String, Expr)>, // (export_name, replacement_expr)
     // Track object property step functions for hoisting in step mode
     // (parent_var_name, prop_name, arrow_expr, span)
     object_property_step_functions: Vec<(String, String, ArrowExpr, swc_core::common::Span)>,
@@ -452,7 +450,6 @@ impl StepTransform {
             workflow_exports_to_expand: Vec::new(),
             workflow_functions_needing_id: Vec::new(),
             step_exports_to_convert: Vec::new(),
-            default_exports_to_replace: Vec::new(),
             object_property_step_functions: Vec::new(),
             nested_step_functions: Vec::new(),
             anonymous_fn_counter: 0,
@@ -2781,30 +2778,6 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // Replace default exports that need to be converted
-        let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
-        for (export_name, replacement_expr) in default_exports {
-            for item in items.iter_mut() {
-                if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export_default)) = item
-                {
-                    if let DefaultDecl::Fn(fn_expr) = &export_default.decl {
-                        if let Some(ident) = &fn_expr.ident {
-                            if ident.sym == export_name {
-                                // Replace with export default expression
-                                *item = ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
-                                    ExportDefaultExpr {
-                                        span: export_default.span,
-                                        expr: Box::new(replacement_expr.clone()),
-                                    },
-                                ));
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // Clear the workflow_functions_needing_id since we've already processed them
         self.workflow_functions_needing_id.clear();
 
@@ -4065,14 +4038,20 @@ impl VisitMut for StepTransform {
                                 // In workflow mode, just remove the directive
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
 
-                                // We'll need to handle the expansion differently for default exports
-                                // For now, just track it
-                                let actual_name = format!(
-                                    "$$default{}",
-                                    if fn_name == "default" { "Workflow" } else { "" }
-                                );
+                                // For named default exports, we can simply add workflowId after:
+                                // export default async function name() { ... }
+                                // name.workflowId = "...";
+                                
+                                // Use the actual function name if available, or "defaultWorkflow" for anonymous
+                                let workflow_name = if fn_name == "default" {
+                                    "defaultWorkflow".to_string()
+                                } else {
+                                    fn_name.clone()
+                                };
+                                
+                                // Track for workflowId assignment
                                 self.workflow_exports_to_expand.push((
-                                    actual_name,
+                                    workflow_name,
                                     Expr::Fn(fn_expr.clone()),
                                     fn_expr.function.span,
                                 ));
