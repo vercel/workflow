@@ -208,7 +208,7 @@ async function executeTool(
         },
       };
     }
-    // For other errors, re-throw to allow workflow retry mechanisms to handle them
+    // This should technically never happen, since any error that's not FatalError would be caught in the step boundary and re-try the step
     throw error;
   }
 }
