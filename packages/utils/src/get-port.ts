@@ -29,6 +29,7 @@ export async function getPort(): Promise<number | undefined> {
         throw new Error('Not implemented');
     }
   } catch {
+    // Unavailable (e.g. Serverless environments)
     return undefined;
   }
 
