@@ -1,4 +1,4 @@
-// import { pidToPorts } from "pid-port";
+import { pidToPorts } from 'pid-port';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -13,6 +13,8 @@ export async function getPort(): Promise<number | undefined> {
   const pid = process.pid;
   const platform = process.platform;
 
+  console.log(await pidToPorts(pid));
+
   let port: number | undefined;
   switch (platform) {
     case 'linux':
@@ -22,6 +24,7 @@ export async function getPort(): Promise<number | undefined> {
           `lsof -i -P -n | grep -w ${pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://' | head -n 1`
         );
         port = parseInt(result.stdout.trim(), 10);
+        console.log(port);
       } catch {
         // Port detection may fail in some environments (e.g., serverless)
         return undefined;
