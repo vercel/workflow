@@ -469,6 +469,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           runId,
           hookId: data.hookId,
           token: data.token,
+          metadata: data.metadata as any,
           ownerId: '', // TODO: get from context
           projectId: '', // TODO: get from context
           environment: '', // TODO: get from context
