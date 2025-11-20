@@ -193,7 +193,7 @@ export function createStreamer(basedir: string): Streamer {
               break;
             }
             if (chunk.chunk.byteLength) {
-              controller.enqueue(chunk.chunk);
+              controller.enqueue(new Uint8Array(chunk.chunk));
             }
           }
 
