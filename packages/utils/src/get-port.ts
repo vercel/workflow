@@ -20,17 +20,17 @@ export async function getPort(): Promise<number | undefined> {
       case 'linux':
       case 'darwin': {
         const result = await execAsync(
-          `lsof -i -P -n | grep -w ${pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://' | head -n 1`
+          `lsof -i -P -n | grep -w ${pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://'`
         );
         port = parseInt(result.stdout.trim(), 10);
         break;
       }
       case 'win32': {
-        const result = await execAsync('netstat -ano');
+        const result = await execAsync(`netstat -ano`);
         const lines = result.stdout.trim().split('\n');
+        const ports: number[] = [];
 
         for (const line of lines) {
-          // Windows netstat format: TCP    0.0.0.0:8080    0.0.0.0:0    LISTENING    1234
           const parts = line.trim().split(/\s+/);
 
           if (
@@ -38,16 +38,18 @@ export async function getPort(): Promise<number | undefined> {
             parts[3] === 'LISTENING' &&
             parts[4] === pid.toString()
           ) {
-            // Extract port from the local address (e.g., "0.0.0.0:8080")
             const localAddress = parts[1];
             const portMatch = localAddress.match(/:(\d+)$/);
 
             if (portMatch && portMatch[1]) {
-              port = parseInt(portMatch[1], 10);
-              break;
+              ports.push(parseInt(portMatch[1], 10));
             }
           }
         }
+
+        // Return the lowest port number (usually created first)
+        ports.sort((a, b) => a - b);
+        port = ports[0];
         break;
       }
     }
