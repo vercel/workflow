@@ -12,7 +12,7 @@ export async function getPort(): Promise<number | undefined> {
   const pid = process.pid;
   const platform = process.platform;
 
-  let port: number | undefined;
+  let ports: number[] = [];
 
   try {
     // Use our fallback
@@ -22,13 +22,17 @@ export async function getPort(): Promise<number | undefined> {
         const result = await execAsync(
           `lsof -i -P -n | grep -w ${pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://'`
         );
-        port = parseInt(result.stdout.trim(), 10);
+        ports = result.stdout
+          .trim()
+          .split('\n')
+          .filter((line) => line.length > 0)
+          .map((port) => parseInt(port, 10))
+          .filter((port) => !Number.isNaN(port));
         break;
       }
       case 'win32': {
         const result = await execAsync(`netstat -ano`);
         const lines = result.stdout.trim().split('\n');
-        const ports: number[] = [];
 
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
@@ -46,10 +50,6 @@ export async function getPort(): Promise<number | undefined> {
             }
           }
         }
-
-        // Return the lowest port number (usually created first)
-        ports.sort((a, b) => a - b);
-        port = ports[0];
         break;
       }
     }
@@ -58,5 +58,12 @@ export async function getPort(): Promise<number | undefined> {
     return undefined;
   }
 
-  return Number.isNaN(port) ? undefined : port;
+  // Return the lowest port number (usually first)
+  ports.sort((a, b) => a - b);
+
+  if (ports.length === 0 || Number.isNaN(ports[0])) {
+    return undefined;
+  }
+
+  return ports[0];
 }
