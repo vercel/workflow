@@ -2917,69 +2917,95 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // In workflow mode, add const declarations for default workflow exports
+        // In workflow mode, handle default workflow exports
+        // We need to: 1) find the export default position, 2) replace it with const declaration,
+        // 3) add workflowId assignment, 4) add export default at the end
         if self.mode == TransformMode::Workflow && !self.default_workflow_exports.is_empty() {
-            // Process default workflow exports to add const declarations and workflowId property
             let default_workflows: Vec<_> = self.default_workflow_exports.drain(..).collect();
+            let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
 
-            for (const_name, fn_expr, span) in default_workflows {
-                // Add const declaration: const defaultWorkflow = async function() { ... };
-                items.push(ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
-                    span: DUMMY_SP,
-                    ctxt: SyntaxContext::empty(),
-                    kind: VarDeclKind::Const,
-                    declare: false,
-                    decls: vec![VarDeclarator {
-                        span: DUMMY_SP,
-                        name: Pat::Ident(BindingIdent {
-                            id: Ident::new(const_name.clone().into(), DUMMY_SP, SyntaxContext::empty()),
-                            type_ann: None,
-                        }),
-                        init: Some(Box::new(fn_expr)),
-                        definite: false,
-                    }],
-                })))));
-                
-                // Add workflowId assignment after the const declaration
-                items.push(ModuleItem::Stmt(
-                    self.create_workflow_id_assignment(&const_name, span),
-                ));
-            }
-        }
-
-        // Replace default exports that need to be converted
-        let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
-        for (export_name, replacement_expr) in default_exports {
-            for item in items.iter_mut() {
+            // Find and remove the original export default, note its position
+            let mut export_position = None;
+            for (i, item) in items.iter().enumerate() {
                 match item {
-                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(export_default)) => {
-                        // Check if this is the default export we want to replace
-                        // For anonymous arrow functions, we're replacing the expression with an identifier
-                        if export_name == "default" {
-                            // Replace with the new expression (identifier)
-                            *item = ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
-                                ExportDefaultExpr {
-                                    span: export_default.span,
-                                    expr: Box::new(replacement_expr.clone()),
-                                },
-                            ));
-                            break;
-                        }
-                    }
-                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export_default)) => {
-                        // For anonymous functions in default exports
-                        if export_name == "default" {
-                            // Replace with export default expression (identifier)
-                            *item = ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
-                                ExportDefaultExpr {
-                                    span: export_default.span,
-                                    expr: Box::new(replacement_expr.clone()),
-                                },
-                            ));
-                            break;
-                        }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_)) |
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(_)) => {
+                        export_position = Some(i);
+                        break;
                     }
                     _ => {}
+                }
+            }
+
+            if let Some(pos) = export_position {
+                // Remove the original export default
+                items.remove(pos);
+
+                // Insert in correct order: const, workflowId, export default
+                for (const_name, fn_expr, span) in default_workflows {
+                    // Insert const declaration at the original export position
+                    items.insert(pos, ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                        span: DUMMY_SP,
+                        ctxt: SyntaxContext::empty(),
+                        kind: VarDeclKind::Const,
+                        declare: false,
+                        decls: vec![VarDeclarator {
+                            span: DUMMY_SP,
+                            name: Pat::Ident(BindingIdent {
+                                id: Ident::new(const_name.clone().into(), DUMMY_SP, SyntaxContext::empty()),
+                                type_ann: None,
+                            }),
+                            init: Some(Box::new(fn_expr)),
+                            definite: false,
+                        }],
+                    })))));
+                    
+                    // Insert workflowId assignment after const
+                    items.insert(pos + 1, ModuleItem::Stmt(
+                        self.create_workflow_id_assignment(&const_name, span),
+                    ));
+
+                    // Insert export default at the end (after workflowId)
+                    for (_export_name, replacement_expr) in &default_exports {
+                        items.insert(pos + 2, ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
+                            ExportDefaultExpr {
+                                span: DUMMY_SP,
+                                expr: Box::new(replacement_expr.clone()),
+                            },
+                        )));
+                    }
+                }
+            }
+        } else {
+            // Handle cases where default exports need to be converted but no const declaration
+            let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
+            for (export_name, replacement_expr) in default_exports {
+                for item in items.iter_mut() {
+                    match item {
+                        ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(export_default)) => {
+                            if export_name == "default" {
+                                *item = ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
+                                    ExportDefaultExpr {
+                                        span: export_default.span,
+                                        expr: Box::new(replacement_expr.clone()),
+                                    },
+                                ));
+                                break;
+                            }
+                        }
+                        ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export_default)) => {
+                            if export_name == "default" {
+                                *item = ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
+                                    ExportDefaultExpr {
+                                        span: export_default.span,
+                                        expr: Box::new(replacement_expr.clone()),
+                                    },
+                                ));
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
