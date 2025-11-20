@@ -210,6 +210,8 @@ async function multiTurnAgentWorkflow() {
   const writable = getWritable<UIMessageChunk>();
 
   // First user message
+  //   - Result is streamed to the provided `writable` stream
+  //   - Message history is returned in `messages` for LLM context
   let { messages } = await agent.stream({
     messages: [
       { role: 'user', content: 'Find me some laptops' }
