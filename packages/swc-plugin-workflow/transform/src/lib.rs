@@ -2843,9 +2843,13 @@ impl VisitMut for StepTransform {
                     }
                     ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default_decl)) => {
                         if let DefaultDecl::Fn(fn_expr) = &default_decl.decl {
-                            if let Some(ident) = &fn_expr.ident {
-                                let fn_name = ident.sym.to_string();
-                                if self.workflow_function_names.contains(&fn_name) {
+                            // Check if this is a workflow function by checking for "default" key
+                            if self.workflow_function_names.contains("default") {
+                                // Only add workflowId for named default exports
+                                // Anonymous ones are handled by default_workflow_exports
+                                if let Some(ident) = &fn_expr.ident {
+                                    // Named default export: use the function name
+                                    let fn_name = ident.sym.to_string();
                                     items_to_insert.push((
                                         i + 1,
                                         ModuleItem::Stmt(self.create_workflow_id_assignment(
@@ -2854,18 +2858,7 @@ impl VisitMut for StepTransform {
                                         )),
                                     ));
                                 }
-                            } else {
-                                // Default export without name, use "defaultWorkflow"
-                                let fn_name = "defaultWorkflow";
-                                if self.workflow_function_names.contains(fn_name) {
-                                    items_to_insert.push((
-                                        i + 1,
-                                        ModuleItem::Stmt(self.create_workflow_id_assignment(
-                                            fn_name,
-                                            fn_expr.function.span,
-                                        )),
-                                    ));
-                                }
+                                // Anonymous default exports will have workflowId added by default_workflow_exports processing
                             }
                         }
                     }
@@ -4368,13 +4361,14 @@ impl VisitMut for StepTransform {
                                     self.default_exports_to_replace.push((
                                         fn_name.clone(),
                                         Expr::Ident(Ident::new(
-                                            const_name.into(),
+                                            const_name.clone().into(),
                                             DUMMY_SP,
                                             SyntaxContext::empty(),
                                         )),
                                     ));
+                                    // workflowId assignment is handled by default_workflow_exports processing
                                 } else {
-                                    // Named function can be referenced directly
+                                    // Named function can be referenced directly, just add workflowId
                                     self.workflow_functions_needing_id
                                         .push((const_name, fn_expr.function.span));
                                 }

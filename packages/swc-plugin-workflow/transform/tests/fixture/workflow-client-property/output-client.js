@@ -11,6 +11,7 @@ arrowWorkflow.workflowId = "workflow//input.js//arrowWorkflow";
 export default async function defaultWorkflow() {
     throw new Error("You attempted to execute workflow defaultWorkflow function directly. To start a workflow, use start(defaultWorkflow) from workflow/api");
 }
+defaultWorkflow.workflowId = "workflow//input.js//defaultWorkflow";
 // Non-export workflow function
 async function internalWorkflow() {
     throw new Error("You attempted to execute workflow internalWorkflow function directly. To start a workflow, use start(internalWorkflow) from workflow/api");
