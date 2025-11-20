@@ -11,6 +11,7 @@ import {
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
+import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
 
 /**
@@ -176,19 +177,38 @@ async function executeTool(
       `Invalid input for tool "${toolCall.toolName}": ${input?.error?.message}`
     );
   }
-  const toolResult = await tool.execute(input.value, {
-    toolCallId: toolCall.toolCallId,
-    // TODO: pass the proper messages to the tool
-    messages: [],
-  });
 
-  return {
-    type: 'tool-result',
-    toolCallId: toolCall.toolCallId,
-    toolName: toolCall.toolName,
-    output: {
-      type: 'text',
-      value: JSON.stringify(toolResult) ?? '',
-    },
-  };
+  try {
+    const toolResult = await tool.execute(input.value, {
+      toolCallId: toolCall.toolCallId,
+      // TODO: pass the proper messages to the tool
+      messages: [],
+    });
+
+    return {
+      type: 'tool-result',
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      output: {
+        type: 'text',
+        value: JSON.stringify(toolResult) ?? '',
+      },
+    };
+  } catch (error) {
+    // If it's a FatalError, convert it to a tool error result that gets sent back to the LLM
+    // This mimics AI SDK behavior where tool call failures are propagated back to the model
+    if (FatalError.is(error)) {
+      return {
+        type: 'tool-result',
+        toolCallId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+        output: {
+          type: 'error-text',
+          value: (error as FatalError).message,
+        },
+      };
+    }
+    // For other errors, re-throw to allow workflow retry mechanisms to handle them
+    throw error;
+  }
 }
