@@ -1,16 +1,16 @@
-import { waitUntil } from '@vercel/functions';
-import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
-import type { Hook } from '@workflow/world';
-import type { WorkflowInvokePayload } from '../schemas.js';
+import { waitUntil } from "@vercel/functions";
+import { ERROR_SLUGS, WorkflowRuntimeError } from "@workflow/errors";
+import type { Hook } from "@workflow/world";
+import type { WorkflowInvokePayload } from "../schemas.js";
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
-} from '../serialization.js';
-import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
-import * as Attribute from '../telemetry/semantic-conventions.js';
-import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
-import { waitedUntil } from '../util.js';
-import { getWorld } from './world.js';
+} from "../serialization.js";
+import { WEBHOOK_RESPONSE_WRITABLE } from "../symbols.js";
+import * as Attribute from "../telemetry/semantic-conventions.js";
+import { getSpanContextForTraceCarrier, trace } from "../telemetry.js";
+import { waitedUntil } from "../util.js";
+import { getWorld } from "./world.js";
 
 /**
  * Get the hook by token to find the associated workflow run,
@@ -22,7 +22,7 @@ import { getWorld } from './world.js';
 export async function getHookByToken(token: string): Promise<Hook> {
   const world = getWorld();
   const hook = await world.hooks.getByToken(token);
-  if (typeof hook.metadata !== 'undefined') {
+  if (typeof hook.metadata !== "undefined") {
     hook.metadata = hydrateStepArguments(hook.metadata as any, [], hook.runId);
   }
   return hook;
@@ -59,10 +59,10 @@ export async function getHookByToken(token: string): Promise<Hook> {
  */
 export async function resumeHook<T = any>(
   token: string,
-  payload: T
+  payload: T,
 ): Promise<Hook> {
   return await waitedUntil(() => {
-    return trace('HOOK.resume', async (span) => {
+    return trace("HOOK.resume", async (span) => {
       const world = getWorld();
 
       try {
@@ -79,18 +79,18 @@ export async function resumeHook<T = any>(
         const dehydratedPayload = dehydrateStepReturnValue(
           payload,
           ops,
-          hook.runId
+          hook.runId,
         );
         // NOTE: Workaround instead of injecting catching undefined unhandled rejections in webhook bundle
         waitUntil(
           Promise.all(ops).catch((err) => {
             if (err !== undefined) throw err;
-          })
+          }),
         );
 
         // Create a hook_received event with the payload
         await world.events.create(hook.runId, {
-          eventType: 'hook_received',
+          eventType: "hook_received",
           correlationId: hook.hookId,
           eventData: {
             payload: dehydratedPayload,
@@ -124,7 +124,7 @@ export async function resumeHook<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             deploymentId: workflowRun.deploymentId,
-          }
+          },
         );
 
         return hook;
@@ -176,7 +176,7 @@ export async function resumeHook<T = any>(
  */
 export async function resumeWebhook(
   token: string,
-  request: Request
+  request: Request,
 ): Promise<Response> {
   const hook = await getHookByToken(token);
 
@@ -184,10 +184,10 @@ export async function resumeWebhook(
   let responseReadable: ReadableStream<Response> | undefined;
   if (
     hook.metadata &&
-    typeof hook.metadata === 'object' &&
-    'respondWith' in hook.metadata
+    typeof hook.metadata === "object" &&
+    "respondWith" in hook.metadata
   ) {
-    if (hook.metadata.respondWith === 'manual') {
+    if (hook.metadata.respondWith === "manual") {
       const { readable, writable } = new TransformStream<Response, Response>();
       responseReadable = readable;
 
@@ -199,7 +199,7 @@ export async function resumeWebhook(
     } else {
       throw new WorkflowRuntimeError(
         `Invalid \`respondWith\` value: ${hook.metadata.respondWith}`,
-        { slug: ERROR_SLUGS.WEBHOOK_INVALID_RESPOND_WITH_VALUE }
+        { slug: ERROR_SLUGS.WEBHOOK_INVALID_RESPOND_WITH_VALUE },
       );
     }
   } else {
@@ -221,7 +221,7 @@ export async function resumeWebhook(
   }
 
   if (!response) {
-    throw new WorkflowRuntimeError('Workflow run did not send a response', {
+    throw new WorkflowRuntimeError("Workflow run did not send a response", {
       slug: ERROR_SLUGS.WEBHOOK_RESPONSE_NOT_SENT,
     });
   }
