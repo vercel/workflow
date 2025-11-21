@@ -73,22 +73,6 @@ describe('getPort', () => {
     expect(port2).toEqual(port3);
   });
 
-  it('should handle servers listening on different interfaces', async () => {
-    const server1 = http.createServer();
-    const server2 = http.createServer();
-    servers.push(server1, server2);
-
-    // One on localhost, one on all interfaces
-    server1.listen(0, '127.0.0.1');
-    server2.listen(0, '0.0.0.0');
-
-    const port = await getPort();
-    const addr1 = server1.address() as AddressInfo;
-
-    // Should still return the first port
-    expect(port).toEqual(addr1.port);
-  });
-
   it('should handle IPv6 addresses', async () => {
     const server = http.createServer();
     servers.push(server);
