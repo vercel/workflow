@@ -86,7 +86,15 @@ export class LocalBuilder extends BaseBuilder {
     for (const file of DEBUG_FILES) {
       const filePath = join(workflowGeneratedDir, file);
       const prefixedFilePath = join(workflowGeneratedDir, `_${file}`);
-      await rename(filePath, prefixedFilePath);
+      try {
+        await rename(filePath, prefixedFilePath);
+      } catch (error: unknown) {
+        // Silently ignore if debug file doesn't exist
+        // (writeDebugFile may have silently failed due to filesystem errors)
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
     }
   }
 
