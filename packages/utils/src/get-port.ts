@@ -62,5 +62,5 @@ export async function getPort(): Promise<number | undefined> {
     return undefined;
   }
 
-  return port || undefined;
+  return Number.isNaN(port) ? undefined : port;
 }
