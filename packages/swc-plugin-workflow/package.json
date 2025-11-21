@@ -20,7 +20,7 @@
     ".": "./swc_plugin_workflow.wasm"
   },
   "peerDependencies": {
-    "@swc/core": "1.11.24"
+    "@swc/core": "catalog:"
   },
   "keywords": [
     "swc-plugin"

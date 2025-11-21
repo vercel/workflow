@@ -39,7 +39,7 @@
     "@workflow/tsconfig": "workspace:*"
   },
   "dependencies": {
-    "@swc/core": "1.11.24",
+    "@swc/core": "catalog:",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/core": "workspace:*",

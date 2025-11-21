@@ -9,6 +9,9 @@ catalogs:
     '@biomejs/biome':
       specifier: ^2.2.7
       version: 2.3.3
+    '@swc/core':
+      specifier: 1.11.24
+      version: 1.11.24
     '@types/node':
       specifier: 22.19.0
       version: 22.19.0
@@ -317,7 +320,7 @@ importers:
   packages/builders:
     dependencies:
       '@swc/core':
-        specifier: 1.11.24
+        specifier: 'catalog:'
         version: 1.11.24
       '@workflow/core':
         specifier: workspace:*
@@ -366,7 +369,7 @@ importers:
         specifier: 6.2.31
         version: 6.2.31(typescript@5.9.3)
       '@swc/core':
-        specifier: 1.11.24
+        specifier: 'catalog:'
         version: 1.11.24
       '@workflow/builders':
         specifier: workspace:*
@@ -549,7 +552,7 @@ importers:
   packages/next:
     dependencies:
       '@swc/core':
-        specifier: 1.11.24
+        specifier: 'catalog:'
         version: 1.11.24
       '@workflow/builders':
         specifier: workspace:*
@@ -586,7 +589,7 @@ importers:
   packages/nitro:
     dependencies:
       '@swc/core':
-        specifier: 1.11.24
+        specifier: 'catalog:'
         version: 1.11.24
       '@workflow/builders':
         specifier: workspace:*
@@ -648,7 +651,7 @@ importers:
   packages/rollup:
     dependencies:
       '@swc/core':
-        specifier: 1.11.24
+        specifier: 'catalog:'
         version: 1.11.24
       '@workflow/swc-plugin':
         specifier: workspace:*
@@ -670,7 +673,7 @@ importers:
   packages/sveltekit:
     dependencies:
       '@swc/core':
-        specifier: 1.11.24
+        specifier: 'catalog:'
         version: 1.11.24
       '@workflow/builders':
         specifier: workspace:*
@@ -707,7 +710,7 @@ importers:
   packages/swc-plugin-workflow:
     dependencies:
       '@swc/core':
-        specifier: 1.11.24
+        specifier: 'catalog:'
         version: 1.11.24
 
   packages/tsconfig: {}
@@ -1501,7 +1504,7 @@ importers:
         specifier: ^6.1.1
         version: 6.1.1(@sveltejs/kit@2.48.4(@opentelemetry/api@1.9.0)(@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(svelte@5.43.3)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.1)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(rollup@4.53.2)
       '@swc/core':
-        specifier: 1.11.24
+        specifier: 'catalog:'
         version: 1.11.24
       '@vercel/otel':
         specifier: ^1.13.0

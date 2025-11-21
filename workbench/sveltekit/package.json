@@ -31,7 +31,7 @@
     "@opentelemetry/api": "^1.9.0",
     "@sveltejs/adapter-node": "^5.4.0",
     "@sveltejs/adapter-vercel": "^6.1.1",
-    "@swc/core": "1.11.24",
+    "@swc/core": "catalog:",
     "@vercel/otel": "^1.13.0",
     "@workflow/ai": "workspace:*",
     "ai": "catalog:",
