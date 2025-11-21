@@ -1,3 +1,3 @@
-# workflow/nitro
+# @workflow/rollup
 
-The docs have moved! Refer to them [here](https://useworkflow.dev/)
+Rollup plugin for the Workflow DevKit.
