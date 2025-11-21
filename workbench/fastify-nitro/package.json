@@ -11,7 +11,6 @@
     "start": "node .output/server/index.mjs"
   },
   "dependencies": {
-    "@workflow/fastify": "workspace:*",
     "fastify": "^5.6.2",
     "nitro": "catalog:",
     "srvx": "^0.9.6",
