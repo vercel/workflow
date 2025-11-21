@@ -43,7 +43,9 @@ export async function getPort(): Promise<number | undefined> {
         const awkResult = await execa(
           'awk',
           [
-            '/LISTENING/ && /${pid}/ {split($2,a,\":\"); print a[length(a)]; exit}',
+            '-v',
+            `pid=${pid}`,
+            '/LISTENING/ && $NF == pid {split($2,a,\":\"); print a[length(a)]; exit}',
           ],
           {
             input: lsofResult.stdout,
