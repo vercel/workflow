@@ -10,7 +10,6 @@ export async function getPort(): Promise<number | undefined> {
   let port: number | undefined;
 
   try {
-    // Use our fallback
     switch (platform) {
       case 'linux':
       case 'darwin': {
@@ -45,7 +44,7 @@ export async function getPort(): Promise<number | undefined> {
           [
             '-v',
             `pid=${pid}`,
-            '/LISTENING/ && $NF == pid {split($2,a,\":\"); print a[length(a)]; exit}',
+            '/LISTENING/ && $NF == pid {split($2,a,":"); print a[length(a)]; exit}',
           ],
           {
             input: lsofResult.stdout,
