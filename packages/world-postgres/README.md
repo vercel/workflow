@@ -37,7 +37,7 @@ WORKFLOW_POSTGRES_APP_URL="http://localhost:3000"
 You can also create a PostgreSQL world directly in your code:
 
 ```typescript
-import { createWorld, createPgBossQueue } from "@workflow/world-postgres";
+import { createWorld, createPgBossHttpProxyQueue } from "@workflow/world-postgres";
 
 const world = createWorld({
   connectionString: "postgres://username:password@localhost:5432/database",
