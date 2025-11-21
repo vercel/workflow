@@ -34,6 +34,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "nitro": "catalog:",
     "vite": "7.1.12"
   }
 }
