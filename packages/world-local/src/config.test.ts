@@ -46,10 +46,21 @@ describe('resolveBaseUrl', () => {
       expect(getPort).not.toHaveBeenCalled();
     });
 
-    it('should auto-detect port when neither baseUrl nor port is provided', async () => {
+    it('should use PORT env var when neither baseUrl nor port is provided', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(5173);
       process.env.PORT = '8080';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:8080');
+      expect(getPort).not.toHaveBeenCalled();
+    });
+
+    it('should use auto-detected port when PORT env var is not set', async () => {
+      const { getPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getPort).mockResolvedValue(5173);
+      delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
 
@@ -57,25 +68,14 @@ describe('resolveBaseUrl', () => {
       expect(getPort).toHaveBeenCalled();
     });
 
-    it('should use PORT env var when auto-detection returns undefined', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(undefined);
-      process.env.PORT = '8080';
-
-      const result = await resolveBaseUrl({});
-
-      expect(result).toBe('http://localhost:8080');
-      expect(getPort).toHaveBeenCalled();
-    });
-
-    it('should fallback to 3000 when all detection methods fail', async () => {
+    it('should return undefined when all detection methods fail', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
 
-      expect(result).toBe('http://localhost:3000');
+      expect(result).toBeUndefined();
       expect(getPort).toHaveBeenCalled();
     });
   });
@@ -155,6 +155,7 @@ describe('resolveBaseUrl', () => {
     it('should use auto-detected port for SvelteKit default (5173)', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(5173);
+      delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
 
@@ -164,6 +165,7 @@ describe('resolveBaseUrl', () => {
     it('should use auto-detected port for Vite default (5173)', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(5173);
+      delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
 
@@ -173,6 +175,7 @@ describe('resolveBaseUrl', () => {
     it('should use auto-detected port for Next.js default (3000)', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(3000);
+      delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
 
@@ -186,7 +189,7 @@ describe('resolveBaseUrl', () => {
 
       const result = await resolveBaseUrl({});
 
-      expect(result).toBe('http://localhost:3000');
+      expect(result).toBeUndefined();
     });
   });
 
@@ -234,7 +237,7 @@ describe('resolveBaseUrl', () => {
 
       const result = await resolveBaseUrl({});
 
-      expect(result).toBe('http://localhost:3000');
+      expect(result).toBeUndefined();
     });
 
     it('should handle undefined config', async () => {
@@ -244,23 +247,26 @@ describe('resolveBaseUrl', () => {
 
       const result = await resolveBaseUrl({});
 
-      expect(result).toBe('http://localhost:3000');
+      expect(result).toBeUndefined();
     });
 
-    it('should handle config with only dataDir', async () => {
+    it('should handle config with only dataDir and use PORT env var', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(5173);
+      process.env.PORT = '4000';
 
       const result = await resolveBaseUrl({
         dataDir: './custom-data',
       });
 
-      expect(result).toBe('http://localhost:5173');
+      expect(result).toBe('http://localhost:4000');
+      expect(getPort).not.toHaveBeenCalled();
     });
 
-    it('should skip null port and use auto-detection', async () => {
+    it('should skip null port and use PORT env var or auto-detection', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(5173);
+      delete process.env.PORT;
 
       const result = await resolveBaseUrl({
         port: null as any,
