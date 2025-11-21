@@ -5,7 +5,7 @@ import type { RollupConfig } from 'nitro/types';
 
 type RollupPlugin = Exclude<
   RollupConfig['plugins'],
-  undefined | null | false | Promise<unknown> | Array<unknown>
+  undefined | void | null | false | Promise<unknown> | Array<unknown>
 >;
 
 export function workflowTransformPlugin(): RollupPlugin {
