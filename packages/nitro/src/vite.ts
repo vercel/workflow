@@ -75,11 +75,20 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           content = await read();
         } catch {
           // File might have been deleted - trigger rebuild to update generated routes
-          console.log('Workflow file deleted, rebuilding...');
+          const deleteStartTime = Date.now();
+          console.log(
+            '[workflow:nitro:vite] Workflow file deleted, starting rebuild...'
+          );
           if (builder) {
             await builder.build();
+            console.log(
+              `[workflow:nitro:vite] Build completed in ${Date.now() - deleteStartTime}ms`
+            );
           }
           // NOTE: Might be too aggressive
+          console.log(
+            '[workflow:nitro:vite] Sending full-reload signal after file deletion'
+          );
           server.ws.send({
             type: 'full-reload',
             path: '*',
@@ -99,10 +108,21 @@ export function workflow(options?: ModuleOptions): Plugin[] {
 
         // Trigger full reload - this will cause Nitro's dev:reload hook to fire,
         // which will rebuild workflows and update routes
-        console.log('Workflow file changed, rebuilding...');
+        const startTime = Date.now();
+        console.log(
+          '[workflow:nitro:vite] Workflow file changed, starting rebuild...'
+        );
         if (builder) {
           await builder.build();
+          console.log(
+            `[workflow:nitro:vite] Build completed in ${Date.now() - startTime}ms`
+          );
+        } else {
+          console.warn('[workflow:nitro:vite] WARNING: No builder available!');
         }
+        console.log(
+          '[workflow:nitro:vite] Sending full-reload signal to Nitro dev server'
+        );
         server.ws.send({
           type: 'full-reload',
           path: '*',
