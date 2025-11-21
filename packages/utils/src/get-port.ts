@@ -1,4 +1,4 @@
-import { exec } from 'node:child_process';
+import { exec, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
@@ -17,17 +17,44 @@ export async function getPort(): Promise<number | undefined> {
     switch (platform) {
       case 'linux':
       case 'darwin': {
-        // Grab the first port entry reported
-        const result = await execAsync(
-          `lsof -a -i -P -n -p ${pid} | awk '/LISTEN/ {split($9,a,":"); print a[length(a)]; exit}'`
+        const lsofResult = execFileSync(
+          'lsof',
+          ['-a', '-i', '-P', '-n', '-p', pid.toString()],
+          {
+            encoding: 'utf-8',
+          }
         );
+        const awkResult = execFileSync(
+          'awk',
+          ['/LISTEN/ {split($9,a,":"); print a[length(a)]; exit}'],
+          {
+            encoding: 'utf-8',
+            input: lsofResult,
+          }
+        );
+        const result = { stdout: awkResult };
         port = parseInt(result.stdout.trim(), 10);
         break;
       }
       case 'win32': {
-        const result = await execAsync(
-          `netstat -ano | awk "/LISTENING/ && /${pid}/ {split($2,a,\":\"); print a[length(a)]; exit}"`
+        const lsofResult = execFileSync(
+          'netstat',
+          ['-a', '-n', '-o', pid.toString()],
+          {
+            encoding: 'utf-8',
+          }
         );
+        const awkResult = execFileSync(
+          'awk',
+          [
+            '/LISTENING/ && /${pid}/ {split($2,a,\":\"); print a[length(a)]; exit}',
+          ],
+          {
+            encoding: 'utf-8',
+            input: lsofResult,
+          }
+        );
+        const result = { stdout: awkResult };
         port = parseInt(result.stdout.trim(), 10);
         break;
       }
