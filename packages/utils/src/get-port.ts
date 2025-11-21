@@ -1,7 +1,4 @@
-import { exec, execFileSync } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execAsync = promisify(exec);
+import { execa } from 'execa';
 
 /**
  * Gets the port number that the process is listening on.
@@ -17,44 +14,42 @@ export async function getPort(): Promise<number | undefined> {
     switch (platform) {
       case 'linux':
       case 'darwin': {
-        const lsofResult = execFileSync(
-          'lsof',
-          ['-a', '-i', '-P', '-n', '-p', pid.toString()],
-          {
-            encoding: 'utf-8',
-          }
-        );
-        const awkResult = execFileSync(
+        const lsofResult = await execa('lsof', [
+          '-a',
+          '-i',
+          '-P',
+          '-n',
+          '-p',
+          pid.toString(),
+        ]);
+        const awkResult = await execa(
           'awk',
           ['/LISTEN/ {split($9,a,":"); print a[length(a)]; exit}'],
           {
-            encoding: 'utf-8',
-            input: lsofResult,
+            input: lsofResult.stdout,
           }
         );
-        const result = { stdout: awkResult };
+        const result = { stdout: awkResult.stdout };
         port = parseInt(result.stdout.trim(), 10);
         break;
       }
       case 'win32': {
-        const lsofResult = execFileSync(
-          'netstat',
-          ['-a', '-n', '-o', pid.toString()],
-          {
-            encoding: 'utf-8',
-          }
-        );
-        const awkResult = execFileSync(
+        const lsofResult = await execa('netstat', [
+          '-a',
+          '-n',
+          '-o',
+          pid.toString(),
+        ]);
+        const awkResult = await execa(
           'awk',
           [
             '/LISTENING/ && /${pid}/ {split($2,a,\":\"); print a[length(a)]; exit}',
           ],
           {
-            encoding: 'utf-8',
-            input: lsofResult,
+            input: lsofResult.stdout,
           }
         );
-        const result = { stdout: awkResult };
+        const result = { stdout: awkResult.stdout };
         port = parseInt(result.stdout.trim(), 10);
         break;
       }
