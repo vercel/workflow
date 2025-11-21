@@ -29,14 +29,12 @@
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "exsolve": "^1.0.7",
-    "fs-extra": "11.3.2",
     "pathe": "^2.0.3"
   },
   "devDependencies": {
-    "@types/fs-extra": "11.0.4",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "astro": "5.15.6",
+    "astro": "5.16.0",
     "vite": "7.1.11"
   }
 }
