@@ -5,12 +5,10 @@ import type { RollupConfig } from 'nitro/types';
 
 type RollupPlugin = Exclude<
   RollupConfig['plugins'],
-  undefined | void | null | false | Promise<unknown> | Array<unknown>
+  undefined | null | false | Promise<unknown> | Array<unknown>
 >;
 
-// https://github.com/vercel/workflow/blob/feat/nitro/packages/next/src/loader.ts
-
-export function workflowRollupPlugin(): RollupPlugin {
+export function workflowTransformPlugin(): RollupPlugin {
   return {
     name: 'workflow:transform',
     // This transform applies the "use workflow"/"use step"
@@ -41,7 +39,7 @@ export function workflowRollupPlugin(): RollupPlugin {
       const lowerPath = normalizedFilepath.toLowerCase();
 
       let relativeFilename: string;
-      if (lowerPath.startsWith(lowerWd + '/')) {
+      if (lowerPath.startsWith(`${lowerWd}/`)) {
         // File is under working directory - manually calculate relative path
         relativeFilename = normalizedFilepath.substring(
           normalizedWorkingDir.length + 1

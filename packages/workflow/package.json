@@ -61,7 +61,8 @@
     "@workflow/next": "workspace:*",
     "@workflow/nitro": "workspace:*",
     "@workflow/nuxt": "workspace:*",
-    "@workflow/sveltekit": "workspace:*"
+    "@workflow/sveltekit": "workspace:*",
+    "@workflow/rollup": "workspace:*"
   },
   "devDependencies": {
     "@types/ms": "2.1.0",

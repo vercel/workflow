@@ -1,1 +1,1 @@
-export { workflowRollupPlugin } from '@workflow/nitro/rollup';
+export * from '@workflow/rollup';
