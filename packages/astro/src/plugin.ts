@@ -15,7 +15,14 @@ export function workflow(): AstroIntegration {
       }: HookParameters<'astro:config:setup'>) => {
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
-          await builder.build();
+          try {
+            await builder.build();
+          } catch (buildError) {
+            // Build might fail due to invalid workflow files or missing dependencies
+            // Log the error and rethrow to properly propagate to Astro
+            console.error('Build failed during config setup:', buildError);
+            throw buildError;
+          }
         }
         updateConfig({
           vite: {
