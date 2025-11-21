@@ -1,0 +1,25 @@
+{
+  "name": "@workbench/fastify",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js",
+    "predev": "pnpm generate:workflows",
+    "prebuild": "pnpm generate:workflows",
+    "build": "nitro build",
+    "dev": "nitro dev",
+    "start": "node .output/server/index.mjs"
+  },
+  "dependencies": {
+    "@workflow/fastify": "workspace:*",
+    "fastify": "^5.6.2",
+    "nitro": "catalog:",
+    "srvx": "^0.9.6",
+    "workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "^4.19.2",
+    "typescript": "catalog:"
+  }
+}
