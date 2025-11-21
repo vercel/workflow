@@ -5,7 +5,7 @@ import type { HotUpdateOptions, PluginOption } from 'vite';
 import type { AstroIntegration } from 'astro';
 import { LocalBuilder, VercelBuilder } from './builder.js';
 
-export function workflowPlugin(): AstroIntegration {
+export function workflow(): AstroIntegration {
   const builder = new LocalBuilder();
 
   return {

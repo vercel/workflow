@@ -1,5 +1,5 @@
 import { defineConfig } from 'astro/config';
-import { workflowPlugin } from 'workflow/astro';
+import { workflow } from 'workflow/astro';
 import node from '@astrojs/node';
 import vercel from '@astrojs/vercel';
 
@@ -13,8 +13,12 @@ const adapter = process.env.VERCEL_DEPLOYMENT_ID
 // https://astro.build/config
 export default defineConfig({
   output: 'server',
-  integrations: [workflowPlugin()],
+  integrations: [workflow()],
   adapter: adapter,
+  // WARNING: CSRF protection is disabled for testing/development purposes.
+  // This configuration trusts all origins and should NOT be used in production.
+  // In production, specify only trusted origins or remove this configuration
+  // to use Astro's default CSRF protection.
   security: {
     checkOrigin: false,
   },
