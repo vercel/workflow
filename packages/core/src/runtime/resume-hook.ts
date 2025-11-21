@@ -84,7 +84,7 @@ export async function resumeHook<T = any>(
         // NOTE: Workaround instead of injecting catching undefined unhandled rejections in webhook bundle
         waitUntil(
           Promise.all(ops).catch((err) => {
-            if (err) throw err;
+            if (err !== undefined) throw err;
           })
         );
 
