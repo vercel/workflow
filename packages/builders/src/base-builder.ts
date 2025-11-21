@@ -671,26 +671,20 @@ export const POST = workflowEntrypoint(workflowCode);`;
    * Creates a webhook handler bundle for resuming workflows via HTTP callbacks.
    *
    * @param bundle - If true, bundles dependencies (needed for Build Output API)
-   * @param suppressUndefinedRejections - If true, suppresses undefined rejections.
-   *                                      This is a workaround to avoid crashing in local
-   *                                      dev when context isn't set for waitUntil()
    */
   protected async createWebhookBundle({
     outfile,
     bundle = false,
-    suppressUndefinedRejections = false,
   }: {
     outfile: string;
     bundle?: boolean;
-    suppressUndefinedRejections?: boolean;
   }): Promise<void> {
     console.log('Creating webhook route');
     await mkdir(dirname(outfile), { recursive: true });
 
     // Create a static route that calls resumeWebhook
     // This route works for both Next.js and Vercel Build Output API
-    const routeContent = `${suppressUndefinedRejections ? 'process.on("unhandledRejection", (reason) => { if (reason !== undefined) console.error("Unhandled rejection detected", reason); });\n' : ''}
-import { resumeWebhook } from 'workflow/api';
+    const routeContent = `import { resumeWebhook } from 'workflow/api';
 
 async function handler(request) {
   const url = new URL(request.url);
