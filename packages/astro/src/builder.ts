@@ -180,7 +180,7 @@ export const prerender = false;`
       suppressUndefinedRejections: true,
     });
 
-    // // Post-process the gen    // Post-process the generated file to wrap with SvelteKit request converter
+    // Post-process the generated file to wrap with Astro request converter
     let webhookRouteContent = await readFile(webhookRouteFile, 'utf-8');
 
     // Update handler signature to accept token as parameter
