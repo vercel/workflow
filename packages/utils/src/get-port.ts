@@ -8,8 +8,7 @@ const execAsync = promisify(exec);
  * @returns The port number that the process is listening on, or undefined if the process is not listening on any port.
  */
 export async function getPort(): Promise<number | undefined> {
-  const pid = process.pid;
-  const platform = process.platform;
+  const { pid, platform } = process;
 
   let port: number | undefined;
 
@@ -20,47 +19,26 @@ export async function getPort(): Promise<number | undefined> {
       case 'darwin': {
         // Grab the first port entry reported
         const result = await execAsync(
-          `lsof -i -P -n | grep -w ${pid} | grep LISTEN | awk '{print $9}' | sed 's/.*://' | head -n 1`
+          `lsof -a -i -P -n -p ${pid} | awk '/LISTEN/ {split($9,a,":"); print a[length(a)]; exit}'`
         );
         port = parseInt(result.stdout.trim(), 10);
         break;
       }
       case 'win32': {
-        const result = await execAsync(`netstat -ano`);
-        const lines = result.stdout.trim().split('\n');
-        const ports: number[] = [];
-
-        for (const line of lines) {
-          const parts = line.trim().split(/\s+/);
-
-          if (
-            parts.length >= 5 &&
-            parts[3] === 'LISTENING' &&
-            parts[4] === pid.toString()
-          ) {
-            const localAddress = parts[1];
-            const portMatch = localAddress.match(/:(\d+)$/);
-
-            if (portMatch?.[1]) {
-              const foundPort = parseInt(portMatch[1], 10);
-              if (!Number.isNaN(foundPort)) {
-                ports.push(foundPort);
-              }
-            }
-          }
-        }
-
-        // Return the lowest port for consistency
-        if (ports.length > 0) {
-          port = Math.min(...ports);
-        }
+        const result = await execAsync(
+          `netstat -ano | awk "/LISTENING/ && /${pid}/ {split($2,a,\":\"); print a[length(a)]; exit}"`
+        );
+        port = parseInt(result.stdout.trim(), 10);
         break;
       }
     }
-  } catch {
-    // Unavailable (e.g. Serverless environments)
+  } catch (error) {
+    // In dev, it's helpful to know why detection failed
+    if (process.env.NODE_ENV === 'development') {
+      console.debug('[getPort] Detection failed:', error);
+    }
     return undefined;
   }
 
-  return Number.isNaN(port) ? undefined : port;
+  return port || undefined;
 }
