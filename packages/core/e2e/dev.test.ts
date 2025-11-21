@@ -123,7 +123,6 @@ export async function myNewStep() {
           'new-workflow.ts'
         );
 
-
         await fs.writeFile(
           workflowFile,
           `export async function newWorkflowFile() {
