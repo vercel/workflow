@@ -8,17 +8,36 @@ import {
 } from 'workflow/internal/errors';
 import { allWorkflows } from '../_workflows.js';
 
+type JsonResult = { ok: true; value: any } | { ok: false; error: Error };
+const parseJson = (text: string): JsonResult => {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (error) {
+    return { ok: false, error: error as Error };
+  }
+};
+
 const server = Fastify({
   logger: true,
 });
 
 console.log('Fastify Server created!');
 
-// Add content type parser for text/*
 server.addContentTypeParser(
   'text/*',
   { parseAs: 'string' },
   server.getDefaultJsonParser('ignore', 'ignore')
+);
+
+server.addContentTypeParser(
+  'application/json',
+  { parseAs: 'string' },
+  (req, body, done) => {
+    const text = typeof body === 'string' ? body : body.toString();
+    if (!text) return done(null, {});
+    const parsed = parseJson(text);
+    return parsed.ok ? done(null, parsed.value) : done(parsed.error);
+  }
 );
 
 server.post('/api/hook', async (req: any, reply) => {
