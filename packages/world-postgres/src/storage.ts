@@ -596,7 +596,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
           stepName: data.stepName,
           input: inputBuffer,
           status: 'pending',
-          attempt: 1,
+          attempt: 0,
         })
         .onConflictDoNothing()
         .returning();
