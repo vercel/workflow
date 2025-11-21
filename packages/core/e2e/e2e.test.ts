@@ -600,7 +600,8 @@ describe('e2e', () => {
       // TODO: Investigate esbuild source map generation for bundled modules
       const isViteBasedFrameworkDevMode =
         (process.env.APP_NAME === 'sveltekit' ||
-          process.env.APP_NAME === 'vite') &&
+          process.env.APP_NAME === 'vite' ||
+          process.env.APP_NAME === 'astro') &&
         isLocalDeployment();
 
       if (!isViteBasedFrameworkDevMode) {
