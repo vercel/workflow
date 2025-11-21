@@ -1,14 +1,9 @@
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import { resolveModulePath } from 'exsolve';
-import type { RollupConfig } from 'nitro/types';
+import type { Plugin } from 'rollup';
 
-type RollupPlugin = Exclude<
-  RollupConfig['plugins'],
-  undefined | void | null | false | Promise<unknown> | Array<unknown>
->;
-
-export function workflowTransformPlugin(): RollupPlugin {
+export function workflowTransformPlugin(): Plugin {
   return {
     name: 'workflow:transform',
     // This transform applies the "use workflow"/"use step"
