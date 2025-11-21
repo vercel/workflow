@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
@@ -20,12 +20,6 @@ async function normalizeRequestConverter(request) {
   return new Request(request.url, options);
 }
 `;
-
-const DEBUG_FILES = [
-  'flow.js.debug.json',
-  'manifest.debug.json',
-  'step.js.debug.json',
-];
 
 const WORKFLOW_ROUTES = [
   {
@@ -51,6 +45,7 @@ export class LocalBuilder extends BaseBuilder {
       workflowsBundlePath: '', // unused in base
       webhookBundlePath: '', // unused in base
       workingDir: process.cwd(),
+      debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
     });
   }
 
@@ -81,21 +76,6 @@ export class LocalBuilder extends BaseBuilder {
     await this.buildStepsRoute(options);
     await this.buildWorkflowsRoute(options);
     await this.buildWebhookRoute({ workflowGeneratedDir });
-
-    // Astro requires non-api routes to be prefixed with _ (debug files)
-    for (const file of DEBUG_FILES) {
-      const filePath = join(workflowGeneratedDir, file);
-      const prefixedFilePath = join(workflowGeneratedDir, `_${file}`);
-      try {
-        await rename(filePath, prefixedFilePath);
-      } catch (error: unknown) {
-        // Silently ignore if debug file doesn't exist
-        // (writeDebugFile may have silently failed due to filesystem errors)
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          throw error;
-        }
-      }
-    }
   }
 
   private async buildStepsRoute({
@@ -236,6 +216,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         dirs: ['src/pages', 'src/workflows'],
       }),
       buildTarget: 'vercel-build-output-api',
+      debugFilePrefix: '_',
     });
   }
 

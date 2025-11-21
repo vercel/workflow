@@ -1,8 +1,7 @@
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import { resolveModulePath } from 'exsolve';
-import type { HotUpdateOptions, PluginOption } from 'vite';
-import type { AstroIntegration } from 'astro';
+import type { AstroIntegration, HookParameters } from 'astro';
 import { LocalBuilder, VercelBuilder } from './builder.js';
 
 export function workflow(): AstroIntegration {
@@ -11,7 +10,9 @@ export function workflow(): AstroIntegration {
   return {
     name: 'workflow:astro',
     hooks: {
-      'astro:config:setup': async ({ updateConfig }: any) => {
+      'astro:config:setup': async ({
+        updateConfig,
+      }: HookParameters<'astro:config:setup'>) => {
         // Use local builder
         if (!process.env.VERCEL_DEPLOYMENT_ID) {
           await builder.build();
@@ -20,7 +21,7 @@ export function workflow(): AstroIntegration {
           vite: {
             plugins: [
               {
-                name: 'workflow:astro:vite',
+                name: 'workflow:vite',
 
                 // TODO: Move this to @workflow/vite or something since this is vite specific
                 // Transform workflow files with SWC
@@ -109,7 +110,7 @@ export function workflow(): AstroIntegration {
                 },
 
                 // TODO: Move this to @workflow/vite or something since this is vite specific
-                async hotUpdate(options: HotUpdateOptions) {
+                async hotUpdate(options) {
                   const { file, server, read } = options;
 
                   // Check if this is a TS/JS file that might contain workflow directives
@@ -172,7 +173,7 @@ export function workflow(): AstroIntegration {
                   // Prevent Vite from processing this HMR update
                   return [];
                 },
-              } as PluginOption,
+              },
             ],
           },
         });

@@ -34,7 +34,6 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "astro": "5.16.0",
-    "vite": "7.1.11"
+    "astro": "5.16.0"
   }
 }

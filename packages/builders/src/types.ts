@@ -23,6 +23,9 @@ interface BaseWorkflowConfig {
   externalPackages?: string[];
 
   workflowManifestPath?: string;
+
+  // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
+  debugFilePrefix?: string;
 }
 
 /**
