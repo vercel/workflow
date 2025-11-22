@@ -32,25 +32,27 @@ export async function getPort(): Promise<number | undefined> {
         port = parseInt(result.stdout.trim(), 10);
         break;
       }
+
       case 'win32': {
-        const lsofResult = await execa('netstat', [
-          '-a',
-          '-n',
-          '-o',
-          pid.toString(),
+        // Use cmd to run the piped command
+        const result = await execa('cmd', [
+          '/c',
+          `netstat -ano | findstr ${pid} | findstr LISTENING`,
         ]);
-        const awkResult = await execa(
-          'awk',
-          [
-            `pid=${pid}`,
-            '/LISTENING/ && $NF == pid {split($2,a,\":\"); print a[length(a)]; exit}',
-          ],
-          {
-            input: lsofResult.stdout,
+
+        const stdout = result.stdout.trim();
+
+        if (stdout) {
+          const lines = stdout.split('\n');
+          for (const line of lines) {
+            // Extract port from the local address column
+            const match = line.trim().match(/^\s*TCP\s+[\d.:]+:(\d+)\s+/);
+            if (match) {
+              port = parseInt(match[1], 10);
+              break;
+            }
           }
-        );
-        const result = { stdout: awkResult.stdout };
-        port = parseInt(result.stdout.trim(), 10);
+        }
         break;
       }
     }
