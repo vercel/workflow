@@ -131,7 +131,8 @@ server.get('/api/trigger', async (req: any, reply) => {
       const reader = stream.getReader();
 
       reply.type('application/octet-stream');
-
+      // Fastify runs on Node and doesn’t send Web ReadableStreams directly
+      // read from the Web reader and write framed chunks to the raw response
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -178,7 +179,7 @@ server.get('/api/trigger', async (req: any, reply) => {
       return;
     }
 
-    // Fastify sends strings as text/plain by default; JSON-encode primitives to match Hono/Response.json
+    // Fastify sends strings as text/plain by default
     const payload =
       typeof returnValue === 'string' ||
       typeof returnValue === 'number' ||
