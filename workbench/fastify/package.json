@@ -13,11 +13,15 @@
   "dependencies": {
     "fastify": "^5.6.2",
     "nitro": "catalog:",
-    "srvx": "^0.9.6",
-    "workflow": "workspace:*"
+    "srvx": "^0.9.6"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "typescript": "catalog:"
+    "ai": "catalog:",
+    "lodash.chunk": "^4.2.0",
+    "openai": "^6.6.0",
+    "typescript": "catalog:",
+    "workflow": "workspace:*",
+    "zod": "catalog:"
   }
 }
