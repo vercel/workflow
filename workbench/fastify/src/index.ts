@@ -116,7 +116,7 @@ server.post('/api/trigger', async (req: any, reply) => {
 server.get('/api/trigger', async (req: any, reply) => {
   const runId = req.query.runId as string | undefined;
   if (!runId) {
-    return reply.code(400).send({ error: 'No runId provided' });
+    return reply.code(400).send('No runId provided');
   }
 
   const outputStreamParam = req.query['output-stream'] as string | undefined;
@@ -214,7 +214,6 @@ server.get('/api/trigger', async (req: any, reply) => {
 
     return reply.code(500).send({
       error: 'Internal server error',
-      message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 });
@@ -233,7 +232,7 @@ server.post('/api/test-direct-step-call', async (req: any, reply) => {
   const result = await add(x, y);
   console.log(`add(${x}, ${y}) = ${result}`);
 
-  return { result };
+  return reply.send(result);
 });
 
 await server.ready();
