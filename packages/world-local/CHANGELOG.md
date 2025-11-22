@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- 3436629: Fix bugs in streamer (empty chunk handling and cloning chunks)
+
 ## 5.0.0-beta.10
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.17
+
+### Patch Changes
+
+- 9961140: Fix hydration of eventData for sleep calls
+- Updated dependencies [3436629]
+- Updated dependencies [9961140]
+- Updated dependencies [73b6c68]
+  - @workflow/core@4.0.1-beta.16
+
 ## 4.0.1-beta.16
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @workflow/ai
 
+## 4.0.1-beta.19
+
+### Patch Changes
+
+- workflow@4.0.1-beta.19
+
 ## 4.0.1-beta.18
 
 ### Patch Changes

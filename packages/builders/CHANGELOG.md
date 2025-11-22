@@ -1,5 +1,15 @@
 # @workflow/builders
 
+## 4.0.1-beta.15
+
+### Patch Changes
+
+- 73b6c68: Remove suppressUndefinedRejection from BaseBuilder
+- Updated dependencies [3436629]
+- Updated dependencies [9961140]
+- Updated dependencies [73b6c68]
+  - @workflow/core@4.0.1-beta.16
+
 ## 4.0.1-beta.14
 
 ### Patch Changes

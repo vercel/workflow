@@ -1,5 +1,15 @@
 # @workflow/core
 
+## 4.0.1-beta.16
+
+### Patch Changes
+
+- 3436629: Fix bugs in streamer (empty chunk handling and cloning chunks)
+- 9961140: Fix hydration of eventData for sleep calls
+- 73b6c68: Remove suppressUndefinedRejection from BaseBuilder
+- Updated dependencies [3436629]
+  - @workflow/world-local@4.0.1-beta.11
+
 ## 4.0.1-beta.15
 
 ### Patch Changes
