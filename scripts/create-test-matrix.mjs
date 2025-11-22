@@ -49,6 +49,12 @@ const DEV_TEST_CONFIGS = {
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
   },
+  fastify: {
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
+    apiFilePath: './src/index.ts',
+    apiFileImportPath: '..',
+  },
 };
 
 const matrix = {
@@ -110,6 +116,12 @@ matrix.app.push({
   name: 'express',
   project: 'workbench-express-workflow',
   ...DEV_TEST_CONFIGS.express,
+});
+
+matrix.app.push({
+  name: 'fastify',
+  project: 'workbench-fastify-workflow',
+  ...DEV_TEST_CONFIGS.fastify,
 });
 
 console.log(JSON.stringify(matrix));
