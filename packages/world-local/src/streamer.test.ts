@@ -318,6 +318,57 @@ describe('streamer', () => {
 
         expect(chunks.join('')).toBe('123');
       });
+
+      it('should handle stream resumption with startIndex after cancellation (reproduces vibe platform bug)', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'resumption-stream';
+
+        // Write multiple chunks to simulate a DurableAgent streaming output
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk0');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk1');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk2');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk3');
+
+        // First read: Simulate initial connection that gets interrupted after 2 chunks
+        // Note: Stream is NOT closed yet - simulates reading while workflow is still running
+        const stream1 = await streamer.readFromStream(streamName, 0);
+        const reader1 = stream1.getReader();
+
+        // Read first 2 chunks
+        const result1 = await reader1.read();
+        const result2 = await reader1.read();
+        expect(Buffer.from(result1.value!).toString()).toBe('chunk0');
+        expect(Buffer.from(result2.value!).toString()).toBe('chunk1');
+
+        // Cancel the first stream (simulating connection loss / timeout)
+        await reader1.cancel();
+
+        // Workflow continues and finishes
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        // Second read: Resume from startIndex=2 (this is where ArrayBuffer detachment bug occurs)
+        // Without the fix, this would fail with "Cannot perform Construct on a detached ArrayBuffer"
+        const stream2 = await streamer.readFromStream(streamName, 2);
+        const reader2 = stream2.getReader();
+
+        const chunks: string[] = [];
+        let done = false;
+
+        while (!done) {
+          const result = await reader2.read();
+          done = result.done;
+          if (result.value) {
+            // This operation would fail if ArrayBuffer is detached
+            chunks.push(Buffer.from(result.value).toString());
+          }
+        }
+
+        // Should successfully read remaining chunks
+        expect(chunks.join('')).toBe('chunk2chunk3');
+      });
     });
 
     describe('integration scenarios', () => {

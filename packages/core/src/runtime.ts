@@ -401,7 +401,15 @@ export function workflowEntrypoint(workflowCode: string) {
                       input: dehydratedArgs as Serializable[],
                     });
 
-                    waitUntil(Promise.all(ops));
+                    waitUntil(
+                      Promise.all(ops).catch((err) => {
+                        // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
+                        const isAbortError =
+                          err?.name === 'AbortError' ||
+                          err?.name === 'ResponseAborted';
+                        if (!isAbortError) throw err;
+                      })
+                    );
 
                     await world.queue(
                       `__wkf_step_${queueItem.stepName}`,
@@ -704,7 +712,14 @@ export const stepEntrypoint =
             // The workflow runtime must be resilient to the below code not executing on a failed step
             result = dehydrateStepReturnValue(result, ops, workflowRunId);
 
-            waitUntil(Promise.all(ops));
+            waitUntil(
+              Promise.all(ops).catch((err) => {
+                // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
+                const isAbortError =
+                  err?.name === 'AbortError' || err?.name === 'ResponseAborted';
+                if (!isAbortError) throw err;
+              })
+            );
 
             // Mark the step as completed first. This order is important. If a concurrent
             // execution marked the step as complete, this request should throw, and

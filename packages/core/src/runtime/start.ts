@@ -108,7 +108,14 @@ export async function start<TArgs extends unknown[], TResult>(
 
       resolveRunId(runResponse.runId);
 
-      waitUntil(Promise.all(ops));
+      waitUntil(
+        Promise.all(ops).catch((err) => {
+          // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
+          const isAbortError =
+            err?.name === 'AbortError' || err?.name === 'ResponseAborted';
+          if (!isAbortError) throw err;
+        })
+      );
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runResponse.runId),

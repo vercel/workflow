@@ -215,7 +215,10 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
   ) => {
     // Avoid returning falsy value for zero-length buffers
     if (length === 0) return '.';
-    return Buffer.from(value, offset, length).toString('base64');
+    // Create a proper copy to avoid ArrayBuffer detachment issues
+    // Buffer.from(ArrayBuffer, offset, length) creates a view, not a copy
+    const uint8 = new Uint8Array(value, offset, length);
+    return Buffer.from(uint8).toString('base64');
   };
   const viewToBase64 = (value: ArrayBufferView) =>
     abToBase64(value.buffer, value.byteOffset, value.byteLength);

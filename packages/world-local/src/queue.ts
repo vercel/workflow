@@ -107,11 +107,21 @@ export function createQueue(config: Partial<Config>): Queue {
       console.error(
         `[embedded world] Reached max retries of embedded world queue implementation`
       );
-    })().finally(() => {
-      for (const fn of cleanup) {
-        fn();
-      }
-    });
+    })()
+      .catch((err) => {
+        // Silently ignore client disconnect errors (e.g., browser refresh during streaming)
+        // These are expected and should not cause unhandled rejection warnings
+        const isAbortError =
+          err?.name === 'AbortError' || err?.name === 'ResponseAborted';
+        if (!isAbortError) {
+          console.error('[embedded world] Queue operation failed:', err);
+        }
+      })
+      .finally(() => {
+        for (const fn of cleanup) {
+          fn();
+        }
+      });
 
     return { messageId };
   };

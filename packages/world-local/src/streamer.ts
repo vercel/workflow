@@ -27,7 +27,8 @@ export function serializeChunk(chunk: Chunk) {
 
 export function deserializeChunk(serialized: Buffer) {
   const eof = serialized[0] === 1;
-  const chunk = serialized.subarray(1);
+  // Create a copy instead of a view to prevent ArrayBuffer detachment
+  const chunk = Buffer.from(serialized.subarray(1));
   return { eof, chunk };
 }
 
@@ -82,11 +83,8 @@ export function createStreamer(basedir: string): Streamer {
 
       await write(chunkPath, serialized);
 
-      // Emit real-time event with Uint8Array
-      const chunkData =
-        chunkBuffer instanceof Buffer
-          ? new Uint8Array(chunkBuffer)
-          : chunkBuffer;
+      // Emit real-time event with Uint8Array (create copy to prevent ArrayBuffer detachment)
+      const chunkData = Uint8Array.from(chunkBuffer);
 
       streamEmitter.emit(`chunk:${name}` as const, {
         streamName: name,
@@ -145,13 +143,15 @@ export function createStreamer(basedir: string): Streamer {
 
             if (isReadingFromDisk) {
               // Buffer chunks that arrive during disk reading to maintain order
+              // Create a copy to prevent ArrayBuffer detachment when enqueued later
               bufferedEventChunks.push({
                 chunkId: event.chunkId,
-                chunkData: event.chunkData,
+                chunkData: Uint8Array.from(event.chunkData),
               });
             } else {
               // After disk reading is complete, deliver chunks immediately
-              controller.enqueue(event.chunkData);
+              // Create a copy to prevent ArrayBuffer detachment
+              controller.enqueue(Uint8Array.from(event.chunkData));
             }
           };
 
@@ -159,7 +159,11 @@ export function createStreamer(basedir: string): Streamer {
             // Remove listeners before closing
             streamEmitter.off(`chunk:${name}` as const, chunkListener);
             streamEmitter.off(`close:${name}` as const, closeListener);
-            controller.close();
+            try {
+              controller.close();
+            } catch (e) {
+              // Ignore if controller is already closed (e.g., from cancel() or EOF)
+            }
           };
           removeListeners = closeListener;
 
@@ -193,7 +197,8 @@ export function createStreamer(basedir: string): Streamer {
               break;
             }
             if (chunk.chunk.byteLength) {
-              controller.enqueue(new Uint8Array(chunk.chunk));
+              // Create a copy to prevent ArrayBuffer detachment
+              controller.enqueue(Uint8Array.from(chunk.chunk));
             }
           }
 
@@ -205,7 +210,8 @@ export function createStreamer(basedir: string): Streamer {
             a.chunkId.localeCompare(b.chunkId)
           );
           for (const buffered of bufferedEventChunks) {
-            controller.enqueue(buffered.chunkData);
+            // Create a copy for defense in depth (already copied at storage, but be extra safe)
+            controller.enqueue(Uint8Array.from(buffered.chunkData));
           }
 
           if (isComplete) {
