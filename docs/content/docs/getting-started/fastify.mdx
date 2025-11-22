@@ -126,7 +126,10 @@ export async function handleUserSignup(email: string) {
 }
 ```
 
-We'll fill in those functions next:
+We'll fill in those functions next, but let's take a look at this code:
+
+- We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
+- The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
 ```typescript title="workflows/user-signup.ts" lineNumbers
 import { FatalError } from "workflow";
