@@ -221,7 +221,9 @@ Trigger the workflow:
 curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/signup
 ```
 
-Check the Fastify logs to see the workflow orchestration and steps. You can also use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect runs:
+Check the Fastify development server logs to see your workflow execute as well as the steps that are being processed.
+
+Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
 ```bash
 npx workflow inspect runs # add '--web' for an interactive Web based UI
