@@ -68,14 +68,14 @@ describe('resolveBaseUrl', () => {
       expect(getPort).toHaveBeenCalled();
     });
 
-    it('should return undefined when all detection methods fail', async () => {
+    it('should throw error when all detection methods fail', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
-      const result = await resolveBaseUrl({});
-
-      expect(result).toBeUndefined();
+      await expect(resolveBaseUrl({})).rejects.toThrow(
+        'Unable to resolve base URL for workflow queue.'
+      );
       expect(getPort).toHaveBeenCalled();
     });
   });
@@ -182,14 +182,14 @@ describe('resolveBaseUrl', () => {
       expect(result).toBe('http://localhost:3000');
     });
 
-    it('should handle auto-detection failure gracefully', async () => {
+    it('should throw error when auto-detection fails', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
-      const result = await resolveBaseUrl({});
-
-      expect(result).toBeUndefined();
+      await expect(resolveBaseUrl({})).rejects.toThrow(
+        'Unable to resolve base URL for workflow queue.'
+      );
     });
   });
 
@@ -230,24 +230,24 @@ describe('resolveBaseUrl', () => {
   });
 
   describe('edge cases', () => {
-    it('should handle empty config object', async () => {
+    it('should throw error with empty config object when no port is detected', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
-      const result = await resolveBaseUrl({});
-
-      expect(result).toBeUndefined();
+      await expect(resolveBaseUrl({})).rejects.toThrow(
+        'Unable to resolve base URL for workflow queue.'
+      );
     });
 
-    it('should handle undefined config', async () => {
+    it('should throw error when all resolution methods fail', async () => {
       const { getPort } = await import('@workflow/utils/get-port');
       vi.mocked(getPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
-      const result = await resolveBaseUrl({});
-
-      expect(result).toBeUndefined();
+      await expect(resolveBaseUrl({})).rejects.toThrow(
+        'Unable to resolve base URL for workflow queue.'
+      );
     });
 
     it('should handle config with only dataDir and use PORT env var', async () => {
@@ -274,6 +274,16 @@ describe('resolveBaseUrl', () => {
 
       expect(result).toBe('http://localhost:5173');
       expect(getPort).toHaveBeenCalled();
+    });
+
+    it('should provide helpful error message when no URL can be resolved', async () => {
+      const { getPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+
+      await expect(resolveBaseUrl({})).rejects.toThrow(
+        'Unable to resolve base URL for workflow queue.'
+      );
     });
   });
 });

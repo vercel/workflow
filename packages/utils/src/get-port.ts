@@ -28,8 +28,7 @@ export async function getPort(): Promise<number | undefined> {
             input: lsofResult.stdout,
           }
         );
-        const result = { stdout: awkResult.stdout };
-        port = parseInt(result.stdout.trim(), 10);
+        port = parseInt(awkResult.stdout.trim(), 10);
         break;
       }
 

@@ -31,9 +31,7 @@ export const config = once<Config>(() => {
  * 3. PORT env var (explicit configuration)
  * 4. Auto-detected port via getPort (detect actual listening port)
  */
-export async function resolveBaseUrl(
-  config: Partial<Config>
-): Promise<string | undefined> {
+export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   if (config.baseUrl) {
     return config.baseUrl;
   }
@@ -51,6 +49,5 @@ export async function resolveBaseUrl(
     return `http://localhost:${detectedPort}`;
   }
 
-  // Return undefined if no base URL can be resolved
-  return undefined;
+  throw new Error('Unable to resolve base URL for workflow queue.');
 }
