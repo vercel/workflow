@@ -89,7 +89,7 @@ To enable helpful hints in your IDE, set up the workflow plugin in `tsconfig.jso
 
 ### Update `package.json`
 
-Add Nitro scripts:
+To use the Nitro builder, update your `package.json` to include the following scripts:
 
 ```json title="package.json" lineNumbers
 {
@@ -130,7 +130,9 @@ We'll fill in those functions next, but let's take a look at this code:
 
 - We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
 - The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
+## Create Your Workflow Steps
 
+Let's now define those missing functions:
 ```typescript title="workflows/user-signup.ts" lineNumbers
 import { FatalError } from "workflow";
 
@@ -176,7 +178,7 @@ Taking a look at this code:
 
 ## Create Your Route Handler
 
-Wire up a Fastify route to start the workflow at `src/index.ts`:
+To invoke your new workflow, we'll create both the Fastify app and a new API route handler at `src/index.ts` with the following code:
 
 ```typescript title="src/index.ts"
 import Fastify from "fastify";
@@ -234,3 +236,18 @@ npx workflow inspect runs # add '--web' for an interactive Web based UI
 </Step>
 
 </Steps>
+
+---
+
+## Deploying to production
+
+Workflow DevKit apps currently work best when deployed to [Vercel](https://vercel.com/home) and needs no special configuration.
+
+Check the [Deploying](/docs/deploying) section to learn how your workflows can be deployed elsewhere.
+
+## Next Steps
+
+- Learn more about the [Foundations](/docs/foundations).
+- Check [Errors](/docs/errors) if you encounter issues.
+- Explore the [API Reference](/docs/api-reference).
+
