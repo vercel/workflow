@@ -181,9 +181,14 @@ server.get('/api/trigger', async (req: any, reply) => {
       );
     }
 
-    // For async handlers, simply return the value
-    // Fastify will automatically serialize it as JSON
-    return returnValue;
+    // Fastify sends strings as text/plain by default; JSON-encode primitives to match Hono/Response.json
+    const payload =
+      typeof returnValue === 'string' ||
+      typeof returnValue === 'number' ||
+      typeof returnValue === 'boolean'
+        ? JSON.stringify(returnValue)
+        : returnValue;
+    return reply.type('application/json').send(payload);
   } catch (error) {
     if (error instanceof Error) {
       if (WorkflowRunNotCompletedError.is(error)) {
