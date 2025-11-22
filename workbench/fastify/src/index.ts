@@ -116,73 +116,78 @@ server.post('/api/trigger', async (req: any, reply) => {
 server.get('/api/trigger', async (req: any, reply) => {
   const runId = req.query.runId as string | undefined;
   if (!runId) {
-    return reply.code(400).send('No runId provided');
+    return reply.code(400).send({ error: 'No runId provided' });
   }
 
   const outputStreamParam = req.query['output-stream'] as string | undefined;
-  if (outputStreamParam) {
-    const namespace = outputStreamParam === '1' ? undefined : outputStreamParam;
-    const run = getRun(runId);
-    const stream = run.getReadable({
-      namespace,
-    });
-
-    // Set headers
-    reply.header('Content-Type', 'application/octet-stream');
-
-    // Read from the stream and write to response
-    const reader = stream.getReader();
-
-    return (async function* () {
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          // Add JSON framing to each chunk, wrapping binary data in base64
-          const data =
-            value instanceof Uint8Array
-              ? { data: Buffer.from(value).toString('base64') }
-              : value;
-          yield `${JSON.stringify(data)}\n`;
-        }
-      } catch (error) {
-        console.error('Error streaming data:', error);
-      }
-    })();
-  }
 
   try {
     const run = getRun(runId);
+
+    if (outputStreamParam) {
+      const namespace =
+        outputStreamParam === '1' ? undefined : outputStreamParam;
+      const stream = run.getReadable({ namespace });
+      const reader = stream.getReader();
+
+      reply.type('application/octet-stream');
+
+      return reply.send(
+        (async function* () {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              const data =
+                value instanceof Uint8Array
+                  ? { data: Buffer.from(value).toString('base64') }
+                  : value;
+              yield `${JSON.stringify(data)}\n`;
+            }
+          } catch (error) {
+            console.error('Error streaming data:', error);
+            throw error;
+          } finally {
+            reader.releaseLock();
+          }
+        })()
+      );
+    }
+
     const returnValue = await run.returnValue;
     console.log('Return value:', returnValue);
 
     if (returnValue instanceof ReadableStream) {
-      // Set headers for streaming response
-      reply.header('Content-Type', 'application/octet-stream');
-
-      // Read from the stream and write to response
       const reader = returnValue.getReader();
 
-      return (async function* () {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            yield value;
+      reply.type('application/octet-stream');
+
+      return reply.send(
+        (async function* () {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              yield value;
+            }
+          } catch (streamError) {
+            console.error('Error streaming return value:', streamError);
+            throw streamError;
+          } finally {
+            reader.releaseLock();
           }
-        } catch (streamError) {
-          console.error('Error streaming return value:', streamError);
-        }
-      })();
+        })()
+      );
     }
 
+    // For async handlers, simply return the value
+    // Fastify will automatically serialize it as JSON
     return returnValue;
   } catch (error) {
     if (error instanceof Error) {
       if (WorkflowRunNotCompletedError.is(error)) {
         return reply.code(202).send({
-          ...error,
           name: error.name,
           message: error.message,
         });
@@ -191,7 +196,6 @@ server.get('/api/trigger', async (req: any, reply) => {
       if (WorkflowRunFailedError.is(error)) {
         const cause = error.cause;
         return reply.code(400).send({
-          ...error,
           name: error.name,
           message: error.message,
           cause: {
@@ -207,8 +211,10 @@ server.get('/api/trigger', async (req: any, reply) => {
       'Unexpected error while getting workflow return value:',
       error
     );
+
     return reply.code(500).send({
       error: 'Internal server error',
+      message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 });
