@@ -132,27 +132,25 @@ server.get('/api/trigger', async (req: any, reply) => {
 
       reply.type('application/octet-stream');
 
-      return reply.send(
-        (async function* () {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-              const data =
-                value instanceof Uint8Array
-                  ? { data: Buffer.from(value).toString('base64') }
-                  : value;
-              yield `${JSON.stringify(data)}\n`;
-            }
-          } catch (error) {
-            console.error('Error streaming data:', error);
-            throw error;
-          } finally {
-            reader.releaseLock();
-          }
-        })()
-      );
+          const data =
+            value instanceof Uint8Array
+              ? { data: Buffer.from(value).toString('base64') }
+              : value;
+          reply.raw.write(`${JSON.stringify(data)}\n`);
+        }
+        reply.raw.end();
+      } catch (error) {
+        console.error('Error streaming data:', error);
+        reply.raw.end();
+      } finally {
+        reader.releaseLock();
+      }
+      return;
     }
 
     const returnValue = await run.returnValue;
