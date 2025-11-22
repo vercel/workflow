@@ -21,14 +21,13 @@ const server = Fastify({
   logger: true,
 });
 
-console.log('Fastify Server created!');
-
 server.addContentTypeParser(
   'text/*',
   { parseAs: 'string' },
   server.getDefaultJsonParser('ignore', 'ignore')
 );
 
+// allow fastify to parse empty json requests
 server.addContentTypeParser(
   'application/json',
   { parseAs: 'string' },
