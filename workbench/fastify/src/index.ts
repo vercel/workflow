@@ -232,7 +232,7 @@ server.post('/api/test-direct-step-call', async (req: any, reply) => {
   const result = await add(x, y);
   console.log(`add(${x}, ${y}) = ${result}`);
 
-  return reply.send(result);
+  return reply.send({ result });
 });
 
 await server.ready();
