@@ -158,25 +158,24 @@ server.get('/api/trigger', async (req: any, reply) => {
 
     if (returnValue instanceof ReadableStream) {
       const reader = returnValue.getReader();
-
       reply.type('application/octet-stream');
 
-      return reply.send(
-        (async function* () {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              yield value;
-            }
-          } catch (streamError) {
-            console.error('Error streaming return value:', streamError);
-            throw streamError;
-          } finally {
-            reader.releaseLock();
-          }
-        })()
-      );
+      // Workflow returns a Web ReadableStream; stream it by pulling from
+      // its reader and writing to reply.raw so Fastify can flush it to the client
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          reply.raw.write(value);
+        }
+        reply.raw.end();
+      } catch (streamError) {
+        console.error('Error streaming return value:', streamError);
+        reply.raw.end();
+      } finally {
+        reader.releaseLock();
+      }
+      return;
     }
 
     // Fastify sends strings as text/plain by default; JSON-encode primitives to match Hono/Response.json
