@@ -216,6 +216,7 @@ async function executeTool(
     throw new Error(
       `Invalid input for tool "${toolCall.toolName}": ${input?.error?.message}`
     );
+  }
 
   try {
     const toolResult = await tool.execute(input.value, {
