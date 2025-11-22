@@ -160,7 +160,16 @@ async function sendOnboardingEmail(user: { id: string; email: string }) {
   console.log(`Sending onboarding email to user: ${user.id}`);
 }
 ```
+Taking a look at this code:
 
+- Business logic lives inside **steps**. When a step is invoked inside a **workflow**, it gets enqueued to run on a separate request while the workflow is suspended, just like `sleep`.
+- If a step throws an error, like in `sendWelcomeEmail`, the step will automatically be retried until it succeeds (or hits the step's max retry count).
+- Steps can throw a `FatalError` if an error is intentional and should not be retried.
+
+<Callout>
+  We'll dive deeper into workflows, steps, and other ways to suspend or handle
+  events in [Foundations](/docs/foundations).
+</Callout>
 </Step>
 
 <Step>
