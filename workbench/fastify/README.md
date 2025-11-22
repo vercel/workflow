@@ -1,6 +1,6 @@
 # Workflows with Fastify (Nitro v3)
 
-- Learn more about Fastify: https://fastify.io
+- Learn more about Fastify: https://fastify.dev
 - Learn more about Nitro: https://v3.nitro.build/
 
 ## Commands
