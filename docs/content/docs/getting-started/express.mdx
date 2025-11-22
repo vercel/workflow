@@ -192,7 +192,7 @@ Taking a look at this code:
 To invoke your new workflow, we'll create both the Express app and a new API route handler at `src/index.ts` with the following code:
 
 ```typescript title="src/index.ts"
-import exprimport express from "express";
+import express from "express";
 import { fromNodeHandler, type NodeMiddleware } from "nitro/h3";
 import { start } from "workflow/api";
 import { handleUserSignup } from "../workflows/user-signup.js";

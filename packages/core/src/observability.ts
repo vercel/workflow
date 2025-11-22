@@ -41,6 +41,7 @@ const streamPrintRevivers: Record<string, (value: any) => any> = {
   ReadableStream: streamToStreamId,
   WritableStream: streamToStreamId,
   TransformStream: streamToStreamId,
+  StepFunction: (value) => `<fn:${value}>`,
 };
 
 const hydrateStepIO = <
@@ -101,22 +102,24 @@ const hydrateEventData = <
   if (!event.eventData) {
     return event;
   }
+  const eventData = { ...event.eventData };
+  // Events can have various eventData with non-devalued keys.
+  // So far, only eventData.result is devalued (though this may change),
+  // so we need to hydrate it specifically.
+  try {
+    if ('result' in eventData && typeof eventData.result === 'object') {
+      eventData.result = hydrateStepReturnValue(
+        eventData.result,
+        globalThis,
+        streamPrintRevivers
+      );
+    }
+  } catch (error) {
+    console.error('Error hydrating event data', error);
+  }
   return {
     ...event,
-    // Events have various top-level non-devalued keys, so we need to
-    // hydrate each value individually.
-    eventData: Object.fromEntries(
-      Object.entries(event.eventData).map(([key, value]) => [
-        key,
-        hydrateStepArguments(
-          value as any,
-          [],
-          event.runId as string,
-          globalThis,
-          streamPrintRevivers
-        ),
-      ])
-    ),
+    eventData,
   };
 };
 

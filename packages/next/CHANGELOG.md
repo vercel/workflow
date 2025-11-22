@@ -1,5 +1,13 @@
 # @workflow/next
 
+## 4.0.1-beta.18
+
+### Patch Changes
+
+- Updated dependencies [e5c5236]
+  - @workflow/swc-plugin@4.0.1-beta.7
+  - @workflow/builders@4.0.1-beta.14
+
 ## 4.0.1-beta.17
 
 ### Patch Changes

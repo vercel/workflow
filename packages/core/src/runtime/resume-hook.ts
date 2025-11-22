@@ -81,7 +81,12 @@ export async function resumeHook<T = any>(
           ops,
           hook.runId
         );
-        waitUntil(Promise.all(ops));
+        // NOTE: Workaround instead of injecting catching undefined unhandled rejections in webhook bundle
+        waitUntil(
+          Promise.all(ops).catch((err) => {
+            if (err !== undefined) throw err;
+          })
+        );
 
         // Create a hook_received event with the payload
         await world.events.create(hook.runId, {

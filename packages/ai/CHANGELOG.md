@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.18
+
+### Patch Changes
+
+- 43a3f79: DurableAgent#stream now sends `start` and `finish` chunks properly at the start and end
+- 154670a: Fix `DurableAgent` to propagate `FatalError` in tool calls
+- 1e636e1: Make `writable` property be required in `DurableAgent#stream()`
+  - workflow@4.0.1-beta.18
+
 ## 4.0.1-beta.17
 
 ### Patch Changes

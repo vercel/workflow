@@ -11,6 +11,7 @@ import {
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
+import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
 
 /**
@@ -62,6 +63,18 @@ export interface DurableAgentStreamOptions {
    * Defaults to false (stream will be closed).
    */
   preventClose?: boolean;
+
+  /**
+   * If true, sends a 'start' chunk at the beginning of the stream.
+   * Defaults to true.
+   */
+  sendStart?: boolean;
+
+  /**
+   * If true, sends a 'finish' chunk at the end of the stream.
+   * Defaults to true.
+   */
+  sendFinish?: boolean;
 
   /**
    * Condition for stopping the generation when there are tool results in the last step.
@@ -133,6 +146,7 @@ export class DurableAgent {
       writable: options.writable,
       prompt: modelPrompt,
       stopConditions: options.stopWhen,
+      sendStart: options.sendStart ?? true,
     });
 
     let result = await iterator.next();
@@ -147,8 +161,12 @@ export class DurableAgent {
       result = await iterator.next(toolResults);
     }
 
-    if (!options.preventClose) {
-      await closeStream(options.writable);
+    const sendFinish = options.sendFinish ?? true;
+    const preventClose = options.preventClose ?? false;
+
+    // Only call closeStream if there's something to do
+    if (sendFinish || !preventClose) {
+      await closeStream(options.writable, preventClose, sendFinish);
     }
 
     // The iterator returns the final conversation prompt (LanguageModelV2Prompt)
@@ -159,10 +177,27 @@ export class DurableAgent {
   }
 }
 
-async function closeStream(writable: WritableStream<UIMessageChunk>) {
+async function closeStream(
+  writable: WritableStream<UIMessageChunk>,
+  preventClose?: boolean,
+  sendFinish?: boolean
+) {
   'use step';
 
-  await writable.close();
+  // Conditionally write the finish chunk
+  if (sendFinish) {
+    const writer = writable.getWriter();
+    try {
+      await writer.write({ type: 'finish' });
+    } finally {
+      writer.releaseLock();
+    }
+  }
+
+  // Conditionally close the stream
+  if (!preventClose) {
+    await writable.close();
+  }
 }
 
 async function executeTool(
@@ -181,20 +216,38 @@ async function executeTool(
     throw new Error(
       `Invalid input for tool "${toolCall.toolName}": ${input?.error?.message}`
     );
-  }
-  const toolResult = await tool.execute(input.value, {
-    toolCallId: toolCall.toolCallId,
-    // TODO: pass the proper messages to the tool (we'd need to pass them through the iterator)
-    messages: [],
-  });
 
-  return {
-    type: 'tool-result',
-    toolCallId: toolCall.toolCallId,
-    toolName: toolCall.toolName,
-    output: {
-      type: 'text',
-      value: JSON.stringify(toolResult) ?? '',
-    },
-  };
+  try {
+    const toolResult = await tool.execute(input.value, {
+      toolCallId: toolCall.toolCallId,
+      // TODO: pass the proper messages to the tool (we'd need to pass them through the iterator)
+      messages: [],
+    });
+
+    return {
+      type: 'tool-result',
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      output: {
+        type: 'text',
+        value: JSON.stringify(toolResult) ?? '',
+      },
+    };
+  } catch (error) {
+    // If it's a FatalError, convert it to a tool error result that gets sent back to the LLM
+    // This mimics AI SDK behavior where tool call failures are propagated back to the model
+    if (FatalError.is(error)) {
+      return {
+        type: 'tool-result',
+        toolCallId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+        output: {
+          type: 'error-text',
+          value: error.message,
+        },
+      };
+    }
+    // This should technically never happen, since any error that's not FatalError would be caught in the step boundary and re-try the step
+    throw error;
+  }
 }

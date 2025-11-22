@@ -157,7 +157,6 @@ export const POST = async ({request}) => {
     await this.createWebhookBundle({
       outfile: webhookRouteFile,
       bundle: false, // SvelteKit will handle bundling
-      suppressUndefinedRejections: true,
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter

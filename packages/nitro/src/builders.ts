@@ -68,7 +68,6 @@ export class LocalBuilder extends BaseBuilder {
     await this.createWebhookBundle({
       outfile: webhookRouteFile,
       bundle: false,
-      suppressUndefinedRejections: true,
     });
   }
 }
