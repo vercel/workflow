@@ -159,7 +159,8 @@ server.get('/api/trigger', async (req: any, reply) => {
 
     if (returnValue instanceof ReadableStream) {
       const reader = returnValue.getReader();
-      reply.type('application/octet-stream');
+      // reply.type() doesn't apply when we write directly to reply.raw
+      reply.raw.setHeader('Content-Type', 'application/octet-stream');
 
       // Workflow returns a Web ReadableStream; stream it by pulling from
       // its reader and writing to reply.raw so Fastify can flush it to the client
