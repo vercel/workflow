@@ -3,7 +3,7 @@ title: Getting Started
 description: Start by choosing your framework. Each guide will walk you through the steps to install the dependencies and start running your first workflow.
 ---
 
-import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStack, Vite, Express } from '@/app/(home)/components/frameworks';
+import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStack, Vite, Express, Fastify } from '@/app/(home)/components/frameworks';
 
 <Cards>
     <Card href="/docs/getting-started/next">
@@ -22,6 +22,12 @@ import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStac
     <div className="flex flex-col items-center justify-center text-center gap-2">
         <Express className="size-16 dark:invert" />
         <span className="font-medium">Express</span>
+    </div>
+    </Card>
+    <Card href="/docs/getting-started/fastify" >
+    <div className="flex flex-col items-center justify-center text-center gap-2">
+        <Fastify className="size-16 dark:invert" />
+        <span className="font-medium">Fastify</span>
     </div>
     </Card>
     <Card href="/docs/getting-started/hono">
