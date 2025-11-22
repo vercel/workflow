@@ -58,11 +58,18 @@ export function createStreamer(basedir: string): Streamer {
 
       const chunkId = `strm_${monotonicUlid()}`;
 
+      // Convert chunk to buffer for serialization
+      let chunkBuffer: Buffer;
       if (typeof chunk === 'string') {
-        chunk = new TextEncoder().encode(chunk);
+        chunkBuffer = Buffer.from(new TextEncoder().encode(chunk));
+      } else if (chunk instanceof Buffer) {
+        chunkBuffer = chunk;
+      } else {
+        chunkBuffer = Buffer.from(chunk);
       }
+
       const serialized = serializeChunk({
-        chunk: Buffer.from(chunk),
+        chunk: chunkBuffer,
         eof: false,
       });
 
@@ -75,13 +82,11 @@ export function createStreamer(basedir: string): Streamer {
 
       await write(chunkPath, serialized);
 
-      // Emit real-time event
+      // Emit real-time event with Uint8Array
       const chunkData =
-        typeof chunk === 'string'
-          ? new TextEncoder().encode(chunk)
-          : chunk instanceof Buffer
-            ? new Uint8Array(chunk)
-            : chunk;
+        chunkBuffer instanceof Buffer
+          ? new Uint8Array(chunkBuffer)
+          : chunkBuffer;
 
       streamEmitter.emit(`chunk:${name}` as const, {
         streamName: name,
@@ -131,6 +136,12 @@ export function createStreamer(basedir: string): Streamer {
             chunkId: string;
           }) => {
             deliveredChunkIds.add(event.chunkId);
+
+            // Skip empty chunks to maintain consistency with disk reading behavior
+            // Empty chunks are not enqueued when read from disk (see line 184-186)
+            if (event.chunkData.byteLength === 0) {
+              return;
+            }
 
             if (isReadingFromDisk) {
               // Buffer chunks that arrive during disk reading to maintain order

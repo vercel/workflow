@@ -38,6 +38,15 @@ export async function writeJSON(
   return write(filePath, JSON.stringify(data, null, 2), opts);
 }
 
+/**
+ * Writes data to a file using atomic write-rename pattern.
+ *
+ * Note: While this function uses temp files to avoid partial writes,
+ * it does not provide protection against concurrent writes from multiple
+ * processes. In a multi-writer scenario, the last writer wins.
+ * For production use with multiple writers, consider using a proper
+ * database or locking mechanism.
+ */
 export async function write(
   filePath: string,
   data: string | Buffer,
@@ -59,12 +68,17 @@ export async function write(
   }
 
   const tempPath = `${filePath}.tmp.${ulid()}`;
+  let tempFileCreated = false;
   try {
     await ensureDir(path.dirname(filePath));
     await fs.writeFile(tempPath, data);
+    tempFileCreated = true;
     await fs.rename(tempPath, filePath);
   } catch (error) {
-    await fs.unlink(tempPath).catch(() => {});
+    // Only try to clean up temp file if it was actually created
+    if (tempFileCreated) {
+      await fs.unlink(tempPath).catch(() => {});
+    }
     throw error;
   }
 }
