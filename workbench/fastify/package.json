@@ -1,7 +1,10 @@
 {
-  "name": "@workbench/fastify",
+  "name": "@workbench/example-fastify",
+  "version": "0.0.0",
   "private": true,
+  "description": "",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "generate:workflows": "node ../scripts/generate-workflows-registry.js",
     "predev": "pnpm generate:workflows",
