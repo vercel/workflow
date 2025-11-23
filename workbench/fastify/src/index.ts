@@ -192,6 +192,7 @@ server.get('/api/trigger', async (req: any, reply) => {
     if (error instanceof Error) {
       if (WorkflowRunNotCompletedError.is(error)) {
         return reply.code(202).send({
+          ...error,
           name: error.name,
           message: error.message,
         });
@@ -200,6 +201,7 @@ server.get('/api/trigger', async (req: any, reply) => {
       if (WorkflowRunFailedError.is(error)) {
         const cause = error.cause;
         return reply.code(400).send({
+          ...error,
           name: error.name,
           message: error.message,
           cause: {
