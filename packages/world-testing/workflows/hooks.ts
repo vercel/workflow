@@ -42,5 +42,4 @@ async function writeEvent(
       })}\r\n`
     )
   );
-  // writer.close();
 }

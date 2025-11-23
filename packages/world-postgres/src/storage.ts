@@ -556,7 +556,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
           stepName: data.stepName,
           input: data.input as SerializedContent,
           status: 'pending',
-          attempt: 1,
+          attempt: 0,
         })
         .onConflictDoNothing()
         .returning();
