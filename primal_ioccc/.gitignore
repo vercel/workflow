@@ -1,0 +1,4 @@
+# Build artifacts
+primal
+*.o
+*.out
