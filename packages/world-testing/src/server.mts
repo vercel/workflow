@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { getRun, start } from 'workflow/api';
+import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import * as z from 'zod';
 import flow from '../.well-known/workflow/v1/flow.js';
@@ -52,6 +52,14 @@ const app = new Hono()
     const handler = await start(json.workflow, json.args);
 
     return ctx.json({ runId: handler.runId });
+  })
+  .post('/hooks/:token', async (ctx) => {
+    const hook = await getHookByToken(ctx.req.param('token'));
+    const { runId } = await resumeHook(hook.token, {
+      ...(await ctx.req.json()),
+      metadata: hook.metadata,
+    });
+    return ctx.json({ runId, hookId: hook.hookId });
   })
   .get('/runs/:runId', async (ctx) => {
     return ctx.json(await getWorld().runs.get(ctx.req.param('runId')));
