@@ -402,6 +402,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
+          v.eventData ||= v.eventDataJson;
           const parsed = EventSchema.parse(compact(v));
           return filterEventData(parsed, resolveData);
         }),
@@ -435,6 +436,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
+          v.eventData ||= v.eventDataJson;
           const parsed = EventSchema.parse(compact(v));
           return filterEventData(parsed, resolveData);
         }),
@@ -461,6 +463,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         .from(hooks)
         .where(eq(hooks.hookId, hookId))
         .limit(1);
+      value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
@@ -496,6 +499,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           status: 404,
         });
       }
+      value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
@@ -520,6 +524,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
+          v.metadata ||= v.metadataJson;
           const parsed = HookSchema.parse(compact(v));
           return filterHookData(parsed, resolveData);
         }),
