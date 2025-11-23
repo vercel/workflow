@@ -83,6 +83,9 @@ export function createFetcher(control: Control) {
         body: JSON.stringify({ file, workflow, args }),
       });
       const data = await x.json().then(Invoke.parse);
+      onTestFailed(() => {
+        console.error('Workflow run:', data.runId);
+      });
       return data;
     },
     async getRun(id: string) {
@@ -120,6 +123,7 @@ export function createFetcher(control: Control) {
           body: JSON.stringify(payload),
         }
       );
+      res.arrayBuffer().catch(() => {}); // Drain the body to avoid resource leaks
       if (!res.ok) {
         throw new Error(
           `Failed to resume hook: ${res.status} ${res.statusText}`

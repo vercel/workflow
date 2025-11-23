@@ -14,7 +14,6 @@ export function hooks(world: string) {
       'collectWithHook',
       [token, customData]
     );
-    console.log('invoke result', result);
     expect(result.runId).toMatch(/^wrun_.+/);
     const readable = await server.getReadable(result.runId);
     const events = jsonlines(readable);
@@ -35,7 +34,9 @@ export function hooks(world: string) {
 
         console.log('unhandled event', obj);
       }
-    })();
+    })().catch(() => {
+      // ignore errors for reading stream
+    });
 
     await hookCreated.promise;
 
