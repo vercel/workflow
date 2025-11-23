@@ -528,6 +528,20 @@ describe('Storage (Postgres integration)', () => {
         expect(event.createdAt).toBeInstanceOf(Date);
       });
 
+      it.only('should create a new event with null byte in payload', async () => {
+        const event = await events.create(testRunId, {
+          eventType: 'step_failed',
+          correlationId: 'corr_123',
+          eventData: { error: 'Error with null byte \u0000 in message' },
+        });
+
+        expect(event.runId).toBe(testRunId);
+        expect(event.eventId).toMatch(/^wevt_/);
+        expect(event.eventType).toBe('step_failed');
+        expect(event.correlationId).toBe('corr_123');
+        expect(event.createdAt).toBeInstanceOf(Date);
+      });
+
       it('should handle workflow completed events', async () => {
         const eventData = {
           eventType: 'workflow_completed' as const,

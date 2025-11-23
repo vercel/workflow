@@ -160,6 +160,9 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       if (!value) {
         throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
       }
+      value.output ||= value.outputJson;
+      value.input ||= value.inputJson;
+      value.executionContext ||= value.executionContextJson;
       const deserialized = deserializeRunError(compact(value));
       const parsed = WorkflowRunSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
@@ -583,6 +586,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
           status: 404,
         });
       }
+      value.output ||= value.outputJson;
       const deserialized = deserializeStepError(compact(value));
       const parsed = StepSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';

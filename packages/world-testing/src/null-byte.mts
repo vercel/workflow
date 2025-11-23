@@ -1,31 +1,27 @@
 import { expect, test, vi } from 'vitest';
-import { hydrateWorkflowReturnValue } from 'workflow/internal/serialization';
 import { createFetcher, startServer } from './util.mjs';
 
-export function addition(world: string) {
-  test('runs an addition', { timeout: 12_000 }, async () => {
+export function nullByte(world: string) {
+  test('supports null bytes in step results', { timeout: 12_000 }, async () => {
     const server = await startServer({ world }).then(createFetcher);
     const result = await server.invoke(
-      'workflows/addition.ts',
-      'addition',
-      [1, 2]
+      'workflows/null-byte.ts',
+      'nullByteWorkflow',
+      []
     );
     expect(result.runId).toMatch(/^wrun_.+/);
-    const run = await vi.waitFor(
+    await vi.waitFor(
       async () => {
         const run = await server.getRun(result.runId);
         expect(run).toMatchObject<Partial<typeof run>>({
           status: 'completed',
-          output: [3],
+          output: ['null byte \0'],
         });
-        return run;
       },
       {
         interval: 200,
         timeout: 10_000,
       }
     );
-    const output = await hydrateWorkflowReturnValue(run.output, [], run.runId);
-    expect(output).toEqual(3);
   });
 }
