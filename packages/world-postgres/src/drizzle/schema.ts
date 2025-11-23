@@ -70,10 +70,7 @@ export const runs = schema.table(
     completedAt: timestamp('completed_at'),
     startedAt: timestamp('started_at'),
   } satisfies DrizzlishOfType<WorkflowRun>,
-  (tb) => ({
-    workflowNameIdx: index().on(tb.workflowName),
-    statusIdx: index().on(tb.status),
-  })
+  (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );
 
 export const events = schema.table(
@@ -86,10 +83,7 @@ export const events = schema.table(
     runId: varchar('run_id').notNull(),
     eventData: jsonb('payload'),
   } satisfies DrizzlishOfType<Event & { eventData?: undefined }>,
-  (tb) => ({
-    runFk: index().on(tb.runId),
-    correlationIdFk: index().on(tb.correlationId),
-  })
+  (tb) => [index().on(tb.runId), index().on(tb.correlationId)]
 );
 
 export const steps = schema.table(
@@ -112,10 +106,7 @@ export const steps = schema.table(
       .notNull(),
     retryAfter: timestamp('retry_after'),
   } satisfies DrizzlishOfType<Step>,
-  (tb) => ({
-    runFk: index().on(tb.runId),
-    statusIdx: index().on(tb.status),
-  })
+  (tb) => [index().on(tb.runId), index().on(tb.status)]
 );
 
 export const hooks = schema.table(
@@ -130,10 +121,7 @@ export const hooks = schema.table(
     createdAt: timestamp('created_at').defaultNow().notNull(),
     metadata: jsonb('metadata').$type<SerializedContent>(),
   } satisfies DrizzlishOfType<Hook>,
-  (tb) => ({
-    runFk: index().on(tb.runId),
-    tokenIdx: index().on(tb.token),
-  })
+  (tb) => [index().on(tb.runId), index().on(tb.token)]
 );
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
@@ -151,7 +139,5 @@ export const streams = schema.table(
     createdAt: timestamp('created_at').defaultNow().notNull(),
     eof: boolean('eof').notNull(),
   },
-  (tb) => ({
-    primaryKey: primaryKey({ columns: [tb.streamId, tb.chunkId] }),
-  })
+  (tb) => [primaryKey({ columns: [tb.streamId, tb.chunkId] })]
 );
