@@ -13,6 +13,7 @@
     "start": "node .output/server/index.mjs"
   },
   "devDependencies": {
+    "@workflow/world-postgres": "workspace:*",
     "workflow": "workspace:*",
     "ai": "catalog:",
     "hono": "^4.9.10",

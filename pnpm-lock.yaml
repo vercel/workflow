@@ -1124,6 +1124,9 @@ importers:
       '@workflow/cli':
         specifier: workspace:*
         version: link:../../packages/cli
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       esbuild:
         specifier: 'catalog:'
         version: 0.25.11
@@ -1143,6 +1146,9 @@ importers:
       '@types/express':
         specifier: ^5.0.5
         version: 5.0.5
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1161,6 +1167,9 @@ importers:
 
   workbench/hono:
     devDependencies:
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1240,6 +1249,9 @@ importers:
       '@types/react-dom':
         specifier: ^19
         version: 19.1.9(@types/react@19.1.13)
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       tailwindcss:
         specifier: ^4
         version: 4.1.13
@@ -1304,6 +1316,9 @@ importers:
       '@types/react-dom':
         specifier: ^19
         version: 19.1.9(@types/react@19.1.13)
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       tailwindcss:
         specifier: ^4
         version: 4.1.13
@@ -1317,6 +1332,9 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
     devDependencies:
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1344,6 +1362,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1372,6 +1393,9 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
     devDependencies:
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1403,6 +1427,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1476,6 +1503,9 @@ importers:
       '@types/lodash.chunk':
         specifier: ^4.2.9
         version: 4.2.9
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       svelte:
         specifier: ^5.39.5
         version: 5.43.3
@@ -1498,6 +1528,9 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
     devDependencies:
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)

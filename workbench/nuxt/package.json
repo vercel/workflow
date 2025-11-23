@@ -13,6 +13,7 @@
     "start": "node .output/server/index.mjs"
   },
   "devDependencies": {
+    "@workflow/world-postgres": "workspace:*",
     "@types/node": "catalog:",
     "workflow": "workspace:*",
     "ai": "catalog:",

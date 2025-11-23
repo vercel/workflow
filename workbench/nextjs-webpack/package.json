@@ -29,6 +29,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@workflow/world-postgres": "workspace:*",
     "@tailwindcss/postcss": "^4",
     "@types/lodash.chunk": "^4.2.9",
     "@types/node": "catalog:",

@@ -10,6 +10,7 @@
     "build": "workflow build --target vercel-build-output-api --workflow-manifest manifest.js && rm -rf .vercel/output/static && cp -rv public .vercel/output/static"
   },
   "devDependencies": {
+    "@workflow/world-postgres": "workspace:*",
     "@types/lodash.chunk": "^4.2.9",
     "@types/node": "catalog:",
     "@workflow/cli": "workspace:*",
