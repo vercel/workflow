@@ -1,0 +1,31 @@
+Title: Primal Memory Without Files
+
+What it is:
+A deterministic-adaptive generator that implements the Primal Logic update:
+    x_{k+1} = x_k + α·Θ(t_k) − λ·x_k
+with Θ(t)=t xor (t mod 7). Output is a 79×24 ASCII field where '#' marks
+a quantized trajectory y = squash(x). The pattern "adapts" to run/build history.
+
+Where "memory" lives:
+α, λ, and the initial t are derived from argv, __FILE__, __DATE__, __TIME__,
+and program text length. No external files, no syscalls beyond stdio.
+Same inputs ⇒ same pattern. Different build/run context ⇒ different, but reproducible.
+
+How it maps:
+  U(a,l,x,t) := x + a*(Θ(t)/255) − l*x
+  Θ(t)      := t ^ (t%7)
+  squash    := 0.5 + 0.5 * tanh(x)  (implemented via a tanh-lite rational)
+
+Why IOCCC:
+Small, portable C; obfuscated via macro lattice and misleading seeds.
+Deterministic yet adaptive behavior fits the contest ethos.
+
+Build:
+  cc -std=c11 -O2 primal.c -o primal
+Run:
+  ./primal
+Portability:
+  Tested with gcc/clang on Unix-like systems; relies on stdio only.
+
+Notes:
+  Source ≤ 4096 bytes. Single file. No undefined behavior intended.
