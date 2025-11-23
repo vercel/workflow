@@ -484,6 +484,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           status: 409,
         });
       }
+      value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
