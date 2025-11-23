@@ -6,13 +6,13 @@ import {
   type WorkflowRun,
   WorkflowRunStatusSchema,
 } from '@workflow/world';
-import { decode, encode } from 'cbor-x';
 import {
   boolean,
   customType,
   index,
   integer,
-  jsonb as jsonb_,
+  /** @deprecated: use Cbor instead */
+  jsonb,
   pgEnum,
   pgSchema,
   primaryKey,
@@ -20,20 +20,7 @@ import {
   timestamp,
   varchar,
 } from 'drizzle-orm/pg-core';
-
-/** @deprecated - use Cbor instead */
-const jsonb = jsonb_;
-
-const Cbor = <T>() =>
-  customType<{ data: T; driverData: Buffer }>({
-    dataType: () => 'bytea',
-    fromDriver: (value) => decode(value),
-    toDriver: (value) => encode(value),
-  });
-
-type Cborized<K extends string> = {
-  [key in `${K}Json`]: unknown;
-};
+import { Cbor, type Cborized } from './cbor.js';
 
 function mustBeMoreThanOne<T>(t: T[]) {
   return t as [T, ...T[]];
@@ -92,9 +79,10 @@ export const runs = schema.table(
     completedAt: timestamp('completed_at'),
     startedAt: timestamp('started_at'),
   } satisfies DrizzlishOfType<
-    Omit<WorkflowRun, 'input'> & { input?: unknown } & Cborized<
-        'output' | 'input' | 'executionContext'
-      >
+    Cborized<
+      Omit<WorkflowRun, 'input'> & { input?: unknown },
+      'input' | 'output' | 'executionContext'
+    >
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );
@@ -111,7 +99,7 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
   } satisfies DrizzlishOfType<
-    Event & Cborized<'eventData'> & { eventData?: undefined }
+    Cborized<Event & { eventData?: undefined }, 'eventData'>
   >,
   (tb) => [index().on(tb.runId), index().on(tb.correlationId)]
 );
@@ -139,8 +127,9 @@ export const steps = schema.table(
       .$onUpdateFn(() => new Date())
       .notNull(),
     retryAfter: timestamp('retry_after'),
-  } satisfies DrizzlishOfType<Omit<Step, 'input'> & { input?: unknown }> &
-    Cborized<'output' | 'input'>,
+  } satisfies DrizzlishOfType<
+    Cborized<Omit<Step, 'input'> & { input?: unknown }, 'output' | 'input'>
+  >,
   (tb) => [index().on(tb.runId), index().on(tb.status)]
 );
 
@@ -157,7 +146,7 @@ export const hooks = schema.table(
     /** @deprecated */
     metadataJson: jsonb('metadata').$type<SerializedContent>(),
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
-  } satisfies DrizzlishOfType<Hook> & Cborized<'metadata'>,
+  } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );
 
