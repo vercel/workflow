@@ -4,12 +4,13 @@ import type {
   LanguageModelV2ToolCall,
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
-import type { StepResult, ToolSet, UIMessageChunk } from 'ai';
-import {
-  doStreamStep,
-  FinishPart,
-  type ModelStopCondition,
-} from './do-stream-step.js';
+import type {
+  StepResult,
+  StreamTextOnStepFinishCallback,
+  ToolSet,
+  UIMessageChunk,
+} from 'ai';
+import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
 // This runs in the workflow context
@@ -20,7 +21,7 @@ export async function* streamTextIterator({
   model,
   stopConditions,
   sendStart = true,
-  onFinish,
+  onStepFinish,
 }: {
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
@@ -28,7 +29,7 @@ export async function* streamTextIterator({
   model: string | (() => Promise<LanguageModelV2>);
   stopConditions?: ModelStopCondition[] | ModelStopCondition;
   sendStart?: boolean;
-  onFinish?: (finish: FinishPart) => void;
+  onStepFinish?: StreamTextOnStepFinishCallback<any>;
 }): AsyncGenerator<
   LanguageModelV2ToolCall[],
   LanguageModelV2Prompt,
@@ -101,8 +102,8 @@ export async function* streamTextIterator({
       throw new Error(`Unexpected finish reason: ${finish?.finishReason}`);
     }
 
-    if (finish && done && onFinish) {
-      onFinish(finish);
+    if (onStepFinish) {
+      await onStepFinish(step);
     }
   }
 

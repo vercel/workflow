@@ -7,13 +7,13 @@ import {
   asSchema,
   type ModelMessage,
   type StopCondition,
+  type StreamTextOnStepFinishCallback,
   type ToolSet,
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
-import type { FinishPart } from './do-stream-step.js';
 
 /**
  * Configuration options for creating a {@link DurableAgent} instance.
@@ -86,9 +86,9 @@ export interface DurableAgentStreamOptions {
     | Array<StopCondition<NoInfer<ToolSet>>>;
 
   /**
-   * Callback function to be called when the generation is finished.
+   * Callback function to be called after each step completes.
    */
-  onFinish?: (finish: FinishPart) => void;
+  onStepFinish?: StreamTextOnStepFinishCallback<any>;
 }
 
 /**
@@ -153,7 +153,7 @@ export class DurableAgent {
       prompt: modelPrompt,
       stopConditions: options.stopWhen,
       sendStart: options.sendStart ?? true,
-      onFinish: options.onFinish,
+      onStepFinish: options.onStepFinish,
     });
 
     let result = await iterator.next();
