@@ -38,7 +38,7 @@ export function createQueue(config?: APIConfig): Queue {
     // We fall back to an identity function for zod v3 compatibility
     const hasEncoder = typeof MessageWrapper.encode === 'function';
     if (!hasEncoder) {
-      console.warn(
+      throw new Error(
         'zod v3 compatibility mode: MessageWrapper.encode is not a function'
       );
     }
