@@ -1,5 +1,11 @@
 # @workflow/builders
 
+## 4.0.1-beta.17
+
+### Patch Changes
+
+- @workflow/core@4.0.1-beta.18
+
 ## 4.0.1-beta.16
 
 ### Patch Changes

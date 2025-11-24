@@ -1,5 +1,11 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.15
+
+### Patch Changes
+
+- @workflow/builders@4.0.1-beta.17
+
 ## 4.0.0-beta.14
 
 ### Patch Changes

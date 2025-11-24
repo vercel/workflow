@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- 6889dac: Log warning when detecting zod v3
+
 ## 4.0.1-beta.11
 
 ### Patch Changes
