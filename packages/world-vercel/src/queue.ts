@@ -35,7 +35,17 @@ export function createQueue(config?: APIConfig): Queue {
   }
 
   const queue: Queue['queue'] = async (queueName, x, opts) => {
-    const encoded = MessageWrapper.encode({
+    // We fall back to an identity function for zod v3 compatibility
+    const hasEncoder = typeof MessageWrapper.encode === 'function';
+    if (!hasEncoder) {
+      console.warn(
+        'zod v3 compatibility mode: MessageWrapper.encode is not a function'
+      );
+    }
+    const encoder = hasEncoder
+      ? MessageWrapper.encode
+      : (data: z.infer<typeof MessageWrapper>) => data;
+    const encoded = encoder({
       payload: x,
       queueName,
     });
