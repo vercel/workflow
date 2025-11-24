@@ -39,8 +39,8 @@ export function createQueue(config?: APIConfig): Queue {
     // but codebases that pin zod v3 are still common.
     const hasEncoder = typeof MessageWrapper.encode === 'function';
     if (!hasEncoder) {
-      throw new Error(
-        'zod v3 compatibility mode: MessageWrapper.encode is not a function'
+      console.warn(
+        'Using zod v3 compatibility mode for queue() calls - this may not work as expected'
       );
     }
     const encoder = hasEncoder
