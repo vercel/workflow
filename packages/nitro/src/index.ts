@@ -43,7 +43,6 @@ export default {
     // Generate functions for vercel build
     if (isVercelDeploy) {
       nitro.hooks.hook('compiled', async () => {
-        console.log('Building functions for Vercel...');
         await new VercelBuilder(nitro).build();
       });
     }
