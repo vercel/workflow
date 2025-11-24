@@ -74,8 +74,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         try {
           content = await read();
         } catch {
-          // File might have been deleted - trigger rebuild to update generated routes
-          const deleteStartTime = Date.now();
           if (builder) {
             await builder.build();
           }
@@ -99,7 +97,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
 
         // Trigger full reload - this will cause Nitro's dev:reload hook to fire,
         // which will rebuild workflows and update routes
-        const startTime = Date.now();
         if (builder) {
           await builder.build();
         }

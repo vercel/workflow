@@ -57,7 +57,6 @@ export default {
       // Allows for HMR
       if (nitro.options.dev) {
         nitro.hooks.hook('dev:reload', async () => {
-          const startTime = Date.now();
           await builder.build();
         });
       }
