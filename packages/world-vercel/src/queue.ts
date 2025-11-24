@@ -36,16 +36,16 @@ export function createQueue(config?: APIConfig): Queue {
 
   const queue: Queue['queue'] = async (queueName, x, opts) => {
     // We fall back to an identity function for zod v3 compatibility
-    const hasEncoder = typeof MessageWrapper.encode === 'function';
-    if (!hasEncoder) {
-      throw new Error(
-        'zod v3 compatibility mode: MessageWrapper.encode is not a function'
-      );
-    }
-    const encoder = hasEncoder
-      ? MessageWrapper.encode
-      : (data: z.infer<typeof MessageWrapper>) => data;
-    const encoded = encoder({
+    // const hasEncoder = typeof MessageWrapper.encode === 'function';
+    // if (!hasEncoder) {
+    //   throw new Error(
+    //     'zod v3 compatibility mode: MessageWrapper.encode is not a function'
+    //   );
+    // }
+    // const encoder = hasEncoder
+    //   ? MessageWrapper.encode
+    //   : (data: z.infer<typeof MessageWrapper>) => data;
+    const encoded = MessageWrapper.encode({
       payload: x,
       queueName,
     });
