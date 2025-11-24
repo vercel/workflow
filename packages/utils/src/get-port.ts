@@ -46,7 +46,9 @@ export async function getPort(): Promise<number | undefined> {
           for (const line of lines) {
             // Extract port from the local address column
             // Matches both IPv4 (e.g., "127.0.0.1:3000") and IPv6 bracket notation (e.g., "[::1]:3000")
-            const match = line.trim().match(/^\s*TCP\s+(?:\[[\da-f:]+\]|[\d.]+):(\d+)\s+/i);
+            const match = line
+              .trim()
+              .match(/^\s*TCP\s+(?:\[[\da-f:]+\]|[\d.]+):(\d+)\s+/i);
             if (match) {
               port = parseInt(match[1], 10);
               break;
