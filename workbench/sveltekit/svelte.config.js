@@ -3,11 +3,7 @@ import vercel from '@sveltejs/adapter-vercel';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
 // Node adapter needed for ci tests
-const adapter = process.env.VERCEL_DEPLOYMENT_ID
-  ? vercel({
-      runtime: 'nodejs22.x',
-    })
-  : node();
+const adapter = process.env.VERCEL_DEPLOYMENT_ID ? vercel() : node();
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
