@@ -9,6 +9,13 @@ import { allWorkflows } from '../_workflows.js';
 
 const app = new Hono();
 
+// Postgres World
+if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+  import('workflow/runtime').then(async ({ getWorld }) => {
+    await getWorld().start?.();
+  });
+}
+
 app.post('/api/trigger', async ({ req }) => {
   const url = new URL(req.url);
 
