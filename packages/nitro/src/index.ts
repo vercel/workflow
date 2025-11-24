@@ -58,13 +58,7 @@ export default {
       if (nitro.options.dev) {
         nitro.hooks.hook('dev:reload', async () => {
           const startTime = Date.now();
-          console.log(
-            '[workflow:nitro] dev:reload hook triggered, starting rebuild...'
-          );
           await builder.build();
-          console.log(
-            `[workflow:nitro] dev:reload hook completed in ${Date.now() - startTime}ms`
-          );
         });
       }
 
@@ -90,7 +84,6 @@ export default {
 } satisfies NitroModule;
 
 function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
-  console.log('ADDING VIRTUAL HANDLER');
   nitro.options.handlers.push({
     route,
     handler: `#${buildPath}`,
@@ -109,15 +102,8 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
     import { POST } from "${join(nitro.options.buildDir, buildPath)}";
     export default async ({ req }) => {
       try {
-        console.log('[workflow:nitro] Virtual handler called for route: ${route}');
         return await POST(req);
       } catch (error) {
-        console.error('[workflow:nitro] Handler error for route ${route}:', error);
-        console.error('[workflow:nitro] Error details:', {
-          message: error.message,
-          code: error.code,
-          stack: error.stack?.split('\\n').slice(0, 3).join('\\n')
-        });
         return new Response('Internal Server Error', { status: 500 });
       }
     };
