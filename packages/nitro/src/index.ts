@@ -103,6 +103,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
       try {
         return await POST(req);
       } catch (error) {
+        console.error('Handler error:', error);
         return new Response('Internal Server Error', { status: 500 });
       }
     };
