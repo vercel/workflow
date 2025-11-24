@@ -239,10 +239,7 @@ export function RunDetailView({
         </AlertDialogContent>
       </AlertDialog>
 
-      <div
-        className="flex flex-col overflow-hidden"
-        style={{ height: 'calc(100vh - 7rem)' }}
-      >
+      <div className="flex flex-col pb-6">
         <div className="flex-none space-y-6">
           <Button
             variant="ghost"
@@ -255,7 +252,7 @@ export function RunDetailView({
           </Button>
 
           {/* Run Overview Header */}
-          <div className="space-y-4 pb-6 border-b">
+          <div className="space-y-4 pb-6">
             {/* Title Row */}
             <div className="flex items-start justify-between">
               <div className="mb-6">
@@ -348,13 +345,12 @@ export function RunDetailView({
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 relative">
+        <div className="mt-6 mb-12">
           <Tabs
             value={activeTab}
             onValueChange={(v) => setActiveTab(v as 'trace' | 'graph')}
-            className="h-full flex flex-col"
           >
-            <TabsList className="flex-none">
+            <TabsList className="mb-4">
               <TabsTrigger value="trace" className="gap-2">
                 <List className="h-4 w-4" />
                 Trace
@@ -365,65 +361,63 @@ export function RunDetailView({
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent
-              value="trace"
-              className="flex-1 min-h-0 mt-0 data-[state=active]:flex data-[state=active]:flex-col"
-            >
-              <WorkflowTraceViewer
-                error={error}
-                steps={allSteps}
-                events={allEvents}
-                hooks={allHooks}
-                env={env}
-                run={run}
-                isLoading={loading}
-              />
+            <TabsContent value="trace" className="mt-0">
+              <div style={{ minHeight: '800px' }}>
+                <WorkflowTraceViewer
+                  error={error}
+                  steps={allSteps}
+                  events={allEvents}
+                  hooks={allHooks}
+                  env={env}
+                  run={run}
+                  isLoading={loading}
+                />
+              </div>
             </TabsContent>
 
-            <TabsContent
-              value="graph"
-              className="flex-1 min-h-0 mt-0 data-[state=active]:flex"
-            >
-              {graphLoading ? (
-                <div className="flex items-center justify-center w-full h-full">
-                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                  <span className="ml-4 text-muted-foreground">
-                    Loading workflow graph...
-                  </span>
-                </div>
-              ) : graphError ? (
-                <div className="flex items-center justify-center w-full h-full p-4">
-                  <Alert variant="destructive" className="max-w-lg">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Error Loading Workflow Graph</AlertTitle>
-                    <AlertDescription>{graphError.message}</AlertDescription>
-                  </Alert>
-                </div>
-              ) : !workflowGraph ? (
-                <div className="flex items-center justify-center w-full h-full">
-                  <Alert className="max-w-lg">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Workflow Graph Not Found</AlertTitle>
-                    <AlertDescription>
-                      Could not find the workflow graph for this run. The
-                      workflow may have been deleted or the graph manifest may
-                      need to be regenerated.
-                    </AlertDescription>
-                  </Alert>
-                </div>
-              ) : (
-                <WorkflowGraphExecutionViewer
-                  workflow={workflowGraph}
-                  execution={execution || undefined}
-                />
-              )}
+            <TabsContent value="graph" className="mt-0">
+              <div style={{ minHeight: '800px', height: '800px' }}>
+                {graphLoading ? (
+                  <div className="flex items-center justify-center w-full h-full">
+                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                    <span className="ml-4 text-muted-foreground">
+                      Loading workflow graph...
+                    </span>
+                  </div>
+                ) : graphError ? (
+                  <div className="flex items-center justify-center w-full h-full p-4">
+                    <Alert variant="destructive" className="max-w-lg">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertTitle>Error Loading Workflow Graph</AlertTitle>
+                      <AlertDescription>{graphError.message}</AlertDescription>
+                    </Alert>
+                  </div>
+                ) : !workflowGraph ? (
+                  <div className="flex items-center justify-center w-full h-full">
+                    <Alert className="max-w-lg">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertTitle>Workflow Graph Not Found</AlertTitle>
+                      <AlertDescription>
+                        Could not find the workflow graph for this run. The
+                        workflow may have been deleted or the graph manifest may
+                        need to be regenerated.
+                      </AlertDescription>
+                    </Alert>
+                  </div>
+                ) : (
+                  <WorkflowGraphExecutionViewer
+                    workflow={workflowGraph}
+                    execution={execution || undefined}
+                  />
+                )}
+              </div>
             </TabsContent>
           </Tabs>
 
           {auxiliaryDataLoading && (
-            <div className="absolute flex items-center justify-center left-4 bottom-4">
+            <div className="fixed flex items-center gap-2 left-8 bottom-8 bg-background border rounded-md px-4 py-2 shadow-lg">
               <Loader2 className="size-4 animate-spin" />
-              <span className="ml-4">Fetching data...</span>
+              <span className="text-sm">Fetching data...</span>
             </div>
           )}
         </div>

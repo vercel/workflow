@@ -131,28 +131,28 @@ function LayoutContent({ children }: LayoutClientProps) {
   }, [resource, id, runId, stepId, hookId, router, config, pathname]);
 
   return (
-    <div className="min-h-screen px-6 pt-8">
+    <div className="min-h-screen flex flex-col">
       <TooltipProvider delayDuration={0}>
-        <div>
-          <div className="flex items-start justify-between">
-            <div className="mb-8 items-center flex justify-between w-full">
-              <Link href="https://useworkflow.dev" target="_blank">
-                <h1
-                  className="flex items-center gap-2 mb-2"
-                  title="Workflow Observability"
-                >
-                  <Logo />
-                </h1>
-              </Link>
-              <div className="ml-auto flex items-center gap-2">
-                <ConnectionStatus config={config} />
-                <SettingsDropdown />
-              </div>
+        {/* Sticky Header */}
+        <div className="sticky top-0 z-50 bg-background border-b px-6 py-4">
+          <div className="flex items-center justify-between w-full">
+            <Link href="https://useworkflow.dev" target="_blank">
+              <h1
+                className="flex items-center gap-2"
+                title="Workflow Observability"
+              >
+                <Logo />
+              </h1>
+            </Link>
+            <div className="ml-auto flex items-center gap-2">
+              <ConnectionStatus config={config} />
+              <SettingsDropdown />
             </div>
           </div>
-
-          {children}
         </div>
+
+        {/* Scrollable Content */}
+        <div className="flex-1 px-6 pt-6">{children}</div>
       </TooltipProvider>
       <Toaster />
     </div>

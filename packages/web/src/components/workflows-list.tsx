@@ -148,7 +148,7 @@ export function WorkflowsList({
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
         <SheetContent
           side="right"
-          className="w-[50vw] max-w-[50vw] sm:max-w-[50vw]"
+          className="w-[75vw] max-w-[75vw] sm:max-w-[75vw]"
         >
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2">
