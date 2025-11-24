@@ -1,5 +1,13 @@
 # @workflow/world-local
 
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- edb69c3: Fix port detection and base URL resolution for dev servers
+- Updated dependencies [edb69c3]
+  - @workflow/utils@4.0.1-beta.4
+
 ## 4.0.1-beta.11
 
 ### Patch Changes

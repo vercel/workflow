@@ -1,5 +1,12 @@
 # @vercel/workflow-nitro
 
+## 4.0.1-beta.20
+
+### Patch Changes
+
+- @workflow/core@4.0.1-beta.17
+- @workflow/builders@4.0.1-beta.16
+
 ## 4.0.1-beta.19
 
 ### Patch Changes

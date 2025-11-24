@@ -1,5 +1,12 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- 2c438c3: Make queue() call backwardscompatible with zod v3 for codebases that pin zod
+  - @workflow/errors@4.0.1-beta.6
+
 ## 4.0.1-beta.10
 
 ### Patch Changes

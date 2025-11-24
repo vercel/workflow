@@ -1,5 +1,18 @@
 # @workflow/cli
 
+## 4.0.1-beta.20
+
+### Patch Changes
+
+- Updated dependencies [2c438c3]
+- Updated dependencies [edb69c3]
+  - @workflow/world-vercel@4.0.1-beta.11
+  - @workflow/world-local@4.0.1-beta.12
+  - @workflow/core@4.0.1-beta.17
+  - @workflow/errors@4.0.1-beta.6
+  - @workflow/builders@4.0.1-beta.16
+  - @workflow/web@4.0.1-beta.11
+
 ## 4.0.1-beta.19
 
 ### Patch Changes
