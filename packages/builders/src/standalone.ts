@@ -10,10 +10,10 @@ export class StandaloneBuilder extends BaseBuilder {
       tsBaseUrl: tsConfig.baseUrl,
       tsPaths: tsConfig.paths,
     };
-    await this.buildStepsBundle(options);
+    const workflowManifest = await this.buildStepsBundle(options);
     await this.buildWorkflowsBundle(options);
     await this.buildWebhookFunction();
-    await this.buildGraphManifest(options);
+    await this.buildGraphManifest({ ...options, workflowManifest });
 
     await this.createClientLibrary();
   }
@@ -26,18 +26,20 @@ export class StandaloneBuilder extends BaseBuilder {
     inputFiles: string[];
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
-  }): Promise<void> {
+  }) {
     console.log('Creating steps bundle at', this.config.stepsBundlePath);
 
     const stepsBundlePath = this.resolvePath(this.config.stepsBundlePath);
     await this.ensureDirectory(stepsBundlePath);
 
-    await this.createStepsBundle({
+    const { manifest } = await this.createStepsBundle({
       outfile: stepsBundlePath,
       inputFiles,
       tsBaseUrl,
       tsPaths,
     });
+
+    return manifest;
   }
 
   private async buildWorkflowsBundle({
@@ -82,10 +84,12 @@ export class StandaloneBuilder extends BaseBuilder {
     inputFiles,
     tsPaths,
     tsBaseUrl,
+    workflowManifest,
   }: {
     inputFiles: string[];
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
+    workflowManifest?: import('./apply-swc-transform.js').WorkflowManifest;
   }): Promise<void> {
     const graphManifestPath = this.resolvePath('.swc/graph-manifest.json');
     await this.ensureDirectory(graphManifestPath);
@@ -95,6 +99,7 @@ export class StandaloneBuilder extends BaseBuilder {
       outfile: graphManifestPath,
       tsBaseUrl,
       tsPaths,
+      workflowManifest,
     });
   }
 }

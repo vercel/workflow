@@ -3,13 +3,33 @@ mod naming;
 
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use swc_core::{
-    common::{DUMMY_SP, SyntaxContext, errors::HANDLER},
+    common::{DUMMY_SP, FileName, FilePathMapping, SourceMap, SyntaxContext, errors::HANDLER},
     ecma::{
         ast::*,
+        parser::{EsSyntax, Syntax, TsSyntax, parse_file_as_module},
         visit::{Visit, VisitMut, VisitMutWith, VisitWith, noop_visit_mut_type},
     },
 };
+
+// Workflow manifest structure passed from JavaScript side
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WorkflowManifest {
+    #[serde(default)]
+    pub steps: HashMap<String, HashMap<String, FunctionMetadata>>,
+    #[serde(default)]
+    pub workflows: HashMap<String, HashMap<String, FunctionMetadata>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FunctionMetadata {
+    #[serde(rename = "stepId", default)]
+    pub step_id: Option<String>,
+    #[serde(rename = "workflowId", default)]
+    pub workflow_id: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 enum WorkflowErrorKind {
@@ -160,8 +180,9 @@ pub struct StepTransform {
     step_function_names: HashSet<String>,
     // Set of function names that are workflow functions
     workflow_function_names: HashSet<String>,
-    // Set of imported identifiers (for graph generation)
-    imported_identifiers: HashSet<String>,
+    // Map of imported identifiers to their source information (for graph generation)
+    // Key: local identifier name, Value: (source_path, imported_name, kind)
+    imported_identifiers: HashMap<String, ImportInfo>,
     // Map from export name to actual const name for default exports (e.g., "default" -> "__default")
     workflow_export_to_const_name: std::collections::HashMap<String, String>,
     // Set of function names that have been registered (to avoid duplicates)
@@ -206,6 +227,10 @@ pub struct StepTransform {
     // Current context: variable name being processed when visiting object properties
     #[allow(dead_code)]
     current_var_context: Option<String>,
+    // Cache for parsed modules to avoid re-parsing the same file
+    parsed_module_cache: HashMap<PathBuf, Module>,
+    // Workflow manifest from the build phase (contains all steps/workflows across all files)
+    workflow_manifest: Option<WorkflowManifest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,10 +240,41 @@ enum GraphCallKind {
 }
 
 #[derive(Debug, Clone)]
+struct ImportInfo {
+    source_path: String,
+    imported_name: String, // The original exported name in the source file
+    kind: Option<GraphCallKind>, // Resolved kind (Step, Workflow, or None if not analyzed yet)
+    lookup_candidates: Vec<String>, // Debug: paths tried during resolution
+}
+
+#[derive(Debug, Clone)]
+enum ControlFlowContext {
+    Loop {
+        id: String,
+        is_await: bool,
+    },
+    Conditional {
+        id: String,
+        branch: ConditionalBranch,
+    },
+    ParallelGroup {
+        id: String,
+        method: String, // "all", "race", "allSettled"
+    },
+}
+
+#[derive(Debug, Clone)]
+enum ConditionalBranch {
+    Then,
+    Else,
+}
+
+#[derive(Debug, Clone)]
 struct GraphCallEvent {
     fn_name: String,
     span: swc_core::common::Span,
     kind: GraphCallKind,
+    context: Vec<ControlFlowContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -230,16 +286,21 @@ struct GraphNodeRef {
 struct GraphUsageCollector<'a> {
     step_function_names: &'a HashSet<String>,
     workflow_function_names: &'a HashSet<String>,
-    imported_identifiers: &'a HashSet<String>,
+    imported_identifiers: &'a HashMap<String, ImportInfo>,
     aliases: HashMap<Id, GraphNodeRef>,
     calls: Vec<GraphCallEvent>,
+    // Control flow tracking
+    context_stack: Vec<ControlFlowContext>,
+    loop_counter: usize,
+    conditional_counter: usize,
+    parallel_counter: usize,
 }
 
 impl<'a> GraphUsageCollector<'a> {
     fn new(
         step_function_names: &'a HashSet<String>,
         workflow_function_names: &'a HashSet<String>,
-        imported_identifiers: &'a HashSet<String>,
+        imported_identifiers: &'a HashMap<String, ImportInfo>,
     ) -> Self {
         Self {
             step_function_names,
@@ -247,6 +308,10 @@ impl<'a> GraphUsageCollector<'a> {
             imported_identifiers,
             aliases: HashMap::new(),
             calls: Vec::new(),
+            context_stack: Vec::new(),
+            loop_counter: 0,
+            conditional_counter: 0,
+            parallel_counter: 0,
         }
     }
 
@@ -301,33 +366,90 @@ impl<'a> GraphUsageCollector<'a> {
     }
 
     fn record_usage(&mut self, node: GraphNodeRef, span: swc_core::common::Span) {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[graph] Recording {} with context depth: {} (contexts: {:?})",
+            node.name,
+            self.context_stack.len(),
+            self.context_stack
+                .iter()
+                .map(|c| match c {
+                    ControlFlowContext::Loop { id, is_await } =>
+                        format!("Loop({}{})", id, if *is_await { " await" } else { "" }),
+                    ControlFlowContext::Conditional { id, branch } =>
+                        format!("Cond({} {:?})", id, branch),
+                    ControlFlowContext::ParallelGroup { id, method } =>
+                        format!("Parallel({} {})", id, method),
+                })
+                .collect::<Vec<_>>()
+        );
         self.calls.push(GraphCallEvent {
             fn_name: node.name,
             span,
             kind: node.kind,
+            context: self.context_stack.clone(),
         });
     }
 }
 
 impl<'a> Visit for GraphUsageCollector<'a> {
     fn visit_call_expr(&mut self, call: &CallExpr) {
+        // Check for Promise.all/race/allSettled for parallel execution detection
+        let is_parallel = if let Callee::Expr(expr) = &call.callee {
+            if let Expr::Member(member) = expr.as_ref() {
+                if let (Expr::Ident(obj), MemberProp::Ident(prop)) =
+                    (member.obj.as_ref(), &member.prop)
+                {
+                    if obj.sym == "Promise"
+                        && ["all", "race", "allSettled"].contains(&prop.sym.as_str())
+                    {
+                        Some(prop.sym.to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(method) = is_parallel {
+            // Enter parallel context
+            let parallel_id = format!("parallel_{}", self.parallel_counter);
+            self.parallel_counter += 1;
+
+            self.context_stack.push(ControlFlowContext::ParallelGroup {
+                id: parallel_id,
+                method,
+            });
+
+            // Visit the arguments (which should contain the array of promises)
+            for arg in &call.args {
+                arg.visit_with(self);
+            }
+
+            self.context_stack.pop();
+            return;
+        }
+
+        // Regular call handling
         if let Some(node) = self.resolve_callee(&call.callee) {
             self.record_usage(node, call.span);
         } else {
             // If not already resolved as a known step/workflow, check if it's an imported identifier
-            // being called as a function - treat it as a potential step for graph visualization
             if let Callee::Expr(expr) = &call.callee {
                 if let Expr::Ident(ident) = expr.as_ref() {
                     let name = ident.sym.to_string();
-                    if self.imported_identifiers.contains(&name) {
-                        // Treat imported function calls as steps for graph visualization
-                        self.record_usage(
-                            GraphNodeRef {
-                                name,
-                                kind: GraphCallKind::Step,
-                            },
-                            call.span,
-                        );
+                    if let Some(import_info) = self.imported_identifiers.get(&name) {
+                        // Use the resolved kind from import analysis
+                        if let Some(kind) = import_info.kind {
+                            self.record_usage(GraphNodeRef { name, kind }, call.span);
+                        }
+                        // If kind is None, the import couldn't be resolved - skip it
                     }
                 }
             }
@@ -350,6 +472,85 @@ impl<'a> Visit for GraphUsageCollector<'a> {
         }
         if let Some(type_args) = &call.type_args {
             type_args.visit_with(self);
+        }
+    }
+
+    fn visit_for_of_stmt(&mut self, n: &ForOfStmt) {
+        let loop_id = format!("loop_{}", self.loop_counter);
+        self.loop_counter += 1;
+
+        self.context_stack.push(ControlFlowContext::Loop {
+            id: loop_id,
+            is_await: n.is_await,
+        });
+
+        n.body.visit_with(self);
+
+        self.context_stack.pop();
+    }
+
+    fn visit_for_stmt(&mut self, n: &ForStmt) {
+        let loop_id = format!("loop_{}", self.loop_counter);
+        self.loop_counter += 1;
+
+        self.context_stack.push(ControlFlowContext::Loop {
+            id: loop_id,
+            is_await: false,
+        });
+
+        n.body.visit_with(self);
+
+        self.context_stack.pop();
+    }
+
+    fn visit_while_stmt(&mut self, n: &WhileStmt) {
+        let loop_id = format!("loop_{}", self.loop_counter);
+        self.loop_counter += 1;
+
+        self.context_stack.push(ControlFlowContext::Loop {
+            id: loop_id,
+            is_await: false,
+        });
+
+        n.body.visit_with(self);
+
+        self.context_stack.pop();
+    }
+
+    fn visit_do_while_stmt(&mut self, n: &DoWhileStmt) {
+        let loop_id = format!("loop_{}", self.loop_counter);
+        self.loop_counter += 1;
+
+        self.context_stack.push(ControlFlowContext::Loop {
+            id: loop_id,
+            is_await: false,
+        });
+
+        n.body.visit_with(self);
+
+        self.context_stack.pop();
+    }
+
+    fn visit_if_stmt(&mut self, n: &IfStmt) {
+        let cond_id = format!("cond_{}", self.conditional_counter);
+        self.conditional_counter += 1;
+
+        // Visit then branch
+        self.context_stack.push(ControlFlowContext::Conditional {
+            id: cond_id.clone(),
+            branch: ConditionalBranch::Then,
+        });
+        n.cons.visit_with(self);
+        self.context_stack.pop();
+
+        // Visit else branch if exists
+        if let Some(alt) = &n.alt {
+            self.context_stack.push(ControlFlowContext::Conditional {
+                id: cond_id,
+                branch: ConditionalBranch::Else,
+            });
+            alt.visit_with(self);
+            self.context_stack.pop();
         }
     }
 
@@ -655,6 +856,384 @@ impl StepTransform {
         }
     }
 
+    // Resolve imported identifiers by analyzing their source files recursively
+    fn resolve_imports(&mut self) {
+        if self.mode != TransformMode::Graph {
+            return;
+        }
+
+        // Clone the import list to avoid borrow checker issues
+        let imports_to_resolve: Vec<(String, ImportInfo)> = self
+            .imported_identifiers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        for (local_name, mut import_info) in imports_to_resolve {
+            // Resolve the import source path relative to current file
+            let (resolved_kind, candidates) = self.resolve_import_kind(&import_info);
+
+            // Update the import info with resolved kind and candidates
+            import_info.kind = resolved_kind;
+            import_info.lookup_candidates = candidates;
+            self.imported_identifiers.insert(local_name, import_info);
+        }
+    }
+
+    // Resolve the kind (Step/Workflow) of an imported function using the pre-built manifest
+    // Returns (kind, candidates_tried)
+    fn resolve_import_kind(
+        &mut self,
+        import_info: &ImportInfo,
+    ) -> (Option<GraphCallKind>, Vec<String>) {
+        // If we have a workflow manifest, use it to resolve the import
+        if let Some(manifest) = &self.workflow_manifest {
+            // Normalize the source path to match manifest keys
+            // Manifest keys can be in various formats:
+            // - "workflows/steps/foo.ts" (no leading ./)
+            // - "./workflows/steps/foo.ts" (with leading ./)
+            // We need to try multiple variations
+
+            let source_path = &import_info.source_path;
+            let mut candidates = Vec::new();
+
+            if source_path.starts_with("./") || source_path.starts_with("../") {
+                // Get the directory of the current file
+                let current_file = Path::new(&self.filename);
+                let current_dir = current_file.parent().unwrap_or_else(|| Path::new("."));
+
+                // Resolve the relative path
+                let resolved = current_dir.join(source_path);
+                let mut resolved_str = resolved.to_string_lossy().to_string().replace('\\', "/");
+
+                // Normalize: remove all "./" segments (leading and internal)
+                while resolved_str.contains("/./") {
+                    resolved_str = resolved_str.replace("/./", "/");
+                }
+                if resolved_str.starts_with("./") {
+                    resolved_str = resolved_str[2..].to_string();
+                }
+
+                // Add the base path (without ./)
+                candidates.push(resolved_str.clone());
+                // Also try with ./ prefix
+                candidates.push(format!("./{}", resolved_str));
+            } else {
+                // Absolute or package imports
+                candidates.push(source_path.clone());
+                if !source_path.starts_with("./") {
+                    candidates.push(format!("./{}", source_path));
+                }
+            }
+
+            // Try with common extensions
+            let extensions = ["", ".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
+            let mut all_candidates = Vec::new();
+            for candidate in &candidates {
+                for ext in &extensions {
+                    all_candidates.push(format!("{}{}", candidate, ext));
+                }
+            }
+
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[graph] Looking up import: {} from {}",
+                import_info.imported_name, import_info.source_path
+            );
+
+            // Try each candidate in steps
+            for candidate in &all_candidates {
+                if let Some(file_steps) = manifest.steps.get(candidate) {
+                    if file_steps.contains_key(&import_info.imported_name) {
+                        return (Some(GraphCallKind::Step), all_candidates);
+                    }
+                }
+            }
+
+            // Try each candidate in workflows
+            for candidate in &all_candidates {
+                if let Some(file_workflows) = manifest.workflows.get(candidate) {
+                    if file_workflows.contains_key(&import_info.imported_name) {
+                        return (Some(GraphCallKind::Workflow), all_candidates);
+                    }
+                }
+            }
+
+            // Not found - return None but include the candidates we tried
+            return (None, all_candidates);
+        }
+
+        // No manifest available
+        (None, vec![])
+    }
+
+    // Parse an imported file using SWC parser (with caching)
+    fn parse_imported_file(&mut self, file_path: &Path) -> Option<Module> {
+        let path_buf = file_path.to_path_buf();
+
+        // Check if we've already parsed this file
+        if let Some(cached_module) = self.parsed_module_cache.get(&path_buf) {
+            #[cfg(debug_assertions)]
+            eprintln!("[graph] Using cached parse for {:?}", file_path);
+            return Some(cached_module.clone());
+        }
+
+        // Read the source file
+        let source_code = std::fs::read_to_string(file_path).ok()?;
+
+        // Determine syntax based on file extension
+        let extension = file_path.extension()?.to_str()?;
+        let syntax = match extension {
+            "ts" => Syntax::Typescript(TsSyntax {
+                tsx: false,
+                decorators: true,
+                ..Default::default()
+            }),
+            "tsx" => Syntax::Typescript(TsSyntax {
+                tsx: true,
+                decorators: true,
+                ..Default::default()
+            }),
+            "jsx" => Syntax::Es(EsSyntax {
+                jsx: true,
+                ..Default::default()
+            }),
+            _ => Syntax::Es(EsSyntax {
+                jsx: false,
+                ..Default::default()
+            }),
+        };
+
+        // Create a source map for parsing
+        let source_map = SourceMap::new(FilePathMapping::empty());
+        let source_file = source_map.new_source_file(
+            Arc::new(FileName::Real(file_path.to_path_buf())),
+            source_code,
+        );
+
+        // Parse the module
+        match parse_file_as_module(&source_file, syntax, Default::default(), None, &mut vec![]) {
+            Ok(module) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[graph] Successfully parsed {:?}", file_path);
+
+                // Cache the parsed module
+                self.parsed_module_cache.insert(path_buf, module.clone());
+                Some(module)
+            }
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[graph] Failed to parse {:?}: {:?}", file_path, _e);
+                None
+            }
+        }
+    }
+
+    // Resolve import path relative to current file
+    fn resolve_import_path(&self, import_source: &str) -> Option<PathBuf> {
+        // Skip node_modules and package imports for now
+        if !import_source.starts_with('.') && !import_source.starts_with('/') {
+            #[cfg(debug_assertions)]
+            eprintln!("[graph] Skipping package import: {}", import_source);
+            return None;
+        }
+
+        // Get the directory of the current file
+        let current_file = Path::new(&self.filename);
+        let current_dir = current_file.parent()?;
+
+        // Resolve relative path
+        let import_path = current_dir.join(import_source);
+
+        // Try common extensions if no extension provided
+        let extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
+
+        // If the path already has an extension, try it first
+        if import_path.extension().is_some() {
+            if import_path.exists() {
+                return Some(import_path);
+            }
+        } else {
+            // Try with each extension
+            for ext in &extensions {
+                let mut path_with_ext = import_path.clone();
+                path_with_ext.set_extension(&ext[1..]); // Remove the leading dot
+                if path_with_ext.exists() {
+                    return Some(path_with_ext);
+                }
+            }
+
+            // Try index files
+            for ext in &extensions {
+                let index_path = import_path.join(format!("index{}", ext));
+                if index_path.exists() {
+                    return Some(index_path);
+                }
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        eprintln!("[graph] Could not resolve path: {}", import_source);
+        None
+    }
+
+    // AST-based method to find export and directive
+    fn find_export_directive_ast(
+        &self,
+        module: &Module,
+        export_name: &str,
+    ) -> Option<GraphCallKind> {
+        for item in &module.body {
+            if let ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) = item {
+                // Check for: export function name() or export async function name()
+                if let Decl::Fn(fn_decl) = &export_decl.decl {
+                    if fn_decl.ident.sym.as_ref() == export_name {
+                        return self.check_function_directive(&fn_decl.function);
+                    }
+                }
+                // Check for: export const name = ...
+                else if let Decl::Var(var_decl) = &export_decl.decl {
+                    for decl in &var_decl.decls {
+                        if let Pat::Ident(ident) = &decl.name {
+                            if ident.id.sym.as_ref() == export_name {
+                                if let Some(init) = &decl.init {
+                                    return self.check_expr_directive(init);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Check for: export default
+            else if export_name == "default" {
+                if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export_default)) = item
+                {
+                    match &export_default.decl {
+                        DefaultDecl::Fn(fn_expr) => {
+                            return self.check_function_directive(&fn_expr.function);
+                        }
+                        DefaultDecl::Class(_) => continue,
+                        DefaultDecl::TsInterfaceDecl(_) => continue,
+                    }
+                }
+                // export default expr;
+                else if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
+                    export_default_expr,
+                )) = item
+                {
+                    return self.check_expr_directive(&export_default_expr.expr);
+                }
+            }
+            // Check for: export { name }
+            else if let ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(export_named)) = item {
+                if export_named.src.is_none() {
+                    // Local re-export: need to find the local declaration
+                    for spec in &export_named.specifiers {
+                        if let ExportSpecifier::Named(named) = spec {
+                            let exported_name = match &named.exported {
+                                Some(exported) => match exported {
+                                    ModuleExportName::Ident(ident) => ident.sym.as_ref(),
+                                    ModuleExportName::Str(_) => continue,
+                                },
+                                None => match &named.orig {
+                                    ModuleExportName::Ident(ident) => ident.sym.as_ref(),
+                                    ModuleExportName::Str(_) => continue,
+                                },
+                            };
+
+                            if exported_name == export_name {
+                                // Find the local declaration
+                                let local_name = match &named.orig {
+                                    ModuleExportName::Ident(ident) => ident.sym.as_ref(),
+                                    ModuleExportName::Str(_) => continue,
+                                };
+                                return self.find_local_declaration(module, local_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        eprintln!("[graph] No directive found for export {}", export_name);
+
+        None
+    }
+
+    // Check if a function has a "use step" or "use workflow" directive
+    fn check_function_directive(&self, function: &Function) -> Option<GraphCallKind> {
+        if let Some(body) = &function.body {
+            for stmt in &body.stmts {
+                if let Stmt::Expr(expr_stmt) = stmt {
+                    if let Expr::Lit(Lit::Str(str_lit)) = &*expr_stmt.expr {
+                        let value = str_lit.value.as_ref();
+                        if value == "use step" {
+                            return Some(GraphCallKind::Step);
+                        } else if value == "use workflow" {
+                            return Some(GraphCallKind::Workflow);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    // Check if an expression is a function with a directive
+    fn check_expr_directive(&self, expr: &Expr) -> Option<GraphCallKind> {
+        match expr {
+            Expr::Fn(fn_expr) => self.check_function_directive(&fn_expr.function),
+            Expr::Arrow(arrow_expr) => {
+                if let BlockStmtOrExpr::BlockStmt(block) = &*arrow_expr.body {
+                    for stmt in &block.stmts {
+                        if let Stmt::Expr(expr_stmt) = stmt {
+                            if let Expr::Lit(Lit::Str(str_lit)) = &*expr_stmt.expr {
+                                let value = str_lit.value.as_ref();
+                                if value == "use step" {
+                                    return Some(GraphCallKind::Step);
+                                } else if value == "use workflow" {
+                                    return Some(GraphCallKind::Workflow);
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    // Find a local declaration by name
+    fn find_local_declaration(&self, module: &Module, local_name: &str) -> Option<GraphCallKind> {
+        for item in &module.body {
+            if let ModuleItem::Stmt(stmt) = item {
+                // Check for: const name = ... or function name()
+                match stmt {
+                    Stmt::Decl(Decl::Fn(fn_decl)) => {
+                        if fn_decl.ident.sym.as_ref() == local_name {
+                            return self.check_function_directive(&fn_decl.function);
+                        }
+                    }
+                    Stmt::Decl(Decl::Var(var_decl)) => {
+                        for decl in &var_decl.decls {
+                            if let Pat::Ident(ident) = &decl.name {
+                                if ident.id.sym.as_ref() == local_name {
+                                    if let Some(init) = &decl.init {
+                                        return self.check_expr_directive(init);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
     fn build_workflow_graph(
         &mut self,
         workflow_name: &str,
@@ -683,25 +1262,82 @@ impl StepTransform {
 
         let file_path = self.filename.clone();
         builder.start_workflow(workflow_name, &file_path, &workflow_id);
+
+        // Collect all nodes with their metadata first
+        let mut nodes_to_add = Vec::new();
         for event in collector {
             let line = event.span.lo.0 as usize;
+            let (metadata, edge_type) = Self::extract_metadata_from_context(&event.context);
+
             match event.kind {
                 GraphCallKind::Step => {
                     let step_id = self.create_id(Some(&event.fn_name), event.span, false);
-                    builder.add_step_node(&event.fn_name, &step_id, line);
+                    nodes_to_add.push((event.fn_name, step_id, line, metadata, edge_type, false));
                 }
                 GraphCallKind::Workflow => {
                     let nested_id = self.create_id(Some(&event.fn_name), event.span, true);
-                    builder.add_workflow_node(&event.fn_name, &nested_id, line);
+                    nodes_to_add.push((event.fn_name, nested_id, line, metadata, edge_type, true));
                 }
             }
         }
+
+        // Add nodes with smart edge generation
+        builder.add_nodes_with_cfg(&nodes_to_add);
         builder.finish_workflow();
 
         self.graph_builder = Some(builder);
     }
 
-    pub fn new(mode: TransformMode, filename: String) -> Self {
+    // Extract metadata and edge type from control flow context
+    fn extract_metadata_from_context(
+        context: &[ControlFlowContext],
+    ) -> (Option<graph::NodeMetadata>, graph::EdgeType) {
+        if context.is_empty() {
+            return (None, graph::EdgeType::Default);
+        }
+
+        let mut metadata = graph::NodeMetadata {
+            loop_id: None,
+            loop_is_await: None,
+            conditional_id: None,
+            conditional_branch: None,
+            parallel_group_id: None,
+            parallel_method: None,
+        };
+
+        let mut edge_type = graph::EdgeType::Default;
+
+        // Process context from innermost to outermost, prioritizing specific types
+        for ctx in context {
+            match ctx {
+                ControlFlowContext::Loop { id, is_await } => {
+                    metadata.loop_id = Some(id.clone());
+                    metadata.loop_is_await = Some(*is_await);
+                    edge_type = graph::EdgeType::Loop;
+                }
+                ControlFlowContext::Conditional { id, branch } => {
+                    metadata.conditional_id = Some(id.clone());
+                    metadata.conditional_branch = Some(format!("{:?}", branch));
+                    if !matches!(edge_type, graph::EdgeType::Parallel) {
+                        edge_type = graph::EdgeType::Conditional;
+                    }
+                }
+                ControlFlowContext::ParallelGroup { id, method } => {
+                    metadata.parallel_group_id = Some(id.clone());
+                    metadata.parallel_method = Some(method.clone());
+                    edge_type = graph::EdgeType::Parallel;
+                }
+            }
+        }
+
+        (Some(metadata), edge_type)
+    }
+
+    pub fn new(
+        mode: TransformMode,
+        filename: String,
+        workflow_manifest: Option<WorkflowManifest>,
+    ) -> Self {
         let graph_builder = if mode == TransformMode::Graph {
             Some(graph::GraphBuilder::new())
         } else {
@@ -715,7 +1351,7 @@ impl StepTransform {
             has_file_workflow_directive: false,
             step_function_names: HashSet::new(),
             workflow_function_names: HashSet::new(),
-            imported_identifiers: HashSet::new(),
+            imported_identifiers: HashMap::new(),
             workflow_export_to_const_name: HashMap::new(),
             registered_functions: HashSet::new(),
             registration_calls: Vec::new(),
@@ -738,6 +1374,8 @@ impl StepTransform {
             graph_builder,
             pending_graph_workflows: Vec::new(),
             current_var_context: None,
+            parsed_module_cache: HashMap::new(),
+            workflow_manifest,
         }
     }
 
@@ -2397,7 +3035,7 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
     fn visit_mut_module_item(&mut self, item: &mut ModuleItem) {
         match item {
             ModuleItem::ModuleDecl(ModuleDecl::Import(_)) => {
-                // Skip import declarations
+                // Skip import declarations (ComprehensiveUsageCollector doesn't need them)
                 return;
             }
             ModuleItem::Stmt(Stmt::Decl(Decl::Fn(_))) => {
@@ -2522,14 +3160,53 @@ impl VisitMut for StepTransform {
         if self.mode == TransformMode::Graph {
             if let Program::Module(module) = program {
                 self.collect_workflow_metadata(&module.body);
+
+                // Also collect imports in Graph mode
+                for item in &module.body {
+                    if let ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) = item {
+                        let source_path = import_decl.src.value.to_string();
+                        for specifier in &import_decl.specifiers {
+                            let (local_name, imported_name) = match specifier {
+                                ImportSpecifier::Named(named) => {
+                                    let local = named.local.sym.to_string();
+                                    let imported = named
+                                        .imported
+                                        .as_ref()
+                                        .map(|m| match m {
+                                            ModuleExportName::Ident(i) => i.sym.to_string(),
+                                            ModuleExportName::Str(s) => s.value.to_string(),
+                                        })
+                                        .unwrap_or_else(|| local.clone());
+                                    (local, imported)
+                                }
+                                ImportSpecifier::Default(default) => {
+                                    (default.local.sym.to_string(), "default".to_string())
+                                }
+                                ImportSpecifier::Namespace(_) => {
+                                    continue;
+                                }
+                            };
+                            self.imported_identifiers.insert(
+                                local_name.clone(),
+                                ImportInfo {
+                                    source_path: source_path.clone(),
+                                    imported_name,
+                                    kind: None,
+                                    lookup_candidates: Vec::new(),
+                                },
+                            );
+                        }
+                    }
+                }
             }
         }
 
-        // First pass: collect step functions
+        // First pass: collect step functions and imports
         program.visit_mut_children_with(self);
 
-        // Ensure graph data is processed after traversing entire program
+        // In Graph mode, resolve imports before processing graphs
         if self.mode == TransformMode::Graph {
+            self.resolve_imports();
             self.process_pending_workflow_graphs();
         }
 
@@ -2557,7 +3234,38 @@ impl VisitMut for StepTransform {
                         // Output graph as a comment in graph mode
                         if let Some(builder) = self.graph_builder.take() {
                             if builder.has_workflows() {
-                                let manifest = builder.to_manifest();
+                                let mut manifest = builder.to_manifest();
+
+                                // Add debug info
+                                let imports_with_kind = self
+                                    .imported_identifiers
+                                    .values()
+                                    .filter(|info| info.kind.is_some())
+                                    .count();
+                                let import_details: Vec<graph::ImportDebugInfo> = self
+                                    .imported_identifiers
+                                    .iter()
+                                    .map(|(local, info)| graph::ImportDebugInfo {
+                                        local_name: local.clone(),
+                                        source: info.source_path.clone(),
+                                        imported_name: info.imported_name.clone(),
+                                        kind: info.kind.as_ref().map(|k| format!("{:?}", k)),
+                                        lookup_candidates: info.lookup_candidates.clone(),
+                                    })
+                                    .collect();
+                                manifest.debug_info = Some(graph::DebugInfo {
+                                    manifest_present: self.workflow_manifest.is_some(),
+                                    manifest_step_files: self
+                                        .workflow_manifest
+                                        .as_ref()
+                                        .map(|m| m.steps.len())
+                                        .unwrap_or(0),
+                                    imports_resolved: self.imported_identifiers.len(),
+                                    imports_with_kind,
+                                    import_details,
+                                    cfg_detection_version: Some("v1.0-cfg".to_string()),
+                                });
+
                                 // Output as a comment similar to workflow metadata
                                 if let Ok(json) = serde_json::to_string(&manifest) {
                                     let comment = format!("/**__workflow_graph{}*/", json);
@@ -3580,6 +4288,18 @@ impl VisitMut for StepTransform {
 
         // Perform dead code elimination in workflow and client mode
         self.remove_dead_code(items);
+    }
+
+    fn visit_mut_module_item(&mut self, item: &mut ModuleItem) {
+        // In Graph mode, explicitly handle module declarations to ensure imports are tracked
+        if self.mode == TransformMode::Graph {
+            if let ModuleItem::ModuleDecl(decl) = item {
+                self.visit_mut_module_decl(decl);
+                return;
+            }
+        }
+        // For all other cases, use default behavior
+        item.visit_mut_children_with(self);
     }
 
     fn visit_mut_fn_decl(&mut self, fn_decl: &mut FnDecl) {
@@ -5133,21 +5853,42 @@ impl VisitMut for StepTransform {
         // Track imported identifiers for graph generation
         if self.mode == TransformMode::Graph {
             if let ModuleDecl::Import(import_decl) = decl {
+                let source_path = import_decl.src.value.to_string();
+
                 for specifier in &import_decl.specifiers {
-                    match specifier {
+                    let (local_name, imported_name) = match specifier {
                         ImportSpecifier::Named(named) => {
-                            self.imported_identifiers
-                                .insert(named.local.sym.to_string());
+                            let local = named.local.sym.to_string();
+                            let imported = named
+                                .imported
+                                .as_ref()
+                                .map(|m| match m {
+                                    ModuleExportName::Ident(i) => i.sym.to_string(),
+                                    ModuleExportName::Str(s) => s.value.to_string(),
+                                })
+                                .unwrap_or_else(|| local.clone());
+                            (local, imported)
                         }
                         ImportSpecifier::Default(default) => {
-                            self.imported_identifiers
-                                .insert(default.local.sym.to_string());
+                            (default.local.sym.to_string(), "default".to_string())
                         }
-                        ImportSpecifier::Namespace(namespace) => {
-                            self.imported_identifiers
-                                .insert(namespace.local.sym.to_string());
+                        ImportSpecifier::Namespace(_namespace) => {
+                            // Namespace imports can't be resolved to specific functions
+                            // Skip them for now
+                            continue;
                         }
-                    }
+                    };
+
+                    // Store import info without kind initially (will be resolved later)
+                    self.imported_identifiers.insert(
+                        local_name,
+                        ImportInfo {
+                            source_path: source_path.clone(),
+                            imported_name,
+                            kind: None,
+                            lookup_candidates: Vec::new(),
+                        },
+                    );
                 }
             }
         }

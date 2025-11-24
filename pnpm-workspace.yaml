@@ -2,6 +2,7 @@ packages:
   - workbench/*
   - packages/*
   - docs
+  - storytime-slackbot
 
 catalog:
   "@types/node": 22.19.0

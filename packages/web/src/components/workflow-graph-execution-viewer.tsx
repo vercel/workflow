@@ -139,14 +139,63 @@ function formatDuration(ms: number): string {
 // Enhanced node label with execution info
 function renderNodeLabel(
   nodeData: { label: string; nodeKind: string },
+  metadata?: {
+    loopId?: string;
+    loopIsAwait?: boolean;
+    conditionalId?: string;
+    conditionalBranch?: string;
+    parallelGroupId?: string;
+    parallelMethod?: string;
+  },
   executions?: StepExecution[]
 ) {
-  const baseLabel = (
-    <div className="flex items-start gap-2 w-full overflow-hidden">
-      <div className="flex-shrink-0">{getNodeIcon(nodeData.nodeKind)}</div>
-      <span className="text-sm font-medium break-words whitespace-normal leading-tight flex-1 min-w-0">
-        {nodeData.label}
+  // Add CFG metadata badges
+  const badges: React.ReactNode[] = [];
+
+  if (metadata?.loopId) {
+    badges.push(
+      <span
+        key="loop"
+        className="px-1.5 py-0.5 text-[10px] font-bold bg-purple-200 dark:bg-purple-900/30 !text-gray-950 dark:!text-white rounded border border-purple-400 dark:border-purple-700"
+      >
+        {metadata.loopIsAwait ? '⟳ await loop' : '⟳ loop'}
       </span>
+    );
+  }
+
+  if (metadata?.conditionalId) {
+    badges.push(
+      <span
+        key="cond"
+        className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-200 dark:bg-amber-900/30 !text-gray-950 dark:!text-white rounded border border-amber-400 dark:border-amber-700"
+      >
+        {metadata.conditionalBranch === 'Then' ? '✓ if' : '✗ else'}
+      </span>
+    );
+  }
+
+  if (metadata?.parallelGroupId) {
+    badges.push(
+      <span
+        key="parallel"
+        className="px-1.5 py-0.5 text-[10px] font-bold bg-blue-200 dark:bg-blue-900/30 !text-gray-950 dark:!text-white rounded border border-blue-400 dark:border-blue-700"
+      >
+        ∥ {metadata.parallelMethod}
+      </span>
+    );
+  }
+
+  const baseLabel = (
+    <div className="flex flex-col gap-1.5 w-full overflow-hidden">
+      <div className="flex items-start gap-2 w-full overflow-hidden">
+        <div className="flex-shrink-0">{getNodeIcon(nodeData.nodeKind)}</div>
+        <span className="text-sm font-medium break-words whitespace-normal leading-tight flex-1 min-w-0">
+          {nodeData.label}
+        </span>
+      </div>
+      {badges.length > 0 && (
+        <div className="flex flex-wrap gap-1">{badges}</div>
+      )}
     </div>
   );
 
@@ -202,11 +251,141 @@ function renderNodeLabel(
 }
 
 // Convert nodes with execution overlay
+// Helper to calculate enhanced layout with control flow
+function calculateEnhancedLayout(workflow: WorkflowGraph): {
+  nodes: typeof workflow.nodes;
+  additionalEdges: Array<{
+    id: string;
+    source: string;
+    target: string;
+    type: string;
+    label?: string;
+  }>;
+} {
+  const nodes = [...workflow.nodes];
+  const additionalEdges: Array<{
+    id: string;
+    source: string;
+    target: string;
+    type: string;
+    label?: string;
+  }> = [];
+
+  // Group nodes by their control flow context
+  const parallelGroups = new Map<string, typeof workflow.nodes>();
+  const loopNodes = new Map<string, typeof workflow.nodes>();
+  const conditionalGroups = new Map<
+    string,
+    { thenBranch: typeof workflow.nodes; elseBranch: typeof workflow.nodes }
+  >();
+
+  for (const node of nodes) {
+    if (node.metadata?.parallelGroupId) {
+      const group = parallelGroups.get(node.metadata.parallelGroupId) || [];
+      group.push(node);
+      parallelGroups.set(node.metadata.parallelGroupId, group);
+    }
+    if (node.metadata?.loopId) {
+      const group = loopNodes.get(node.metadata.loopId) || [];
+      group.push(node);
+      loopNodes.set(node.metadata.loopId, group);
+    }
+    if (node.metadata?.conditionalId) {
+      const groups = conditionalGroups.get(node.metadata.conditionalId) || {
+        thenBranch: [],
+        elseBranch: [],
+      };
+      if (node.metadata.conditionalBranch === 'Then') {
+        groups.thenBranch.push(node);
+      } else {
+        groups.elseBranch.push(node);
+      }
+      conditionalGroups.set(node.metadata.conditionalId, groups);
+    }
+  }
+
+  // Layout parallel nodes side-by-side
+  for (const [, groupNodes] of parallelGroups) {
+    if (groupNodes.length <= 1) continue;
+
+    const baseY = groupNodes[0].position.y;
+    const spacing = 300; // horizontal spacing
+    const totalWidth = (groupNodes.length - 1) * spacing;
+    const startX = 250 - totalWidth / 2;
+
+    groupNodes.forEach((node, idx) => {
+      node.position = {
+        x: startX + idx * spacing,
+        y: baseY,
+      };
+    });
+  }
+
+  // Layout conditional branches side-by-side
+  for (const [, branches] of conditionalGroups) {
+    const allNodes = [...branches.thenBranch, ...branches.elseBranch];
+    if (allNodes.length <= 1) continue;
+
+    const thenNodes = branches.thenBranch;
+    const elseNodes = branches.elseBranch;
+
+    if (thenNodes.length > 0 && elseNodes.length > 0) {
+      // Position then branch on the left, else on the right
+      const baseY = Math.min(
+        thenNodes[0]?.position.y || 0,
+        elseNodes[0]?.position.y || 0
+      );
+
+      thenNodes.forEach((node, idx) => {
+        node.position = {
+          x: 100,
+          y: baseY + idx * 120,
+        };
+      });
+
+      elseNodes.forEach((node, idx) => {
+        node.position = {
+          x: 400,
+          y: baseY + idx * 120,
+        };
+      });
+    }
+  }
+
+  // Add loop-back edges
+  for (const [loopId, loopNodeList] of loopNodes) {
+    if (loopNodeList.length > 0) {
+      // Find first and last nodes in the loop
+      loopNodeList.sort((a, b) => {
+        const aNum = parseInt(a.id.replace('node_', '')) || 0;
+        const bNum = parseInt(b.id.replace('node_', '')) || 0;
+        return aNum - bNum;
+      });
+
+      const firstNode = loopNodeList[0];
+      const lastNode = loopNodeList[loopNodeList.length - 1];
+
+      // Add a back edge from last to first
+      // Note: no label needed - the nodes already show loop badges
+      additionalEdges.push({
+        id: `loop_back_${loopId}`,
+        source: lastNode.id,
+        target: firstNode.id,
+        type: 'loop',
+      });
+    }
+  }
+
+  return { nodes, additionalEdges };
+}
+
 function convertToReactFlowNodes(
   workflow: WorkflowGraph,
   execution?: WorkflowRunExecution
 ): Node[] {
-  return workflow.nodes.map((node) => {
+  const { nodes } = calculateEnhancedLayout(workflow);
+
+  return nodes.map((node) => {
     const executions = execution?.nodeExecutions.get(node.id);
     const styles = getNodeStyle(node.data.nodeKind, executions);
     const isCurrentNode = execution?.currentNode === node.id;
@@ -224,7 +403,7 @@ function convertToReactFlowNodes(
       position: node.position,
       data: {
         ...node.data,
-        label: renderNodeLabel(node.data, executions),
+        label: renderNodeLabel(node.data, node.metadata, executions),
         executions, // Store for onClick handler
       },
       style: {
@@ -244,7 +423,15 @@ function convertToReactFlowEdges(
   workflow: WorkflowGraph,
   execution?: WorkflowRunExecution
 ): Edge[] {
-  return workflow.edges.map((edge) => {
+  const { additionalEdges } = calculateEnhancedLayout(workflow);
+
+  // Combine original edges with additional loop-back edges
+  const allEdges = [
+    ...workflow.edges.map((e) => ({ ...e, isOriginal: true })),
+    ...additionalEdges.map((e) => ({ ...e, isOriginal: false })),
+  ];
+
+  return allEdges.map((edge) => {
     const traversal = execution?.edgeTraversals.get(edge.id);
     const isTraversed = traversal && traversal.traversalCount > 0;
 
@@ -253,11 +440,45 @@ function convertToReactFlowEdges(
       ? traversal.timings.reduce((a, b) => a + b, 0) / traversal.timings.length
       : undefined;
 
+    // Customize based on CFG edge type (but preserve execution state coloring)
+    let baseStrokeColor = '#94a3b8';
+    let strokeDasharray: string | undefined;
+    let cfgLabel: string | undefined = edge.label;
+    let edgeType: 'smoothstep' | 'straight' | 'step' = 'smoothstep';
+
+    if (!isTraversed) {
+      // Only apply CFG styling if not executed (to keep execution state clear)
+      switch (edge.type) {
+        case 'parallel':
+          baseStrokeColor = '#3b82f6';
+          if (!cfgLabel) cfgLabel = '∥';
+          break;
+        case 'loop':
+          baseStrokeColor = '#a855f7';
+          strokeDasharray = '5,5';
+          // Don't add label for loop-back edges - nodes already have badges
+          // Loop-back edges get a different path type for better visualization
+          if (edge.source === edge.target || !edge.isOriginal) {
+            edgeType = 'step';
+            cfgLabel = undefined; // No label on back edges
+          }
+          break;
+        case 'conditional':
+          baseStrokeColor = '#f59e0b';
+          strokeDasharray = '8,4';
+          break;
+      }
+    }
+
+    const finalStrokeColor = isTraversed ? '#22c55e' : baseStrokeColor;
+    const finalDasharray =
+      traversal && traversal.traversalCount > 1 ? '5,5' : strokeDasharray;
+
     return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      type: 'smoothstep',
+      type: edgeType,
       animated: isTraversed && execution?.status === 'running',
       label:
         traversal && traversal.traversalCount > 1 ? (
@@ -271,7 +492,9 @@ function convertToReactFlowEdges(
               </span>
             )}
           </div>
-        ) : undefined,
+        ) : (
+          cfgLabel
+        ),
       labelStyle: {
         fill: 'hsl(var(--foreground))',
         fontWeight: 500,
@@ -284,14 +507,13 @@ function convertToReactFlowEdges(
         type: MarkerType.ArrowClosed,
         width: 20,
         height: 20,
-        color: isTraversed ? '#22c55e' : '#94a3b8',
+        color: finalStrokeColor,
       },
       style: {
         strokeWidth: isTraversed ? 3 : 2,
-        stroke: isTraversed ? '#22c55e' : '#94a3b8',
+        stroke: finalStrokeColor,
         opacity: execution && !isTraversed ? 0.3 : 1,
-        strokeDasharray:
-          traversal && traversal.traversalCount > 1 ? '5,5' : undefined,
+        strokeDasharray: finalDasharray,
       },
     };
   });

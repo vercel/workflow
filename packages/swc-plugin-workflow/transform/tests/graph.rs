@@ -14,6 +14,7 @@ fn graph_mode(input: PathBuf) {
             visit_mut_pass(StepTransform::new(
                 TransformMode::Graph,
                 input.file_name().unwrap().to_string_lossy().to_string(),
+                None,
             ))
         },
         &input,

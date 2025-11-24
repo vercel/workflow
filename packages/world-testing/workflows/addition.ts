@@ -1,4 +1,4 @@
-async function add(num: number, num2: number): Promise<number> {
+export async function add(num: number, num2: number): Promise<number> {
   'use step';
   return num + num2;
 }

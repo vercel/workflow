@@ -8,6 +8,15 @@ export interface Position {
   y: number;
 }
 
+export interface NodeMetadata {
+  loopId?: string;
+  loopIsAwait?: boolean;
+  conditionalId?: string;
+  conditionalBranch?: 'Then' | 'Else';
+  parallelGroupId?: string;
+  parallelMethod?: 'all' | 'race' | 'allSettled';
+}
+
 export interface NodeData {
   label: string;
   nodeKind: 'workflow_start' | 'workflow_end' | 'step';
@@ -20,13 +29,15 @@ export interface GraphNode {
   type: string;
   position: Position;
   data: NodeData;
+  metadata?: NodeMetadata;
 }
 
 export interface GraphEdge {
   id: string;
   source: string;
   target: string;
-  type: string;
+  type: 'default' | 'loop' | 'conditional' | 'parallel';
+  label?: string;
 }
 
 export interface WorkflowGraph {

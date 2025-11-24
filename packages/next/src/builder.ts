@@ -43,7 +43,8 @@ export async function getNextBuilder() {
         tsPaths: tsConfig.paths,
       };
 
-      const stepsBuildContext = await this.buildStepsFunction(options);
+      const { context: stepsBuildContext, manifest: workflowManifest } =
+        await this.buildStepsFunction(options);
       const workflowsBundle = await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
 
@@ -58,6 +59,7 @@ export async function getNextBuilder() {
         outfile: join(workflowDataDir, 'graph-manifest.json'),
         tsBaseUrl: options.tsBaseUrl,
         tsPaths: options.tsPaths,
+        workflowManifest,
       });
 
       await this.writeFunctionsConfig(outputDir);
@@ -164,7 +166,8 @@ export async function getNextBuilder() {
           options.inputFiles = newInputFiles;
 
           await stepsCtx.dispose();
-          const newStepsCtx = await this.buildStepsFunction(options);
+          const { context: newStepsCtx } =
+            await this.buildStepsFunction(options);
           if (!newStepsCtx) {
             throw new Error(
               'Invariant: expected steps build context after rebuild'

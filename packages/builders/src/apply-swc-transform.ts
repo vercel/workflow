@@ -46,6 +46,19 @@ export type GraphManifest = {
       }>;
     };
   };
+  debugInfo?: {
+    manifestPresent: boolean;
+    manifestStepFiles: number;
+    importsResolved: number;
+    importsWithKind: number;
+    importDetails: Array<{
+      localName: string;
+      source: string;
+      importedName: string;
+      kind: string | null;
+      lookupCandidates: string[];
+    }>;
+  };
 };
 
 export async function applySwcTransform(
@@ -56,7 +69,8 @@ export async function applySwcTransform(
     paths?: Record<string, string[]>;
     // this must be absolute path
     baseUrl?: string;
-  }
+  },
+  workflowManifest?: WorkflowManifest
 ): Promise<{
   code: string;
   workflowManifest: WorkflowManifest;
@@ -78,7 +92,12 @@ export async function applySwcTransform(
       target: 'es2022',
       experimental: mode
         ? {
-            plugins: [[require.resolve('@workflow/swc-plugin'), { mode }]],
+            plugins: [
+              [
+                require.resolve('@workflow/swc-plugin'),
+                { mode, workflowManifest },
+              ],
+            ],
           }
         : undefined,
       ...jscConfig,

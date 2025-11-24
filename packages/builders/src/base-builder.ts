@@ -26,6 +26,7 @@ const EMIT_SOURCEMAPS_FOR_DEBUGGING =
  */
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
+  protected lastWorkflowManifest?: WorkflowManifest;
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -253,6 +254,7 @@ export abstract class BaseBuilder {
    * Steps have full Node.js runtime access and handle side effects, API calls, etc.
    *
    * @param externalizeNonSteps - If true, only bundles step entry points and externalizes other code
+   * @returns Build context (for watch mode) and the collected workflow manifest
    */
   protected async createStepsBundle({
     inputFiles,
@@ -268,7 +270,10 @@ export abstract class BaseBuilder {
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
-  }): Promise<esbuild.BuildContext | undefined> {
+  }): Promise<{
+    context: esbuild.BuildContext | undefined;
+    manifest: WorkflowManifest;
+  }> {
     // These need to handle watching for dev to scan for
     // new entries and changes to existing ones
     const { discoveredSteps: stepFiles } = await this.discoverEntries(
@@ -389,10 +394,14 @@ export abstract class BaseBuilder {
     // Create .gitignore in .swc directory
     await this.createSwcGitignore();
 
+    // Store the manifest for later use (e.g., graph generation in watch mode)
+    this.lastWorkflowManifest = workflowManifest;
+
     if (this.config.watch) {
-      return esbuildCtx;
+      return { context: esbuildCtx, manifest: workflowManifest };
     }
     await esbuildCtx.dispose();
+    return { context: undefined, manifest: workflowManifest };
   }
 
   /**
@@ -848,11 +857,13 @@ export const OPTIONS = handler;`;
     outfile,
     tsBaseUrl,
     tsPaths,
+    workflowManifest,
   }: {
     inputFiles: string[];
     outfile: string;
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
+    workflowManifest?: WorkflowManifest;
   }): Promise<void> {
     const graphBuildStart = Date.now();
     console.log('Creating workflow graph manifest...');
@@ -866,6 +877,9 @@ export const OPTIONS = handler;`;
       console.log('No workflow files found, skipping graph generation');
       return;
     }
+
+    // Use provided manifest or fall back to last built manifest
+    const manifest = workflowManifest || this.lastWorkflowManifest;
 
     // Import applySwcTransform dynamically
     const { applySwcTransform } = await import('./apply-swc-transform.js');
@@ -896,7 +910,8 @@ export const OPTIONS = handler;`;
           {
             paths: tsPaths,
             baseUrl: tsBaseUrl,
-          }
+          },
+          manifest
         );
 
         if (graphManifest && graphManifest.workflows) {
@@ -905,6 +920,11 @@ export const OPTIONS = handler;`;
             combinedGraphManifest.workflows,
             graphManifest.workflows
           );
+
+          // Preserve debug info from the first workflow file (for debugging)
+          if (graphManifest.debugInfo && !combinedGraphManifest.debugInfo) {
+            combinedGraphManifest.debugInfo = graphManifest.debugInfo;
+          }
         }
       } catch (error) {
         console.warn(
