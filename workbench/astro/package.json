@@ -20,6 +20,7 @@
     "lodash.chunk": "^4.2.0",
     "openai": "6.9.0",
     "workflow": "workspace:*",
+    "@workflow/world-postgres": "workspace:*",
     "zod": "catalog:"
   }
 }
