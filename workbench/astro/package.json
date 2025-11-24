@@ -10,7 +10,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "start": "node dist/server/entry.mjs"
+    "start:pg-world": "node scripts/start-pg-world.js",
+    "start": "pnpm start:pg-world && node dist/server/entry.mjs"
   },
   "dependencies": {
     "@astrojs/node": "9.5.0",
