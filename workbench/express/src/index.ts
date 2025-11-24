@@ -13,13 +13,6 @@ const app = express();
 app.use(express.json());
 app.use(express.text({ type: 'text/*' }));
 
-// Postgres World
-if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-  import('workflow/runtime').then(async ({ getWorld }) => {
-    await getWorld().start?.();
-  });
-}
-
 app.post('/api/hook', async (req, res) => {
   const { token, data } = JSON.parse(req.body);
 
