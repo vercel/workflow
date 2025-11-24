@@ -1,5 +1,3 @@
-import { defineNuxtPlugin } from 'nuxt/app';
-
 // Start the Postgres World
 // Needed since we test this in CI
 export default defineNuxtPlugin(() => {
