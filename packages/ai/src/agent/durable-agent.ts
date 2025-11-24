@@ -13,6 +13,7 @@ import {
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
+import type { FinishPart } from './do-stream-step.js';
 
 /**
  * Configuration options for creating a {@link DurableAgent} instance.
@@ -83,6 +84,11 @@ export interface DurableAgentStreamOptions {
   stopWhen?:
     | StopCondition<NoInfer<ToolSet>>
     | Array<StopCondition<NoInfer<ToolSet>>>;
+
+  /**
+   * Callback function to be called when the generation is finished.
+   */
+  onFinish?: (finish: FinishPart) => void;
 }
 
 /**
@@ -147,6 +153,7 @@ export class DurableAgent {
       prompt: modelPrompt,
       stopConditions: options.stopWhen,
       sendStart: options.sendStart ?? true,
+      onFinish: options.onFinish,
     });
 
     let result = await iterator.next();
