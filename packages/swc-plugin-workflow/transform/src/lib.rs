@@ -160,6 +160,8 @@ pub struct StepTransform {
     step_function_names: HashSet<String>,
     // Set of function names that are workflow functions
     workflow_function_names: HashSet<String>,
+    // Set of imported identifiers (for graph generation)
+    imported_identifiers: HashSet<String>,
     // Map from export name to actual const name for default exports (e.g., "default" -> "__default")
     workflow_export_to_const_name: std::collections::HashMap<String, String>,
     // Set of function names that have been registered (to avoid duplicates)
@@ -228,6 +230,7 @@ struct GraphNodeRef {
 struct GraphUsageCollector<'a> {
     step_function_names: &'a HashSet<String>,
     workflow_function_names: &'a HashSet<String>,
+    imported_identifiers: &'a HashSet<String>,
     aliases: HashMap<Id, GraphNodeRef>,
     calls: Vec<GraphCallEvent>,
 }
@@ -236,10 +239,12 @@ impl<'a> GraphUsageCollector<'a> {
     fn new(
         step_function_names: &'a HashSet<String>,
         workflow_function_names: &'a HashSet<String>,
+        imported_identifiers: &'a HashSet<String>,
     ) -> Self {
         Self {
             step_function_names,
             workflow_function_names,
+            imported_identifiers,
             aliases: HashMap::new(),
             calls: Vec::new(),
         }
@@ -308,6 +313,24 @@ impl<'a> Visit for GraphUsageCollector<'a> {
     fn visit_call_expr(&mut self, call: &CallExpr) {
         if let Some(node) = self.resolve_callee(&call.callee) {
             self.record_usage(node, call.span);
+        } else {
+            // If not already resolved as a known step/workflow, check if it's an imported identifier
+            // being called as a function - treat it as a potential step for graph visualization
+            if let Callee::Expr(expr) = &call.callee {
+                if let Expr::Ident(ident) = expr.as_ref() {
+                    let name = ident.sym.to_string();
+                    if self.imported_identifiers.contains(&name) {
+                        // Treat imported function calls as steps for graph visualization
+                        self.record_usage(
+                            GraphNodeRef {
+                                name,
+                                kind: GraphCallKind::Step,
+                            },
+                            call.span,
+                        );
+                    }
+                }
+            }
         }
         match &call.callee {
             Callee::Expr(expr) => {
@@ -331,6 +354,8 @@ impl<'a> Visit for GraphUsageCollector<'a> {
     }
 
     fn visit_expr(&mut self, expr: &Expr) {
+        // Only record usage of known step/workflow functions here
+        // Imported identifiers are handled in visit_call_expr when they're actually called
         match expr {
             Expr::Ident(ident) => {
                 if let Some(node) = self.resolve_ident(ident) {
@@ -644,9 +669,12 @@ impl StepTransform {
             return;
         };
 
-        let collector =
-            GraphUsageCollector::new(&self.step_function_names, &self.workflow_function_names)
-                .collect(function);
+        let collector = GraphUsageCollector::new(
+            &self.step_function_names,
+            &self.workflow_function_names,
+            &self.imported_identifiers,
+        )
+        .collect(function);
         eprintln!(
             "[graph] collected {} calls for {}",
             collector.len(),
@@ -687,6 +715,7 @@ impl StepTransform {
             has_file_workflow_directive: false,
             step_function_names: HashSet::new(),
             workflow_function_names: HashSet::new(),
+            imported_identifiers: HashSet::new(),
             workflow_export_to_const_name: HashMap::new(),
             registered_functions: HashSet::new(),
             registration_calls: Vec::new(),
@@ -5101,6 +5130,28 @@ impl VisitMut for StepTransform {
     }
 
     fn visit_mut_module_decl(&mut self, decl: &mut ModuleDecl) {
+        // Track imported identifiers for graph generation
+        if self.mode == TransformMode::Graph {
+            if let ModuleDecl::Import(import_decl) = decl {
+                for specifier in &import_decl.specifiers {
+                    match specifier {
+                        ImportSpecifier::Named(named) => {
+                            self.imported_identifiers
+                                .insert(named.local.sym.to_string());
+                        }
+                        ImportSpecifier::Default(default) => {
+                            self.imported_identifiers
+                                .insert(default.local.sym.to_string());
+                        }
+                        ImportSpecifier::Namespace(namespace) => {
+                            self.imported_identifiers
+                                .insert(namespace.local.sym.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
         // ExportDecl is fully handled by visit_mut_export_decl, so just delegate
         // to default visitor which will call visit_mut_export_decl
         match decl {

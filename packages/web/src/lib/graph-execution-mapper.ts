@@ -69,19 +69,42 @@ function createStepExecution(
 }
 
 /**
- * Build index of graph nodes by normalized stepId
+ * Extract function name from a step ID
+ * "step//workflows/steps/post-slack-message.ts//postSlackMessage" -> "postSlackMessage"
  */
-function buildNodeIndex(nodes: GraphNode[]): Map<string, GraphNode[]> {
-  const nodesByStepId = new Map<string, GraphNode[]>();
+function extractFunctionName(stepId: string): string | null {
+  const parts = stepId.split('//');
+  return parts.length >= 3 ? parts[parts.length - 1] : null;
+}
+
+/**
+ * Build index of graph nodes by normalized stepId and by function name
+ */
+function buildNodeIndex(nodes: GraphNode[]): {
+  byStepId: Map<string, GraphNode[]>;
+  byFunctionName: Map<string, GraphNode[]>;
+} {
+  const byStepId = new Map<string, GraphNode[]>();
+  const byFunctionName = new Map<string, GraphNode[]>();
+
   for (const node of nodes) {
     if (node.data.stepId) {
+      // Index by full step ID
       const normalizedStepId = normalizeStepName(node.data.stepId);
-      const existing = nodesByStepId.get(normalizedStepId) || [];
+      const existing = byStepId.get(normalizedStepId) || [];
       existing.push(node);
-      nodesByStepId.set(normalizedStepId, existing);
+      byStepId.set(normalizedStepId, existing);
+
+      // Also index by function name for fallback matching
+      const functionName = extractFunctionName(normalizedStepId);
+      if (functionName) {
+        const existingByName = byFunctionName.get(functionName) || [];
+        existingByName.push(node);
+        byFunctionName.set(functionName, existingByName);
+      }
     }
   }
-  return nodesByStepId;
+  return { byStepId, byFunctionName };
 }
 
 /**
@@ -187,6 +210,7 @@ function processStepGroup(
   stepGroup: Step[],
   stepName: string,
   nodesByStepId: Map<string, GraphNode[]>,
+  nodesByFunctionName: Map<string, GraphNode[]>,
   occurrenceCount: Map<string, number>,
   nodeExecutions: Map<string, StepExecution[]>,
   executionPath: string[]
@@ -195,7 +219,18 @@ function processStepGroup(
   const occurrenceIndex = occurrenceCount.get(normalizedStepName) || 0;
   occurrenceCount.set(normalizedStepName, occurrenceIndex + 1);
 
-  const nodesWithStepId = nodesByStepId.get(normalizedStepName) || [];
+  let nodesWithStepId = nodesByStepId.get(normalizedStepName) || [];
+  let matchStrategy = 'step-id';
+
+  // Fallback: If no exact stepId match, try matching by function name
+  // This handles cases where step functions are in separate files
+  if (nodesWithStepId.length === 0) {
+    const functionName = extractFunctionName(normalizedStepName);
+    if (functionName) {
+      nodesWithStepId = nodesByFunctionName.get(functionName) || [];
+      matchStrategy = 'function-name';
+    }
+  }
 
   // If there's only one node for this step but multiple invocations,
   // map all invocations to that single node
@@ -212,6 +247,7 @@ function processStepGroup(
     totalNodesWithStepId: nodesWithStepId.length,
     selectedNode: graphNode?.id,
     allNodesWithStepId: nodesWithStepId.map((n) => n.id),
+    matchStrategy,
     strategy:
       nodesWithStepId.length === 1
         ? 'single-node-multiple-invocations'
@@ -282,8 +318,9 @@ export function mapRunToExecution(
     }))
   );
 
-  // Build an index of graph nodes by normalized stepId for quick lookup
-  const nodesByStepId = buildNodeIndex(graph.nodes);
+  // Build an index of graph nodes by normalized stepId and function name for quick lookup
+  const { byStepId: nodesByStepId, byFunctionName: nodesByFunctionName } =
+    buildNodeIndex(graph.nodes);
 
   console.log('[Graph Mapper] Graph nodes by stepId:', {
     allGraphNodes: graph.nodes.map((n) => ({
@@ -325,6 +362,7 @@ export function mapRunToExecution(
           currentStepGroup,
           currentStepName,
           nodesByStepId,
+          nodesByFunctionName,
           stepNameOccurrenceCount,
           nodeExecutions,
           executionPath
