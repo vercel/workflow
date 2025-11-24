@@ -21,6 +21,7 @@ export default defineConfig({
         // Start the Postgres World
         // Needed since we test this in CI
         'astro:server:setup': async () => {
+          console.log('starting..');
           if (
             process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
           ) {
