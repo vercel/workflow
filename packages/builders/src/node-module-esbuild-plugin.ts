@@ -7,12 +7,13 @@ import type * as esbuild from 'esbuild';
 // - "node:fs", "node:path" etc. (with node: prefix)
 // But NOT "some-package/stream" or "eventsource-parser/stream"
 const nodeModulesRegex = new RegExp(`^(${builtinModules.join('|')})$`);
+const regex = new RegExp(`${nodeModulesRegex}|bun`);
 
 export function createNodeModuleErrorPlugin(): esbuild.Plugin {
   return {
     name: 'workflow-node-module-error',
     setup(build) {
-      build.onResolve({ filter: nodeModulesRegex }, (args) => {
+      build.onResolve({ filter: regex }, (args) => {
         return {
           path: args.path,
           errors: [
