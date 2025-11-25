@@ -15,11 +15,6 @@ async function convertToLanguageModelPrompt({ prompt, supportedUrls, download = 
     };
 }
 export async function myWorkflow(input) {
-    'use workflow';
-    const result = await convertToLanguageModelPrompt({
-        prompt: input.prompt,
-        supportedUrls: {},
-        download: undefined
-    });
-    return result;
+    throw new Error("You attempted to execute workflow myWorkflow function directly. To start a workflow, use start(myWorkflow) from workflow/api");
 }
+myWorkflow.workflowId = "workflow//input.js//myWorkflow";

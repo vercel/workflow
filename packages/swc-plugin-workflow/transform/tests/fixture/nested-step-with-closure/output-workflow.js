@@ -9,14 +9,14 @@ function stepWrapperReturnArrowFunctionVar(a, b, c) {
     return fn;
 }
 function stepWrapperReturnNamedFunction(a, b, c) {
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//f", ()=>({
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//stepWrapperReturnNamedFunction/f", ()=>({
             a,
             b,
             c
         }));
 }
 function stepWrapperReturnArrowFunction(a, b, c) {
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//_anonymousStep0", ()=>({
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//stepWrapperReturnArrowFunction/_anonymousStep0", ()=>({
             a,
             b,
             c
@@ -39,14 +39,14 @@ const arrowWrapperReturnArrowFunctionVar = (a, b, c)=>{
     return fn;
 };
 const arrowWrapperReturnNamedFunction = (a, b, c)=>{
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//f", ()=>({
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//arrowWrapperReturnNamedFunction/f", ()=>({
             a,
             b,
             c
         }));
 };
 const arrowWrapperReturnArrowFunction = (a, b, c)=>{
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//_anonymousStep1", ()=>({
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//arrowWrapperReturnArrowFunction/_anonymousStep1", ()=>({
             a,
             b,
             c

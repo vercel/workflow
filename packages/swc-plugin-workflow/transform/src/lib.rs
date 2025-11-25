@@ -5467,9 +5467,14 @@ impl VisitMut for StepTransform {
                             }
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
+                                // Use current_parent_function_name to match step mode's ID generation
                                 let step_fn_name =
-                                    if let Some(parent) = &self.current_workflow_function_name {
-                                        format!("{}/{}", parent, name)
+                                    if let Some(parent) = &self.current_parent_function_name {
+                                        if !parent.is_empty() {
+                                            format!("{}/{}", parent, name)
+                                        } else {
+                                            name.clone()
+                                        }
                                     } else {
                                         name.clone()
                                     };
@@ -5588,9 +5593,14 @@ impl VisitMut for StepTransform {
                             }
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
+                                // Use current_parent_function_name to match step mode's ID generation
                                 let step_fn_name =
-                                    if let Some(parent) = &self.current_workflow_function_name {
-                                        format!("{}/{}", parent, name)
+                                    if let Some(parent) = &self.current_parent_function_name {
+                                        if !parent.is_empty() {
+                                            format!("{}/{}", parent, name)
+                                        } else {
+                                            name.clone()
+                                        }
                                     } else {
                                         name.clone()
                                     };
