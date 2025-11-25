@@ -1,8 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import type {
+  ArrowFunctionExpression,
+  BlockStatement,
   CallExpression,
   Expression,
   FunctionDeclaration,
+  FunctionExpression,
   Identifier,
   MemberExpression,
   Program,
@@ -10,6 +13,16 @@ import type {
   VariableDeclaration,
 } from '@swc/core';
 import { parseSync } from '@swc/core';
+
+/**
+ * Represents a function in the bundle (can be declaration, expression, or arrow)
+ */
+interface FunctionInfo {
+  name: string;
+  body: BlockStatement | Expression | null | undefined;
+  isStep: boolean;
+  stepId?: string;
+}
 
 /**
  * Graph manifest structure
@@ -48,6 +61,10 @@ export interface NodeMetadata {
   conditionalBranch?: string;
   parallelGroupId?: string;
   parallelMethod?: string;
+  /** Step is passed as a reference (callback/tool) rather than directly called */
+  isStepReference?: boolean;
+  /** Context where the step reference was found (e.g., "tools.getWeather.execute") */
+  referenceContext?: string;
 }
 
 export interface GraphEdge {
@@ -108,8 +125,11 @@ export async function extractGraphFromBundle(
     // Extract step declarations
     const stepDeclarations = extractStepDeclarations(actualWorkflowCode);
 
-    // Extract workflows
-    const workflows = extractWorkflows(ast, stepDeclarations);
+    // Build a map of ALL functions in the bundle (for transitive step resolution)
+    const functionMap = buildFunctionMap(ast, stepDeclarations);
+
+    // Extract workflows with transitive step resolution
+    const workflows = extractWorkflows(ast, stepDeclarations, functionMap);
 
     return {
       version: '1.0.0',
@@ -187,11 +207,70 @@ function extractStepDeclarations(
 }
 
 /**
+ * Build a map of all functions in the bundle for transitive step resolution
+ */
+function buildFunctionMap(
+  ast: Program,
+  stepDeclarations: Map<string, { stepId: string; line: number }>
+): Map<string, FunctionInfo> {
+  const functionMap = new Map<string, FunctionInfo>();
+
+  for (const item of ast.body) {
+    // Handle function declarations: function foo() {}
+    if (item.type === 'FunctionDeclaration') {
+      const func = item as FunctionDeclaration;
+      if (func.identifier) {
+        const name = func.identifier.value;
+        const isStep = stepDeclarations.has(name);
+        functionMap.set(name, {
+          name,
+          body: func.body,
+          isStep,
+          stepId: isStep ? stepDeclarations.get(name)?.stepId : undefined,
+        });
+      }
+    }
+
+    // Handle variable declarations: const foo = function() {} or const foo = () => {}
+    if (item.type === 'VariableDeclaration') {
+      const varDecl = item as VariableDeclaration;
+      for (const decl of varDecl.declarations) {
+        if (decl.id.type === 'Identifier' && decl.init) {
+          const name = decl.id.value;
+          const isStep = stepDeclarations.has(name);
+
+          if (decl.init.type === 'FunctionExpression') {
+            const funcExpr = decl.init as FunctionExpression;
+            functionMap.set(name, {
+              name,
+              body: funcExpr.body,
+              isStep,
+              stepId: isStep ? stepDeclarations.get(name)?.stepId : undefined,
+            });
+          } else if (decl.init.type === 'ArrowFunctionExpression') {
+            const arrowFunc = decl.init as ArrowFunctionExpression;
+            functionMap.set(name, {
+              name,
+              body: arrowFunc.body,
+              isStep,
+              stepId: isStep ? stepDeclarations.get(name)?.stepId : undefined,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return functionMap;
+}
+
+/**
  * Extract workflows from AST
  */
 function extractWorkflows(
   ast: Program,
-  stepDeclarations: Map<string, { stepId: string; line: number }>
+  stepDeclarations: Map<string, { stepId: string; line: number }>,
+  functionMap: Map<string, FunctionInfo>
 ): Record<string, WorkflowGraph> {
   const workflows: Record<string, WorkflowGraph> = {};
 
@@ -213,13 +292,14 @@ function extractWorkflows(
       const parts = workflowId.split('//');
       const filePath = parts.length > 1 ? parts[1] : '';
 
-      // Analyze the function body
+      // Analyze the function body with transitive step resolution
       const graph = analyzeWorkflowFunction(
         func,
         workflowName,
         workflowId,
         filePath,
-        stepDeclarations
+        stepDeclarations,
+        functionMap
       );
 
       workflows[workflowName] = graph;
@@ -267,7 +347,8 @@ function analyzeWorkflowFunction(
   workflowName: string,
   workflowId: string,
   filePath: string,
-  stepDeclarations: Map<string, { stepId: string; line: number }>
+  stepDeclarations: Map<string, { stepId: string; line: number }>,
+  functionMap: Map<string, FunctionInfo>
 ): WorkflowGraph {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -300,7 +381,12 @@ function analyzeWorkflowFunction(
   // Analyze function body
   if (func.body?.stmts) {
     for (const stmt of func.body.stmts) {
-      const result = analyzeStatement(stmt, stepDeclarations, context);
+      const result = analyzeStatement(
+        stmt,
+        stepDeclarations,
+        context,
+        functionMap
+      );
 
       // Add all nodes and edges from this statement
       nodes.push(...result.nodes);
@@ -390,7 +476,8 @@ interface AnalysisResult {
 function analyzeStatement(
   stmt: Statement,
   stepDeclarations: Map<string, { stepId: string; line: number }>,
-  context: AnalysisContext
+  context: AnalysisContext,
+  functionMap: Map<string, FunctionInfo>
 ): AnalysisResult {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -402,7 +489,12 @@ function analyzeStatement(
     const varDecl = stmt as VariableDeclaration;
     for (const decl of varDecl.declarations) {
       if (decl.init) {
-        const result = analyzeExpression(decl.init, stepDeclarations, context);
+        const result = analyzeExpression(
+          decl.init,
+          stepDeclarations,
+          context,
+          functionMap
+        );
         nodes.push(...result.nodes);
         edges.push(...result.edges);
         if (entryNodeIds.length === 0) {
@@ -430,7 +522,8 @@ function analyzeStatement(
     const result = analyzeExpression(
       stmt.expression,
       stepDeclarations,
-      context
+      context,
+      functionMap
     );
     nodes.push(...result.nodes);
     edges.push(...result.edges);
@@ -448,7 +541,8 @@ function analyzeStatement(
       const branchResult = analyzeBlock(
         stmt.consequent.stmts,
         stepDeclarations,
-        context
+        context,
+        functionMap
       );
       nodes.push(...branchResult.nodes);
       edges.push(...branchResult.edges);
@@ -463,7 +557,8 @@ function analyzeStatement(
       const branchResult = analyzeBlock(
         stmt.alternate.stmts,
         stepDeclarations,
-        context
+        context,
+        functionMap
       );
       nodes.push(...branchResult.nodes);
       edges.push(...branchResult.edges);
@@ -482,7 +577,12 @@ function analyzeStatement(
     const body =
       stmt.type === 'WhileStatement' ? stmt.body : (stmt as any).body;
     if (body.type === 'BlockStatement') {
-      const loopResult = analyzeBlock(body.stmts, stepDeclarations, context);
+      const loopResult = analyzeBlock(
+        body.stmts,
+        stepDeclarations,
+        context,
+        functionMap
+      );
 
       // Mark all nodes with loop metadata
       for (const node of loopResult.nodes) {
@@ -521,7 +621,12 @@ function analyzeStatement(
     const body = (stmt as any).body;
 
     if (body.type === 'BlockStatement') {
-      const loopResult = analyzeBlock(body.stmts, stepDeclarations, context);
+      const loopResult = analyzeBlock(
+        body.stmts,
+        stepDeclarations,
+        context,
+        functionMap
+      );
 
       // Mark all nodes with loop metadata
       for (const node of loopResult.nodes) {
@@ -556,7 +661,8 @@ function analyzeStatement(
     const result = analyzeExpression(
       (stmt as any).argument,
       stepDeclarations,
-      context
+      context,
+      functionMap
     );
     nodes.push(...result.nodes);
     edges.push(...result.edges);
@@ -573,7 +679,8 @@ function analyzeStatement(
 function analyzeBlock(
   stmts: Statement[],
   stepDeclarations: Map<string, { stepId: string; line: number }>,
-  context: AnalysisContext
+  context: AnalysisContext,
+  functionMap: Map<string, FunctionInfo>
 ): AnalysisResult {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -581,7 +688,12 @@ function analyzeBlock(
   let currentExitIds: string[] = [];
 
   for (const stmt of stmts) {
-    const result = analyzeStatement(stmt, stepDeclarations, context);
+    const result = analyzeStatement(
+      stmt,
+      stepDeclarations,
+      context,
+      functionMap
+    );
 
     if (result.nodes.length === 0) continue;
 
@@ -621,12 +733,14 @@ function analyzeBlock(
 }
 
 /**
- * Analyze an expression and extract step calls
+ * Analyze an expression and extract step calls (including transitive calls through helper functions)
  */
 function analyzeExpression(
   expr: Expression,
   stepDeclarations: Map<string, { stepId: string; line: number }>,
-  context: AnalysisContext
+  context: AnalysisContext,
+  functionMap: Map<string, FunctionInfo>,
+  visitedFunctions: Set<string> = new Set() // Prevent infinite recursion
 ): AnalysisResult {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -661,7 +775,9 @@ function analyzeExpression(
                     const elemResult = analyzeExpression(
                       element.expression,
                       stepDeclarations,
-                      context
+                      context,
+                      functionMap,
+                      visitedFunctions
                     );
 
                     // Set parallel metadata on all nodes from this element
@@ -689,12 +805,13 @@ function analyzeExpression(
         }
       }
 
-      // Regular step call
+      // Regular call - check if it's a step or a helper function
       if (callExpr.callee.type === 'Identifier') {
         const funcName = (callExpr.callee as Identifier).value;
         const stepInfo = stepDeclarations.get(funcName);
 
         if (stepInfo) {
+          // Direct step call
           const nodeId = `node_${context.nodeCounter++}`;
           const metadata: NodeMetadata = {};
 
@@ -722,6 +839,20 @@ function analyzeExpression(
           entryNodeIds.push(nodeId);
           exitNodeIds.push(nodeId);
           context.yPosition += 100;
+        } else {
+          // Check if it's a helper function - analyze transitively
+          const transitiveResult = analyzeTransitiveCall(
+            funcName,
+            stepDeclarations,
+            context,
+            functionMap,
+            visitedFunctions,
+            expr.span.start
+          );
+          nodes.push(...transitiveResult.nodes);
+          edges.push(...transitiveResult.edges);
+          entryNodeIds.push(...transitiveResult.entryNodeIds);
+          exitNodeIds.push(...transitiveResult.exitNodeIds);
         }
       }
     }
@@ -735,6 +866,7 @@ function analyzeExpression(
       const stepInfo = stepDeclarations.get(funcName);
 
       if (stepInfo) {
+        // Direct step call
         const nodeId = `node_${context.nodeCounter++}`;
         const metadata: NodeMetadata = {};
 
@@ -762,8 +894,251 @@ function analyzeExpression(
         entryNodeIds.push(nodeId);
         exitNodeIds.push(nodeId);
         context.yPosition += 100;
+      } else {
+        // Check if it's a helper function - analyze transitively
+        const transitiveResult = analyzeTransitiveCall(
+          funcName,
+          stepDeclarations,
+          context,
+          functionMap,
+          visitedFunctions,
+          expr.span.start
+        );
+        nodes.push(...transitiveResult.nodes);
+        edges.push(...transitiveResult.edges);
+        entryNodeIds.push(...transitiveResult.entryNodeIds);
+        exitNodeIds.push(...transitiveResult.exitNodeIds);
       }
     }
+  }
+
+  // Check for step references in object literals (e.g., { execute: stepFunc, tools: { ... } })
+  if (expr.type === 'ObjectExpression') {
+    const refResult = analyzeObjectForStepReferences(
+      expr,
+      stepDeclarations,
+      context,
+      ''
+    );
+    nodes.push(...refResult.nodes);
+    edges.push(...refResult.edges);
+    entryNodeIds.push(...refResult.entryNodeIds);
+    exitNodeIds.push(...refResult.exitNodeIds);
+  }
+
+  // Check for step references in function call arguments
+  if (expr.type === 'CallExpression') {
+    const callExpr = expr as CallExpression;
+    for (const arg of callExpr.arguments) {
+      if (arg.expression) {
+        // Check if argument is a step reference
+        if (arg.expression.type === 'Identifier') {
+          const argName = (arg.expression as Identifier).value;
+          const stepInfo = stepDeclarations.get(argName);
+          if (stepInfo) {
+            const nodeId = `node_${context.nodeCounter++}`;
+            const node: GraphNode = {
+              id: nodeId,
+              type: 'step',
+              position: { x: 250, y: context.yPosition },
+              data: {
+                label: `${argName} (ref)`,
+                nodeKind: 'step',
+                stepId: stepInfo.stepId,
+                line: arg.expression.span.start,
+              },
+              metadata: {
+                isStepReference: true,
+                referenceContext: 'function argument',
+              },
+            };
+            nodes.push(node);
+            entryNodeIds.push(nodeId);
+            exitNodeIds.push(nodeId);
+            context.yPosition += 100;
+          }
+        }
+        // Check for object literals in arguments
+        if (arg.expression.type === 'ObjectExpression') {
+          const refResult = analyzeObjectForStepReferences(
+            arg.expression,
+            stepDeclarations,
+            context,
+            ''
+          );
+          nodes.push(...refResult.nodes);
+          edges.push(...refResult.edges);
+          entryNodeIds.push(...refResult.entryNodeIds);
+          exitNodeIds.push(...refResult.exitNodeIds);
+        }
+      }
+    }
+  }
+
+  // Check for step references in 'new' expressions (e.g., new DurableAgent({ tools: ... }))
+  if (expr.type === 'NewExpression') {
+    const newExpr = expr as any;
+    if (newExpr.arguments) {
+      for (const arg of newExpr.arguments) {
+        if (arg.expression?.type === 'ObjectExpression') {
+          const refResult = analyzeObjectForStepReferences(
+            arg.expression,
+            stepDeclarations,
+            context,
+            ''
+          );
+          nodes.push(...refResult.nodes);
+          edges.push(...refResult.edges);
+          entryNodeIds.push(...refResult.entryNodeIds);
+          exitNodeIds.push(...refResult.exitNodeIds);
+        }
+      }
+    }
+  }
+
+  return { nodes, edges, entryNodeIds, exitNodeIds };
+}
+
+/**
+ * Analyze an object expression for step references (e.g., { execute: stepFunc })
+ */
+function analyzeObjectForStepReferences(
+  obj: any,
+  stepDeclarations: Map<string, { stepId: string; line: number }>,
+  context: AnalysisContext,
+  path: string
+): AnalysisResult {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  const entryNodeIds: string[] = [];
+  const exitNodeIds: string[] = [];
+
+  if (!obj.properties) return { nodes, edges, entryNodeIds, exitNodeIds };
+
+  for (const prop of obj.properties) {
+    if (prop.type !== 'KeyValueProperty') continue;
+
+    // Get property key name
+    let keyName = '';
+    if (prop.key.type === 'Identifier') {
+      keyName = prop.key.value;
+    } else if (prop.key.type === 'StringLiteral') {
+      keyName = prop.key.value;
+    }
+
+    const currentPath = path ? `${path}.${keyName}` : keyName;
+
+    // Check if the value is a step reference
+    if (prop.value.type === 'Identifier') {
+      const valueName = prop.value.value;
+      const stepInfo = stepDeclarations.get(valueName);
+      if (stepInfo) {
+        const nodeId = `node_${context.nodeCounter++}`;
+        const node: GraphNode = {
+          id: nodeId,
+          type: 'step',
+          position: { x: 250, y: context.yPosition },
+          data: {
+            label: `${valueName} (tool)`,
+            nodeKind: 'step',
+            stepId: stepInfo.stepId,
+            line: prop.value.span.start,
+          },
+          metadata: {
+            isStepReference: true,
+            referenceContext: currentPath,
+          },
+        };
+        nodes.push(node);
+        entryNodeIds.push(nodeId);
+        exitNodeIds.push(nodeId);
+        context.yPosition += 100;
+      }
+    }
+
+    // Recursively check nested objects
+    if (prop.value.type === 'ObjectExpression') {
+      const nestedResult = analyzeObjectForStepReferences(
+        prop.value,
+        stepDeclarations,
+        context,
+        currentPath
+      );
+      nodes.push(...nestedResult.nodes);
+      edges.push(...nestedResult.edges);
+      entryNodeIds.push(...nestedResult.entryNodeIds);
+      exitNodeIds.push(...nestedResult.exitNodeIds);
+    }
+  }
+
+  return { nodes, edges, entryNodeIds, exitNodeIds };
+}
+
+/**
+ * Analyze a transitive function call to find step calls within helper functions
+ */
+function analyzeTransitiveCall(
+  funcName: string,
+  stepDeclarations: Map<string, { stepId: string; line: number }>,
+  context: AnalysisContext,
+  functionMap: Map<string, FunctionInfo>,
+  visitedFunctions: Set<string>,
+  _callLine: number // Reserved for future debug info
+): AnalysisResult {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  const entryNodeIds: string[] = [];
+  const exitNodeIds: string[] = [];
+
+  // Prevent infinite recursion
+  if (visitedFunctions.has(funcName)) {
+    return { nodes, edges, entryNodeIds, exitNodeIds };
+  }
+
+  // Look up the function in our map
+  const funcInfo = functionMap.get(funcName);
+  if (!funcInfo || funcInfo.isStep) {
+    // Not a helper function or already a step
+    return { nodes, edges, entryNodeIds, exitNodeIds };
+  }
+
+  // Mark as visited to prevent cycles
+  visitedFunctions.add(funcName);
+
+  try {
+    // Analyze the function body
+    if (funcInfo.body) {
+      if (funcInfo.body.type === 'BlockStatement') {
+        // Function body is a block statement
+        const bodyResult = analyzeBlock(
+          funcInfo.body.stmts,
+          stepDeclarations,
+          context,
+          functionMap
+        );
+        nodes.push(...bodyResult.nodes);
+        edges.push(...bodyResult.edges);
+        entryNodeIds.push(...bodyResult.entryNodeIds);
+        exitNodeIds.push(...bodyResult.exitNodeIds);
+      } else {
+        // Arrow function with expression body
+        const exprResult = analyzeExpression(
+          funcInfo.body,
+          stepDeclarations,
+          context,
+          functionMap,
+          visitedFunctions
+        );
+        nodes.push(...exprResult.nodes);
+        edges.push(...exprResult.edges);
+        entryNodeIds.push(...exprResult.entryNodeIds);
+        exitNodeIds.push(...exprResult.exitNodeIds);
+      }
+    }
+  } finally {
+    // Unmark after analysis to allow the same function to be called multiple times
+    // (just not recursively)
+    visitedFunctions.delete(funcName);
   }
 
   return { nodes, edges, entryNodeIds, exitNodeIds };

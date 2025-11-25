@@ -11,7 +11,6 @@ import {
   type ToolSet,
   type UIMessageChunk,
 } from 'ai';
-import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
 
@@ -135,15 +134,27 @@ export class DurableAgent {
   }
 
   async stream(options: DurableAgentStreamOptions) {
-    const prompt = await standardizePrompt({
-      system: options.system || this.system,
-      messages: options.messages,
-    });
+    // Build messages array with optional system prompt prepended
+    const systemPrompt = options.system || this.system;
+    const inputMessages: ModelMessage[] = systemPrompt
+      ? [{ role: 'system', content: systemPrompt }, ...options.messages]
+      : [...options.messages];
 
-    const modelPrompt = await convertToLanguageModelPrompt({
-      prompt,
-      supportedUrls: {},
-      download: undefined,
+    // Convert messages to LanguageModelV2Prompt format
+    // System messages need string content, user/assistant need array content
+    const modelPrompt = inputMessages.map((msg): any => {
+      if (msg.role === 'system') {
+        // System messages must have string content per LanguageModelV2 spec
+        return { role: 'system', content: String(msg.content) };
+      }
+      // User and assistant messages need array content
+      const content =
+        typeof msg.content === 'string'
+          ? [{ type: 'text', text: msg.content }]
+          : Array.isArray(msg.content)
+            ? msg.content
+            : [{ type: 'text', text: String(msg.content) }];
+      return { role: msg.role, content };
     });
 
     const iterator = streamTextIterator({
