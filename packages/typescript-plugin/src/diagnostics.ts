@@ -22,7 +22,7 @@ function isBuiltinModule(moduleName: string): boolean {
 }
 
 function isBunModule(moduleName: string): boolean {
-  return moduleName === 'bun';
+  return moduleName === 'bun' || moduleName.startsWith('bun:');
 }
 
 type TypeScriptLib = typeof import('typescript/lib/tsserverlibrary');
