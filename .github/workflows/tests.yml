@@ -208,7 +208,13 @@ jobs:
           LAST_MTIME=""
           STABLE_COUNT=0
           while [ $STABLE_COUNT -lt 5 ]; do
-            CURRENT_MTIME=$(stat -c %Y "$WORKFLOW_FILE" 2>/dev/null || echo "0")
+            if [ ! -f "$WORKFLOW_FILE" ]; then
+              echo "  File does not exist yet, waiting..."
+              STABLE_COUNT=0
+              sleep 1
+              continue
+            fi
+            CURRENT_MTIME=$(stat -c %Y "$WORKFLOW_FILE")
             if [ "$CURRENT_MTIME" = "$LAST_MTIME" ]; then
               STABLE_COUNT=$((STABLE_COUNT + 1))
               echo "  File unchanged ($STABLE_COUNT/5)..."
