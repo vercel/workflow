@@ -22,7 +22,7 @@ export async function validStep() {
     return 42;
 }
 export const validWorkflow = async ()=>{
-    'use workflow';
-    return 'test';
+    throw new Error("You attempted to execute workflow validWorkflow function directly. To start a workflow, use start(validWorkflow) from workflow/api");
 };
+validWorkflow.workflowId = "workflow//input.js//validWorkflow";
 registerStepFunction("step//input.js//validStep", validStep);

@@ -6,27 +6,8 @@ import * as z from 'zod';
 var test$_anonymousStep0 = async ()=>gateway('openai/gpt-5');
 var test$_anonymousStep1 = async ({ location })=>`Weather in ${location}: Sunny, 72°F`;
 export async function test() {
-    'use workflow';
-    const agent = new DurableAgent({
-        model: _anonymousStep0,
-        tools: {
-            getWeather: tool({
-                description: 'Get weather for a location',
-                inputSchema: z.object({
-                    location: z.string()
-                }),
-                execute: _anonymousStep1
-            })
-        }
-    });
-    await agent.stream({
-        messages: [
-            {
-                role: 'user',
-                content: 'What is the weather in San Francisco?'
-            }
-        ]
-    });
+    throw new Error("You attempted to execute workflow test function directly. To start a workflow, use start(test) from workflow/api");
 }
+test.workflowId = "workflow//input.js//test";
 registerStepFunction("step//input.js//test/_anonymousStep0", test$_anonymousStep0);
 registerStepFunction("step//input.js//test/_anonymousStep1", test$_anonymousStep1);

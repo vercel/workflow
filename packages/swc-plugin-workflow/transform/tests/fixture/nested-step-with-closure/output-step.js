@@ -80,23 +80,9 @@ const arrowWrapperReturnNamedFunctionVar = (a, b, c)=>{
     return fn;
 };
 export async function wflow() {
-    'use workflow';
-    let count = 42;
-    const namedStepWithClosureVars = wflow$namedStepWithClosureVars;
-    const agent = new DurableAgent({
-        arrowFunctionWithClosureVars: _anonymousStep2,
-        namedFunctionWithClosureVars: _anonymousStep3,
-        methodWithClosureVars: _anonymousStep4
-    });
-    await stepWrapperReturnArrowFunctionVar(1, 2, 3)();
-    await stepWrapperReturnNamedFunction(1, 2, 3)();
-    await stepWrapperReturnArrowFunction(1, 2, 3)();
-    await stepWrapperReturnNamedFunctionVar(1, 2, 3)();
-    await arrowWrapperReturnArrowFunctionVar(1, 2, 3)();
-    await arrowWrapperReturnNamedFunction(1, 2, 3)();
-    await arrowWrapperReturnArrowFunction(1, 2, 3)();
-    await arrowWrapperReturnNamedFunctionVar(1, 2, 3)();
+    throw new Error("You attempted to execute workflow wflow function directly. To start a workflow, use start(wflow) from workflow/api");
 }
+wflow.workflowId = "workflow//input.js//wflow";
 registerStepFunction("step//input.js//stepWrapperReturnArrowFunctionVar/fn", stepWrapperReturnArrowFunctionVar$fn);
 registerStepFunction("step//input.js//stepWrapperReturnNamedFunction/f", stepWrapperReturnNamedFunction$f);
 registerStepFunction("step//input.js//stepWrapperReturnArrowFunction/_anonymousStep0", stepWrapperReturnArrowFunction$_anonymousStep0);

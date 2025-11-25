@@ -11,25 +11,9 @@ var helpers$objectStep = async (x, y)=>{
     return x + y + 10;
 };
 export async function example(a, b) {
-    "use workflow";
-    const step = example$step;
-    // Arrow function with const
-    const arrowStep = example$arrowStep;
-    // Arrow function with let
-    let letArrowStep = example$letArrowStep;
-    // Arrow function with var
-    var varArrowStep = example$varArrowStep;
-    // Object with step method
-    const helpers = {
-        objectStep: helpers$objectStep
-    };
-    const val = await step(a, b);
-    const val2 = await arrowStep(a, b);
-    const val3 = await letArrowStep(a, b);
-    const val4 = await varArrowStep(a, b);
-    const val5 = await helpers.objectStep(a, b);
-    return val + val2 + val3 + val4 + val5;
+    throw new Error("You attempted to execute workflow example function directly. To start a workflow, use start(example) from workflow/api");
 }
+example.workflowId = "workflow//input.js//example";
 registerStepFunction("step//input.js//example/step", example$step);
 registerStepFunction("step//input.js//example/arrowStep", example$arrowStep);
 registerStepFunction("step//input.js//example/letArrowStep", example$letArrowStep);
