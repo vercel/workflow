@@ -189,18 +189,21 @@ jobs:
 
       - name: Run E2E Tests
         run: |
+          # Start dev server in background from workbench directory
           cd workbench/${{ matrix.app.name }}
           pnpm dev &
           DEV_PID=$!
+          cd ../..
+
           echo "Dev server started (PID: $DEV_PID), waiting for initial build..."
           sleep 15
 
-          # Run dev tests (these modify files and trigger rebuilds)
+          # Run dev tests from repo root (these modify files and trigger rebuilds)
           pnpm vitest run packages/core/e2e/dev.test.ts
 
           # Wait for the generated workflow file to stabilize after dev tests
           # The dev tests' afterEach restores files, triggering rebuilds
-          WORKFLOW_FILE="${{ matrix.app.generatedWorkflowPath }}"
+          WORKFLOW_FILE="workbench/${{ matrix.app.name }}/${{ matrix.app.generatedWorkflowPath }}"
           echo "Waiting for $WORKFLOW_FILE to stabilize..."
           LAST_MTIME=""
           STABLE_COUNT=0
