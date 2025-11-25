@@ -364,16 +364,26 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ) : (
         <>
           <Card className="overflow-hidden mt-4 bg-background">
-            <CardContent className="p-0">
+            <CardContent className="p-0 max-h-[calc(100vh-280px)] overflow-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="h-10">Workflow</TableHead>
-                    <TableHead className="h-10">Run ID</TableHead>
-                    <TableHead className="h-10">Status</TableHead>
-                    <TableHead className="h-10">Started</TableHead>
-                    <TableHead className="h-10">Completed</TableHead>
-                    <TableHead className="h-10 w-10"></TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Workflow
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Run ID
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Status
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Started
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Completed
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

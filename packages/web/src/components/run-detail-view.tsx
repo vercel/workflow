@@ -8,7 +8,8 @@ import {
   type WorkflowRun,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
-import { AlertCircle, ChevronLeft, List, Loader2, Network } from 'lucide-react';
+import { AlertCircle, List, Loader2, Network } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -23,6 +24,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { WorkflowGraphExecutionViewer } from '@/components/workflow-graph-execution-viewer';
@@ -241,15 +250,21 @@ export function RunDetailView({
 
       <div className="flex flex-col pb-6">
         <div className="flex-none space-y-6">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => router.back()}
-            className="gap-2"
-          >
-            <ChevronLeft className="size-4" />
-            Back
-          </Button>
+          <Breadcrumb>
+            <BreadcrumbList>
+              <BreadcrumbItem>
+                <BreadcrumbLink asChild>
+                  <Link href={buildUrlWithConfig('/', config)}>Runs</Link>
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbPage className="font-mono text-xs">
+                  {runId}
+                </BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
 
           {/* Run Overview Header */}
           <div className="space-y-4 pb-6">

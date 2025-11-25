@@ -272,16 +272,26 @@ export function HooksTable({
       ) : (
         <>
           <Card className="overflow-hidden mt-4 bg-background">
-            <CardContent className="p-0">
+            <CardContent className="p-0 max-h-[calc(100vh-280px)] overflow-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="h-10">Hook ID</TableHead>
-                    <TableHead className="h-10">Run ID</TableHead>
-                    <TableHead className="h-10">Token</TableHead>
-                    <TableHead className="h-10">Created</TableHead>
-                    <TableHead className="h-10">Invocations</TableHead>
-                    <TableHead className="h-10 w-10"></TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Hook ID
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Run ID
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Token
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Created
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                      Invocations
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
