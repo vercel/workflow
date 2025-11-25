@@ -54,16 +54,13 @@ export default {
         await builder.build();
       });
 
-      // Allows for HMR - rebuild workflow bundles when files change
+      // Allows for HMR
       if (nitro.options.dev) {
         nitro.hooks.hook('dev:reload', async () => {
           await builder.build();
         });
       }
-    }
 
-    // Register virtual handlers for local builds (both dev and prod)
-    if (!isVercelDeploy) {
       addVirtualHandler(
         nitro,
         '/.well-known/workflow/v1/webhook/:token',
