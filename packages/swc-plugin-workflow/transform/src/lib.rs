@@ -1,35 +1,14 @@
-mod graph;
 mod naming;
 
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::collections::{HashSet, HashMap};
 use swc_core::{
-    common::{DUMMY_SP, FileName, FilePathMapping, SourceMap, SyntaxContext, errors::HANDLER},
+    common::{DUMMY_SP, SyntaxContext, errors::HANDLER},
     ecma::{
         ast::*,
-        parser::{EsSyntax, Syntax, TsSyntax, parse_file_as_module},
-        visit::{Visit, VisitMut, VisitMutWith, VisitWith, noop_visit_mut_type},
+        visit::{VisitMut, VisitMutWith, noop_visit_mut_type},
     },
 };
-
-// Workflow manifest structure passed from JavaScript side
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct WorkflowManifest {
-    #[serde(default)]
-    pub steps: HashMap<String, HashMap<String, FunctionMetadata>>,
-    #[serde(default)]
-    pub workflows: HashMap<String, HashMap<String, FunctionMetadata>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct FunctionMetadata {
-    #[serde(rename = "stepId", default)]
-    pub step_id: Option<String>,
-    #[serde(rename = "workflowId", default)]
-    pub workflow_id: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 enum WorkflowErrorKind {
@@ -165,7 +144,6 @@ pub enum TransformMode {
     Step,
     Workflow,
     Client,
-    Graph,
 }
 
 #[derive(Debug)]
@@ -180,9 +158,6 @@ pub struct StepTransform {
     step_function_names: HashSet<String>,
     // Set of function names that are workflow functions
     workflow_function_names: HashSet<String>,
-    // Map of imported identifiers to their source information (for graph generation)
-    // Key: local identifier name, Value: (source_path, imported_name, kind)
-    imported_identifiers: HashMap<String, ImportInfo>,
     // Map from export name to actual const name for default exports (e.g., "default" -> "__default")
     workflow_export_to_const_name: std::collections::HashMap<String, String>,
     // Set of function names that have been registered (to avoid duplicates)
@@ -221,364 +196,9 @@ pub struct StepTransform {
     // Track object properties that need to be converted to initializer calls in workflow mode
     // (parent_var_name, prop_name, step_id)
     object_property_workflow_conversions: Vec<(String, String, String)>,
-    // Graph builder for graph mode
-    graph_builder: Option<graph::GraphBuilder>,
-    pending_graph_workflows: Vec<(String, String, Function)>,
     // Current context: variable name being processed when visiting object properties
     #[allow(dead_code)]
     current_var_context: Option<String>,
-    // Cache for parsed modules to avoid re-parsing the same file
-    parsed_module_cache: HashMap<PathBuf, Module>,
-    // Workflow manifest from the build phase (contains all steps/workflows across all files)
-    workflow_manifest: Option<WorkflowManifest>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GraphCallKind {
-    Step,
-    Workflow,
-}
-
-#[derive(Debug, Clone)]
-struct ImportInfo {
-    source_path: String,
-    imported_name: String, // The original exported name in the source file
-    kind: Option<GraphCallKind>, // Resolved kind (Step, Workflow, or None if not analyzed yet)
-    lookup_candidates: Vec<String>, // Debug: paths tried during resolution
-}
-
-#[derive(Debug, Clone)]
-enum ControlFlowContext {
-    Loop {
-        id: String,
-        is_await: bool,
-    },
-    Conditional {
-        id: String,
-        branch: ConditionalBranch,
-    },
-    ParallelGroup {
-        id: String,
-        method: String, // "all", "race", "allSettled"
-    },
-}
-
-#[derive(Debug, Clone)]
-enum ConditionalBranch {
-    Then,
-    Else,
-}
-
-#[derive(Debug, Clone)]
-struct GraphCallEvent {
-    fn_name: String,
-    span: swc_core::common::Span,
-    kind: GraphCallKind,
-    context: Vec<ControlFlowContext>,
-}
-
-#[derive(Debug, Clone)]
-struct GraphNodeRef {
-    name: String,
-    kind: GraphCallKind,
-}
-
-struct GraphUsageCollector<'a> {
-    step_function_names: &'a HashSet<String>,
-    workflow_function_names: &'a HashSet<String>,
-    imported_identifiers: &'a HashMap<String, ImportInfo>,
-    aliases: HashMap<Id, GraphNodeRef>,
-    calls: Vec<GraphCallEvent>,
-    // Control flow tracking
-    context_stack: Vec<ControlFlowContext>,
-    loop_counter: usize,
-    conditional_counter: usize,
-    parallel_counter: usize,
-}
-
-impl<'a> GraphUsageCollector<'a> {
-    fn new(
-        step_function_names: &'a HashSet<String>,
-        workflow_function_names: &'a HashSet<String>,
-        imported_identifiers: &'a HashMap<String, ImportInfo>,
-    ) -> Self {
-        Self {
-            step_function_names,
-            workflow_function_names,
-            imported_identifiers,
-            aliases: HashMap::new(),
-            calls: Vec::new(),
-            context_stack: Vec::new(),
-            loop_counter: 0,
-            conditional_counter: 0,
-            parallel_counter: 0,
-        }
-    }
-
-    fn collect(mut self, function: &Function) -> Vec<GraphCallEvent> {
-        if let Some(body) = &function.body {
-            body.visit_with(&mut self);
-        }
-        self.calls
-    }
-
-    fn resolve_symbol_name(&self, name: &str) -> Option<GraphNodeRef> {
-        if self.step_function_names.contains(name) {
-            Some(GraphNodeRef {
-                name: name.to_string(),
-                kind: GraphCallKind::Step,
-            })
-        } else if self.workflow_function_names.contains(name) {
-            Some(GraphNodeRef {
-                name: name.to_string(),
-                kind: GraphCallKind::Workflow,
-            })
-        } else {
-            None
-        }
-    }
-
-    fn resolve_ident_direct(&self, ident: &Ident) -> Option<GraphNodeRef> {
-        self.resolve_symbol_name(&ident.sym.to_string())
-    }
-
-    fn resolve_ident(&self, ident: &Ident) -> Option<GraphNodeRef> {
-        if let Some(alias) = self.aliases.get(&ident.to_id()) {
-            return Some(alias.clone());
-        }
-        self.resolve_ident_direct(ident)
-    }
-
-    fn resolve_expr_to_node(&self, expr: &Expr) -> Option<GraphNodeRef> {
-        match expr {
-            Expr::Ident(ident) => self.resolve_ident(ident),
-            Expr::Paren(paren) => self.resolve_expr_to_node(&paren.expr),
-            Expr::Await(await_expr) => self.resolve_expr_to_node(&await_expr.arg),
-            _ => None,
-        }
-    }
-
-    fn resolve_callee(&self, callee: &Callee) -> Option<GraphNodeRef> {
-        match callee {
-            Callee::Expr(expr) => self.resolve_expr_to_node(expr),
-            _ => None,
-        }
-    }
-
-    fn record_usage(&mut self, node: GraphNodeRef, span: swc_core::common::Span) {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "[graph] Recording {} with context depth: {} (contexts: {:?})",
-            node.name,
-            self.context_stack.len(),
-            self.context_stack
-                .iter()
-                .map(|c| match c {
-                    ControlFlowContext::Loop { id, is_await } =>
-                        format!("Loop({}{})", id, if *is_await { " await" } else { "" }),
-                    ControlFlowContext::Conditional { id, branch } =>
-                        format!("Cond({} {:?})", id, branch),
-                    ControlFlowContext::ParallelGroup { id, method } =>
-                        format!("Parallel({} {})", id, method),
-                })
-                .collect::<Vec<_>>()
-        );
-        self.calls.push(GraphCallEvent {
-            fn_name: node.name,
-            span,
-            kind: node.kind,
-            context: self.context_stack.clone(),
-        });
-    }
-}
-
-impl<'a> Visit for GraphUsageCollector<'a> {
-    fn visit_call_expr(&mut self, call: &CallExpr) {
-        // Check for Promise.all/race/allSettled for parallel execution detection
-        let is_parallel = if let Callee::Expr(expr) = &call.callee {
-            if let Expr::Member(member) = expr.as_ref() {
-                if let (Expr::Ident(obj), MemberProp::Ident(prop)) =
-                    (member.obj.as_ref(), &member.prop)
-                {
-                    if obj.sym == "Promise"
-                        && ["all", "race", "allSettled"].contains(&prop.sym.as_str())
-                    {
-                        Some(prop.sym.to_string())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if let Some(method) = is_parallel {
-            // Enter parallel context
-            let parallel_id = format!("parallel_{}", self.parallel_counter);
-            self.parallel_counter += 1;
-
-            self.context_stack.push(ControlFlowContext::ParallelGroup {
-                id: parallel_id,
-                method,
-            });
-
-            // Visit the arguments (which should contain the array of promises)
-            for arg in &call.args {
-                arg.visit_with(self);
-            }
-
-            self.context_stack.pop();
-            return;
-        }
-
-        // Regular call handling
-        if let Some(node) = self.resolve_callee(&call.callee) {
-            self.record_usage(node, call.span);
-        } else {
-            // If not already resolved as a known step/workflow, check if it's an imported identifier
-            if let Callee::Expr(expr) = &call.callee {
-                if let Expr::Ident(ident) = expr.as_ref() {
-                    let name = ident.sym.to_string();
-                    if let Some(import_info) = self.imported_identifiers.get(&name) {
-                        // Use the resolved kind from import analysis
-                        if let Some(kind) = import_info.kind {
-                            self.record_usage(GraphNodeRef { name, kind }, call.span);
-                        }
-                        // If kind is None, the import couldn't be resolved - skip it
-                    }
-                }
-            }
-        }
-        match &call.callee {
-            Callee::Expr(expr) => {
-                if !matches!(expr.as_ref(), Expr::Ident(_)) {
-                    expr.visit_with(self);
-                }
-            }
-            Callee::Super(super_callee) => {
-                super_callee.visit_with(self);
-            }
-            Callee::Import(import) => {
-                import.visit_with(self);
-            }
-        }
-        for arg in &call.args {
-            arg.visit_with(self);
-        }
-        if let Some(type_args) = &call.type_args {
-            type_args.visit_with(self);
-        }
-    }
-
-    fn visit_for_of_stmt(&mut self, n: &ForOfStmt) {
-        let loop_id = format!("loop_{}", self.loop_counter);
-        self.loop_counter += 1;
-
-        self.context_stack.push(ControlFlowContext::Loop {
-            id: loop_id,
-            is_await: n.is_await,
-        });
-
-        n.body.visit_with(self);
-
-        self.context_stack.pop();
-    }
-
-    fn visit_for_stmt(&mut self, n: &ForStmt) {
-        let loop_id = format!("loop_{}", self.loop_counter);
-        self.loop_counter += 1;
-
-        self.context_stack.push(ControlFlowContext::Loop {
-            id: loop_id,
-            is_await: false,
-        });
-
-        n.body.visit_with(self);
-
-        self.context_stack.pop();
-    }
-
-    fn visit_while_stmt(&mut self, n: &WhileStmt) {
-        let loop_id = format!("loop_{}", self.loop_counter);
-        self.loop_counter += 1;
-
-        self.context_stack.push(ControlFlowContext::Loop {
-            id: loop_id,
-            is_await: false,
-        });
-
-        n.body.visit_with(self);
-
-        self.context_stack.pop();
-    }
-
-    fn visit_do_while_stmt(&mut self, n: &DoWhileStmt) {
-        let loop_id = format!("loop_{}", self.loop_counter);
-        self.loop_counter += 1;
-
-        self.context_stack.push(ControlFlowContext::Loop {
-            id: loop_id,
-            is_await: false,
-        });
-
-        n.body.visit_with(self);
-
-        self.context_stack.pop();
-    }
-
-    fn visit_if_stmt(&mut self, n: &IfStmt) {
-        let cond_id = format!("cond_{}", self.conditional_counter);
-        self.conditional_counter += 1;
-
-        // Visit then branch
-        self.context_stack.push(ControlFlowContext::Conditional {
-            id: cond_id.clone(),
-            branch: ConditionalBranch::Then,
-        });
-        n.cons.visit_with(self);
-        self.context_stack.pop();
-
-        // Visit else branch if exists
-        if let Some(alt) = &n.alt {
-            self.context_stack.push(ControlFlowContext::Conditional {
-                id: cond_id,
-                branch: ConditionalBranch::Else,
-            });
-            alt.visit_with(self);
-            self.context_stack.pop();
-        }
-    }
-
-    fn visit_expr(&mut self, expr: &Expr) {
-        // Only record usage of known step/workflow functions here
-        // Imported identifiers are handled in visit_call_expr when they're actually called
-        match expr {
-            Expr::Ident(ident) => {
-                if let Some(node) = self.resolve_ident(ident) {
-                    self.record_usage(node, ident.span);
-                }
-            }
-            _ => {
-                expr.visit_children_with(self);
-            }
-        }
-    }
-
-    fn visit_var_declarator(&mut self, decl: &VarDeclarator) {
-        if let Some(init) = &decl.init {
-            if let Some(target) = self.resolve_expr_to_node(init) {
-                if let Pat::Ident(binding) = &decl.name {
-                    self.aliases.insert(binding.id.to_id(), target);
-                }
-            }
-        }
-        decl.visit_children_with(self);
-    }
 }
 
 // Structure to track variable names and their access patterns
@@ -714,10 +334,6 @@ impl StepTransform {
                                     *stmt = Stmt::Empty(EmptyStmt { span: DUMMY_SP });
                                     return;
                                 }
-                                TransformMode::Graph => {
-                                    // No transformation in graph mode, but continue traversing
-                                    stmt.visit_mut_children_with(self);
-                                }
                             }
                         } else {
                             match self.mode {
@@ -758,10 +374,6 @@ impl StepTransform {
                                 }
                                 TransformMode::Client => {
                                     self.remove_use_step_directive(&mut fn_decl.function.body);
-                                    stmt.visit_mut_children_with(self);
-                                }
-                                TransformMode::Graph => {
-                                    // No transformation in graph mode, but continue traversing
                                     stmt.visit_mut_children_with(self);
                                 }
                             }
@@ -813,537 +425,21 @@ impl StepTransform {
                                     .push((fn_name.clone(), fn_decl.function.span));
                                 stmt.visit_mut_children_with(self);
                             }
-                            TransformMode::Graph => {
-                                // No transformation in graph mode
-                                stmt.visit_mut_children_with(self);
-                            }
                         }
                     }
                 } else {
                     stmt.visit_mut_children_with(self);
                 }
             }
+            Stmt::Decl(Decl::Var(_)) => {
+                stmt.visit_mut_children_with(self);
+            }
             _ => {
-                // For all other statement types, continue traversing to detect nested step calls
                 stmt.visit_mut_children_with(self);
             }
         }
     }
-
-    fn queue_workflow_graph(
-        &mut self,
-        workflow_name: &str,
-        workflow_id: &str,
-        function: &Function,
-    ) {
-        if self.mode != TransformMode::Graph {
-            return;
-        }
-        self.pending_graph_workflows.push((
-            workflow_name.to_string(),
-            workflow_id.to_string(),
-            function.clone(),
-        ));
-    }
-
-    fn process_pending_workflow_graphs(&mut self) {
-        if self.mode != TransformMode::Graph {
-            return;
-        }
-        let pending = std::mem::take(&mut self.pending_graph_workflows);
-        for (workflow_name, workflow_id, function) in pending {
-            self.build_workflow_graph(&workflow_name, workflow_id, &function);
-        }
-    }
-
-    // Resolve imported identifiers by analyzing their source files recursively
-    fn resolve_imports(&mut self) {
-        if self.mode != TransformMode::Graph {
-            return;
-        }
-
-        // Clone the import list to avoid borrow checker issues
-        let imports_to_resolve: Vec<(String, ImportInfo)> = self
-            .imported_identifiers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        for (local_name, mut import_info) in imports_to_resolve {
-            // Resolve the import source path relative to current file
-            let (resolved_kind, candidates) = self.resolve_import_kind(&import_info);
-
-            // Update the import info with resolved kind and candidates
-            import_info.kind = resolved_kind;
-            import_info.lookup_candidates = candidates;
-            self.imported_identifiers.insert(local_name, import_info);
-        }
-    }
-
-    // Resolve the kind (Step/Workflow) of an imported function using the pre-built manifest
-    // Returns (kind, candidates_tried)
-    fn resolve_import_kind(
-        &mut self,
-        import_info: &ImportInfo,
-    ) -> (Option<GraphCallKind>, Vec<String>) {
-        // If we have a workflow manifest, use it to resolve the import
-        if let Some(manifest) = &self.workflow_manifest {
-            // Normalize the source path to match manifest keys
-            // Manifest keys can be in various formats:
-            // - "workflows/steps/foo.ts" (no leading ./)
-            // - "./workflows/steps/foo.ts" (with leading ./)
-            // We need to try multiple variations
-
-            let source_path = &import_info.source_path;
-            let mut candidates = Vec::new();
-
-            if source_path.starts_with("./") || source_path.starts_with("../") {
-                // Get the directory of the current file
-                let current_file = Path::new(&self.filename);
-                let current_dir = current_file.parent().unwrap_or_else(|| Path::new("."));
-
-                // Resolve the relative path
-                let resolved = current_dir.join(source_path);
-                let mut resolved_str = resolved.to_string_lossy().to_string().replace('\\', "/");
-
-                // Normalize: remove all "./" segments (leading and internal)
-                while resolved_str.contains("/./") {
-                    resolved_str = resolved_str.replace("/./", "/");
-                }
-                if resolved_str.starts_with("./") {
-                    resolved_str = resolved_str[2..].to_string();
-                }
-
-                // Add the base path (without ./)
-                candidates.push(resolved_str.clone());
-                // Also try with ./ prefix
-                candidates.push(format!("./{}", resolved_str));
-            } else {
-                // Absolute or package imports
-                candidates.push(source_path.clone());
-                if !source_path.starts_with("./") {
-                    candidates.push(format!("./{}", source_path));
-                }
-            }
-
-            // Try with common extensions
-            let extensions = ["", ".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
-            let mut all_candidates = Vec::new();
-            for candidate in &candidates {
-                for ext in &extensions {
-                    all_candidates.push(format!("{}{}", candidate, ext));
-                }
-            }
-
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[graph] Looking up import: {} from {}",
-                import_info.imported_name, import_info.source_path
-            );
-
-            // Try each candidate in steps
-            for candidate in &all_candidates {
-                if let Some(file_steps) = manifest.steps.get(candidate) {
-                    if file_steps.contains_key(&import_info.imported_name) {
-                        return (Some(GraphCallKind::Step), all_candidates);
-                    }
-                }
-            }
-
-            // Try each candidate in workflows
-            for candidate in &all_candidates {
-                if let Some(file_workflows) = manifest.workflows.get(candidate) {
-                    if file_workflows.contains_key(&import_info.imported_name) {
-                        return (Some(GraphCallKind::Workflow), all_candidates);
-                    }
-                }
-            }
-
-            // Not found - return None but include the candidates we tried
-            return (None, all_candidates);
-        }
-
-        // No manifest available
-        (None, vec![])
-    }
-
-    // Parse an imported file using SWC parser (with caching)
-    fn parse_imported_file(&mut self, file_path: &Path) -> Option<Module> {
-        let path_buf = file_path.to_path_buf();
-
-        // Check if we've already parsed this file
-        if let Some(cached_module) = self.parsed_module_cache.get(&path_buf) {
-            #[cfg(debug_assertions)]
-            eprintln!("[graph] Using cached parse for {:?}", file_path);
-            return Some(cached_module.clone());
-        }
-
-        // Read the source file
-        let source_code = std::fs::read_to_string(file_path).ok()?;
-
-        // Determine syntax based on file extension
-        let extension = file_path.extension()?.to_str()?;
-        let syntax = match extension {
-            "ts" => Syntax::Typescript(TsSyntax {
-                tsx: false,
-                decorators: true,
-                ..Default::default()
-            }),
-            "tsx" => Syntax::Typescript(TsSyntax {
-                tsx: true,
-                decorators: true,
-                ..Default::default()
-            }),
-            "jsx" => Syntax::Es(EsSyntax {
-                jsx: true,
-                ..Default::default()
-            }),
-            _ => Syntax::Es(EsSyntax {
-                jsx: false,
-                ..Default::default()
-            }),
-        };
-
-        // Create a source map for parsing
-        let source_map = SourceMap::new(FilePathMapping::empty());
-        let source_file = source_map.new_source_file(
-            Arc::new(FileName::Real(file_path.to_path_buf())),
-            source_code,
-        );
-
-        // Parse the module
-        match parse_file_as_module(&source_file, syntax, Default::default(), None, &mut vec![]) {
-            Ok(module) => {
-                #[cfg(debug_assertions)]
-                eprintln!("[graph] Successfully parsed {:?}", file_path);
-
-                // Cache the parsed module
-                self.parsed_module_cache.insert(path_buf, module.clone());
-                Some(module)
-            }
-            Err(_e) => {
-                #[cfg(debug_assertions)]
-                eprintln!("[graph] Failed to parse {:?}: {:?}", file_path, _e);
-                None
-            }
-        }
-    }
-
-    // Resolve import path relative to current file
-    fn resolve_import_path(&self, import_source: &str) -> Option<PathBuf> {
-        // Skip node_modules and package imports for now
-        if !import_source.starts_with('.') && !import_source.starts_with('/') {
-            #[cfg(debug_assertions)]
-            eprintln!("[graph] Skipping package import: {}", import_source);
-            return None;
-        }
-
-        // Get the directory of the current file
-        let current_file = Path::new(&self.filename);
-        let current_dir = current_file.parent()?;
-
-        // Resolve relative path
-        let import_path = current_dir.join(import_source);
-
-        // Try common extensions if no extension provided
-        let extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
-
-        // If the path already has an extension, try it first
-        if import_path.extension().is_some() {
-            if import_path.exists() {
-                return Some(import_path);
-            }
-        } else {
-            // Try with each extension
-            for ext in &extensions {
-                let mut path_with_ext = import_path.clone();
-                path_with_ext.set_extension(&ext[1..]); // Remove the leading dot
-                if path_with_ext.exists() {
-                    return Some(path_with_ext);
-                }
-            }
-
-            // Try index files
-            for ext in &extensions {
-                let index_path = import_path.join(format!("index{}", ext));
-                if index_path.exists() {
-                    return Some(index_path);
-                }
-            }
-        }
-
-        #[cfg(debug_assertions)]
-        eprintln!("[graph] Could not resolve path: {}", import_source);
-        None
-    }
-
-    // AST-based method to find export and directive
-    fn find_export_directive_ast(
-        &self,
-        module: &Module,
-        export_name: &str,
-    ) -> Option<GraphCallKind> {
-        for item in &module.body {
-            if let ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) = item {
-                // Check for: export function name() or export async function name()
-                if let Decl::Fn(fn_decl) = &export_decl.decl {
-                    if fn_decl.ident.sym.as_ref() == export_name {
-                        return self.check_function_directive(&fn_decl.function);
-                    }
-                }
-                // Check for: export const name = ...
-                else if let Decl::Var(var_decl) = &export_decl.decl {
-                    for decl in &var_decl.decls {
-                        if let Pat::Ident(ident) = &decl.name {
-                            if ident.id.sym.as_ref() == export_name {
-                                if let Some(init) = &decl.init {
-                                    return self.check_expr_directive(init);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // Check for: export default
-            else if export_name == "default" {
-                if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(export_default)) = item
-                {
-                    match &export_default.decl {
-                        DefaultDecl::Fn(fn_expr) => {
-                            return self.check_function_directive(&fn_expr.function);
-                        }
-                        DefaultDecl::Class(_) => continue,
-                        DefaultDecl::TsInterfaceDecl(_) => continue,
-                    }
-                }
-                // export default expr;
-                else if let ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
-                    export_default_expr,
-                )) = item
-                {
-                    return self.check_expr_directive(&export_default_expr.expr);
-                }
-            }
-            // Check for: export { name }
-            else if let ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(export_named)) = item {
-                if export_named.src.is_none() {
-                    // Local re-export: need to find the local declaration
-                    for spec in &export_named.specifiers {
-                        if let ExportSpecifier::Named(named) = spec {
-                            let exported_name = match &named.exported {
-                                Some(exported) => match exported {
-                                    ModuleExportName::Ident(ident) => ident.sym.as_ref(),
-                                    ModuleExportName::Str(_) => continue,
-                                },
-                                None => match &named.orig {
-                                    ModuleExportName::Ident(ident) => ident.sym.as_ref(),
-                                    ModuleExportName::Str(_) => continue,
-                                },
-                            };
-
-                            if exported_name == export_name {
-                                // Find the local declaration
-                                let local_name = match &named.orig {
-                                    ModuleExportName::Ident(ident) => ident.sym.as_ref(),
-                                    ModuleExportName::Str(_) => continue,
-                                };
-                                return self.find_local_declaration(module, local_name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        #[cfg(debug_assertions)]
-        eprintln!("[graph] No directive found for export {}", export_name);
-
-        None
-    }
-
-    // Check if a function has a "use step" or "use workflow" directive
-    fn check_function_directive(&self, function: &Function) -> Option<GraphCallKind> {
-        if let Some(body) = &function.body {
-            for stmt in &body.stmts {
-                if let Stmt::Expr(expr_stmt) = stmt {
-                    if let Expr::Lit(Lit::Str(str_lit)) = &*expr_stmt.expr {
-                        let value = str_lit.value.as_ref();
-                        if value == "use step" {
-                            return Some(GraphCallKind::Step);
-                        } else if value == "use workflow" {
-                            return Some(GraphCallKind::Workflow);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    // Check if an expression is a function with a directive
-    fn check_expr_directive(&self, expr: &Expr) -> Option<GraphCallKind> {
-        match expr {
-            Expr::Fn(fn_expr) => self.check_function_directive(&fn_expr.function),
-            Expr::Arrow(arrow_expr) => {
-                if let BlockStmtOrExpr::BlockStmt(block) = &*arrow_expr.body {
-                    for stmt in &block.stmts {
-                        if let Stmt::Expr(expr_stmt) = stmt {
-                            if let Expr::Lit(Lit::Str(str_lit)) = &*expr_stmt.expr {
-                                let value = str_lit.value.as_ref();
-                                if value == "use step" {
-                                    return Some(GraphCallKind::Step);
-                                } else if value == "use workflow" {
-                                    return Some(GraphCallKind::Workflow);
-                                }
-                            }
-                        }
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    // Find a local declaration by name
-    fn find_local_declaration(&self, module: &Module, local_name: &str) -> Option<GraphCallKind> {
-        for item in &module.body {
-            if let ModuleItem::Stmt(stmt) = item {
-                // Check for: const name = ... or function name()
-                match stmt {
-                    Stmt::Decl(Decl::Fn(fn_decl)) => {
-                        if fn_decl.ident.sym.as_ref() == local_name {
-                            return self.check_function_directive(&fn_decl.function);
-                        }
-                    }
-                    Stmt::Decl(Decl::Var(var_decl)) => {
-                        for decl in &var_decl.decls {
-                            if let Pat::Ident(ident) = &decl.name {
-                                if ident.id.sym.as_ref() == local_name {
-                                    if let Some(init) = &decl.init {
-                                        return self.check_expr_directive(init);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        None
-    }
-
-    fn build_workflow_graph(
-        &mut self,
-        workflow_name: &str,
-        workflow_id: String,
-        function: &Function,
-    ) {
-        if self.mode != TransformMode::Graph {
-            return;
-        }
-
-        let Some(mut builder) = self.graph_builder.take() else {
-            return;
-        };
-
-        let collector = GraphUsageCollector::new(
-            &self.step_function_names,
-            &self.workflow_function_names,
-            &self.imported_identifiers,
-        )
-        .collect(function);
-        eprintln!(
-            "[graph] collected {} calls for {}",
-            collector.len(),
-            workflow_name
-        );
-
-        let file_path = self.filename.clone();
-        builder.start_workflow(workflow_name, &file_path, &workflow_id);
-
-        // Collect all nodes with their metadata first
-        let mut nodes_to_add = Vec::new();
-        for event in collector {
-            let line = event.span.lo.0 as usize;
-            let (metadata, edge_type) = Self::extract_metadata_from_context(&event.context);
-
-            match event.kind {
-                GraphCallKind::Step => {
-                    let step_id = self.create_id(Some(&event.fn_name), event.span, false);
-                    nodes_to_add.push((event.fn_name, step_id, line, metadata, edge_type, false));
-                }
-                GraphCallKind::Workflow => {
-                    let nested_id = self.create_id(Some(&event.fn_name), event.span, true);
-                    nodes_to_add.push((event.fn_name, nested_id, line, metadata, edge_type, true));
-                }
-            }
-        }
-
-        // Add nodes with smart edge generation
-        builder.add_nodes_with_cfg(&nodes_to_add);
-        builder.finish_workflow();
-
-        self.graph_builder = Some(builder);
-    }
-
-    // Extract metadata and edge type from control flow context
-    fn extract_metadata_from_context(
-        context: &[ControlFlowContext],
-    ) -> (Option<graph::NodeMetadata>, graph::EdgeType) {
-        if context.is_empty() {
-            return (None, graph::EdgeType::Default);
-        }
-
-        let mut metadata = graph::NodeMetadata {
-            loop_id: None,
-            loop_is_await: None,
-            conditional_id: None,
-            conditional_branch: None,
-            parallel_group_id: None,
-            parallel_method: None,
-        };
-
-        let mut edge_type = graph::EdgeType::Default;
-
-        // Process context from innermost to outermost, prioritizing specific types
-        for ctx in context {
-            match ctx {
-                ControlFlowContext::Loop { id, is_await } => {
-                    metadata.loop_id = Some(id.clone());
-                    metadata.loop_is_await = Some(*is_await);
-                    edge_type = graph::EdgeType::Loop;
-                }
-                ControlFlowContext::Conditional { id, branch } => {
-                    metadata.conditional_id = Some(id.clone());
-                    metadata.conditional_branch = Some(format!("{:?}", branch));
-                    if !matches!(edge_type, graph::EdgeType::Parallel) {
-                        edge_type = graph::EdgeType::Conditional;
-                    }
-                }
-                ControlFlowContext::ParallelGroup { id, method } => {
-                    metadata.parallel_group_id = Some(id.clone());
-                    metadata.parallel_method = Some(method.clone());
-                    edge_type = graph::EdgeType::Parallel;
-                }
-            }
-        }
-
-        (Some(metadata), edge_type)
-    }
-
-    pub fn new(
-        mode: TransformMode,
-        filename: String,
-        workflow_manifest: Option<WorkflowManifest>,
-    ) -> Self {
-        let graph_builder = if mode == TransformMode::Graph {
-            Some(graph::GraphBuilder::new())
-        } else {
-            None
-        };
-
+    pub fn new(mode: TransformMode, filename: String) -> Self {
         Self {
             mode,
             filename,
@@ -1351,7 +447,6 @@ impl StepTransform {
             has_file_workflow_directive: false,
             step_function_names: HashSet::new(),
             workflow_function_names: HashSet::new(),
-            imported_identifiers: HashMap::new(),
             workflow_export_to_const_name: HashMap::new(),
             registered_functions: HashSet::new(),
             registration_calls: Vec::new(),
@@ -1371,11 +466,7 @@ impl StepTransform {
             nested_step_functions: Vec::new(),
             anonymous_fn_counter: 0,
             object_property_workflow_conversions: Vec::new(),
-            graph_builder,
-            pending_graph_workflows: Vec::new(),
             current_var_context: None,
-            parsed_module_cache: HashMap::new(),
-            workflow_manifest,
         }
     }
 
@@ -1407,12 +498,12 @@ impl StepTransform {
     fn generate_unique_name(&self, base_name: &str) -> String {
         let mut name = base_name.to_string();
         let mut counter = 0;
-
+        
         while self.declared_identifiers.contains(&name) {
             counter += 1;
             name = format!("{}${}", base_name, counter);
         }
-
+        
         name
     }
 
@@ -1420,27 +511,10 @@ impl StepTransform {
     fn collect_declared_identifiers(&mut self, items: &[ModuleItem]) {
         for item in items {
             match item {
-                ModuleItem::Stmt(Stmt::Decl(decl)) => match decl {
-                    Decl::Fn(fn_decl) => {
-                        self.declared_identifiers
-                            .insert(fn_decl.ident.sym.to_string());
-                    }
-                    Decl::Var(var_decl) => {
-                        for declarator in &var_decl.decls {
-                            self.collect_idents_from_pat(&declarator.name);
-                        }
-                    }
-                    Decl::Class(class_decl) => {
-                        self.declared_identifiers
-                            .insert(class_decl.ident.sym.to_string());
-                    }
-                    _ => {}
-                },
-                ModuleItem::ModuleDecl(module_decl) => match module_decl {
-                    ModuleDecl::ExportDecl(export_decl) => match &export_decl.decl {
+                ModuleItem::Stmt(Stmt::Decl(decl)) => {
+                    match decl {
                         Decl::Fn(fn_decl) => {
-                            self.declared_identifiers
-                                .insert(fn_decl.ident.sym.to_string());
+                            self.declared_identifiers.insert(fn_decl.ident.sym.to_string());
                         }
                         Decl::Var(var_decl) => {
                             for declarator in &var_decl.decls {
@@ -1448,96 +522,63 @@ impl StepTransform {
                             }
                         }
                         Decl::Class(class_decl) => {
-                            self.declared_identifiers
-                                .insert(class_decl.ident.sym.to_string());
+                            self.declared_identifiers.insert(class_decl.ident.sym.to_string());
                         }
                         _ => {}
-                    },
-                    ModuleDecl::ExportDefaultDecl(default_decl) => match &default_decl.decl {
-                        DefaultDecl::Fn(fn_expr) => {
-                            if let Some(ident) = &fn_expr.ident {
-                                self.declared_identifiers.insert(ident.sym.to_string());
+                    }
+                }
+                ModuleItem::ModuleDecl(module_decl) => {
+                    match module_decl {
+                        ModuleDecl::ExportDecl(export_decl) => {
+                            match &export_decl.decl {
+                                Decl::Fn(fn_decl) => {
+                                    self.declared_identifiers.insert(fn_decl.ident.sym.to_string());
+                                }
+                                Decl::Var(var_decl) => {
+                                    for declarator in &var_decl.decls {
+                                        self.collect_idents_from_pat(&declarator.name);
+                                    }
+                                }
+                                Decl::Class(class_decl) => {
+                                    self.declared_identifiers.insert(class_decl.ident.sym.to_string());
+                                }
+                                _ => {}
                             }
                         }
-                        DefaultDecl::Class(class_expr) => {
-                            if let Some(ident) = &class_expr.ident {
-                                self.declared_identifiers.insert(ident.sym.to_string());
+                        ModuleDecl::ExportDefaultDecl(default_decl) => {
+                            match &default_decl.decl {
+                                DefaultDecl::Fn(fn_expr) => {
+                                    if let Some(ident) = &fn_expr.ident {
+                                        self.declared_identifiers.insert(ident.sym.to_string());
+                                    }
+                                }
+                                DefaultDecl::Class(class_expr) => {
+                                    if let Some(ident) = &class_expr.ident {
+                                        self.declared_identifiers.insert(ident.sym.to_string());
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        ModuleDecl::Import(import_decl) => {
+                            for specifier in &import_decl.specifiers {
+                                match specifier {
+                                    ImportSpecifier::Named(named) => {
+                                        self.declared_identifiers.insert(named.local.sym.to_string());
+                                    }
+                                    ImportSpecifier::Default(default) => {
+                                        self.declared_identifiers.insert(default.local.sym.to_string());
+                                    }
+                                    ImportSpecifier::Namespace(namespace) => {
+                                        self.declared_identifiers.insert(namespace.local.sym.to_string());
+                                    }
+                                }
                             }
                         }
                         _ => {}
-                    },
-                    ModuleDecl::Import(import_decl) => {
-                        for specifier in &import_decl.specifiers {
-                            match specifier {
-                                ImportSpecifier::Named(named) => {
-                                    self.declared_identifiers
-                                        .insert(named.local.sym.to_string());
-                                }
-                                ImportSpecifier::Default(default) => {
-                                    self.declared_identifiers
-                                        .insert(default.local.sym.to_string());
-                                }
-                                ImportSpecifier::Namespace(namespace) => {
-                                    self.declared_identifiers
-                                        .insert(namespace.local.sym.to_string());
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
-    }
-
-    // Collect step and workflow function names in a pre-pass (for graph mode)
-    // This ensures we know about all step functions before traversing workflow bodies
-    fn collect_workflow_metadata(&mut self, items: &[ModuleItem]) {
-        for item in items {
-            match item {
-                ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fn_decl))) => {
-                    self.collect_function_metadata(
-                        &fn_decl.function,
-                        &fn_decl.ident.sym.to_string(),
-                    );
-                }
-                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
-                    if let Decl::Fn(fn_decl) = &export_decl.decl {
-                        self.collect_function_metadata(
-                            &fn_decl.function,
-                            &fn_decl.ident.sym.to_string(),
-                        );
-                    }
-                }
-                ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default_decl)) => {
-                    if let DefaultDecl::Fn(fn_expr) = &default_decl.decl {
-                        if let Some(ident) = &fn_expr.ident {
-                            self.collect_function_metadata(
-                                &fn_expr.function,
-                                &ident.sym.to_string(),
-                            );
-                        }
                     }
                 }
                 _ => {}
-            }
-        }
-    }
-
-    // Helper to check if a function has step or workflow directive and collect metadata
-    fn collect_function_metadata(&mut self, func: &Function, name: &str) {
-        if let Some(body) = &func.body {
-            if let Some(first_stmt) = body.stmts.first() {
-                if let Stmt::Expr(ExprStmt { expr, .. }) = first_stmt {
-                    if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
-                        if value == "use step" {
-                            self.step_function_names.insert(name.to_string());
-                        } else if value == "use workflow" {
-                            self.workflow_function_names.insert(name.to_string());
-                        }
-                    }
-                }
             }
         }
     }
@@ -1818,9 +859,6 @@ impl StepTransform {
                                     TransformMode::Client => {
                                         // In client mode, just remove the directive (already done above)
                                     }
-                                    TransformMode::Graph => {
-                                        // No transformation in graph mode
-                                    }
                                 }
                             }
                         }
@@ -1868,9 +906,6 @@ impl StepTransform {
             }
             TransformMode::Client => {
                 // In client mode, just remove the directive
-            }
-            TransformMode::Graph => {
-                // No transformation in graph mode
             }
         }
     }
@@ -2922,8 +1957,7 @@ impl StepTransform {
                 .map(|fn_name| {
                     // Check if this export name has a different const name (e.g., "default" -> "__default")
                     let fn_name_str: &str = fn_name;
-                    let actual_name = self
-                        .workflow_export_to_const_name
+                    let actual_name = self.workflow_export_to_const_name
                         .get(fn_name_str)
                         .map(|s| s.as_str())
                         .unwrap_or(fn_name_str);
@@ -3035,7 +2069,7 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
     fn visit_mut_module_item(&mut self, item: &mut ModuleItem) {
         match item {
             ModuleItem::ModuleDecl(ModuleDecl::Import(_)) => {
-                // Skip import declarations (ComprehensiveUsageCollector doesn't need them)
+                // Skip import declarations
                 return;
             }
             ModuleItem::Stmt(Stmt::Decl(Decl::Fn(_))) => {
@@ -3155,60 +2189,8 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
 
 impl VisitMut for StepTransform {
     fn visit_mut_program(&mut self, program: &mut Program) {
-        // In Graph mode, do a pre-pass to collect all step and workflow function names
-        // This ensures we know about all step functions before we start building the graph
-        if self.mode == TransformMode::Graph {
-            if let Program::Module(module) = program {
-                self.collect_workflow_metadata(&module.body);
-
-                // Also collect imports in Graph mode
-                for item in &module.body {
-                    if let ModuleItem::ModuleDecl(ModuleDecl::Import(import_decl)) = item {
-                        let source_path = import_decl.src.value.to_string();
-                        for specifier in &import_decl.specifiers {
-                            let (local_name, imported_name) = match specifier {
-                                ImportSpecifier::Named(named) => {
-                                    let local = named.local.sym.to_string();
-                                    let imported = named
-                                        .imported
-                                        .as_ref()
-                                        .map(|m| match m {
-                                            ModuleExportName::Ident(i) => i.sym.to_string(),
-                                            ModuleExportName::Str(s) => s.value.to_string(),
-                                        })
-                                        .unwrap_or_else(|| local.clone());
-                                    (local, imported)
-                                }
-                                ImportSpecifier::Default(default) => {
-                                    (default.local.sym.to_string(), "default".to_string())
-                                }
-                                ImportSpecifier::Namespace(_) => {
-                                    continue;
-                                }
-                            };
-                            self.imported_identifiers.insert(
-                                local_name.clone(),
-                                ImportInfo {
-                                    source_path: source_path.clone(),
-                                    imported_name,
-                                    kind: None,
-                                    lookup_candidates: Vec::new(),
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // First pass: collect step functions and imports
+        // First pass: collect step functions
         program.visit_mut_children_with(self);
-
-        // In Graph mode, resolve imports before processing graphs
-        if self.mode == TransformMode::Graph {
-            self.resolve_imports();
-            self.process_pending_workflow_graphs();
-        }
 
         // Add necessary imports and registrations
         match program {
@@ -3229,72 +2211,6 @@ impl VisitMut for StepTransform {
                     }
                     TransformMode::Client => {
                         // No imports needed for client mode since step functions are not transformed
-                    }
-                    TransformMode::Graph => {
-                        // Output graph as a comment in graph mode
-                        if let Some(builder) = self.graph_builder.take() {
-                            if builder.has_workflows() {
-                                let mut manifest = builder.to_manifest();
-
-                                // Add debug info
-                                let imports_with_kind = self
-                                    .imported_identifiers
-                                    .values()
-                                    .filter(|info| info.kind.is_some())
-                                    .count();
-                                let import_details: Vec<graph::ImportDebugInfo> = self
-                                    .imported_identifiers
-                                    .iter()
-                                    .map(|(local, info)| graph::ImportDebugInfo {
-                                        local_name: local.clone(),
-                                        source: info.source_path.clone(),
-                                        imported_name: info.imported_name.clone(),
-                                        kind: info.kind.as_ref().map(|k| format!("{:?}", k)),
-                                        lookup_candidates: info.lookup_candidates.clone(),
-                                    })
-                                    .collect();
-                                manifest.debug_info = Some(graph::DebugInfo {
-                                    manifest_present: self.workflow_manifest.is_some(),
-                                    manifest_step_files: self
-                                        .workflow_manifest
-                                        .as_ref()
-                                        .map(|m| m.steps.len())
-                                        .unwrap_or(0),
-                                    imports_resolved: self.imported_identifiers.len(),
-                                    imports_with_kind,
-                                    import_details,
-                                    cfg_detection_version: Some("v1.0-cfg".to_string()),
-                                });
-
-                                // Output as a comment similar to workflow metadata
-                                if let Ok(json) = serde_json::to_string(&manifest) {
-                                    let comment = format!("/**__workflow_graph{}*/", json);
-                                    // Insert the graph comment at the beginning of the file
-                                    let insert_position = module
-                                        .body
-                                        .iter()
-                                        .position(|item| {
-                                            !matches!(
-                                                item,
-                                                ModuleItem::ModuleDecl(ModuleDecl::Import(_))
-                                            )
-                                        })
-                                        .unwrap_or(0);
-
-                                    module.body.insert(
-                                        insert_position,
-                                        ModuleItem::Stmt(Stmt::Expr(ExprStmt {
-                                            span: DUMMY_SP,
-                                            expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                                span: DUMMY_SP,
-                                                value: comment.clone().into(),
-                                                raw: Some(comment.into()),
-                                            }))),
-                                        })),
-                                    );
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -3505,9 +2421,6 @@ impl VisitMut for StepTransform {
                         TransformMode::Client => {
                             // No imports needed for workflow mode
                         }
-                        TransformMode::Graph => {
-                            // No imports needed for graph mode
-                        }
                     }
 
                     // Convert script statements to module items
@@ -3673,13 +2586,7 @@ impl VisitMut for StepTransform {
     fn visit_mut_module_items(&mut self, items: &mut Vec<ModuleItem>) {
         // Collect all declared identifiers to avoid naming collisions
         self.collect_declared_identifiers(items);
-
-        // In Graph mode, collect all step and workflow function names first
-        // This ensures we know about all step functions before we start building the graph
-        if self.mode == TransformMode::Graph {
-            self.collect_workflow_metadata(items);
-        }
-
+        
         // Check for file-level directives
         self.has_file_step_directive = self.check_module_directive(items);
         self.has_file_workflow_directive = self.check_module_workflow_directive(items);
@@ -3692,7 +2599,6 @@ impl VisitMut for StepTransform {
                         TransformMode::Step => value == "use step",
                         TransformMode::Workflow => value == "use workflow",
                         TransformMode::Client => value == "use step" || value == "use workflow",
-                        TransformMode::Graph => false,
                     };
                     if should_remove {
                         items.remove(0);
@@ -4016,9 +2922,8 @@ impl VisitMut for StepTransform {
         // Handle default workflow exports (workflow and client modes)
         // We need to: 1) find the export default position, 2) replace it with const declaration,
         // 3) add workflowId assignment, 4) add export default at the end
-        if (self.mode == TransformMode::Workflow || self.mode == TransformMode::Client)
-            && !self.default_workflow_exports.is_empty()
-        {
+        if (self.mode == TransformMode::Workflow || self.mode == TransformMode::Client) 
+            && !self.default_workflow_exports.is_empty() {
             let default_workflows: Vec<_> = self.default_workflow_exports.drain(..).collect();
             let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
 
@@ -4026,8 +2931,8 @@ impl VisitMut for StepTransform {
             let mut export_position = None;
             for (i, item) in items.iter().enumerate() {
                 match item {
-                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_))
-                    | ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(_)) => {
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_)) |
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(_)) => {
                         export_position = Some(i);
                         break;
                     }
@@ -4042,46 +2947,35 @@ impl VisitMut for StepTransform {
                 // Insert in correct order: const, workflowId, export default
                 for (const_name, fn_expr, span) in default_workflows {
                     // Insert const declaration at the original export position
-                    items.insert(
-                        pos,
-                        ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                    items.insert(pos, ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                        span: DUMMY_SP,
+                        ctxt: SyntaxContext::empty(),
+                        kind: VarDeclKind::Const,
+                        declare: false,
+                        decls: vec![VarDeclarator {
                             span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            kind: VarDeclKind::Const,
-                            declare: false,
-                            decls: vec![VarDeclarator {
-                                span: DUMMY_SP,
-                                name: Pat::Ident(BindingIdent {
-                                    id: Ident::new(
-                                        const_name.clone().into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    ),
-                                    type_ann: None,
-                                }),
-                                init: Some(Box::new(fn_expr)),
-                                definite: false,
-                            }],
-                        })))),
-                    );
-
+                            name: Pat::Ident(BindingIdent {
+                                id: Ident::new(const_name.clone().into(), DUMMY_SP, SyntaxContext::empty()),
+                                type_ann: None,
+                            }),
+                            init: Some(Box::new(fn_expr)),
+                            definite: false,
+                        }],
+                    })))));
+                    
                     // Insert workflowId assignment after const
-                    items.insert(
-                        pos + 1,
-                        ModuleItem::Stmt(self.create_workflow_id_assignment(&const_name, span)),
-                    );
+                    items.insert(pos + 1, ModuleItem::Stmt(
+                        self.create_workflow_id_assignment(&const_name, span),
+                    ));
 
                     // Insert export default at the end (after workflowId)
                     for (_export_name, replacement_expr) in &default_exports {
-                        items.insert(
-                            pos + 2,
-                            ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
-                                ExportDefaultExpr {
-                                    span: DUMMY_SP,
-                                    expr: Box::new(replacement_expr.clone()),
-                                },
-                            )),
-                        );
+                        items.insert(pos + 2, ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
+                            ExportDefaultExpr {
+                                span: DUMMY_SP,
+                                expr: Box::new(replacement_expr.clone()),
+                            },
+                        )));
                     }
                 }
             }
@@ -4290,18 +3184,6 @@ impl VisitMut for StepTransform {
         self.remove_dead_code(items);
     }
 
-    fn visit_mut_module_item(&mut self, item: &mut ModuleItem) {
-        // In Graph mode, explicitly handle module declarations to ensure imports are tracked
-        if self.mode == TransformMode::Graph {
-            if let ModuleItem::ModuleDecl(decl) = item {
-                self.visit_mut_module_decl(decl);
-                return;
-            }
-        }
-        // For all other cases, use default behavior
-        item.visit_mut_children_with(self);
-    }
-
     fn visit_mut_fn_decl(&mut self, fn_decl: &mut FnDecl) {
         let fn_name = fn_decl.ident.sym.to_string();
 
@@ -4330,9 +3212,6 @@ impl VisitMut for StepTransform {
                         // Step functions are completely removed in client mode
                         // This will be handled at a higher level
                     }
-                    TransformMode::Graph => {
-                        // No transformation in graph mode
-                    }
                 }
             }
         } else if self.has_workflow_directive(&fn_decl.function, false) {
@@ -4346,7 +3225,6 @@ impl VisitMut for StepTransform {
                 // It's valid - proceed with transformation
                 self.workflow_function_names.insert(fn_name.clone());
 
-                let mut graph_workflow_id: Option<String> = None;
                 match self.mode {
                     TransformMode::Step => {
                         // Workflow functions are not processed in step mode
@@ -4359,25 +3237,7 @@ impl VisitMut for StepTransform {
                         // Workflow functions are transformed in client mode
                         // This will be handled at a higher level
                     }
-                    TransformMode::Graph => {
-                        // Start tracking this workflow in graph mode
-                        let workflow_id =
-                            self.create_id(Some(&fn_name), fn_decl.function.span, true);
-                        graph_workflow_id = Some(workflow_id);
-                        // Set flag so we can detect step calls inside the workflow
-                        self.in_workflow_function = true;
-                    }
                 }
-
-                fn_decl.visit_mut_children_with(self);
-
-                // Finish workflow graph if we started one
-                if let Some(workflow_id) = graph_workflow_id {
-                    self.queue_workflow_graph(&fn_name, &workflow_id, &fn_decl.function);
-                    // Reset the flag
-                    self.in_workflow_function = false;
-                }
-                return;
             }
         }
 
@@ -4454,9 +3314,6 @@ impl VisitMut for StepTransform {
                                 // In client mode, just remove the directive and keep the function as-is
                                 self.remove_use_step_directive(&mut fn_decl.function.body);
                                 export_decl.visit_mut_children_with(self);
-                            }
-                            TransformMode::Graph => {
-                                // No transformation in graph mode
                             }
                         }
                     }
@@ -4537,19 +3394,6 @@ impl VisitMut for StepTransform {
 
                                 self.workflow_functions_needing_id
                                     .push((fn_name.clone(), fn_decl.function.span));
-                            }
-                            TransformMode::Graph => {
-                                let workflow_id =
-                                    self.create_id(Some(&fn_name), fn_decl.function.span, true);
-                                self.in_workflow_function = true;
-                                fn_decl.visit_mut_children_with(self);
-                                self.queue_workflow_graph(
-                                    &fn_name,
-                                    &workflow_id,
-                                    &fn_decl.function,
-                                );
-                                self.in_workflow_function = old_in_workflow;
-                                return;
                             }
                         }
                     }
@@ -4641,9 +3485,6 @@ impl VisitMut for StepTransform {
                                                         &mut fn_expr.function.body,
                                                     );
                                                 }
-                                                TransformMode::Graph => {
-                                                    // No transformation in graph mode
-                                                }
                                             }
                                         }
                                     } else if self
@@ -4726,13 +3567,8 @@ impl VisitMut for StepTransform {
                                                         fn_expr.function.span,
                                                     ));
                                                 }
-                                                TransformMode::Graph => {
-                                                    // No transformation in graph mode
-                                                }
                                             }
                                         }
-
-                                        self.in_workflow_function = old_in_workflow;
                                     }
                                 }
                                 Expr::Arrow(arrow_expr) => {
@@ -4778,9 +3614,6 @@ impl VisitMut for StepTransform {
                                                     self.remove_use_step_directive_arrow(
                                                         &mut arrow_expr.body,
                                                     );
-                                                }
-                                                TransformMode::Graph => {
-                                                    // No transformation in graph mode
                                                 }
                                             }
                                         }
@@ -4866,9 +3699,6 @@ impl VisitMut for StepTransform {
 
                                                     self.workflow_functions_needing_id
                                                         .push((name.clone(), arrow_expr.span));
-                                                }
-                                                TransformMode::Graph => {
-                                                    // No transformation in graph mode
                                                 }
                                             }
                                         }
@@ -5011,9 +3841,6 @@ impl VisitMut for StepTransform {
                                                 &mut fn_expr.function.body,
                                             );
                                         }
-                                        TransformMode::Graph => {
-                                            // No transformation in graph mode
-                                        }
                                     }
                                 }
                             } else if self.has_workflow_directive(&fn_expr.function, false) {
@@ -5073,9 +3900,6 @@ impl VisitMut for StepTransform {
                                             }
                                             self.workflow_functions_needing_id
                                                 .push((name.clone(), fn_expr.function.span));
-                                        }
-                                        TransformMode::Graph => {
-                                            // No transformation in graph mode
                                         }
                                     }
                                 }
@@ -5181,9 +4005,6 @@ impl VisitMut for StepTransform {
                                                     span: DUMMY_SP,
                                                 }));
                                             }
-                                            TransformMode::Graph => {
-                                                // No transformation in graph mode
-                                            }
                                         }
                                     } else {
                                         // Not in a workflow function - handle normally
@@ -5240,9 +4061,6 @@ impl VisitMut for StepTransform {
                                                 self.remove_use_step_directive_arrow(
                                                     &mut arrow_expr.body,
                                                 );
-                                            }
-                                            TransformMode::Graph => {
-                                                // No transformation in graph mode
                                             }
                                         }
                                     }
@@ -5307,9 +4125,6 @@ impl VisitMut for StepTransform {
                                                 }));
                                             self.workflow_functions_needing_id
                                                 .push((name.clone(), arrow_expr.span));
-                                        }
-                                        TransformMode::Graph => {
-                                            // No transformation in graph mode
                                         }
                                     }
                                 }
@@ -5452,16 +4267,14 @@ impl VisitMut for StepTransform {
                         let const_name = if fn_name == "default" {
                             // Anonymous: generate unique name
                             let unique_name = self.generate_unique_name("__default");
-                            self.workflow_export_to_const_name
-                                .insert("default".to_string(), unique_name.clone());
+                            self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
                             unique_name
                         } else {
                             // Named: use the function name
-                            self.workflow_export_to_const_name
-                                .insert("default".to_string(), fn_name.clone());
+                            self.workflow_export_to_const_name.insert("default".to_string(), fn_name.clone());
                             fn_name.clone()
                         };
-
+                        
                         // Always use "default" as the metadata key for default exports
                         self.workflow_function_names.insert("default".to_string());
 
@@ -5481,7 +4294,7 @@ impl VisitMut for StepTransform {
                                         Expr::Fn(fn_expr.clone()),
                                         fn_expr.function.span,
                                     ));
-
+                                    
                                     // Track for replacement with identifier
                                     self.default_exports_to_replace.push((
                                         fn_name.clone(),
@@ -5505,7 +4318,7 @@ impl VisitMut for StepTransform {
                             TransformMode::Client => {
                                 // In client mode, replace workflow function body with error throw
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
-
+                                
                                 let error_msg = format!(
                                     "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
                                     const_name, const_name
@@ -5534,7 +4347,7 @@ impl VisitMut for StepTransform {
                                         arg: Box::new(error_expr),
                                     })];
                                 }
-
+                                
                                 // For anonymous functions, convert to const declaration so we can assign workflowId
                                 if fn_name == "default" {
                                     // Track for const declaration and workflowId assignment
@@ -5543,7 +4356,7 @@ impl VisitMut for StepTransform {
                                         Expr::Fn(fn_expr.clone()),
                                         fn_expr.function.span,
                                     ));
-
+                                    
                                     // Track for replacement with identifier
                                     self.default_exports_to_replace.push((
                                         fn_name.clone(),
@@ -5559,9 +4372,6 @@ impl VisitMut for StepTransform {
                                     self.workflow_functions_needing_id
                                         .push((const_name, fn_expr.function.span));
                                 }
-                            }
-                            TransformMode::Graph => {
-                                // No transformation in graph mode
                             }
                         }
                     }
@@ -5613,9 +4423,6 @@ impl VisitMut for StepTransform {
                                 // Transform step function body to use step run call
                                 self.remove_use_step_directive(&mut fn_expr.function.body);
                             }
-                            TransformMode::Graph => {
-                                // No transformation in graph mode
-                            }
                         }
                     }
                 }
@@ -5638,9 +4445,8 @@ impl VisitMut for StepTransform {
                         // Generate unique name first so we can use it in workflow_function_names
                         let unique_name = self.generate_unique_name("__default");
                         // For function expression default exports, track mapping from "default" to actual const name
-                        self.workflow_export_to_const_name
-                            .insert("default".to_string(), unique_name.clone());
-
+                        self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
+                        
                         // Always use "default" as the metadata key for default exports
                         self.workflow_function_names.insert("default".to_string());
 
@@ -5651,14 +4457,14 @@ impl VisitMut for StepTransform {
                             TransformMode::Workflow => {
                                 // In workflow mode, convert to const declaration
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
-
+                                
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((
                                     unique_name.clone(),
                                     Expr::Fn(fn_expr.clone()),
                                     fn_expr.function.span,
                                 ));
-
+                                
                                 // Track for replacement with identifier
                                 self.default_exports_to_replace.push((
                                     "default".to_string(),
@@ -5700,14 +4506,14 @@ impl VisitMut for StepTransform {
                                         arg: Box::new(error_expr),
                                     })];
                                 }
-
+                                
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((
                                     unique_name.clone(),
                                     Expr::Fn(fn_expr.clone()),
                                     fn_expr.function.span,
                                 ));
-
+                                
                                 // Track for replacement with identifier
                                 self.default_exports_to_replace.push((
                                     "default".to_string(),
@@ -5717,9 +4523,6 @@ impl VisitMut for StepTransform {
                                         SyntaxContext::empty(),
                                     )),
                                 ));
-                            }
-                            TransformMode::Graph => {
-                                // No transformation in graph mode
                             }
                         }
                     }
@@ -5742,12 +4545,11 @@ impl VisitMut for StepTransform {
                     } else {
                         // For arrow function default exports, generate unique name and track mapping
                         let unique_name = self.generate_unique_name("__default");
-                        self.workflow_export_to_const_name
-                            .insert("default".to_string(), unique_name.clone());
-
+                        self.workflow_export_to_const_name.insert("default".to_string(), unique_name.clone());
+                        
                         // Always use "default" as the metadata key for default exports
                         self.workflow_function_names.insert("default".to_string());
-
+                        
                         match self.mode {
                             TransformMode::Step => {
                                 // Workflow functions are not processed in step mode
@@ -5755,14 +4557,14 @@ impl VisitMut for StepTransform {
                             TransformMode::Workflow => {
                                 // In workflow mode, convert to const declaration
                                 self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
-
+                                
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((
                                     unique_name.clone(),
                                     Expr::Arrow(arrow_expr.clone()),
                                     arrow_expr.span,
                                 ));
-
+                                
                                 // Track for replacement with identifier
                                 self.default_exports_to_replace.push((
                                     "default".to_string(),
@@ -5807,14 +4609,14 @@ impl VisitMut for StepTransform {
                                         arg: Box::new(error_expr),
                                     })],
                                 }));
-
+                                
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((
                                     unique_name.clone(),
                                     Expr::Arrow(arrow_expr.clone()),
                                     arrow_expr.span,
                                 ));
-
+                                
                                 // Track for replacement with identifier
                                 self.default_exports_to_replace.push((
                                     "default".to_string(),
@@ -5824,9 +4626,6 @@ impl VisitMut for StepTransform {
                                         SyntaxContext::empty(),
                                     )),
                                 ));
-                            }
-                            TransformMode::Graph => {
-                                // No transformation in graph mode
                             }
                         }
                     }
@@ -5850,49 +4649,6 @@ impl VisitMut for StepTransform {
     }
 
     fn visit_mut_module_decl(&mut self, decl: &mut ModuleDecl) {
-        // Track imported identifiers for graph generation
-        if self.mode == TransformMode::Graph {
-            if let ModuleDecl::Import(import_decl) = decl {
-                let source_path = import_decl.src.value.to_string();
-
-                for specifier in &import_decl.specifiers {
-                    let (local_name, imported_name) = match specifier {
-                        ImportSpecifier::Named(named) => {
-                            let local = named.local.sym.to_string();
-                            let imported = named
-                                .imported
-                                .as_ref()
-                                .map(|m| match m {
-                                    ModuleExportName::Ident(i) => i.sym.to_string(),
-                                    ModuleExportName::Str(s) => s.value.to_string(),
-                                })
-                                .unwrap_or_else(|| local.clone());
-                            (local, imported)
-                        }
-                        ImportSpecifier::Default(default) => {
-                            (default.local.sym.to_string(), "default".to_string())
-                        }
-                        ImportSpecifier::Namespace(_namespace) => {
-                            // Namespace imports can't be resolved to specific functions
-                            // Skip them for now
-                            continue;
-                        }
-                    };
-
-                    // Store import info without kind initially (will be resolved later)
-                    self.imported_identifiers.insert(
-                        local_name,
-                        ImportInfo {
-                            source_path: source_path.clone(),
-                            imported_name,
-                            kind: None,
-                            lookup_candidates: Vec::new(),
-                        },
-                    );
-                }
-            }
-        }
-
         // ExportDecl is fully handled by visit_mut_export_decl, so just delegate
         // to default visitor which will call visit_mut_export_decl
         match decl {
@@ -6041,9 +4797,6 @@ impl VisitMut for StepTransform {
                                                             &mut arrow_expr.body,
                                                         );
                                                     }
-                                                    TransformMode::Graph => {
-                                                        // No transformation in graph mode
-                                                    }
                                                 }
                                             }
                                         }
@@ -6113,9 +4866,6 @@ impl VisitMut for StepTransform {
                                                         self.remove_use_step_directive(
                                                             &mut fn_expr.function.body,
                                                         );
-                                                    }
-                                                    TransformMode::Graph => {
-                                                        // No transformation in graph mode
                                                     }
                                                 }
                                             }
@@ -6202,9 +4952,6 @@ impl VisitMut for StepTransform {
                                                 self.remove_use_step_directive(
                                                     &mut method_prop.function.body,
                                                 );
-                                            }
-                                            TransformMode::Graph => {
-                                                // No transformation in graph mode
                                             }
                                         }
                                     }

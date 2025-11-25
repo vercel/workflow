@@ -43,23 +43,21 @@ export async function getNextBuilder() {
         tsPaths: tsConfig.paths,
       };
 
-      const { context: stepsBuildContext, manifest: workflowManifest } =
+      const { context: stepsBuildContext } =
         await this.buildStepsFunction(options);
       const workflowsBundle = await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
 
-      // Write graph manifest to workflow data directory
+      // Write graph manifest to workflow data directory (post-bundle extraction)
       const workflowDataDir = join(
         this.config.workingDir,
         '.next/workflow-data'
       );
       await mkdir(workflowDataDir, { recursive: true });
+      const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
       await this.createGraphManifest({
-        inputFiles: options.inputFiles,
+        workflowBundlePath,
         outfile: join(workflowDataDir, 'graph-manifest.json'),
-        tsBaseUrl: options.tsBaseUrl,
-        tsPaths: options.tsPaths,
-        workflowManifest,
       });
 
       await this.writeFunctionsConfig(outputDir);
@@ -191,11 +189,13 @@ export async function getNextBuilder() {
               '.next/workflow-data'
             );
             await mkdir(workflowDataDir, { recursive: true });
+            const workflowBundlePath = join(
+              workflowGeneratedDir,
+              'flow/route.js'
+            );
             await this.createGraphManifest({
-              inputFiles: options.inputFiles,
+              workflowBundlePath,
               outfile: join(workflowDataDir, 'graph-manifest.json'),
-              tsBaseUrl: options.tsBaseUrl,
-              tsPaths: options.tsPaths,
             });
           } catch (error) {
             console.error('Failed to rebuild graph manifest:', error);
@@ -255,18 +255,20 @@ export async function getNextBuilder() {
             `${Date.now() - rebuiltWorkflowStart}ms`
           );
 
-          // Rebuild graph manifest to workflow data directory
+          // Rebuild graph manifest to workflow data directory (post-bundle extraction)
           try {
             const workflowDataDir = join(
               this.config.workingDir,
               '.next/workflow-data'
             );
             await mkdir(workflowDataDir, { recursive: true });
+            const workflowBundlePath = join(
+              workflowGeneratedDir,
+              'flow/route.js'
+            );
             await this.createGraphManifest({
-              inputFiles: options.inputFiles,
+              workflowBundlePath,
               outfile: join(workflowDataDir, 'graph-manifest.json'),
-              tsBaseUrl: options.tsBaseUrl,
-              tsPaths: options.tsPaths,
             });
           } catch (error) {
             console.error('Failed to rebuild graph manifest:', error);

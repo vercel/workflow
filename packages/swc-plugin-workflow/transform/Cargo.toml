@@ -13,7 +13,7 @@ version      = "0.1.0"
 [dependencies]
 serde       = { workspace = true }
 serde_json  = { workspace = true }
-swc_core    = { workspace = true, features = ["ecma_plugin_transform", "ecma_parser"] }
+swc_core    = { workspace = true, features = ["ecma_plugin_transform"] }
 
 [dev-dependencies]
 testing     = { workspace = true }
