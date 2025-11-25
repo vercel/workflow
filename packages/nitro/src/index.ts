@@ -12,25 +12,10 @@ export default {
     const isVercelDeploy =
       !nitro.options.dev && nitro.options.preset === 'vercel';
 
-    // Add transform plugin and build workflow bundles before each Rollup build
-    // Using rollup:before ensures workflow bundles are ready before Nitro reloads
-    const builder =
-      !isVercelDeploy && nitro.options.dev
-        ? new LocalBuilder(nitro)
-        : undefined;
-
-    nitro.hooks.hook(
-      'rollup:before',
-      async (_nitro: Nitro, config: RollupConfig) => {
-        (config.plugins as Array<unknown>).push(workflowRollupPlugin());
-
-        // In dev mode, build workflow bundles before Rollup runs
-        // This prevents race conditions where the server reloads before bundles are ready
-        if (builder) {
-          await builder.build();
-        }
-      }
-    );
+    // Add transform plugin
+    nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
+      (config.plugins as Array<unknown>).push(workflowRollupPlugin());
+    });
 
     // NOTE: Temporary workaround for debug unenv mock
     if (!nitro.options.workflow?._vite) {
@@ -62,13 +47,19 @@ export default {
       });
     }
 
-    // Generate local bundles for local prod (non-dev)
-    // Dev mode is handled in rollup:before above to prevent race conditions
-    if (!isVercelDeploy && !nitro.options.dev) {
-      const prodBuilder = new LocalBuilder(nitro);
+    // Generate local bundles for dev and local prod
+    if (!isVercelDeploy) {
+      const builder = new LocalBuilder(nitro);
       nitro.hooks.hook('build:before', async () => {
-        await prodBuilder.build();
+        await builder.build();
       });
+
+      // Allows for HMR - rebuild workflow bundles when files change
+      if (nitro.options.dev) {
+        nitro.hooks.hook('dev:reload', async () => {
+          await builder.build();
+        });
+      }
     }
 
     // Register virtual handlers for local builds (both dev and prod)
