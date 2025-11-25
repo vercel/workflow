@@ -225,7 +225,22 @@ jobs:
             LAST_MTIME="$CURRENT_MTIME"
             sleep 1
           done
-          echo "File stable, running e2e tests..."
+          echo "File stable. Waiting for server to be ready..."
+
+          # Wait for the server to respond successfully (Nitro worker reload happens after file write)
+          SERVER_URL="${{ matrix.app.name == 'sveltekit' && 'http://localhost:5173' || 'http://localhost:3000' }}"
+          READY_COUNT=0
+          while [ $READY_COUNT -lt 3 ]; do
+            if curl -s -o /dev/null -w "%{http_code}" "$SERVER_URL" | grep -q "200\|404"; then
+              READY_COUNT=$((READY_COUNT + 1))
+              echo "  Server responding ($READY_COUNT/3)..."
+            else
+              READY_COUNT=0
+              echo "  Server not ready, waiting..."
+            fi
+            sleep 1
+          done
+          echo "Server ready, running e2e tests..."
 
           pnpm run test:e2e
         env:
