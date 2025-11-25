@@ -233,6 +233,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
 
         if (chunk.value.type === 'finish') {
           gotFinish = true;
+          break;
         }
       }
     } catch (error) {
