@@ -13,8 +13,9 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
-import { GitBranch, PlayCircle, StopCircle, X } from 'lucide-react';
+import { GitBranch, Loader2, PlayCircle, StopCircle, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
+import { type EnvMap, useWorkflowResourceData } from '@workflow/web-shared';
 import { StatusBadge } from '@/components/display-utils/status-badge';
 import { Badge } from '@/components/ui/badge';
 import type {
@@ -27,6 +28,7 @@ import type {
 interface WorkflowGraphExecutionViewerProps {
   workflow: WorkflowGraph;
   execution?: WorkflowRunExecution;
+  env?: EnvMap;
   onNodeClick?: (nodeId: string, executions: StepExecution[]) => void;
 }
 
@@ -34,6 +36,8 @@ interface SelectedNodeInfo {
   nodeId: string;
   node: GraphNode;
   executions: StepExecution[];
+  stepId?: string;
+  runId?: string;
 }
 
 // Map execution status to StatusBadge-compatible status
@@ -572,14 +576,29 @@ function formatDurationMs(ms: number): string {
 // Node Detail Panel Component
 function GraphNodeDetailPanel({
   selectedNode,
+  env,
   onClose,
 }: {
   selectedNode: SelectedNodeInfo;
+  env?: EnvMap;
   onClose: () => void;
 }) {
-  const { node, executions } = selectedNode;
+  const { node, executions, stepId, runId } = selectedNode;
   const latestExecution = executions[executions.length - 1];
   const hasMultipleAttempts = executions.length > 1;
+
+  // Fetch full step data with resolved input/output
+  const { data: stepData, loading: stepLoading } = useWorkflowResourceData(
+    env ?? {},
+    'step',
+    stepId ?? '',
+    { runId }
+  );
+
+  // Use fetched data for input/output if available, fallback to execution data
+  const resolvedInput = (stepData as any)?.input ?? latestExecution?.input;
+  const resolvedOutput = (stepData as any)?.output ?? latestExecution?.output;
+  const resolvedError = (stepData as any)?.error ?? latestExecution?.error;
 
   return (
     <div className="h-full flex flex-col bg-background border-l">
@@ -673,31 +692,35 @@ function GraphNodeDetailPanel({
           )}
         </div>
 
+        {/* Loading indicator for resolved data */}
+        {stepLoading && stepId && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            <span>Loading step data...</span>
+          </div>
+        )}
+
         {/* Input section */}
-        {latestExecution?.input !== undefined && (
+        {resolvedInput !== undefined && (
           <details className="group mb-3">
             <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-muted/50">
               <span className="font-medium">Input</span>
               <span className="text-muted-foreground ml-1">
-                (
-                {Array.isArray(latestExecution.input)
-                  ? latestExecution.input.length
-                  : 1}{' '}
-                args)
+                ({Array.isArray(resolvedInput) ? resolvedInput.length : 1} args)
               </span>
             </summary>
             <div className="relative pl-6 mt-3">
               <div className="absolute left-3 -top-3 w-px h-3 bg-border" />
               <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-border" />
-              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-muted/30">
-                <code>{JSON.stringify(latestExecution.input, null, 2)}</code>
+              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-muted/30 max-h-64 overflow-y-auto">
+                <code>{JSON.stringify(resolvedInput, null, 2)}</code>
               </pre>
             </div>
           </details>
         )}
 
         {/* Output section */}
-        {latestExecution?.output !== undefined && (
+        {resolvedOutput !== undefined && (
           <details className="group mb-3">
             <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-muted/50">
               <span className="font-medium">Output</span>
@@ -705,15 +728,15 @@ function GraphNodeDetailPanel({
             <div className="relative pl-6 mt-3">
               <div className="absolute left-3 -top-3 w-px h-3 bg-border" />
               <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-border" />
-              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-muted/30">
-                <code>{JSON.stringify(latestExecution.output, null, 2)}</code>
+              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-muted/30 max-h-64 overflow-y-auto">
+                <code>{JSON.stringify(resolvedOutput, null, 2)}</code>
               </pre>
             </div>
           </details>
         )}
 
         {/* Error section */}
-        {latestExecution?.error && (
+        {resolvedError && (
           <details className="group mb-3" open>
             <summary className="cursor-pointer rounded-md border border-red-300 bg-red-50 dark:bg-red-950/20 px-2.5 py-1.5 text-xs hover:brightness-95">
               <span className="font-medium text-red-600 dark:text-red-400">
@@ -723,11 +746,11 @@ function GraphNodeDetailPanel({
             <div className="relative pl-6 mt-3">
               <div className="absolute left-3 -top-3 w-px h-3 bg-red-300" />
               <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-red-300" />
-              <pre className="text-[11px] overflow-x-auto rounded-md border border-red-200 p-2.5 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 whitespace-pre-wrap">
+              <pre className="text-[11px] overflow-x-auto rounded-md border border-red-200 p-2.5 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 whitespace-pre-wrap max-h-64 overflow-y-auto">
                 <code>
-                  {typeof latestExecution.error === 'object'
-                    ? JSON.stringify(latestExecution.error, null, 2)
-                    : String(latestExecution.error)}
+                  {typeof resolvedError === 'object'
+                    ? JSON.stringify(resolvedError, null, 2)
+                    : String(resolvedError)}
                 </code>
               </pre>
             </div>
@@ -779,6 +802,7 @@ function GraphNodeDetailPanel({
 export function WorkflowGraphExecutionViewer({
   workflow,
   execution,
+  env,
   onNodeClick,
 }: WorkflowGraphExecutionViewerProps) {
   const [selectedNode, setSelectedNode] = useState<SelectedNodeInfo | null>(
@@ -821,10 +845,13 @@ export function WorkflowGraphExecutionViewer({
       const graphNode = workflow.nodes.find((n) => n.id === node.id);
       if (graphNode) {
         const executions = (node.data.executions as StepExecution[]) || [];
+        const latestExecution = executions[executions.length - 1];
         setSelectedNode({
           nodeId: node.id,
           node: graphNode,
           executions,
+          stepId: latestExecution?.stepId,
+          runId: execution?.runId,
         });
         // Also call the external handler if provided
         if (onNodeClick && executions.length > 0) {
@@ -832,7 +859,7 @@ export function WorkflowGraphExecutionViewer({
         }
       }
     },
-    [workflow.nodes, onNodeClick]
+    [workflow.nodes, execution?.runId, onNodeClick]
   );
 
   const handleClosePanel = useCallback(() => {
@@ -937,6 +964,7 @@ export function WorkflowGraphExecutionViewer({
         <div className="h-full flex-none" style={{ width: panelWidth }}>
           <GraphNodeDetailPanel
             selectedNode={selectedNode}
+            env={env}
             onClose={handleClosePanel}
           />
         </div>

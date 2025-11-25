@@ -457,6 +457,7 @@ export function RunDetailView({
                   <WorkflowGraphExecutionViewer
                     workflow={workflowGraph}
                     execution={execution || undefined}
+                    env={env}
                   />
                 )}
               </div>
