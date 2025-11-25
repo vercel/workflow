@@ -11,12 +11,14 @@ import {
   useEdgesState,
   useNodesState,
 } from '@xyflow/react';
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
-import { GitBranch, PlayCircle, StopCircle } from 'lucide-react';
+import { GitBranch, PlayCircle, StopCircle, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
+import { StatusBadge } from '@/components/display-utils/status-badge';
 import { Badge } from '@/components/ui/badge';
 import type {
+  GraphNode,
   StepExecution,
   WorkflowGraph,
   WorkflowRunExecution,
@@ -26,6 +28,27 @@ interface WorkflowGraphExecutionViewerProps {
   workflow: WorkflowGraph;
   execution?: WorkflowRunExecution;
   onNodeClick?: (nodeId: string, executions: StepExecution[]) => void;
+}
+
+interface SelectedNodeInfo {
+  nodeId: string;
+  node: GraphNode;
+  executions: StepExecution[];
+}
+
+// Map execution status to StatusBadge-compatible status
+type StatusBadgeStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'paused';
+function mapToStatusBadgeStatus(
+  status: StepExecution['status']
+): StatusBadgeStatus {
+  if (status === 'retrying') return 'running';
+  return status as StatusBadgeStatus;
 }
 
 // Custom node components
@@ -67,37 +90,41 @@ function getNodeStyle(nodeKind: string, executions?: StepExecution[]) {
 
   const latestExecution = executions[executions.length - 1];
 
-  // Override colors based on execution status
+  // Override colors based on execution status (matching status-badge colors)
   switch (latestExecution.status) {
     case 'running':
       return {
         ...baseStyle,
-        backgroundColor: 'rgba(251, 191, 36, 0.25)', // amber
-        borderColor: '#f59e0b',
-        borderWidth: 3,
-        boxShadow: '0 0 0 3px rgba(251, 191, 36, 0.2)',
+        backgroundColor: 'rgba(59, 130, 246, 0.25)', // blue-500
+        borderColor: '#3b82f6',
+        borderWidth: 1.5,
+        boxShadow: '0 0 0 2px rgba(59, 130, 246, 0.2)',
       };
     case 'completed':
       return {
         ...baseStyle,
-        backgroundColor: 'rgba(34, 197, 94, 0.25)', // green
-        borderColor: '#22c55e',
-        borderWidth: 2,
+        backgroundColor: 'rgba(16, 185, 129, 0.25)', // emerald-500
+        borderColor: '#10b981',
       };
     case 'failed':
       return {
         ...baseStyle,
-        backgroundColor: 'rgba(239, 68, 68, 0.25)', // red
+        backgroundColor: 'rgba(239, 68, 68, 0.25)', // red-500
         borderColor: '#ef4444',
-        borderWidth: 3,
+        borderWidth: 1.5,
       };
     case 'retrying':
       return {
         ...baseStyle,
-        backgroundColor: 'rgba(249, 115, 22, 0.25)', // orange
+        backgroundColor: 'rgba(249, 115, 22, 0.25)', // orange-500
         borderColor: '#f97316',
         borderStyle: 'dashed',
-        borderWidth: 2,
+      };
+    case 'cancelled':
+      return {
+        ...baseStyle,
+        backgroundColor: 'rgba(234, 179, 8, 0.25)', // yellow-500
+        borderColor: '#eab308',
       };
     case 'pending':
       return {
@@ -175,12 +202,20 @@ function renderNodeLabel(
   }
 
   if (metadata?.parallelGroupId) {
+    const parallelLabel =
+      metadata.parallelMethod === 'all'
+        ? 'Promise.all'
+        : metadata.parallelMethod === 'race'
+          ? 'Promise.race'
+          : metadata.parallelMethod === 'allSettled'
+            ? 'Promise.allSettled'
+            : `parallel: ${metadata.parallelMethod}`;
     badges.push(
       <span
         key="parallel"
         className="px-1.5 py-0.5 text-[10px] font-bold bg-blue-200 dark:bg-blue-900/30 !text-gray-950 dark:!text-white rounded border border-blue-400 dark:border-blue-700"
       >
-        ∥ {metadata.parallelMethod}
+        {parallelLabel}
       </span>
     );
   }
@@ -222,7 +257,9 @@ function renderNodeLabel(
                 ? 'destructive'
                 : latestExecution.status === 'running'
                   ? 'secondary'
-                  : 'outline'
+                  : latestExecution.status === 'cancelled'
+                    ? 'outline'
+                    : 'outline'
           }
           className="text-xs px-1.5 py-0"
         >
@@ -407,7 +444,7 @@ function convertToReactFlowNodes(
         executions, // Store for onClick handler
       },
       style: {
-        borderWidth: 2,
+        borderWidth: 1,
         borderRadius: 8,
         padding: 12,
         width: 220,
@@ -451,21 +488,25 @@ function convertToReactFlowEdges(
       switch (edge.type) {
         case 'parallel':
           baseStrokeColor = '#3b82f6';
-          if (!cfgLabel) cfgLabel = '∥';
+          strokeDasharray = '4,4';
+          // No label needed - nodes have Promise.all/race/allSettled badges
+          cfgLabel = undefined;
           break;
         case 'loop':
           baseStrokeColor = '#a855f7';
           strokeDasharray = '5,5';
-          // Don't add label for loop-back edges - nodes already have badges
           // Loop-back edges get a different path type for better visualization
           if (edge.source === edge.target || !edge.isOriginal) {
             edgeType = 'step';
-            cfgLabel = undefined; // No label on back edges
           }
+          // No label needed - nodes have loop badges
+          cfgLabel = undefined;
           break;
         case 'conditional':
           baseStrokeColor = '#f59e0b';
           strokeDasharray = '8,4';
+          // No label needed - nodes have if/else badges
+          cfgLabel = undefined;
           break;
       }
     }
@@ -505,12 +546,12 @@ function convertToReactFlowEdges(
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        width: 20,
-        height: 20,
+        width: 12,
+        height: 12,
         color: finalStrokeColor,
       },
       style: {
-        strokeWidth: isTraversed ? 3 : 2,
+        strokeWidth: isTraversed ? 1.5 : 1,
         stroke: finalStrokeColor,
         opacity: execution && !isTraversed ? 0.3 : 1,
         strokeDasharray: finalDasharray,
@@ -519,11 +560,232 @@ function convertToReactFlowEdges(
   });
 }
 
+// Format duration in a human-readable way
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(2)}s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = ((ms % 60000) / 1000).toFixed(1);
+  return `${minutes}m ${seconds}s`;
+}
+
+// Node Detail Panel Component
+function GraphNodeDetailPanel({
+  selectedNode,
+  onClose,
+}: {
+  selectedNode: SelectedNodeInfo;
+  onClose: () => void;
+}) {
+  const { node, executions } = selectedNode;
+  const latestExecution = executions[executions.length - 1];
+  const hasMultipleAttempts = executions.length > 1;
+
+  return (
+    <div className="h-full flex flex-col bg-background border-l">
+      {/* Header - similar to trace view */}
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b flex-none">
+        <span
+          className="text-xs font-medium truncate flex-1"
+          title={node.data.label}
+        >
+          {node.data.label}
+        </span>
+        <div className="flex items-center gap-2 flex-none">
+          {latestExecution?.duration !== undefined && (
+            <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+              {formatDurationMs(latestExecution.duration)}
+            </span>
+          )}
+          <div className="w-px h-4 bg-border" />
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 rounded hover:bg-muted transition-colors"
+            aria-label="Close panel"
+          >
+            <X className="h-4 w-4 text-muted-foreground" />
+          </button>
+        </div>
+      </div>
+
+      {/* Content - scrollable */}
+      <div className="flex-1 overflow-y-auto p-3 min-h-0">
+        {/* Basic attributes in bordered container */}
+        <div className="flex flex-col divide-y rounded-lg border overflow-hidden mb-3">
+          <div className="flex items-center justify-between px-2.5 py-1.5">
+            <span className="text-[11px] font-medium text-muted-foreground">
+              type
+            </span>
+            <span className="text-[11px] font-mono">{node.data.nodeKind}</span>
+          </div>
+          {latestExecution && (
+            <>
+              <div className="flex items-center justify-between px-2.5 py-1.5">
+                <span className="text-[11px] font-medium text-muted-foreground">
+                  status
+                </span>
+                <StatusBadge
+                  status={mapToStatusBadgeStatus(latestExecution.status)}
+                />
+              </div>
+              {latestExecution.duration !== undefined && (
+                <div className="flex items-center justify-between px-2.5 py-1.5">
+                  <span className="text-[11px] font-medium text-muted-foreground">
+                    duration
+                  </span>
+                  <span className="text-[11px] font-mono">
+                    {formatDurationMs(latestExecution.duration)}
+                  </span>
+                </div>
+              )}
+              {hasMultipleAttempts && (
+                <div className="flex items-center justify-between px-2.5 py-1.5">
+                  <span className="text-[11px] font-medium text-muted-foreground">
+                    attempts
+                  </span>
+                  <span className="text-[11px] font-mono">
+                    {executions.length}
+                  </span>
+                </div>
+              )}
+              {latestExecution.startedAt && (
+                <div className="flex items-center justify-between px-2.5 py-1.5">
+                  <span className="text-[11px] font-medium text-muted-foreground">
+                    startedAt
+                  </span>
+                  <span className="text-[11px] font-mono">
+                    {new Date(latestExecution.startedAt).toLocaleString()}
+                  </span>
+                </div>
+              )}
+              {latestExecution.completedAt && (
+                <div className="flex items-center justify-between px-2.5 py-1.5">
+                  <span className="text-[11px] font-medium text-muted-foreground">
+                    completedAt
+                  </span>
+                  <span className="text-[11px] font-mono">
+                    {new Date(latestExecution.completedAt).toLocaleString()}
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Input section */}
+        {latestExecution?.input !== undefined && (
+          <details className="group mb-3">
+            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-muted/50">
+              <span className="font-medium">Input</span>
+              <span className="text-muted-foreground ml-1">
+                (
+                {Array.isArray(latestExecution.input)
+                  ? latestExecution.input.length
+                  : 1}{' '}
+                args)
+              </span>
+            </summary>
+            <div className="relative pl-6 mt-3">
+              <div className="absolute left-3 -top-3 w-px h-3 bg-border" />
+              <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-border" />
+              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-muted/30">
+                <code>{JSON.stringify(latestExecution.input, null, 2)}</code>
+              </pre>
+            </div>
+          </details>
+        )}
+
+        {/* Output section */}
+        {latestExecution?.output !== undefined && (
+          <details className="group mb-3">
+            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-muted/50">
+              <span className="font-medium">Output</span>
+            </summary>
+            <div className="relative pl-6 mt-3">
+              <div className="absolute left-3 -top-3 w-px h-3 bg-border" />
+              <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-border" />
+              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-muted/30">
+                <code>{JSON.stringify(latestExecution.output, null, 2)}</code>
+              </pre>
+            </div>
+          </details>
+        )}
+
+        {/* Error section */}
+        {latestExecution?.error && (
+          <details className="group mb-3" open>
+            <summary className="cursor-pointer rounded-md border border-red-300 bg-red-50 dark:bg-red-950/20 px-2.5 py-1.5 text-xs hover:brightness-95">
+              <span className="font-medium text-red-600 dark:text-red-400">
+                Error
+              </span>
+            </summary>
+            <div className="relative pl-6 mt-3">
+              <div className="absolute left-3 -top-3 w-px h-3 bg-red-300" />
+              <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-red-300" />
+              <pre className="text-[11px] overflow-x-auto rounded-md border border-red-200 p-2.5 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 whitespace-pre-wrap">
+                <code>
+                  {typeof latestExecution.error === 'object'
+                    ? JSON.stringify(latestExecution.error, null, 2)
+                    : String(latestExecution.error)}
+                </code>
+              </pre>
+            </div>
+          </details>
+        )}
+
+        {/* Attempt history for retries */}
+        {hasMultipleAttempts && (
+          <details className="group">
+            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-muted/50">
+              <span className="font-medium">Attempt History</span>
+              <span className="text-muted-foreground ml-1">
+                ({executions.length} attempts)
+              </span>
+            </summary>
+            <div className="relative pl-6 mt-3">
+              <div className="absolute left-3 -top-3 w-px h-3 bg-border" />
+              <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-border" />
+              <div className="flex flex-col divide-y rounded-md border overflow-hidden">
+                {executions.map((exec) => (
+                  <div
+                    key={exec.attemptNumber}
+                    className="flex items-center justify-between px-2.5 py-1.5 text-[11px]"
+                  >
+                    <span className="text-muted-foreground">
+                      Attempt {exec.attemptNumber}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <StatusBadge
+                        status={mapToStatusBadgeStatus(exec.status)}
+                      />
+                      {exec.duration !== undefined && (
+                        <span className="font-mono text-muted-foreground">
+                          {formatDurationMs(exec.duration)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function WorkflowGraphExecutionViewer({
   workflow,
   execution,
   onNodeClick,
 }: WorkflowGraphExecutionViewerProps) {
+  const [selectedNode, setSelectedNode] = useState<SelectedNodeInfo | null>(
+    null
+  );
+  const panelWidth = 320;
+
   const initialNodes = useMemo(
     () => convertToReactFlowNodes(workflow, execution),
     [workflow, execution]
@@ -537,101 +799,148 @@ export function WorkflowGraphExecutionViewer({
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
   // Update nodes and edges when workflow or execution changes
+  // Preserve user-dragged positions by merging with current node positions
   useEffect(() => {
-    setNodes(convertToReactFlowNodes(workflow, execution));
+    setNodes((currentNodes) => {
+      const newNodes = convertToReactFlowNodes(workflow, execution);
+      // Create a map of current positions (user may have dragged nodes)
+      const currentPositions = new Map(
+        currentNodes.map((n) => [n.id, n.position])
+      );
+      // Merge new node data with existing positions
+      return newNodes.map((node) => ({
+        ...node,
+        position: currentPositions.get(node.id) ?? node.position,
+      }));
+    });
     setEdges(convertToReactFlowEdges(workflow, execution));
   }, [workflow, execution, setNodes, setEdges]);
 
   const handleNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
-      if (onNodeClick && node.data.executions) {
-        onNodeClick(node.id, node.data.executions as StepExecution[]);
+      const graphNode = workflow.nodes.find((n) => n.id === node.id);
+      if (graphNode) {
+        const executions = (node.data.executions as StepExecution[]) || [];
+        setSelectedNode({
+          nodeId: node.id,
+          node: graphNode,
+          executions,
+        });
+        // Also call the external handler if provided
+        if (onNodeClick && executions.length > 0) {
+          onNodeClick(node.id, executions);
+        }
       }
     },
-    [onNodeClick]
+    [workflow.nodes, onNodeClick]
   );
 
+  const handleClosePanel = useCallback(() => {
+    setSelectedNode(null);
+  }, []);
+
   return (
-    <div className="h-full w-full border rounded-none bg-background relative">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeClick={handleNodeClick}
-        nodeTypes={nodeTypes}
-        fitView
-        minZoom={0.1}
-        maxZoom={2}
-        defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-        proOptions={{ hideAttribution: true }}
+    <div className="h-full w-full border rounded-lg bg-background relative overflow-hidden flex">
+      {/* Graph canvas */}
+      <div
+        className="h-full flex-1 min-w-0"
+        style={{
+          width: selectedNode ? `calc(100% - ${panelWidth}px)` : '100%',
+        }}
       >
-        <Background />
-        <Controls />
-
-        {/* Legend with execution states */}
-        <Panel
-          position="top-left"
-          className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border rounded-lg p-2 text-xs"
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onNodeClick={handleNodeClick}
+          nodeTypes={nodeTypes}
+          fitView
+          minZoom={0.1}
+          maxZoom={2}
+          defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+          proOptions={{ hideAttribution: true }}
         >
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-green-100 dark:bg-green-950 border-2 border-green-600" />
-              <span>Completed</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-amber-100 dark:bg-amber-950 border-2 border-amber-600" />
-              <span>Running</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-red-100 dark:bg-red-950 border-2 border-red-600" />
-              <span>Failed</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div
-                className="w-3 h-3 rounded-full bg-orange-100 dark:bg-orange-950 border-2 border-orange-600"
-                style={{ borderStyle: 'dashed' }}
-              />
-              <span>Retrying</span>
-            </div>
-            <div className="flex items-center gap-2 opacity-50">
-              <div className="w-3 h-3 rounded-full bg-gray-100 dark:bg-gray-800 border-2 border-gray-400" />
-              <span>Not Executed</span>
-            </div>
-          </div>
-        </Panel>
+          <Background />
+          <Controls />
 
-        {/* Execution summary panel */}
-        {execution && (
+          {/* Legend with execution states (matching status-badge colors) */}
           <Panel
-            position="top-right"
-            className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border rounded-lg p-3 text-xs space-y-1.5"
+            position="top-left"
+            className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border rounded-lg p-2 text-xs"
           >
-            <div className="font-semibold text-sm">Execution</div>
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">Status:</span>
-              <Badge
-                variant={
-                  execution.status === 'completed'
-                    ? 'default'
-                    : execution.status === 'failed'
-                      ? 'destructive'
-                      : 'secondary'
-                }
-                className="text-xs"
-              >
-                {execution.status}
-              </Badge>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">Progress:</span>
-              <span className="font-mono">
-                {execution.executionPath.length} / {workflow.nodes.length}
-              </span>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-blue-500" />
+                <span>Running</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                <span>Completed</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-red-500" />
+                <span>Failed</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-yellow-500" />
+                <span>Canceled</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-orange-500" />
+                <span>Paused</span>
+              </div>
+              <div className="flex items-center gap-2 opacity-50">
+                <div className="w-3 h-3 rounded-full bg-gray-400" />
+                <span>Pending</span>
+              </div>
             </div>
           </Panel>
-        )}
-      </ReactFlow>
+
+          {/* Execution summary panel */}
+          {execution && (
+            <Panel
+              position="top-right"
+              className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border rounded-lg p-3 text-xs space-y-1.5"
+            >
+              <div className="font-semibold text-sm">Execution</div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Status:</span>
+                <Badge
+                  variant={
+                    execution.status === 'completed'
+                      ? 'default'
+                      : execution.status === 'failed'
+                        ? 'destructive'
+                        : execution.status === 'cancelled'
+                          ? 'outline'
+                          : 'secondary'
+                  }
+                  className="text-xs"
+                >
+                  {execution.status}
+                </Badge>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Progress:</span>
+                <span className="font-mono">
+                  {execution.executionPath.length} / {workflow.nodes.length}
+                </span>
+              </div>
+            </Panel>
+          )}
+        </ReactFlow>
+      </div>
+
+      {/* Detail panel */}
+      {selectedNode && (
+        <div className="h-full flex-none" style={{ width: panelWidth }}>
+          <GraphNodeDetailPanel
+            selectedNode={selectedNode}
+            onClose={handleClosePanel}
+          />
+        </div>
+      )}
     </div>
   );
 }

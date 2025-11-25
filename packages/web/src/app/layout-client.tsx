@@ -136,7 +136,7 @@ function LayoutContent({ children }: LayoutClientProps) {
         {/* Sticky Header */}
         <div className="sticky top-0 z-50 bg-background border-b px-6 py-4">
           <div className="flex items-center justify-between w-full">
-            <Link href="https://useworkflow.dev" target="_blank">
+            <Link href={buildUrlWithConfig('/', config)}>
               <h1
                 className="flex items-center gap-2"
                 title="Workflow Observability"

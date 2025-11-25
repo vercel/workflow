@@ -236,12 +236,20 @@ function convertToReactFlowNodes(workflow: WorkflowGraph): Node[] {
     }
 
     if (metadata?.parallelGroupId) {
+      const parallelLabel =
+        metadata.parallelMethod === 'all'
+          ? 'Promise.all'
+          : metadata.parallelMethod === 'race'
+            ? 'Promise.race'
+            : metadata.parallelMethod === 'allSettled'
+              ? 'Promise.allSettled'
+              : `parallel: ${metadata.parallelMethod}`;
       badges.push(
         <span
           key="parallel"
           className="px-1.5 py-0.5 text-[10px] font-bold bg-blue-200 dark:bg-blue-900/30 !text-gray-950 dark:!text-white rounded border border-blue-400 dark:border-blue-700"
         >
-          ∥ {metadata.parallelMethod}
+          {parallelLabel}
         </span>
       );
     }
@@ -269,7 +277,7 @@ function convertToReactFlowNodes(workflow: WorkflowGraph): Node[] {
         ),
       },
       style: {
-        borderWidth: 2,
+        borderWidth: 1,
         borderRadius: 8,
         padding: 12,
         width: 220,
@@ -292,35 +300,37 @@ function convertToReactFlowEdges(workflow: WorkflowGraph): Edge[] {
   return allEdges.map((edge) => {
     // Customize edge style based on type
     let strokeColor = '#94a3b8'; // default gray
-    let strokeWidth = 2;
+    let strokeWidth = 1;
     let strokeDasharray: string | undefined;
-    let animated = false;
+    const animated = false;
     let label: string | undefined = edge.label;
     let edgeType: 'smoothstep' | 'straight' | 'step' = 'smoothstep';
 
     switch (edge.type) {
       case 'parallel':
         strokeColor = '#3b82f6'; // blue
-        strokeWidth = 3;
-        animated = true;
-        if (!label) label = '∥';
+        strokeWidth = 1.5;
+        strokeDasharray = '4,4';
+        // No label needed - nodes have Promise.all/race/allSettled badges
+        label = undefined;
         break;
       case 'loop':
         strokeColor = '#a855f7'; // purple
-        strokeWidth = 2.5;
+        strokeWidth = 1.5;
         strokeDasharray = '5,5';
-        animated = true; // Animate loop edges for clarity
-        // Don't add label for loop-back edges - nodes already have badges
         // Loop-back edges get a different path type for better visualization
         if (edge.source === edge.target || !edge.isOriginal) {
           edgeType = 'step';
-          label = undefined; // Definitely no label on back edges
         }
+        // No label needed - nodes have loop badges
+        label = undefined;
         break;
       case 'conditional':
         strokeColor = '#f59e0b'; // amber
-        strokeWidth = 2;
+        strokeWidth = 1;
         strokeDasharray = '8,4';
+        // No label needed - nodes have if/else badges
+        label = undefined;
         break;
       default:
         // Keep default styling
@@ -340,8 +350,8 @@ function convertToReactFlowEdges(workflow: WorkflowGraph): Edge[] {
       labelBgStyle: { fill: strokeColor, fillOpacity: 0.15 },
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        width: 20,
-        height: 20,
+        width: 12,
+        height: 12,
         color: strokeColor,
       },
       style: {
@@ -373,7 +383,7 @@ export function WorkflowGraphViewer({ workflow }: WorkflowGraphViewerProps) {
   }, [workflow, setNodes, setEdges]);
 
   return (
-    <div className="h-full w-full border rounded-none bg-background relative">
+    <div className="h-full w-full border rounded-lg bg-background relative overflow-hidden">
       <ReactFlow
         nodes={nodes}
         edges={edges}

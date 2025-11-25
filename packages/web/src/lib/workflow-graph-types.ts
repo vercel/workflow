@@ -61,7 +61,13 @@ export interface StepExecution {
   nodeId: string;
   stepId?: string;
   attemptNumber: number;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'retrying';
+  status:
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'retrying'
+    | 'cancelled';
   startedAt?: string;
   completedAt?: string;
   duration?: number;
@@ -79,7 +85,13 @@ export interface EdgeTraversal {
 
 export interface WorkflowRunExecution {
   runId: string;
-  status: 'running' | 'completed' | 'failed' | 'pending' | 'cancelled';
+  status:
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'paused'
+    | 'cancelled';
   nodeExecutions: Map<string, StepExecution[]>; // nodeId -> array of executions (for retries)
   edgeTraversals: Map<string, EdgeTraversal>; // edgeId -> traversal info
   currentNode?: string; // for running workflows

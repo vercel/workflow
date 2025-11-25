@@ -23,6 +23,7 @@ function normalizeStepName(name: string): string {
 
 /**
  * Create execution data for a single step attempt
+ * Handles all step statuses: pending, running, completed, failed, cancelled
  */
 function createStepExecution(
   attemptStep: Step,
@@ -30,13 +31,26 @@ function createStepExecution(
   idx: number,
   totalAttempts: number
 ): StepExecution {
-  let status: StepExecution['status'] = 'pending';
-  if (attemptStep.status === 'completed') {
-    status = 'completed';
-  } else if (attemptStep.status === 'failed') {
-    status = idx < totalAttempts - 1 ? 'retrying' : 'failed';
-  } else if (attemptStep.status === 'running') {
-    status = 'running';
+  // Map step status to execution status
+  let status: StepExecution['status'];
+  switch (attemptStep.status) {
+    case 'completed':
+      status = 'completed';
+      break;
+    case 'failed':
+      // If this is not the last attempt, it's a retry
+      status = idx < totalAttempts - 1 ? 'retrying' : 'failed';
+      break;
+    case 'running':
+      status = 'running';
+      break;
+    case 'cancelled':
+      status = 'cancelled';
+      break;
+    case 'pending':
+    default:
+      status = 'pending';
+      break;
   }
 
   const duration =
@@ -173,7 +187,8 @@ function initializeStartNode(
 }
 
 /**
- * Add end node execution if workflow is complete
+ * Add end node execution based on workflow run status
+ * Handles all run statuses: pending, running, completed, failed, paused, cancelled
  */
 function addEndNodeExecution(
   run: WorkflowRun,
@@ -181,26 +196,51 @@ function addEndNodeExecution(
   executionPath: string[],
   nodeExecutions: Map<string, StepExecution[]>
 ): void {
-  if (run.status === 'completed' || run.status === 'failed') {
-    const endNode = graph.nodes.find((n) => n.data.nodeKind === 'workflow_end');
-    if (endNode && !executionPath.includes(endNode.id)) {
-      executionPath.push(endNode.id);
-      nodeExecutions.set(endNode.id, [
-        {
-          nodeId: endNode.id,
-          attemptNumber: 1,
-          status: run.status === 'completed' ? 'completed' : 'failed',
-          startedAt: run.completedAt
-            ? new Date(run.completedAt).toISOString()
-            : undefined,
-          completedAt: run.completedAt
-            ? new Date(run.completedAt).toISOString()
-            : undefined,
-          duration: 0,
-        },
-      ]);
-    }
+  const endNode = graph.nodes.find((n) => n.data.nodeKind === 'workflow_end');
+  if (!endNode || executionPath.includes(endNode.id)) {
+    return;
   }
+
+  // Map run status to end node execution status
+  let endNodeStatus: StepExecution['status'];
+  switch (run.status) {
+    case 'completed':
+      endNodeStatus = 'completed';
+      break;
+    case 'failed':
+      endNodeStatus = 'failed';
+      break;
+    case 'cancelled':
+      endNodeStatus = 'cancelled';
+      break;
+    case 'running':
+      endNodeStatus = 'running';
+      break;
+    case 'paused':
+      // Paused is like running but waiting
+      endNodeStatus = 'pending';
+      break;
+    case 'pending':
+    default:
+      // Don't add end node for pending runs
+      return;
+  }
+
+  executionPath.push(endNode.id);
+  nodeExecutions.set(endNode.id, [
+    {
+      nodeId: endNode.id,
+      attemptNumber: 1,
+      status: endNodeStatus,
+      startedAt: run.completedAt
+        ? new Date(run.completedAt).toISOString()
+        : undefined,
+      completedAt: run.completedAt
+        ? new Date(run.completedAt).toISOString()
+        : undefined,
+      duration: 0,
+    },
+  ]);
 }
 
 /**
@@ -384,19 +424,15 @@ export function mapRunToExecution(
     }
   }
 
-  // Add end node if workflow is completed/failed
+  // Add end node based on workflow status
   addEndNodeExecution(run, graph, executionPath, nodeExecutions);
 
   // Calculate edge traversals based on execution path
   const edgeTraversals = calculateEdgeTraversals(executionPath, graph);
 
-  // Map run status to execution status (filter out unsupported statuses)
-  const executionStatus: WorkflowRunExecution['status'] =
-    run.status === 'paused' ? 'running' : run.status;
-
   const result: WorkflowRunExecution = {
     runId: run.runId,
-    status: executionStatus,
+    status: run.status,
     nodeExecutions,
     edgeTraversals,
     currentNode,

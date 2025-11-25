@@ -248,8 +248,8 @@ export function RunDetailView({
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="flex flex-col pb-6">
-        <div className="flex-none space-y-6">
+      <div className="flex flex-col h-[calc(100vh-88px)]">
+        <div className="flex-none space-y-4">
           <Breadcrumb>
             <BreadcrumbList>
               <BreadcrumbItem>
@@ -267,15 +267,15 @@ export function RunDetailView({
           </Breadcrumb>
 
           {/* Run Overview Header */}
-          <div className="space-y-4 pb-6">
+          <div className="space-y-4 p-6 border rounded-lg">
             {/* Title Row */}
             <div className="flex items-start justify-between">
-              <div className="mb-6">
-                <h1 className="text-2xl font-semibold">
+              <div className="mb-4">
+                <h1 className="text-xl font-semibold">
                   {workflowName ? (
                     workflowName
                   ) : (
-                    <Skeleton className="w-[260px] h-[32px]" />
+                    <Skeleton className="w-[260px] h-[28px]" />
                   )}
                 </h1>
               </div>
@@ -309,10 +309,43 @@ export function RunDetailView({
                 )}
               </div>
               <div className="flex flex-col gap-1">
+                <div className="text-xs text-muted-foreground">Duration</div>
+                <div className="text-xs">
+                  {run.runId ? (
+                    run.startedAt ? (
+                      (() => {
+                        const ms =
+                          (run.completedAt
+                            ? new Date(run.completedAt).getTime()
+                            : Date.now()) - new Date(run.startedAt).getTime();
+                        const seconds = Math.floor(ms / 1000);
+                        if (seconds < 60) return `${seconds}s`;
+                        const minutes = Math.floor(seconds / 60);
+                        const remainingSeconds = seconds % 60;
+                        if (minutes < 60) {
+                          return remainingSeconds > 0
+                            ? `${minutes}m ${remainingSeconds}s`
+                            : `${minutes}m`;
+                        }
+                        const hours = Math.floor(minutes / 60);
+                        const remainingMinutes = minutes % 60;
+                        return remainingMinutes > 0
+                          ? `${hours}h ${remainingMinutes}m`
+                          : `${hours}h`;
+                      })()
+                    ) : (
+                      '-'
+                    )
+                  ) : (
+                    <Skeleton className="w-[60px] h-[20px]" />
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Run ID</div>
                 {run.runId ? (
                   <CopyableText text={run.runId}>
-                    <div className="text-sm mt-0.5 font-mono">{run.runId}</div>
+                    <div className="text-xs mt-0.5 font-mono">{run.runId}</div>
                   </CopyableText>
                 ) : (
                   <Skeleton className="w-[280px] h-[20px]" />
@@ -321,7 +354,7 @@ export function RunDetailView({
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Queued</div>
                 {run.createdAt ? (
-                  <div className="text-sm">
+                  <div className="text-xs">
                     <RelativeTime date={run.createdAt} />
                   </div>
                 ) : (
@@ -330,7 +363,7 @@ export function RunDetailView({
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Started</div>
-                <div className="text-sm">
+                <div className="text-xs">
                   {run.runId ? (
                     run.startedAt ? (
                       <RelativeTime date={run.startedAt} />
@@ -344,7 +377,7 @@ export function RunDetailView({
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Completed</div>
-                <div className="text-sm">
+                <div className="text-xs">
                   {run.runId ? (
                     run.completedAt ? (
                       <RelativeTime date={run.completedAt} />
@@ -360,12 +393,13 @@ export function RunDetailView({
           </div>
         </div>
 
-        <div className="mt-6 mb-12">
+        <div className="mt-4 flex-1 flex flex-col min-h-0">
           <Tabs
             value={activeTab}
             onValueChange={(v) => setActiveTab(v as 'trace' | 'graph')}
+            className="flex-1 flex flex-col min-h-0"
           >
-            <TabsList className="mb-4">
+            <TabsList className="mb-4 flex-none">
               <TabsTrigger value="trace" className="gap-2">
                 <List className="h-4 w-4" />
                 Trace
@@ -376,8 +410,8 @@ export function RunDetailView({
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="trace" className="mt-0">
-              <div style={{ minHeight: '800px' }}>
+            <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
+              <div className="h-full">
                 <WorkflowTraceViewer
                   error={error}
                   steps={allSteps}
@@ -390,8 +424,8 @@ export function RunDetailView({
               </div>
             </TabsContent>
 
-            <TabsContent value="graph" className="mt-0">
-              <div style={{ minHeight: '800px', height: '800px' }}>
+            <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
+              <div className="h-full min-h-[500px]">
                 {graphLoading ? (
                   <div className="flex items-center justify-center w-full h-full">
                     <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />

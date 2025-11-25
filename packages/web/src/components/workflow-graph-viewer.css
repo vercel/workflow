@@ -28,6 +28,7 @@
   width: 220px !important;
   min-width: 220px !important;
   max-width: 220px !important;
+  border-width: 1px;
 }
 
 /* Pulse animation for currently executing node */

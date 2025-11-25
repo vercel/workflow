@@ -1,6 +1,6 @@
 'use client';
 
-import { Monitor, Moon, Settings, Sun } from 'lucide-react';
+import { ExternalLink, Monitor, Moon, Settings, Sun } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -66,6 +66,16 @@ export function SettingsDropdown() {
           <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
             <span>Configuration</span>
             <Settings className="ml-auto h-4 w-4" />
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild>
+            <a
+              href="https://useworkflow.dev/docs/getting-started"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span>Docs</span>
+              <ExternalLink className="ml-auto h-4 w-4" />
+            </a>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
