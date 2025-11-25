@@ -203,6 +203,62 @@ describe('getCustomDiagnostics', () => {
       expectNoDiagnostic(diagnostics, 9003);
     });
 
+    it('does not warn when Bun is used in step function', () => {
+      const source = `
+        import { RedisClient } from 'bun';
+
+        async function myStep() {
+          'use step';
+          new RedisClient();
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectNoDiagnostic(diagnostics, 9003);
+    });
+
+    it('warns when Bun module is used in workflow function', () => {
+      const source = `
+        import { file } from 'bun';
+
+        export async function myWorkflow() {
+          'use workflow';
+          const f = file('/tmp/test.txt');
+          return f;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9003,
+        messageIncludes: 'bun',
+      });
+    });
+
+    it('shows Bun in error message when Bun module is used', () => {
+      const source = `
+        import { file } from 'bun';
+
+        export async function myWorkflow() {
+          'use workflow';
+          const f = file('/tmp/test.txt');
+          return f;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9003,
+        messageIncludes: 'Bun API',
+      });
+    });
+
     it('does not warn when importing without using', () => {
       const source = `
         import fs from 'fs';
