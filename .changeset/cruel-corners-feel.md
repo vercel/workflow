@@ -1,4 +1,5 @@
 ---
+"@workflow/web-shared": patch
 "@workflow/swc-plugin": patch
 "@workflow/world": patch
 "@workflow/core": patch
