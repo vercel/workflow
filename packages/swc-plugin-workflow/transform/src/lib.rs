@@ -3428,7 +3428,7 @@ impl VisitMut for StepTransform {
             if let ModuleItem::Stmt(Stmt::Expr(ExprStmt { expr, .. })) = &items[0] {
                 if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                     let should_remove = match self.mode {
-                        TransformMode::Step => value == "use step",
+                        TransformMode::Step => value == "use step" || value == "use workflow",
                         TransformMode::Workflow => value == "use workflow",
                         TransformMode::Client => value == "use step" || value == "use workflow",
                     };
@@ -3751,11 +3751,10 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // Handle default workflow exports (workflow and client modes)
+        // Handle default workflow exports (all modes)
         // We need to: 1) find the export default position, 2) replace it with const declaration,
         // 3) add workflowId assignment, 4) add export default at the end
-        if (self.mode == TransformMode::Workflow || self.mode == TransformMode::Client)
-            && !self.default_workflow_exports.is_empty()
+        if !self.default_workflow_exports.is_empty()
         {
             let default_workflows: Vec<_> = self.default_workflow_exports.drain(..).collect();
             let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
@@ -5609,44 +5608,8 @@ impl VisitMut for StepTransform {
                         self.workflow_function_names.insert("default".to_string());
 
                         match self.mode {
-                            TransformMode::Step => {
-                                // Workflow functions are not processed in step mode
-                            }
-                            TransformMode::Workflow => {
-                                // In workflow mode, just remove the directive
-                                self.remove_use_workflow_directive(&mut fn_expr.function.body);
-
-                                if fn_name == "default" {
-                                    // Anonymous default export: convert to const declaration
-                                    // Track for const declaration and workflowId assignment
-                                    self.default_workflow_exports.push((
-                                        const_name.clone(),
-                                        Expr::Fn(fn_expr.clone()),
-                                        fn_expr.function.span,
-                                    ));
-
-                                    // Track for replacement with identifier
-                                    self.default_exports_to_replace.push((
-                                        fn_name.clone(),
-                                        Expr::Ident(Ident::new(
-                                            const_name.into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        )),
-                                    ));
-                                } else {
-                                    // Named default export: can reference by name
-                                    // export default async function name() { ... }
-                                    // name.workflowId = "...";
-                                    self.workflow_exports_to_expand.push((
-                                        const_name,
-                                        Expr::Fn(fn_expr.clone()),
-                                        fn_expr.function.span,
-                                    ));
-                                }
-                            }
-                            TransformMode::Client => {
-                                // In client mode, replace workflow function body with error throw
+                            TransformMode::Step | TransformMode::Client => {
+                                // In step/client mode, replace workflow function body with error throw
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
 
                                 let error_msg = format!(
@@ -5700,7 +5663,40 @@ impl VisitMut for StepTransform {
                                 } else {
                                     // Named function can be referenced directly, just add workflowId
                                     self.workflow_functions_needing_id
-                                        .push((const_name, fn_expr.function.span));
+                                        .push((const_name.clone(), fn_expr.function.span));
+                                }
+                            }
+                            TransformMode::Workflow => {
+                                // In workflow mode, just remove the directive
+                                self.remove_use_workflow_directive(&mut fn_expr.function.body);
+
+                                if fn_name == "default" {
+                                    // Anonymous default export: convert to const declaration
+                                    // Track for const declaration and workflowId assignment
+                                    self.default_workflow_exports.push((
+                                        const_name.clone(),
+                                        Expr::Fn(fn_expr.clone()),
+                                        fn_expr.function.span,
+                                    ));
+
+                                    // Track for replacement with identifier
+                                    self.default_exports_to_replace.push((
+                                        fn_name.clone(),
+                                        Expr::Ident(Ident::new(
+                                            const_name.into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        )),
+                                    ));
+                                } else {
+                                    // Named default export: can reference by name
+                                    // export default async function name() { ... }
+                                    // name.workflowId = "...";
+                                    self.workflow_exports_to_expand.push((
+                                        const_name,
+                                        Expr::Fn(fn_expr.clone()),
+                                        fn_expr.function.span,
+                                    ));
                                 }
                             }
                         }
@@ -5782,32 +5778,8 @@ impl VisitMut for StepTransform {
                         self.workflow_function_names.insert("default".to_string());
 
                         match self.mode {
-                            TransformMode::Step => {
-                                // Workflow functions are not processed in step mode
-                            }
-                            TransformMode::Workflow => {
-                                // In workflow mode, convert to const declaration
-                                self.remove_use_workflow_directive(&mut fn_expr.function.body);
-
-                                // Track for const declaration and workflowId assignment
-                                self.default_workflow_exports.push((
-                                    unique_name.clone(),
-                                    Expr::Fn(fn_expr.clone()),
-                                    fn_expr.function.span,
-                                ));
-
-                                // Track for replacement with identifier
-                                self.default_exports_to_replace.push((
-                                    "default".to_string(),
-                                    Expr::Ident(Ident::new(
-                                        unique_name.into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    )),
-                                ));
-                            }
-                            TransformMode::Client => {
-                                // In client mode, replace workflow function body with error throw
+                            TransformMode::Step | TransformMode::Client => {
+                                // In step/client mode, replace workflow function body with error throw
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
                                 let error_msg = format!(
                                     "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
@@ -5855,6 +5827,27 @@ impl VisitMut for StepTransform {
                                     )),
                                 ));
                             }
+                            TransformMode::Workflow => {
+                                // In workflow mode, convert to const declaration
+                                self.remove_use_workflow_directive(&mut fn_expr.function.body);
+
+                                // Track for const declaration and workflowId assignment
+                                self.default_workflow_exports.push((
+                                    unique_name.clone(),
+                                    Expr::Fn(fn_expr.clone()),
+                                    fn_expr.function.span,
+                                ));
+
+                                // Track for replacement with identifier
+                                self.default_exports_to_replace.push((
+                                    "default".to_string(),
+                                    Expr::Ident(Ident::new(
+                                        unique_name.into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    )),
+                                ));
+                            }
                         }
                     }
                 } else if self.should_transform_function(&fn_expr.function, true) {
@@ -5883,32 +5876,8 @@ impl VisitMut for StepTransform {
                         self.workflow_function_names.insert("default".to_string());
 
                         match self.mode {
-                            TransformMode::Step => {
-                                // Workflow functions are not processed in step mode
-                            }
-                            TransformMode::Workflow => {
-                                // In workflow mode, convert to const declaration
-                                self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
-
-                                // Track for const declaration and workflowId assignment
-                                self.default_workflow_exports.push((
-                                    unique_name.clone(),
-                                    Expr::Arrow(arrow_expr.clone()),
-                                    arrow_expr.span,
-                                ));
-
-                                // Track for replacement with identifier
-                                self.default_exports_to_replace.push((
-                                    "default".to_string(),
-                                    Expr::Ident(Ident::new(
-                                        unique_name.into(),
-                                        DUMMY_SP,
-                                        SyntaxContext::empty(),
-                                    )),
-                                ));
-                            }
-                            TransformMode::Client => {
-                                // In client mode, convert to const declaration so we can assign workflowId
+                            TransformMode::Step | TransformMode::Client => {
+                                // In step/client mode, replace arrow body with throw error
                                 self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
                                 let error_msg = format!(
                                     "You attempted to execute workflow {} function directly. To start a workflow, use start({}) from workflow/api",
@@ -5941,6 +5910,27 @@ impl VisitMut for StepTransform {
                                         arg: Box::new(error_expr),
                                     })],
                                 }));
+
+                                // Track for const declaration and workflowId assignment
+                                self.default_workflow_exports.push((
+                                    unique_name.clone(),
+                                    Expr::Arrow(arrow_expr.clone()),
+                                    arrow_expr.span,
+                                ));
+
+                                // Track for replacement with identifier
+                                self.default_exports_to_replace.push((
+                                    "default".to_string(),
+                                    Expr::Ident(Ident::new(
+                                        unique_name.into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    )),
+                                ));
+                            }
+                            TransformMode::Workflow => {
+                                // In workflow mode, convert to const declaration
+                                self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
 
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((

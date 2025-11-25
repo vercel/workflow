@@ -9,8 +9,7 @@ export const arrowWorkflow = async ()=>{
 };
 arrowWorkflow.workflowId = "workflow//input.js//arrowWorkflow";
 export default async function defaultWorkflow() {
-    'use workflow';
-    return await process();
+    throw new Error("You attempted to execute workflow defaultWorkflow function directly. To start a workflow, use start(defaultWorkflow) from workflow/api");
 }
 defaultWorkflow.workflowId = "workflow//input.js//defaultWorkflow";
 // Non-export workflow function
