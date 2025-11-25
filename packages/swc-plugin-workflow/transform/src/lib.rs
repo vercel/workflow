@@ -189,8 +189,8 @@ pub struct StepTransform {
     // Track all declared identifiers in module scope to avoid collisions
     declared_identifiers: HashSet<String>,
     // Track object property step functions for hoisting in step mode
-    // (parent_var_name, prop_name, arrow_expr, span)
-    object_property_step_functions: Vec<(String, String, ArrowExpr, swc_core::common::Span)>,
+    // (parent_var_name, prop_name, arrow_expr, span, parent_workflow_name)
+    object_property_step_functions: Vec<(String, String, ArrowExpr, swc_core::common::Span, String)>,
     // Track nested step functions inside workflow functions for hoisting in step mode
     // (fn_name, fn_expr, span, closure_vars, was_arrow, parent_workflow_name)
     nested_step_functions: Vec<(
@@ -1230,8 +1230,13 @@ impl StepTransform {
         parent_var_name: &str,
         prop_name: &str,
         is_workflow: bool,
+        workflow_name: Option<&str>,
     ) -> String {
-        let fn_name = format!("{}/{}", parent_var_name, prop_name);
+        let fn_name = if let Some(wf_name) = workflow_name {
+            format!("{}/{}/{}", wf_name, parent_var_name, prop_name)
+        } else {
+            format!("{}/{}", parent_var_name, prop_name)
+        };
         let prefix = if is_workflow { "workflow" } else { "step" };
         naming::format_name(prefix, &self.filename, &fn_name)
     }
@@ -1283,6 +1288,9 @@ impl StepTransform {
                                             prop_key.clone(),
                                             arrow_expr.clone(),
                                             arrow_expr.span,
+                                            self.current_workflow_function_name
+                                                .clone()
+                                                .unwrap_or_default(),
                                         ));
 
                                         let span = arrow_expr.span;
@@ -1344,6 +1352,9 @@ impl StepTransform {
                                             prop_key.clone(),
                                             arrow_from_fn,
                                             span,
+                                            self.current_workflow_function_name
+                                                .clone()
+                                                .unwrap_or_default(),
                                         ));
 
                                         let _ = fn_expr; // Drop the mutable reference
@@ -1413,18 +1424,27 @@ impl StepTransform {
                                     prop_key.clone(),
                                     arrow_from_method,
                                     span,
+                                    self.current_workflow_function_name
+                                        .clone()
+                                        .unwrap_or_default(),
                                 ));
 
                                 // Now handle the transformation based on mode
                                 match self.mode {
                                     TransformMode::Step => {
                                         // In step mode, replace method with key-value property referencing the hoisted variable
-                                        let hoist_var_name =
-                                            format!("{}${}", parent_var_name, prop_key);
+                                        let hoist_var_name = if let Some(ref workflow_name) =
+                                            self.current_workflow_function_name
+                                        {
+                                            format!("{}${}${}", workflow_name, parent_var_name, prop_key)
+                                        } else {
+                                            format!("{}${}", parent_var_name, prop_key)
+                                        };
                                         let step_id = self.create_object_property_id(
                                             parent_var_name,
                                             &prop_key,
                                             false,
+                                            self.current_workflow_function_name.as_deref(),
                                         );
                                         // Replace the method with a key-value property referencing the hoisted function
                                         *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
@@ -1447,6 +1467,7 @@ impl StepTransform {
                                             parent_var_name,
                                             &prop_key,
                                             false,
+                                            self.current_workflow_function_name.as_deref(),
                                         );
                                         *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
                                             key: method_prop.key.clone(),
@@ -1479,12 +1500,23 @@ impl StepTransform {
         prop_key: &str,
         _span: swc_core::common::Span,
     ) {
-        let step_id = self.create_object_property_id(parent_var_name, prop_key, false);
+        let step_id = self.create_object_property_id(
+            parent_var_name,
+            prop_key,
+            false,
+            self.current_workflow_function_name.as_deref(),
+        );
 
         match self.mode {
             TransformMode::Step => {
                 // In step mode, replace with reference to hoisted variable
-                let hoist_var_name = format!("{}${}", parent_var_name, prop_key);
+                let hoist_var_name = if let Some(ref workflow_name) =
+                    self.current_workflow_function_name
+                {
+                    format!("{}${}${}", workflow_name, parent_var_name, prop_key)
+                } else {
+                    format!("{}${}", parent_var_name, prop_key)
+                };
                 *kv_prop.value = Expr::Ident(Ident::new(
                     hoist_var_name.into(),
                     DUMMY_SP,
@@ -3100,10 +3132,19 @@ impl VisitMut for StepTransform {
                     let hoisting_info: Vec<_> = self
                         .object_property_step_functions
                         .iter()
-                        .map(|(parent_var, prop_name, arrow_expr, _span)| {
-                            let hoist_var_name = format!("{}${}", parent_var, prop_name);
+                        .map(|(parent_var, prop_name, arrow_expr, _span, workflow_name)| {
+                            let hoist_var_name = if !workflow_name.is_empty() {
+                                format!("{}${}${}", workflow_name, parent_var, prop_name)
+                            } else {
+                                format!("{}${}", parent_var, prop_name)
+                            };
+                            let wf_name = if workflow_name.is_empty() {
+                                None
+                            } else {
+                                Some(workflow_name.as_str())
+                            };
                             let step_id =
-                                self.create_object_property_id(parent_var, prop_name, false);
+                                self.create_object_property_id(parent_var, prop_name, false, wf_name);
                             (
                                 hoist_var_name,
                                 arrow_expr.clone(),
