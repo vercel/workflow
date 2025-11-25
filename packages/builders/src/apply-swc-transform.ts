@@ -20,8 +20,6 @@ export type WorkflowManifest = {
   };
 };
 
-// Graph manifest types moved to graph-extractor.ts (post-bundle extraction)
-
 export async function applySwcTransform(
   filename: string,
   source: string,
@@ -30,8 +28,7 @@ export async function applySwcTransform(
     paths?: Record<string, string[]>;
     // this must be absolute path
     baseUrl?: string;
-  },
-  workflowManifest?: WorkflowManifest
+  }
 ): Promise<{
   code: string;
   workflowManifest: WorkflowManifest;
@@ -52,12 +49,7 @@ export async function applySwcTransform(
       target: 'es2022',
       experimental: mode
         ? {
-            plugins: [
-              [
-                require.resolve('@workflow/swc-plugin'),
-                { mode, workflowManifest },
-              ],
-            ],
+            plugins: [[require.resolve('@workflow/swc-plugin'), { mode }]],
           }
         : undefined,
       ...jscConfig,
@@ -73,12 +65,9 @@ export async function applySwcTransform(
     /\/\*\*__internal_workflows({.*?})\*\//s
   );
 
-  const metadata = JSON.parse(workflowCommentMatch?.[1] || '{}');
-
-  const parsedWorkflows = {
-    steps: metadata.steps,
-    workflows: metadata.workflows,
-  } as WorkflowManifest;
+  const parsedWorkflows = JSON.parse(
+    workflowCommentMatch?.[1] || '{}'
+  ) as WorkflowManifest;
 
   return {
     code: result.code,
