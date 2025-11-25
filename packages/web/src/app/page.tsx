@@ -59,7 +59,7 @@ export default function Home() {
   const workflows = graphManifest ? Object.values(graphManifest.workflows) : [];
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-7xl mx-auto px-4">
       <Tabs value={tab} onValueChange={setTab} className="w-full">
         <TabsList className="mb-4">
           <TabsTrigger value="runs">Runs</TabsTrigger>

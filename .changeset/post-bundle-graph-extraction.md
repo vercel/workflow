@@ -6,7 +6,7 @@
 
 Refactor graph extraction to post-bundle TypeScript AST traversal. This replaces the previous Rust-based per-file analysis with a more accurate approach that analyzes the bundled workflow code, enabling:
 
-- Full CFG representation including loops, conditionals, and parallel execution
+- Full CFG representation including loops, conditionals (with proper Then/Else branch metadata), and parallel execution
 - Detection of step functions from imported packages
 - Detection of indirect step calls through helper functions
 - Step reference detection in tool configurations

@@ -1,9 +1,8 @@
 'use client';
 
-import { FileCode2, GitBranch, Workflow } from 'lucide-react';
+import { GitBranch, Workflow } from 'lucide-react';
 import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Sheet,
@@ -12,7 +11,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
   TableBody,
@@ -23,6 +21,7 @@ import {
 } from '@/components/ui/table';
 import { WorkflowGraphViewer } from '@/components/workflow-graph-viewer';
 import type { WorkflowGraph } from '@/lib/workflow-graph-types';
+import { TableSkeleton } from './display-utils/table-skeleton';
 
 interface WorkflowsListProps {
   workflows: WorkflowGraph[];
@@ -46,18 +45,7 @@ export function WorkflowsList({
   };
 
   if (loading) {
-    return (
-      <Card>
-        <CardContent className="p-6">
-          <div className="space-y-3">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        </CardContent>
-      </Card>
-    );
+    return <TableSkeleton variant="workflows" rows={6} />;
   }
 
   if (workflows.length === 0) {
@@ -76,22 +64,19 @@ export function WorkflowsList({
 
   return (
     <>
-      <Card>
+      <Card className="overflow-hidden bg-background">
         <CardContent className="p-0 max-h-[calc(100vh-200px)] overflow-auto">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="sticky top-0 bg-card z-10 border-b shadow-sm">
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
                   Workflow
                 </TableHead>
-                <TableHead className="sticky top-0 bg-card z-10 border-b shadow-sm">
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
                   File
                 </TableHead>
-                <TableHead className="text-center sticky top-0 bg-card z-10 border-b shadow-sm">
+                <TableHead className="text-center sticky top-0 bg-background z-10 border-b shadow-sm h-10">
                   Steps
-                </TableHead>
-                <TableHead className="text-right sticky top-0 bg-card z-10 border-b shadow-sm">
-                  Actions
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -102,40 +87,26 @@ export function WorkflowsList({
                 ).length;
 
                 return (
-                  <TableRow key={workflow.workflowName}>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <Workflow className="h-4 w-4 text-muted-foreground" />
-                        <div>
-                          <div className="font-medium">
-                            {workflow.workflowName}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {workflow.workflowId}
-                          </div>
-                        </div>
-                      </div>
+                  <TableRow
+                    key={workflow.workflowName}
+                    className="cursor-pointer"
+                    onClick={() => handleViewWorkflow(workflow)}
+                  >
+                    <TableCell className="py-2">
+                      <span className="font-medium">
+                        {workflow.workflowName}
+                      </span>
                     </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2 text-sm">
-                        <FileCode2 className="h-3.5 w-3.5 text-muted-foreground" />
-                        <code className="text-xs">{workflow.filePath}</code>
-                      </div>
+                    <TableCell className="py-2">
+                      <code className="text-xs text-muted-foreground">
+                        {workflow.filePath}
+                      </code>
                     </TableCell>
-                    <TableCell className="text-center">
+                    <TableCell className="text-center py-2">
                       <Badge variant="secondary" className="gap-1">
                         <GitBranch className="h-3 w-3" />
                         {stepCount} {stepCount === 1 ? 'step' : 'steps'}
                       </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleViewWorkflow(workflow)}
-                      >
-                        View Workflow
-                      </Button>
                     </TableCell>
                   </TableRow>
                 );
@@ -158,10 +129,7 @@ export function WorkflowsList({
             {selectedWorkflow && (
               <SheetDescription asChild>
                 <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-sm">
-                    <FileCode2 className="h-3.5 w-3.5" />
-                    <code className="text-xs">{selectedWorkflow.filePath}</code>
-                  </div>
+                  <code className="text-xs">{selectedWorkflow.filePath}</code>
                   <div>
                     <Badge variant="outline" className="gap-1">
                       <GitBranch className="h-3 w-3" />

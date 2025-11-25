@@ -58,7 +58,7 @@ export interface NodeMetadata {
   loopId?: string;
   loopIsAwait?: boolean;
   conditionalId?: string;
-  conditionalBranch?: string;
+  conditionalBranch?: 'Then' | 'Else';
   parallelGroupId?: string;
   parallelMethod?: string;
   /** Step is passed as a reference (callback/tool) rather than directly called */
@@ -534,7 +534,8 @@ function analyzeStatement(
   // If statement
   if (stmt.type === 'IfStatement') {
     const savedConditional = context.inConditional;
-    context.inConditional = `cond_${context.conditionalCounter++}`;
+    const conditionalId = `cond_${context.conditionalCounter++}`;
+    context.inConditional = conditionalId;
 
     // Analyze consequent (then branch)
     if (stmt.consequent.type === 'BlockStatement') {
@@ -544,6 +545,14 @@ function analyzeStatement(
         context,
         functionMap
       );
+
+      // Mark all nodes with conditional metadata for 'Then' branch
+      for (const node of branchResult.nodes) {
+        if (!node.metadata) node.metadata = {};
+        node.metadata.conditionalId = conditionalId;
+        node.metadata.conditionalBranch = 'Then';
+      }
+
       nodes.push(...branchResult.nodes);
       edges.push(...branchResult.edges);
       if (entryNodeIds.length === 0) {
@@ -560,8 +569,22 @@ function analyzeStatement(
         context,
         functionMap
       );
+
+      // Mark all nodes with conditional metadata for 'Else' branch
+      for (const node of branchResult.nodes) {
+        if (!node.metadata) node.metadata = {};
+        node.metadata.conditionalId = conditionalId;
+        node.metadata.conditionalBranch = 'Else';
+      }
+
       nodes.push(...branchResult.nodes);
       edges.push(...branchResult.edges);
+      // Add else branch entries to entryNodeIds for proper edge connection
+      if (entryNodeIds.length === 0) {
+        entryNodeIds = branchResult.entryNodeIds;
+      } else {
+        entryNodeIds.push(...branchResult.entryNodeIds);
+      }
       exitNodeIds.push(...branchResult.exitNodeIds);
     }
 

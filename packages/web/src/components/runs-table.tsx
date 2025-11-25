@@ -1,7 +1,12 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
-import { getErrorMessage, useWorkflowRuns } from '@workflow/web-shared';
+import {
+  cancelRun,
+  getErrorMessage,
+  recreateRun,
+  useWorkflowRuns,
+} from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
@@ -9,13 +14,24 @@ import {
   ArrowUpAZ,
   ChevronLeft,
   ChevronRight,
+  MoreHorizontal,
   RefreshCw,
+  RotateCw,
+  XCircle,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { DocsLink } from '@/components/ui/docs-link';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -38,6 +54,7 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
+import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { TableSkeleton } from './display-utils/table-skeleton';
@@ -346,50 +363,140 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
         </div>
       ) : (
         <>
-          <Table className="mt-4">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="h-10">Workflow</TableHead>
-                <TableHead className="h-10">Run ID</TableHead>
-                <TableHead className="h-10">Status</TableHead>
-                <TableHead className="h-10">Started</TableHead>
-                <TableHead className="h-10">Completed</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.data?.map((run) => (
-                <TableRow
-                  key={run.runId}
-                  className="cursor-pointer group relative"
-                  onClick={() => onRunClick(run.runId)}
-                >
-                  <TableCell className="py-2">
-                    {parseWorkflowName(run.workflowName)?.shortName || '?'}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs py-2">
-                    {run.runId}
-                  </TableCell>
-                  <TableCell className="py-2">
-                    <StatusBadge status={run.status} context={run} />
-                  </TableCell>
-                  <TableCell className="py-2">
-                    {run.startedAt ? (
-                      <RelativeTime date={run.startedAt} />
-                    ) : (
-                      '-'
-                    )}
-                  </TableCell>
-                  <TableCell className="py-2">
-                    {run.completedAt ? (
-                      <RelativeTime date={run.completedAt} />
-                    ) : (
-                      '-'
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <Card className="overflow-hidden mt-4 bg-background">
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="h-10">Workflow</TableHead>
+                    <TableHead className="h-10">Run ID</TableHead>
+                    <TableHead className="h-10">Status</TableHead>
+                    <TableHead className="h-10">Started</TableHead>
+                    <TableHead className="h-10">Completed</TableHead>
+                    <TableHead className="h-10 w-10"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.data?.map((run) => (
+                    <TableRow
+                      key={run.runId}
+                      className="cursor-pointer group relative"
+                      onClick={() => onRunClick(run.runId)}
+                    >
+                      <TableCell className="py-2">
+                        <CopyableText text={run.workflowName} overlay>
+                          {parseWorkflowName(run.workflowName)?.shortName ||
+                            '?'}
+                        </CopyableText>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs py-2">
+                        <CopyableText text={run.runId} overlay>
+                          {run.runId}
+                        </CopyableText>
+                      </TableCell>
+                      <TableCell className="py-2 align-top">
+                        <StatusBadge
+                          status={run.status}
+                          context={run}
+                          durationMs={
+                            run.startedAt
+                              ? (run.completedAt
+                                  ? new Date(run.completedAt).getTime()
+                                  : Date.now()) -
+                                new Date(run.startedAt).getTime()
+                              : undefined
+                          }
+                        />
+                      </TableCell>
+                      <TableCell className="py-2 text-muted-foreground text-xs">
+                        {run.startedAt ? (
+                          <RelativeTime date={run.startedAt} />
+                        ) : (
+                          '-'
+                        )}
+                      </TableCell>
+                      <TableCell className="py-2 text-muted-foreground text-xs">
+                        {run.completedAt ? (
+                          <RelativeTime date={run.completedAt} />
+                        ) : (
+                          '-'
+                        )}
+                      </TableCell>
+                      <TableCell className="py-2">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  const newRunId = await recreateRun(
+                                    env,
+                                    run.runId
+                                  );
+                                  toast.success('New run started', {
+                                    description: `Run ID: ${newRunId}`,
+                                  });
+                                  reload();
+                                } catch (err) {
+                                  toast.error('Failed to re-run', {
+                                    description:
+                                      err instanceof Error
+                                        ? err.message
+                                        : 'Unknown error',
+                                  });
+                                }
+                              }}
+                            >
+                              <RotateCw className="h-4 w-4 mr-2" />
+                              Re-run
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (run.status !== 'pending') {
+                                  toast.error('Cannot cancel', {
+                                    description:
+                                      'Only pending runs can be cancelled',
+                                  });
+                                  return;
+                                }
+                                try {
+                                  await cancelRun(env, run.runId);
+                                  toast.success('Run cancelled');
+                                  reload();
+                                } catch (err) {
+                                  toast.error('Failed to cancel', {
+                                    description:
+                                      err instanceof Error
+                                        ? err.message
+                                        : 'Unknown error',
+                                  });
+                                }
+                              }}
+                              disabled={run.status !== 'pending'}
+                            >
+                              <XCircle className="h-4 w-4 mr-2" />
+                              Cancel
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
 
           <div className="flex items-center justify-between mt-4">
             <div className="text-sm text-muted-foreground">{pageInfo}</div>
