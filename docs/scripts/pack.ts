@@ -6,25 +6,17 @@ import { promisify } from 'node:util';
 
 const exec = promisify(cp.exec);
 
-interface TurboDryRun {
-  packages: Array<string>;
-  tasks: Array<Task>;
-}
-
-interface Task {
-  taskId: string;
-  task: string;
-  package: string;
-  hash: string;
-  command: string;
-  outputs: Array<string>;
-  logFile: string;
-  directory: string;
-  dependencies: Array<string>;
-  dependents: Array<string>;
+interface PackageJson {
+  name: string;
+  version: string;
+  private?: boolean;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
 }
 
 const rootDir = fileURLToPath(new URL('../../', import.meta.url));
+const packagesDir = path.join(rootDir, 'packages');
 const outDir = fileURLToPath(new URL('../public', import.meta.url));
 
 async function main() {
@@ -33,53 +25,80 @@ async function main() {
   // Ensure output directory exists
   await fs.mkdir(outDir, { recursive: true });
 
-  const { stdout: turboStdout } = await exec('turbo run build --dry-run=json', {
-    cwd: new URL('../', import.meta.url),
-  });
+  // Scan the packages directory for all packages
+  const packageDirs = await fs.readdir(packagesDir);
+  const packages: Array<{
+    name: string;
+    dir: string;
+    packageJson: PackageJson;
+  }> = [];
 
-  const turboJson: TurboDryRun = JSON.parse(turboStdout);
-
-  for (const task of turboJson.tasks) {
-    const dir = path.join(rootDir, task.directory);
+  for (const packageDir of packageDirs) {
+    const dir = path.join(packagesDir, packageDir);
     const packageJsonPath = path.join(dir, 'package.json');
-    const originalPackageJson = await fs.readFile(packageJsonPath, 'utf8');
-    const originalPackageObj = JSON.parse(originalPackageJson);
 
-    // Skip private packages
-    if (originalPackageObj.private) continue;
-
-    const packageObj = JSON.parse(originalPackageJson);
-    packageObj.version += `-${sha.trim()}`;
-
-    // Update dependencies to use preview URLs
-    if (task.dependencies.length > 0) {
-      for (const dependency of task.dependencies) {
-        const name = dependency.split('#')[0];
-        const escapedName = name.replace(/^@(.+)\//, '$1-');
-        const tarballUrl = `https://${process.env.VERCEL_URL}/${escapedName}.tgz`;
-
-        if (packageObj.dependencies && name in packageObj.dependencies) {
-          packageObj.dependencies[name] = tarballUrl;
-        }
-        if (packageObj.devDependencies && name in packageObj.devDependencies) {
-          packageObj.devDependencies[name] = tarballUrl;
-        }
-      }
+    try {
+      const stat = await fs.stat(packageJsonPath);
+      if (!stat.isFile()) continue;
+    } catch {
+      continue; // Skip directories without package.json
     }
 
-    // Write modified package.json
-    await fs.writeFile(packageJsonPath, JSON.stringify(packageObj, null, 2));
+    const packageJsonContent = await fs.readFile(packageJsonPath, 'utf8');
+    const packageJson: PackageJson = JSON.parse(packageJsonContent);
 
-    // Pack the package
-    await exec(`pnpm pack --out="${outDir}/%s.tgz"`, {
-      cwd: dir,
-    });
+    // Skip private packages
+    if (packageJson.private) continue;
 
-    // Restore original package.json
-    await fs.writeFile(packageJsonPath, originalPackageJson);
+    packages.push({ name: packageJson.name, dir, packageJson });
   }
 
-  console.log(`Successfully packed preview packages to ${outDir}`);
+  // Create a set of all package names for dependency resolution
+  const packageNames = new Set(packages.map((p) => p.name));
+
+  for (const { name, dir, packageJson } of packages) {
+    const packageJsonPath = path.join(dir, 'package.json');
+    const originalPackageJson = JSON.stringify(packageJson, null, 2);
+
+    // Create modified package.json with preview version
+    const modifiedPackageJson: PackageJson = JSON.parse(originalPackageJson);
+    modifiedPackageJson.version += `-${sha}`;
+
+    // Update workspace dependencies to use preview tarball URLs
+    const updateDeps = (deps: Record<string, string> | undefined) => {
+      if (!deps) return;
+      for (const depName of Object.keys(deps)) {
+        if (packageNames.has(depName)) {
+          const escapedName = depName.replace(/^@(.+)\//, '$1-');
+          deps[depName] =
+            `https://${process.env.VERCEL_URL}/${escapedName}.tgz`;
+        }
+      }
+    };
+
+    updateDeps(modifiedPackageJson.dependencies);
+    updateDeps(modifiedPackageJson.devDependencies);
+    updateDeps(modifiedPackageJson.peerDependencies);
+
+    // Write modified package.json
+    await fs.writeFile(
+      packageJsonPath,
+      JSON.stringify(modifiedPackageJson, null, 2)
+    );
+
+    try {
+      // Pack the package
+      await exec(`pnpm pack --out="${outDir}/%s.tgz"`, { cwd: dir });
+      console.log(`Packed ${name}`);
+    } finally {
+      // Always restore original package.json
+      await fs.writeFile(packageJsonPath, originalPackageJson);
+    }
+  }
+
+  console.log(
+    `\nSuccessfully packed ${packages.length} preview packages to ${outDir}`
+  );
 }
 
 async function getSha(): Promise<string> {
