@@ -6,4 +6,5 @@ export default defineNitroConfig({
   routes: {
     '/**': './src/index.ts',
   },
+  plugins: ['plugins/start-pg-world.ts'],
 });

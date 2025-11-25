@@ -1,5 +1,17 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.19
+
+### Patch Changes
+
+- @workflow/core@4.0.1-beta.18
+
+## 4.0.1-beta.18
+
+### Patch Changes
+
+- @workflow/core@4.0.1-beta.17
+
 ## 4.0.1-beta.17
 
 ### Patch Changes

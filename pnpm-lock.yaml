@@ -707,12 +707,12 @@ importers:
 
   packages/utils:
     dependencies:
+      execa:
+        specifier: 9.6.0
+        version: 9.6.0
       ms:
         specifier: 2.1.3
         version: 2.1.3
-      pid-port:
-        specifier: 2.0.0
-        version: 2.0.0
     devDependencies:
       '@types/ms':
         specifier: 2.1.0
@@ -997,6 +997,9 @@ importers:
       '@workflow/world-local':
         specifier: workspace:*
         version: link:../world-local
+      cbor-x:
+        specifier: 1.6.0
+        version: 1.6.0
       dotenv:
         specifier: 16.4.5
         version: 16.4.5
@@ -1203,6 +1206,9 @@ importers:
       '@workflow/cli':
         specifier: workspace:*
         version: link:../../packages/cli
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       esbuild:
         specifier: 'catalog:'
         version: 0.25.11
@@ -1222,6 +1228,9 @@ importers:
       '@types/express':
         specifier: ^5.0.5
         version: 5.0.5
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1240,6 +1249,9 @@ importers:
 
   workbench/hono:
     devDependencies:
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1294,9 +1306,6 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.1.1(react@19.1.1)
-      react-markdown:
-        specifier: ^10.1.0
-        version: 10.1.0(@types/react@19.1.13)(react@19.1.1)
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow
@@ -1319,6 +1328,9 @@ importers:
       '@types/react-dom':
         specifier: ^19
         version: 19.1.9(@types/react@19.1.13)
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       tailwindcss:
         specifier: ^4
         version: 4.1.13
@@ -1358,9 +1370,6 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.1.1(react@19.1.1)
-      react-markdown:
-        specifier: ^10.1.0
-        version: 10.1.0(@types/react@19.1.13)(react@19.1.1)
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow
@@ -1383,6 +1392,9 @@ importers:
       '@types/react-dom':
         specifier: ^19
         version: 19.1.9(@types/react@19.1.13)
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       tailwindcss:
         specifier: ^4
         version: 4.1.13
@@ -1396,6 +1408,9 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
     devDependencies:
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1423,6 +1438,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1451,6 +1469,9 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
     devDependencies:
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1482,6 +1503,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1555,6 +1579,9 @@ importers:
       '@types/lodash.chunk':
         specifier: ^4.2.9
         version: 4.2.9
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       svelte:
         specifier: ^5.39.5
         version: 5.43.3
@@ -1577,6 +1604,9 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
     devDependencies:
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
         version: 5.0.76(zod@4.1.11)
@@ -1951,6 +1981,36 @@ packages:
 
   '@braintree/sanitize-url@7.1.1':
     resolution: {integrity: sha512-i1L7noDNxtFyL5DmZafWy1wRVhGehQmzZaz1HiN5e7iylJMSZR7ekOV7NsIqa5qBldlLrsKv4HbgFUVlQrz8Mw==}
+
+  '@cbor-extract/cbor-extract-darwin-arm64@2.2.0':
+    resolution: {integrity: sha512-P7swiOAdF7aSi0H+tHtHtr6zrpF3aAq/W9FXx5HektRvLTM2O89xCyXF3pk7pLc7QpaY7AoaE8UowVf9QBdh3w==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@cbor-extract/cbor-extract-darwin-x64@2.2.0':
+    resolution: {integrity: sha512-1liF6fgowph0JxBbYnAS7ZlqNYLf000Qnj4KjqPNW4GViKrEql2MgZnAsExhY9LSy8dnvA4C0qHEBgPrll0z0w==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@cbor-extract/cbor-extract-linux-arm64@2.2.0':
+    resolution: {integrity: sha512-rQvhNmDuhjTVXSPFLolmQ47/ydGOFXtbR7+wgkSY0bdOxCFept1hvg59uiLPT2fVDuJFuEy16EImo5tE2x3RsQ==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@cbor-extract/cbor-extract-linux-arm@2.2.0':
+    resolution: {integrity: sha512-QeBcBXk964zOytiedMPQNZr7sg0TNavZeuUCD6ON4vEOU/25+pLhNN6EDIKJ9VLTKaZ7K7EaAriyYQ1NQ05s/Q==}
+    cpu: [arm]
+    os: [linux]
+
+  '@cbor-extract/cbor-extract-linux-x64@2.2.0':
+    resolution: {integrity: sha512-cWLAWtT3kNLHSvP4RKDzSTX9o0wvQEEAj4SKvhWuOVZxiDAeQazr9A+PSiRILK1VYMLeDml89ohxCnUNQNQNCw==}
+    cpu: [x64]
+    os: [linux]
+
+  '@cbor-extract/cbor-extract-win32-x64@2.2.0':
+    resolution: {integrity: sha512-l2M+Z8DO2vbvADOBNLbbh9y5ST1RY5sqkWOg/58GkUPBYou/cuNZ68SGQ644f1CvZ8kcOxyZtw06+dxWHIoN/w==}
+    cpu: [x64]
+    os: [win32]
 
   '@changesets/apply-release-plan@7.0.12':
     resolution: {integrity: sha512-EaET7As5CeuhTzvXTQCRZeBUcisoYPDDcXvgTE/2jmmypKp0RC7LxKj/yzqeh/1qFTZI7oDGFcL1PHRuQuketQ==}
@@ -7694,6 +7754,13 @@ packages:
   castable-video@1.1.11:
     resolution: {integrity: sha512-LCRTK6oe7SB1SiUQFzZCo6D6gcEzijqBTVIuj3smKpQdesXM18QTbCVqWgh9MfOeQgTx/i9ji5jGcdqNPeWg2g==}
 
+  cbor-extract@2.2.0:
+    resolution: {integrity: sha512-Ig1zM66BjLfTXpNgKpvBePq271BPOvu8MR0Jl080yG7Jsl+wAZunfrwiwA+9ruzm/WEdIV5QF/bjDZTqyAIVHA==}
+    hasBin: true
+
+  cbor-x@1.6.0:
+    resolution: {integrity: sha512-0kareyRwHSkL6ws5VXHEf8uY1liitysCVJjlmhaLG+IXLqhSaOO+t63coaso7yjwEzWZzLy8fJo06gZDVQM9Qg==}
+
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
 
@@ -11091,6 +11158,10 @@ packages:
     resolution: {integrity: sha512-dPEtOeMvF9VMcYV/1Wb8CPoVAXtp6MKMlcbAt4ddqmGqUJ6fQZFXkNZNkNlfevtNkGtaSoXf/vNNNSvgrdXwtA==}
     engines: {node: '>= 6.13.0'}
 
+  node-gyp-build-optional-packages@5.1.1:
+    resolution: {integrity: sha512-+P72GAjVAbTxjjwUmwjVrqrdZROD4nf8KgpBoDxqXXTiYZZt/ud60dE5yvCSr9lRO8e8yv6kgJIC0K0PfZFVQw==}
+    hasBin: true
+
   node-gyp-build@4.8.4:
     resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
     hasBin: true
@@ -11637,10 +11708,6 @@ packages:
   picomatch@4.0.3:
     resolution: {integrity: sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==}
     engines: {node: '>=12'}
-
-  pid-port@2.0.0:
-    resolution: {integrity: sha512-EDmfRxLl6lkhPjDI+19l5pkII89xVsiCP3aGjS808f7M16DyCKSXEWthD/hjyDLn5I4gKqTVw7hSgdvdXRJDTw==}
-    engines: {node: '>=20'}
 
   pidtree@0.6.0:
     resolution: {integrity: sha512-eG2dWTVw5bzqGRztnHExczNxt5VGsE6OwTeCG3fdUf9KBsZzO3R5OIIIzWR+iZA0NtZ+RDVdaoE2dK1cn6jH4g==}
@@ -14716,6 +14783,24 @@ snapshots:
     optional: true
 
   '@braintree/sanitize-url@7.1.1': {}
+
+  '@cbor-extract/cbor-extract-darwin-arm64@2.2.0':
+    optional: true
+
+  '@cbor-extract/cbor-extract-darwin-x64@2.2.0':
+    optional: true
+
+  '@cbor-extract/cbor-extract-linux-arm64@2.2.0':
+    optional: true
+
+  '@cbor-extract/cbor-extract-linux-arm@2.2.0':
+    optional: true
+
+  '@cbor-extract/cbor-extract-linux-x64@2.2.0':
+    optional: true
+
+  '@cbor-extract/cbor-extract-win32-x64@2.2.0':
+    optional: true
 
   '@changesets/apply-release-plan@7.0.12':
     dependencies:
@@ -21107,6 +21192,22 @@ snapshots:
     dependencies:
       custom-media-element: 1.4.5
 
+  cbor-extract@2.2.0:
+    dependencies:
+      node-gyp-build-optional-packages: 5.1.1
+    optionalDependencies:
+      '@cbor-extract/cbor-extract-darwin-arm64': 2.2.0
+      '@cbor-extract/cbor-extract-darwin-x64': 2.2.0
+      '@cbor-extract/cbor-extract-linux-arm': 2.2.0
+      '@cbor-extract/cbor-extract-linux-arm64': 2.2.0
+      '@cbor-extract/cbor-extract-linux-x64': 2.2.0
+      '@cbor-extract/cbor-extract-win32-x64': 2.2.0
+    optional: true
+
+  cbor-x@1.6.0:
+    optionalDependencies:
+      cbor-extract: 2.2.0
+
   ccount@2.0.1: {}
 
   ce-la-react@0.3.2(react@19.2.0):
@@ -25377,6 +25478,11 @@ snapshots:
 
   node-forge@1.3.1: {}
 
+  node-gyp-build-optional-packages@5.1.1:
+    dependencies:
+      detect-libc: 2.1.2
+    optional: true
+
   node-gyp-build@4.8.4: {}
 
   node-mock-http@1.0.3: {}
@@ -26245,10 +26351,6 @@ snapshots:
 
   picomatch@4.0.3: {}
 
-  pid-port@2.0.0:
-    dependencies:
-      execa: 9.6.0
-
   pidtree@0.6.0: {}
 
   pify@4.0.1: {}
@@ -26732,24 +26834,6 @@ snapshots:
   react-is@16.13.1: {}
 
   react-is@18.3.1: {}
-
-  react-markdown@10.1.0(@types/react@19.1.13)(react@19.1.1):
-    dependencies:
-      '@types/hast': 3.0.4
-      '@types/mdast': 4.0.4
-      '@types/react': 19.1.13
-      devlop: 1.1.0
-      hast-util-to-jsx-runtime: 2.3.6
-      html-url-attributes: 3.0.1
-      mdast-util-to-hast: 13.2.0
-      react: 19.1.1
-      remark-parse: 11.0.0
-      remark-rehype: 11.1.2
-      unified: 11.0.5
-      unist-util-visit: 5.0.0
-      vfile: 6.0.3
-    transitivePeerDependencies:
-      - supports-color
 
   react-markdown@10.1.0(@types/react@19.1.13)(react@19.2.0):
     dependencies:

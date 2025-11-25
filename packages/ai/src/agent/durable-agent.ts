@@ -7,6 +7,7 @@ import {
   asSchema,
   type ModelMessage,
   type StopCondition,
+  type StreamTextOnStepFinishCallback,
   type ToolSet,
   type UIMessageChunk,
 } from 'ai';
@@ -83,6 +84,11 @@ export interface DurableAgentStreamOptions {
   stopWhen?:
     | StopCondition<NoInfer<ToolSet>>
     | Array<StopCondition<NoInfer<ToolSet>>>;
+
+  /**
+   * Callback function to be called after each step completes.
+   */
+  onStepFinish?: StreamTextOnStepFinishCallback<any>;
 }
 
 /**
@@ -147,6 +153,7 @@ export class DurableAgent {
       prompt: modelPrompt,
       stopConditions: options.stopWhen,
       sendStart: options.sendStart ?? true,
+      onStepFinish: options.onStepFinish,
     });
 
     let result = await iterator.next();
@@ -168,6 +175,12 @@ export class DurableAgent {
     if (sendFinish || !preventClose) {
       await closeStream(options.writable, preventClose, sendFinish);
     }
+
+    // The iterator returns the final conversation prompt (LanguageModelV2Prompt)
+    // which is compatible with ModelMessage[]
+    const messages = result.value as ModelMessage[];
+
+    return { messages };
   }
 }
 
@@ -215,7 +228,7 @@ async function executeTool(
   try {
     const toolResult = await tool.execute(input.value, {
       toolCallId: toolCall.toolCallId,
-      // TODO: pass the proper messages to the tool
+      // TODO: pass the proper messages to the tool (we'd need to pass them through the iterator)
       messages: [],
     });
 

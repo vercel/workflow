@@ -13,7 +13,7 @@ import {
   type UIMessageChunk,
 } from 'ai';
 
-type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
+export type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 
 export type ModelStopCondition = StopCondition<NoInfer<ToolSet>>;
 

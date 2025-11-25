@@ -4,7 +4,12 @@ import type {
   LanguageModelV2ToolCall,
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
-import type { StepResult, ToolSet, UIMessageChunk } from 'ai';
+import type {
+  StepResult,
+  StreamTextOnStepFinishCallback,
+  ToolSet,
+  UIMessageChunk,
+} from 'ai';
 import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
@@ -16,6 +21,7 @@ export async function* streamTextIterator({
   model,
   stopConditions,
   sendStart = true,
+  onStepFinish,
 }: {
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
@@ -23,9 +29,10 @@ export async function* streamTextIterator({
   model: string | (() => Promise<LanguageModelV2>);
   stopConditions?: ModelStopCondition[] | ModelStopCondition;
   sendStart?: boolean;
+  onStepFinish?: StreamTextOnStepFinishCallback<any>;
 }): AsyncGenerator<
   LanguageModelV2ToolCall[],
-  void,
+  LanguageModelV2Prompt,
   LanguageModelV2ToolResultPart[]
 > {
   const conversationPrompt = [...prompt]; // Create a mutable copy
@@ -78,11 +85,29 @@ export async function* streamTextIterator({
         }
       }
     } else if (finish?.finishReason === 'stop') {
+      // Add assistant message with text content to the conversation
+      const textContent = step.content.filter(
+        (item) => item.type === 'text'
+      ) as Array<{ type: 'text'; text: string }>;
+
+      if (textContent.length > 0) {
+        conversationPrompt.push({
+          role: 'assistant',
+          content: textContent,
+        });
+      }
+
       done = true;
     } else {
       throw new Error(`Unexpected finish reason: ${finish?.finishReason}`);
     }
+
+    if (onStepFinish) {
+      await onStepFinish(step);
+    }
   }
+
+  return conversationPrompt;
 }
 
 async function writeToolOutputToUI(

@@ -160,6 +160,9 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       if (!value) {
         throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
       }
+      value.output ||= value.outputJson;
+      value.input ||= value.inputJson;
+      value.executionContext ||= value.executionContextJson;
       const deserialized = deserializeRunError(compact(value));
       const parsed = WorkflowRunSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
@@ -399,6 +402,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
+          v.eventData ||= v.eventDataJson;
           const parsed = EventSchema.parse(compact(v));
           return filterEventData(parsed, resolveData);
         }),
@@ -432,6 +436,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
+          v.eventData ||= v.eventDataJson;
           const parsed = EventSchema.parse(compact(v));
           return filterEventData(parsed, resolveData);
         }),
@@ -458,6 +463,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         .from(hooks)
         .where(eq(hooks.hookId, hookId))
         .limit(1);
+      value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
@@ -469,6 +475,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           runId,
           hookId: data.hookId,
           token: data.token,
+          metadata: data.metadata as SerializedContent,
           ownerId: '', // TODO: get from context
           projectId: '', // TODO: get from context
           environment: '', // TODO: get from context
@@ -480,6 +487,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           status: 409,
         });
       }
+      value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
@@ -491,6 +499,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
           status: 404,
         });
       }
+      value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
@@ -515,6 +524,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
+          v.metadata ||= v.metadataJson;
           const parsed = HookSchema.parse(compact(v));
           return filterHookData(parsed, resolveData);
         }),
@@ -552,7 +562,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
           stepName: data.stepName,
           input: data.input as SerializedContent,
           status: 'pending',
-          attempt: 1,
+          attempt: 0,
         })
         .onConflictDoNothing()
         .returning();
@@ -582,6 +592,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
           status: 404,
         });
       }
+      value.output ||= value.outputJson;
       const deserialized = deserializeStepError(compact(value));
       const parsed = StepSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';

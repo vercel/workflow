@@ -1,5 +1,19 @@
 # @workflow/ai
 
+## 4.0.1-beta.21
+
+### Patch Changes
+
+- aba5264: Add `onStepFinish` callback to `DurableAgent#stream()`
+  - workflow@4.0.1-beta.21
+
+## 4.0.1-beta.20
+
+### Patch Changes
+
+- 00e3345: Make `DurableAgent#stream()` return a `messages` array
+  - workflow@4.0.1-beta.20
+
 ## 4.0.1-beta.19
 
 ### Patch Changes

@@ -1,5 +1,30 @@
 # workflow
 
+## 4.0.1-beta.21
+
+### Patch Changes
+
+- @workflow/cli@4.0.1-beta.21
+- @workflow/core@4.0.1-beta.18
+- @workflow/next@4.0.1-beta.21
+- @workflow/nitro@4.0.1-beta.21
+- @workflow/typescript-plugin@4.0.1-beta.4
+- @workflow/sveltekit@4.0.0-beta.15
+- @workflow/nuxt@4.0.1-beta.10
+
+## 4.0.1-beta.20
+
+### Patch Changes
+
+- @workflow/cli@4.0.1-beta.20
+- @workflow/core@4.0.1-beta.17
+- @workflow/errors@4.0.1-beta.6
+- @workflow/next@4.0.1-beta.20
+- @workflow/nitro@4.0.1-beta.20
+- @workflow/typescript-plugin@4.0.1-beta.4
+- @workflow/sveltekit@4.0.0-beta.14
+- @workflow/nuxt@4.0.1-beta.9
+
 ## 4.0.1-beta.19
 
 ### Patch Changes

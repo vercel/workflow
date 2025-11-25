@@ -4,6 +4,43 @@ import type { Hook, HookOptions } from './create-hook.js';
 import { resumeHook } from './runtime/resume-hook.js';
 
 /**
+ * A typed hook interface for type-safe hook creation and resumption.
+ */
+export interface TypedHook<TInput, TOutput> {
+  /**
+   * Creates a new hook with the defined output type.
+   *
+   * Note: This method is not available in runtime bundles. Use it from workflow contexts only.
+   *
+   * @param options - Optional hook configuration
+   * @returns A Hook that resolves to the defined output type
+   */
+  create(options?: HookOptions): Hook<TOutput>;
+  /**
+   * Resumes a hook by sending a payload with the defined input type.
+   * This is a type-safe wrapper around the `resumeHook` runtime function.
+   *
+   * @param token - The unique token identifying the hook
+   * @param payload - The payload to send; if a `schema` is configured it is validated/transformed before resuming
+   * @returns Promise resolving to the hook entity
+   * @throws Error if the hook is not found or if there's an error during the process
+   */
+  resume(token: string, payload: TInput): Promise<HookEntity>;
+}
+
+export namespace TypedHook {
+  /**
+   * Extracts the input type from a {@link TypedHook}
+   */
+  export type Input<T extends TypedHook<any, any>> = T extends TypedHook<
+    infer I,
+    any
+  >
+    ? I
+    : never;
+}
+
+/**
  * Defines a typed hook for type-safe hook creation and resumption.
  *
  * This helper provides type safety by allowing you to define the input and output types
@@ -38,31 +75,13 @@ export function defineHook<TInput, TOutput = TInput>({
   schema,
 }: {
   schema?: StandardSchemaV1<TInput, TOutput>;
-} = {}) {
+} = {}): TypedHook<TInput, TOutput> {
   return {
-    /**
-     * Creates a new hook with the defined output type.
-     *
-     * Note: This method is not available in runtime bundles. Use it from workflow contexts only.
-     *
-     * @param _options - Optional hook configuration
-     * @returns A Hook that resolves to the defined output type
-     */
     create(_options?: HookOptions): Hook<TOutput> {
       throw new Error(
         '`defineHook().create()` can only be called inside a workflow function.'
       );
     },
-
-    /**
-     * Resumes a hook by sending a payload with the defined input type.
-     * This is a type-safe wrapper around the `resumeHook` runtime function.
-     *
-     * @param token - The unique token identifying the hook
-     * @param payload - The payload to send; if a `schema` is configured it is validated/transformed before resuming
-     * @returns Promise resolving to the hook entity
-     * @throws Error if the hook is not found or if there's an error during the process
-     */
     async resume(token: string, payload: TInput): Promise<HookEntity> {
       if (!schema?.['~standard']) {
         return await resumeHook(token, payload);

@@ -13,6 +13,7 @@
     "start": "node .output/server/index.mjs"
   },
   "devDependencies": {
+    "@workflow/world-postgres": "workspace:*",
     "ai": "catalog:",
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",

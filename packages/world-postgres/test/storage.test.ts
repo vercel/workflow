@@ -329,18 +329,20 @@ describe('Storage (Postgres integration)', () => {
 
         const step = await steps.create(testRunId, stepData);
 
-        expect(step.runId).toBe(testRunId);
-        expect(step.stepId).toBe('step-123');
-        expect(step.stepName).toBe('test-step');
-        expect(step.status).toBe('pending');
-        expect(step.input).toEqual(['input1', 'input2']);
-        expect(step.output).toBeUndefined();
-        expect(step.error).toBeUndefined();
-        expect(step.attempt).toBe(1); // steps are created with attempt 1
-        expect(step.startedAt).toBeUndefined();
-        expect(step.completedAt).toBeUndefined();
-        expect(step.createdAt).toBeInstanceOf(Date);
-        expect(step.updatedAt).toBeInstanceOf(Date);
+        expect(step).toEqual({
+          runId: testRunId,
+          stepId: 'step-123',
+          stepName: 'test-step',
+          status: 'pending',
+          input: ['input1', 'input2'],
+          output: undefined,
+          error: undefined,
+          attempt: 0, // steps are created with attempt 0
+          startedAt: undefined,
+          completedAt: undefined,
+          createdAt: expect.any(Date),
+          updatedAt: expect.any(Date),
+        });
       });
     });
 
@@ -524,6 +526,20 @@ describe('Storage (Postgres integration)', () => {
         expect(event.runId).toBe(testRunId);
         expect(event.eventId).toMatch(/^wevt_/);
         expect(event.eventType).toBe('step_started');
+        expect(event.correlationId).toBe('corr_123');
+        expect(event.createdAt).toBeInstanceOf(Date);
+      });
+
+      it('should create a new event with null byte in payload', async () => {
+        const event = await events.create(testRunId, {
+          eventType: 'step_failed',
+          correlationId: 'corr_123',
+          eventData: { error: 'Error with null byte \u0000 in message' },
+        });
+
+        expect(event.runId).toBe(testRunId);
+        expect(event.eventId).toMatch(/^wevt_/);
+        expect(event.eventType).toBe('step_failed');
         expect(event.correlationId).toBe('corr_123');
         expect(event.createdAt).toBeInstanceOf(Date);
       });

@@ -5,6 +5,7 @@ import { WorkflowRunSchema } from '@workflow/world';
 import chalk, { type ChalkInstance } from 'chalk';
 import jsonlines from 'jsonlines';
 import { assert, onTestFailed, onTestFinished } from 'vitest';
+import type { TypedHook } from 'workflow';
 import * as z from 'zod';
 import type manifest from '../.well-known/workflow/v1/manifest.debug.json';
 
@@ -18,11 +19,6 @@ type Control = z.infer<typeof Control>;
 
 type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
-
-export const Worlds = {
-  embedded: 'embedded',
-  postgres: '@workflow/world-postgres',
-};
 
 export async function startServer(opts: { world: string }) {
   let serverPath = new URL('./server.mts', import.meta.url);
@@ -87,6 +83,9 @@ export function createFetcher(control: Control) {
         body: JSON.stringify({ file, workflow, args }),
       });
       const data = await x.json().then(Invoke.parse);
+      onTestFailed(() => {
+        console.error('Workflow run:', data.runId);
+      });
       return data;
     },
     async getRun(id: string) {
@@ -95,6 +94,41 @@ export function createFetcher(control: Control) {
       );
       const data = await x.json();
       return WorkflowRunSchema.parseAsync(data);
+    },
+    async getReadable(id: string): Promise<ReadableStream<Uint8Array>> {
+      const x = await fetch(
+        `http://localhost:${control.info.port}/runs/${encodeURIComponent(id)}/readable`
+      );
+      if (!x.ok) {
+        throw new Error(
+          `Failed to get readable stream: ${x.status} ${x.statusText}`
+        );
+      }
+      if (!x.body) {
+        throw new Error('No body in response');
+      }
+      return x.body;
+    },
+    async resumeHook<T extends TypedHook<any, any>>(
+      token: string,
+      payload: Omit<NoInfer<TypedHook.Input<T>>, 'metadata'>
+    ) {
+      const res = await fetch(
+        `http://localhost:${control.info.port}/hooks/${token}`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+      res.arrayBuffer().catch(() => {}); // Drain the body to avoid resource leaks
+      if (!res.ok) {
+        throw new Error(
+          `Failed to resume hook: ${res.status} ${res.statusText}`
+        );
+      }
     },
   };
 }
