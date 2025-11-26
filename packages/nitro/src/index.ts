@@ -1,3 +1,4 @@
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
 import { LocalBuilder, VercelBuilder } from './builders.js';
@@ -50,6 +51,7 @@ export default {
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
       const builder = new LocalBuilder(nitro);
+      const lockFile = join(nitro.options.buildDir, 'workflow', '.building');
 
       // In dev mode, build bundles BEFORE adding handlers
       // This ensures bundles exist when server starts accepting requests
@@ -59,7 +61,16 @@ export default {
 
         // Allows for HMR on subsequent changes
         nitro.hooks.hook('dev:reload', async () => {
-          await builder.build();
+          // Create lock file before rebuild to signal handlers to wait
+          writeFileSync(lockFile, Date.now().toString());
+          try {
+            await builder.build();
+          } finally {
+            // Remove lock file after rebuild (even on error)
+            if (existsSync(lockFile)) {
+              unlinkSync(lockFile);
+            }
+          }
         });
       } else {
         // For prod builds, use the hook
@@ -68,46 +79,92 @@ export default {
         });
       }
 
+      // Pass lockFile to dev handlers so they can wait during rebuilds
+      const devLockFile = nitro.options.dev ? lockFile : undefined;
+
       addVirtualHandler(
         nitro,
         '/.well-known/workflow/v1/webhook/:token',
-        'workflow/webhook.mjs'
+        'workflow/webhook.mjs',
+        devLockFile
       );
 
       addVirtualHandler(
         nitro,
         '/.well-known/workflow/v1/step',
-        'workflow/steps.mjs'
+        'workflow/steps.mjs',
+        devLockFile
       );
 
       addVirtualHandler(
         nitro,
         '/.well-known/workflow/v1/flow',
-        'workflow/workflows.mjs'
+        'workflow/workflows.mjs',
+        devLockFile
       );
     }
   },
 } satisfies NitroModule;
 
-function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
+function addVirtualHandler(
+  nitro: Nitro,
+  route: string,
+  buildPath: string,
+  lockFile?: string
+) {
   nitro.options.handlers.push({
     route,
     handler: `#${buildPath}`,
   });
 
+  const buildFilePath = join(nitro.options.buildDir, buildPath);
+
+  // Helper code to wait for build lock to be released (only in dev mode)
+  const waitForBuildCode = lockFile
+    ? /* js */ `
+    import { existsSync } from "node:fs";
+
+    async function waitForBuild() {
+      const lockFile = "${lockFile}";
+      const maxWait = 30000; // 30 second timeout
+      const pollInterval = 100;
+      let waited = 0;
+
+      while (existsSync(lockFile) && waited < maxWait) {
+        await new Promise(r => setTimeout(r, pollInterval));
+        waited += pollInterval;
+      }
+
+      if (waited >= maxWait) {
+        console.warn('Workflow build lock timeout - proceeding anyway');
+      }
+    }
+  `
+    : '';
+
+  const awaitBuild = lockFile ? 'await waitForBuild();' : '';
+
   if (!nitro.routing) {
     // Nitro v2 (legacy)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import { fromWebHandler } from "h3";
-    import { POST } from "${join(nitro.options.buildDir, buildPath)}";
-    export default fromWebHandler(POST);
+    ${waitForBuildCode}
+
+    export default fromWebHandler(async (req) => {
+      ${awaitBuild}
+      const { POST } = await import("${buildFilePath}");
+      return POST(req);
+    });
   `;
   } else {
     // Nitro v3+ (native web handlers)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
-    import { POST } from "${join(nitro.options.buildDir, buildPath)}";
+    ${waitForBuildCode}
+
     export default async ({ req }) => {
       try {
+        ${awaitBuild}
+        const { POST } = await import("${buildFilePath}");
         return await POST(req);
       } catch (error) {
         console.error('Handler error:', error);
