@@ -562,10 +562,11 @@ export abstract class BaseBuilder {
 
       // Escape for embedding in a template literal string.
       // Order matters: backslashes first, then backticks, then dollar signs.
+      // Using function replacements to avoid special $ patterns in replacement strings.
       const escapedWorkflowCode = workflowBundleCode
-        .replace(/\\/g, '\\\\')
-        .replace(/`/g, '\\`')
-        .replace(/\$/g, '\\$');
+        .replace(/\\/g, () => '\\\\')
+        .replace(/`/g, () => '\\`')
+        .replace(/\$/g, () => '\\$');
 
       const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
