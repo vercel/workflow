@@ -119,10 +119,22 @@ function addVirtualHandler(
 
   const buildFilePath = join(nitro.options.buildDir, buildPath);
 
-  // Helper code to wait for build lock to be released (only in dev mode)
+  // Helper code to wait for build lock and generate cache-busting URL (only in dev mode)
   const waitForBuildCode = lockFile
     ? /* js */ `
-    import { existsSync } from "node:fs";
+    import { existsSync, readFileSync } from "node:fs";
+
+    // Get build timestamp for cache-busting dynamic imports
+    function getBuildTimestamp() {
+      try {
+        const manifestPath = "${join(nitro.options.buildDir, 'workflow', 'manifest.debug.json')}";
+        if (existsSync(manifestPath)) {
+          const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+          return manifest.timestamp || Date.now();
+        }
+      } catch {}
+      return Date.now();
+    }
 
     async function waitForBuild() {
       const lockFile = "${lockFile}";
@@ -131,7 +143,6 @@ function addVirtualHandler(
       let waited = 0;
 
       while (existsSync(lockFile) && waited < maxWait) {
-        console.log("Waiting for build lock to be released...");
         await new Promise(r => setTimeout(r, pollInterval));
         waited += pollInterval;
       }
@@ -145,6 +156,11 @@ function addVirtualHandler(
 
   const awaitBuild = lockFile ? 'await waitForBuild();' : '';
 
+  // In dev mode, add cache-busting query param to force fresh imports after rebuilds
+  const importPath = lockFile
+    ? `"${buildFilePath}?t=" + getBuildTimestamp()`
+    : `"${buildFilePath}"`;
+
   if (!nitro.routing) {
     // Nitro v2 (legacy)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
@@ -153,7 +169,7 @@ function addVirtualHandler(
 
     export default fromWebHandler(async (req) => {
       ${awaitBuild}
-      const { POST } = await import("${buildFilePath}");
+      const { POST } = await import(${importPath});
       return POST(req);
     });
   `;
@@ -165,7 +181,7 @@ function addVirtualHandler(
     export default async ({ req }) => {
       try {
         ${awaitBuild}
-        const { POST } = await import("${buildFilePath}");
+        const { POST } = await import(${importPath});
         return await POST(req);
       } catch (error) {
         console.error('Handler error:', error);
