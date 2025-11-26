@@ -33,7 +33,7 @@ export function createDevTests(config?: DevTestConfig) {
       'No dev test config provided via parameter or DEV_TEST_CONFIG env var'
     );
   }
-  describe('dev e2e', () => {
+  describe.sequential('dev e2e', () => {
     const appPath = getWorkbenchAppPath();
     const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
     const generatedWorkflow = path.join(
