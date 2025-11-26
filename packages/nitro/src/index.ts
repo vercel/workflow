@@ -131,6 +131,7 @@ function addVirtualHandler(
       let waited = 0;
 
       while (existsSync(lockFile) && waited < maxWait) {
+        console.log("Waiting for build lock to be released...");
         await new Promise(r => setTimeout(r, pollInterval));
         waited += pollInterval;
       }
