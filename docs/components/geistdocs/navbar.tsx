@@ -9,6 +9,7 @@ import { MobileMenu } from './mobile-menu';
 import { RSSButton } from './rss-button';
 import { SearchButton } from './search';
 import { ThemeToggle } from './theme-toggle';
+import { XButton } from './x-button';
 
 type NavbarProps = {
   children: ReactNode;
@@ -34,6 +35,7 @@ export const Navbar = ({ children, items, suggestions }: NavbarProps) => (
       </div>
       <div className="hidden flex-1 shrink-0 items-center justify-end gap-1 md:flex">
         <RSSButton />
+        <XButton />
         <GitHubButton />
         <ThemeToggle />
         <SearchButton />
