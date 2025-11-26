@@ -95,11 +95,6 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           if (builder) {
             await enqueueBuild(() => builder!.build());
           }
-          // // NOTE: Might be too aggressive
-          // server.ws.send({
-          //   type: "full-reload",
-          //   path: "*",
-          // });
           return;
         }
 
@@ -113,19 +108,12 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           return;
         }
 
-        // Trigger full reload - this will cause Nitro's dev:reload hook to fire,
-        // which will rebuild workflows and update routes
         console.log('Workflow file changed, rebuilding...');
         if (builder) {
           await enqueueBuild(() => builder!.build());
           console.log('REBUILD COUNT', count);
           count++;
         }
-        // server.ws.send({
-        //   type: "full-reload",
-        //   path: "*",
-        // });
-
         // Let Vite handle the normal HMR for the changed file
         return;
       },
