@@ -1,5 +1,6 @@
 import type {
   LanguageModelV2,
+  LanguageModelV2Prompt,
   LanguageModelV2ToolCall,
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
@@ -158,11 +159,11 @@ export class DurableAgent {
 
     let result = await iterator.next();
     while (!result.done) {
-      const toolCalls = result.value;
+      const { toolCalls, messages } = result.value;
       const toolResults = await Promise.all(
         toolCalls.map(
           (toolCall): Promise<LanguageModelV2ToolResultPart> =>
-            executeTool(toolCall, this.tools)
+            executeTool(toolCall, this.tools, messages)
         )
       );
       result = await iterator.next(toolResults);
@@ -209,7 +210,8 @@ async function closeStream(
 
 async function executeTool(
   toolCall: LanguageModelV2ToolCall,
-  tools: ToolSet
+  tools: ToolSet,
+  messages: LanguageModelV2Prompt
 ): Promise<LanguageModelV2ToolResultPart> {
   const tool = tools[toolCall.toolName];
   if (!tool) throw new Error(`Tool "${toolCall.toolName}" not found`);
@@ -228,8 +230,8 @@ async function executeTool(
   try {
     const toolResult = await tool.execute(input.value, {
       toolCallId: toolCall.toolCallId,
-      // TODO: pass the proper messages to the tool (we'd need to pass them through the iterator)
-      messages: [],
+      // Pass the conversation messages to the tool so it has context about the conversation
+      messages,
     });
 
     return {

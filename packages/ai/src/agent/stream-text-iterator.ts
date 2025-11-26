@@ -13,6 +13,17 @@ import type {
 import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
+/**
+ * The value yielded by the stream text iterator when tool calls are requested.
+ * Contains both the tool calls and the current conversation messages.
+ */
+export interface StreamTextIteratorYieldValue {
+  /** The tool calls requested by the model */
+  toolCalls: LanguageModelV2ToolCall[];
+  /** The conversation messages up to (and including) the tool call request */
+  messages: LanguageModelV2Prompt;
+}
+
 // This runs in the workflow context
 export async function* streamTextIterator({
   prompt,
@@ -31,7 +42,7 @@ export async function* streamTextIterator({
   sendStart?: boolean;
   onStepFinish?: StreamTextOnStepFinishCallback<any>;
 }): AsyncGenerator<
-  LanguageModelV2ToolCall[],
+  StreamTextIteratorYieldValue,
   LanguageModelV2Prompt,
   LanguageModelV2ToolResultPart[]
 > {
@@ -66,8 +77,9 @@ export async function* streamTextIterator({
         })),
       });
 
-      // Yield the tool calls and wait for results
-      const toolResults = yield toolCalls;
+      // Yield the tool calls along with the current conversation messages
+      // This allows executeTool to pass the conversation context to tool execute functions
+      const toolResults = yield { toolCalls, messages: conversationPrompt };
 
       await writeToolOutputToUI(writable, toolResults);
 
