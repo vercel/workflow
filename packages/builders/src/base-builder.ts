@@ -560,11 +560,18 @@ export abstract class BaseBuilder {
     const bundleFinal = async (interimBundle: string) => {
       const workflowBundleCode = interimBundle;
 
+      // Escape for embedding in a template literal string.
+      // Order matters: backslashes first, then backticks, then dollar signs.
+      const escapedWorkflowCode = workflowBundleCode
+        .replace(/\\/g, '\\\\')
+        .replace(/`/g, '\\`')
+        .replace(/\$/g, '\\$');
+
       const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
-const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
+const workflowCode = \`${escapedWorkflowCode}\`;
 
 export const POST = workflowEntrypoint(workflowCode);`;
 
