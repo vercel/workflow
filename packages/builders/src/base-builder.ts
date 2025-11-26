@@ -183,12 +183,15 @@ export abstract class BaseBuilder {
     debugData: object,
     merge?: boolean
   ): Promise<void> {
+    let existing = {};
     try {
-      let existing = {};
       if (merge) {
-        existing = JSON.parse(
-          await readFile(`${outfile}.debug.json`, 'utf8').catch(() => '{}')
-        );
+        try {
+          const content = await readFile(`${outfile}.debug.json`, 'utf8');
+          existing = JSON.parse(content);
+        } catch (e) {
+          console.error('Error reading file', e);
+        }
       }
       await writeFile(
         `${outfile}.debug.json`,
@@ -203,6 +206,8 @@ export abstract class BaseBuilder {
       );
     } catch (error: unknown) {
       console.warn('Failed to write debug file:', error);
+      console.debug('Debug data:', debugData);
+      console.debug('Existing data:', existing);
     }
   }
 
