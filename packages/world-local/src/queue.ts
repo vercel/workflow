@@ -14,10 +14,12 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
   Infinity;
 
-const WORKFLOW_LOCAL_QUEUE_CONCURRENCY = parseInt(
-  process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '10',
-  10
-);
+// The local workers share the same Node.js process and event loop,
+// so we need to limit concurrency to avoid overwhelming the system.
+const DEFAULT_CONCURRENCY_LIMIT = 20;
+const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
+  parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
+  DEFAULT_CONCURRENCY_LIMIT;
 
 // Create a custom agent with unlimited headers timeout for long-running steps
 const httpAgent = new Agent({
