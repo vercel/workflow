@@ -306,6 +306,9 @@ importers:
       '@ai-sdk/gateway':
         specifier: 2.0.15
         version: 2.0.15(zod@4.1.11)
+      '@ai-sdk/google':
+        specifier: 2.0.43
+        version: 2.0.43(zod@4.1.11)
       '@ai-sdk/openai':
         specifier: 2.0.72
         version: 2.0.72(zod@4.1.11)
@@ -1615,6 +1618,12 @@ packages:
 
   '@ai-sdk/gateway@2.0.15':
     resolution: {integrity: sha512-i1YVKzC1dg9LGvt+GthhD7NlRhz9J4+ZRj3KELU14IZ/MHPsOBiFeEoCCIDLR+3tqT8/+5nIsK3eZ7DFRfMfdw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/google@2.0.43':
+    resolution: {integrity: sha512-qO6giuoYCX/SdZScP/3VO5Xnbd392zm3HrTkhab/efocZU8J/VVEAcAUE1KJh0qOIAYllofRtpJIUGkRK8Q5rw==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -12514,6 +12523,12 @@ snapshots:
       '@ai-sdk/provider': 2.0.0
       '@ai-sdk/provider-utils': 3.0.17(zod@4.1.11)
       '@vercel/oidc': 3.0.5
+      zod: 4.1.11
+
+  '@ai-sdk/google@2.0.43(zod@4.1.11)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.0
+      '@ai-sdk/provider-utils': 3.0.17(zod@4.1.11)
       zod: 4.1.11
 
   '@ai-sdk/openai-compatible@1.0.27(zod@4.1.11)':
