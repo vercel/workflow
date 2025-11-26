@@ -2,4 +2,4 @@
 "@workflow/world-local": patch
 ---
 
-Set a concurrency limit for the local world queue
+Use a semaphore to enforce a concurrency limit on the local world queue
