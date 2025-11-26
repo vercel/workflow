@@ -65,6 +65,10 @@ export function createQueue(config: Partial<Config>): Queue {
     }
 
     (async () => {
+      const currentCallCount = semaphore.nrWaiting();
+      if (currentCallCount >= DEFAULT_CONCURRENCY_LIMIT) {
+        console.warn(`[world-local]: concurrency limit reached, ${currentCallCount} calls inflight, throttling queue`);
+      }
       await semaphore.acquire();
       try {
         let defaultRetriesLeft = 3;
