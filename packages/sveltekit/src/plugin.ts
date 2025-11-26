@@ -7,14 +7,14 @@ export function workflowPlugin(): Plugin[] {
 
   // Build queue to serialize builds and prevent race conditions
   // when rapid file changes trigger concurrent hotUpdate calls.
-  // This follows the same pattern as packages/next/src/builder.ts.
-  let buildQueue = Promise.resolve();
+  // Similar pattern to packages/next/src/builder.ts
+  let rebuildQueue = Promise.resolve();
 
-  const enqueueBuild = (task: () => Promise<void>): Promise<void> => {
-    buildQueue = buildQueue.then(task).catch((error) => {
+  const enqueue = (task: () => Promise<void>): Promise<void> => {
+    rebuildQueue = rebuildQueue.then(task).catch((error) => {
       console.error("Workflow build failed:", error);
     });
-    return buildQueue;
+    return rebuildQueue;
   };
 
   return [
@@ -27,7 +27,7 @@ export function workflowPlugin(): Plugin[] {
 
       // TODO: Move this to @workflow/vite or something since this is vite specific
       async hotUpdate(options: HotUpdateOptions) {
-        const { file, server, read } = options;
+        const { file, read } = options;
 
         // Check if this is a TS/JS file that might contain workflow directives
         const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -41,8 +41,7 @@ export function workflowPlugin(): Plugin[] {
           content = await read();
         } catch {
           // File might have been deleted - trigger rebuild to update generated routes
-          console.log("Workflow file deleted, regenerating routes...");
-          await enqueueBuild(() => builder.build());
+          await enqueue(() => builder.build());
           return;
         }
 
@@ -56,16 +55,8 @@ export function workflowPlugin(): Plugin[] {
           return;
         }
 
-        // Rebuild everything - simpler and more reliable than tracking individual files
-        console.log("Workflow file changed, regenerating routes...");
-        await enqueueBuild(() => builder.build());
-
-        // Trigger full reload of workflow routes
-        server.ws.send({
-          type: "full-reload",
-          path: "*",
-        });
-
+        console.log("Workflow file changed, rebuilding...");
+        await enqueue(() => builder.build());
         // Let Vite handle the normal HMR for the changed file
         return;
       },
