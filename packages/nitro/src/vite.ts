@@ -7,8 +7,22 @@ import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 import { workflowTransformPlugin } from '@workflow/rollup';
 
+let count = 0;
+
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder | undefined;
+
+  // Build queue to serialize builds and prevent race conditions
+  // when rapid file changes trigger concurrent hotUpdate calls.
+  // This follows the same pattern as packages/next/src/builder.ts.
+  let buildQueue = Promise.resolve();
+
+  const enqueueBuild = (task: () => Promise<void>): Promise<void> => {
+    buildQueue = buildQueue.then(task).catch((error) => {
+      console.error('Workflow build failed:', error);
+    });
+    return buildQueue;
+  };
 
   return [
     workflowTransformPlugin() as VitePlugin,
@@ -74,10 +88,12 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         try {
           content = await read();
         } catch {
+          console.log('REBUILD COUNT', count);
           // File might have been deleted - trigger rebuild to update generated routes
           console.log('Workflow file deleted, rebuilding...');
+          count++;
           if (builder) {
-            await builder.build();
+            await enqueueBuild(() => builder!.build());
           }
           // NOTE: Might be too aggressive
           server.ws.send({
@@ -101,7 +117,9 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         // which will rebuild workflows and update routes
         console.log('Workflow file changed, rebuilding...');
         if (builder) {
-          await builder.build();
+          await enqueueBuild(() => builder!.build());
+          console.log('REBUILD COUNT', count);
+          count++;
         }
         server.ws.send({
           type: 'full-reload',
