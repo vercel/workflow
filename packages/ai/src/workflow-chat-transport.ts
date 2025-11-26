@@ -233,6 +233,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
 
         if (chunk.value.type === 'finish') {
           gotFinish = true;
+          await chunkStream.cancel().catch(() => {});
           break;
         }
       }
@@ -324,6 +325,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
 
           if (chunk.value.type === 'finish') {
             gotFinish = true;
+            await chunkStream.cancel().catch(() => {});
             break;
           }
         }
