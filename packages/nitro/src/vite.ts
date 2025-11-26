@@ -7,21 +7,19 @@ import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 import { workflowTransformPlugin } from '@workflow/rollup';
 
-let count = 0;
-
 export function workflow(options?: ModuleOptions): Plugin[] {
-  let builder: LocalBuilder | undefined;
+  let builder: LocalBuilder;
 
   // Build queue to serialize builds and prevent race conditions
   // when rapid file changes trigger concurrent hotUpdate calls.
-  // This follows the same pattern as packages/next/src/builder.ts.
-  let buildQueue = Promise.resolve();
+  // Similar pattern to packages/next/src/builder.ts
+  let rebuildQueue = Promise.resolve();
 
-  const enqueueBuild = (task: () => Promise<void>): Promise<void> => {
-    buildQueue = buildQueue.then(task).catch((error) => {
+  const enqueue = (task: () => Promise<void>): Promise<void> => {
+    rebuildQueue = rebuildQueue.then(task).catch((error) => {
       console.error('Workflow build failed:', error);
     });
-    return buildQueue;
+    return rebuildQueue;
   };
 
   return [
@@ -42,7 +40,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         },
       },
       // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
-      //       For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.
+      // For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.
       configureServer(server) {
         // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
         return () => {
@@ -58,7 +56,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
               const statusCode = typeof args[0] === 'number' ? args[0] : 200;
 
               // NOTE: Workaround because Nitro passes 404 requests to the vite to handle.
-              //       Causes `webhook route with invalid token` test to fail.
+              // Causes `webhook route with invalid token` test to fail.
               // For 404s on workflow routes, ensure we're sending the right headers
               if (statusCode === 404) {
                 // Set content-length to 0 to prevent Vite from overriding
@@ -88,13 +86,8 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         try {
           content = await read();
         } catch {
-          console.log('REBUILD COUNT', count);
           // File might have been deleted - trigger rebuild to update generated routes
-          console.log('Workflow file deleted, rebuilding...');
-          count++;
-          if (builder) {
-            await enqueueBuild(() => builder!.build());
-          }
+          await enqueue(() => builder.build());
           return;
         }
 
@@ -109,11 +102,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         }
 
         console.log('Workflow file changed, rebuilding...');
-        if (builder) {
-          await enqueueBuild(() => builder!.build());
-          console.log('REBUILD COUNT', count);
-          count++;
-        }
+        await enqueue(() => builder.build());
         // Let Vite handle the normal HMR for the changed file
         return;
       },

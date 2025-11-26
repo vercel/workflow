@@ -213,7 +213,7 @@ export abstract class BaseBuilder {
 
       // Write atomically: write to temp file, then rename.
       // rename() is atomic on POSIX systems and provides best-effort atomicity on Windows.
-      // This prevents race conditions where concurrent builds read partially-written files.
+      // Prevents race conditions where concurrent builds read partially-written files.
       const tempPath = `${targetPath}.${randomUUID()}.tmp`;
       await writeFile(tempPath, mergedData);
       await rename(tempPath, targetPath);
