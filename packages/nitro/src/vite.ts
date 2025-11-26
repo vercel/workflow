@@ -7,6 +7,22 @@ import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 import { workflowRollupPlugin } from './rollup.js';
 
+// Serialize builds to prevent concurrent builds from racing on shared files
+let buildPromise: Promise<void> | null = null;
+
+async function serializedBuild(builder: LocalBuilder): Promise<void> {
+  // Wait for any in-progress build before starting a new one
+  if (buildPromise) {
+    await buildPromise;
+  }
+  buildPromise = builder.build();
+  try {
+    await buildPromise;
+  } finally {
+    buildPromise = null;
+  }
+}
+
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder | undefined;
 
@@ -77,7 +93,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           // File might have been deleted - trigger rebuild to update generated routes
           console.log('Workflow file deleted, rebuilding...');
           if (builder) {
-            await builder.build();
+            await serializedBuild(builder);
           }
           // NOTE: Might be too aggressive
           server.ws.send({
@@ -101,7 +117,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         // which will rebuild workflows and update routes
         console.log('Workflow file changed, rebuilding...');
         if (builder) {
-          await builder.build();
+          await serializedBuild(builder);
         }
         server.ws.send({
           type: 'full-reload',
