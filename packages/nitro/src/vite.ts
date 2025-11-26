@@ -75,7 +75,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       },
       // TODO: Move this to @workflow/vite or something since this is vite specific
       async hotUpdate(options: HotUpdateOptions) {
-        const { file, server, read } = options;
+        const { file, read } = options;
 
         // Check if this is a TS/JS file that might contain workflow directives
         const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -95,11 +95,11 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           if (builder) {
             await enqueueBuild(() => builder!.build());
           }
-          // NOTE: Might be too aggressive
-          server.ws.send({
-            type: 'full-reload',
-            path: '*',
-          });
+          // // NOTE: Might be too aggressive
+          // server.ws.send({
+          //   type: "full-reload",
+          //   path: "*",
+          // });
           return;
         }
 
@@ -121,10 +121,10 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           console.log('REBUILD COUNT', count);
           count++;
         }
-        server.ws.send({
-          type: 'full-reload',
-          path: '*',
-        });
+        // server.ws.send({
+        //   type: "full-reload",
+        //   path: "*",
+        // });
 
         // Let Vite handle the normal HMR for the changed file
         return;
