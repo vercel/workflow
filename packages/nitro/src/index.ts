@@ -50,13 +50,20 @@ export default {
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
       const builder = new LocalBuilder(nitro);
-      nitro.hooks.hook('build:before', async () => {
-        await builder.build();
-      });
 
-      // Allows for HMR
+      // In dev mode, build bundles BEFORE adding handlers
+      // This ensures bundles exist when server starts accepting requests
+      // (fixes race condition in CI where requests hit before bundles are ready)
       if (nitro.options.dev) {
+        await builder.build();
+
+        // Allows for HMR on subsequent changes
         nitro.hooks.hook('dev:reload', async () => {
+          await builder.build();
+        });
+      } else {
+        // For prod builds, use the hook
+        nitro.hooks.hook('build:before', async () => {
           await builder.build();
         });
       }
