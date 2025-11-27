@@ -1,5 +1,13 @@
 # @workflow/world-local
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- 40057db: Use a semaphore to enforce a concurrency limit on the local world queue
+- Updated dependencies [fb9fd0f]
+  - @workflow/world@4.0.1-beta.7
+
 ## 4.0.1-beta.12
 
 ### Patch Changes

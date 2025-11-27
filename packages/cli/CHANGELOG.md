@@ -1,5 +1,23 @@
 # @workflow/cli
 
+## 4.0.1-beta.22
+
+### Patch Changes
+
+- Updated dependencies [07800c2]
+- Updated dependencies [fb9fd0f]
+- Updated dependencies [b042ba7]
+- Updated dependencies [8b470f0]
+- Updated dependencies [40057db]
+  - @workflow/core@4.0.1-beta.19
+  - @workflow/swc-plugin@4.0.1-beta.8
+  - @workflow/world@4.0.1-beta.7
+  - @workflow/builders@4.0.1-beta.18
+  - @workflow/world-local@4.0.1-beta.13
+  - @workflow/web@4.0.1-beta.11
+  - @workflow/errors@4.0.1-beta.6
+  - @workflow/world-vercel@4.0.1-beta.13
+
 ## 4.0.1-beta.21
 
 ### Patch Changes

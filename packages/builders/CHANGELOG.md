@@ -1,5 +1,17 @@
 # @workflow/builders
 
+## 4.0.1-beta.18
+
+### Patch Changes
+
+- b042ba7: Externalize bun from step bundles
+- Updated dependencies [07800c2]
+- Updated dependencies [fb9fd0f]
+- Updated dependencies [8b470f0]
+  - @workflow/core@4.0.1-beta.19
+  - @workflow/swc-plugin@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.6
+
 ## 4.0.1-beta.17
 
 ### Patch Changes

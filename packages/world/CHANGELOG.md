@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- fb9fd0f: Add support for closure scope vars in step functions
+
 ## 4.0.1-beta.6
 
 ### Patch Changes
