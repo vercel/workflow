@@ -11,6 +11,7 @@ import type {
   UIMessageChunk,
 } from 'ai';
 import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
+import type { PrepareStepCallback } from './durable-agent.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
 /**
@@ -33,6 +34,7 @@ export async function* streamTextIterator({
   stopConditions,
   sendStart = true,
   onStepFinish,
+  prepareStep,
 }: {
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
@@ -41,21 +43,42 @@ export async function* streamTextIterator({
   stopConditions?: ModelStopCondition[] | ModelStopCondition;
   sendStart?: boolean;
   onStepFinish?: StreamTextOnStepFinishCallback<any>;
+  prepareStep?: PrepareStepCallback<any>;
 }): AsyncGenerator<
   StreamTextIteratorYieldValue,
   LanguageModelV2Prompt,
   LanguageModelV2ToolResultPart[]
 > {
-  const conversationPrompt = [...prompt]; // Create a mutable copy
+  let conversationPrompt = [...prompt]; // Create a mutable copy
+  let currentModel = model;
 
   const steps: StepResult<any>[] = [];
   let done = false;
   let isFirstIteration = true;
+  let stepNumber = 0;
 
   while (!done) {
+    // Call prepareStep callback before each step if provided
+    if (prepareStep) {
+      const prepareResult = await prepareStep({
+        model: currentModel,
+        stepNumber,
+        steps,
+        messages: conversationPrompt,
+      });
+
+      // Apply any overrides from prepareStep
+      if (prepareResult.model !== undefined) {
+        currentModel = prepareResult.model;
+      }
+      if (prepareResult.messages !== undefined) {
+        conversationPrompt = [...prepareResult.messages];
+      }
+    }
+
     const { toolCalls, finish, step } = await doStreamStep(
       conversationPrompt,
-      model,
+      currentModel,
       writable,
       toolsToModelTools(tools),
       {
@@ -63,6 +86,7 @@ export async function* streamTextIterator({
       }
     );
     isFirstIteration = false;
+    stepNumber++;
     steps.push(step);
 
     if (finish?.finishReason === 'tool-calls') {
