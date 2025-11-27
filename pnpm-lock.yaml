@@ -341,6 +341,9 @@ importers:
       '@workflow/builders':
         specifier: workspace:*
         version: link:../builders
+      '@workflow/rollup':
+        specifier: workspace:*
+        version: link:../rollup
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
