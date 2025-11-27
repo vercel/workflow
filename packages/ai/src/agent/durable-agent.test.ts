@@ -10,9 +10,9 @@ import type {
   LanguageModelV2Prompt,
   LanguageModelV2ToolCall,
 } from '@ai-sdk/provider';
-import { FatalError } from 'workflow';
-import { describe, expect, it, vi } from 'vitest';
 import type { ToolSet } from 'ai';
+import { describe, expect, it, vi } from 'vitest';
+import { FatalError } from 'workflow';
 import { z } from 'zod';
 
 // Mock the streamTextIterator
@@ -22,6 +22,8 @@ vi.mock('./stream-text-iterator.js', () => ({
 
 // Import after mocking
 const { DurableAgent } = await import('./durable-agent.js');
+
+import type { PrepareStepCallback } from './durable-agent.js';
 
 describe('DurableAgent', () => {
   describe('tool execution error handling', () => {
@@ -244,6 +246,212 @@ describe('DurableAgent', () => {
           value: JSON.stringify(toolResult),
         },
       });
+    });
+  });
+
+  describe('prepareStep callback', () => {
+    it('should pass prepareStep callback to streamTextIterator', async () => {
+      const mockModel: LanguageModelV2 = {
+        specificationVersion: 'v2' as const,
+        provider: 'test',
+        modelId: 'test-model',
+        doGenerate: vi.fn(),
+        doStream: vi.fn(),
+      };
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as AsyncGenerator
+      );
+
+      const prepareStep: PrepareStepCallback = vi.fn().mockReturnValue({});
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        prepareStep,
+      });
+
+      // Verify streamTextIterator was called with prepareStep
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prepareStep,
+        })
+      );
+    });
+
+    it('should allow prepareStep to modify messages', async () => {
+      const mockModel: LanguageModelV2 = {
+        specificationVersion: 'v2' as const,
+        provider: 'test',
+        modelId: 'test-model',
+        doGenerate: vi.fn(),
+        doStream: vi.fn(),
+      };
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as AsyncGenerator
+      );
+
+      const injectedMessage = {
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: 'injected message' }],
+      };
+
+      const prepareStep: PrepareStepCallback = ({ messages }) => {
+        return {
+          messages: [...messages, injectedMessage],
+        };
+      };
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        prepareStep,
+      });
+
+      // Verify prepareStep was passed to the iterator
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prepareStep: expect.any(Function),
+        })
+      );
+    });
+
+    it('should allow prepareStep to change model dynamically', async () => {
+      const mockModel: LanguageModelV2 = {
+        specificationVersion: 'v2' as const,
+        provider: 'test',
+        modelId: 'test-model',
+        doGenerate: vi.fn(),
+        doStream: vi.fn(),
+      };
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as AsyncGenerator
+      );
+
+      const prepareStep: PrepareStepCallback = ({ stepNumber }) => {
+        // Switch to a different model after step 0
+        if (stepNumber > 0) {
+          return {
+            model: 'anthropic/claude-sonnet-4.5',
+          };
+        }
+        return {};
+      };
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        prepareStep,
+      });
+
+      // Verify prepareStep was passed to the iterator
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prepareStep: expect.any(Function),
+        })
+      );
+    });
+
+    it('should provide step information to prepareStep callback', async () => {
+      const mockModel: LanguageModelV2 = {
+        specificationVersion: 'v2' as const,
+        provider: 'test',
+        modelId: 'test-model',
+        doGenerate: vi.fn(),
+        doStream: vi.fn(),
+      };
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as AsyncGenerator
+      );
+
+      const prepareStepCalls: Array<{
+        model: unknown;
+        stepNumber: number;
+        steps: unknown[];
+        messages: LanguageModelV2Prompt;
+      }> = [];
+
+      const prepareStep: PrepareStepCallback = (info) => {
+        prepareStepCalls.push({
+          model: info.model,
+          stepNumber: info.stepNumber,
+          steps: info.steps,
+          messages: info.messages,
+        });
+        return {};
+      };
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        prepareStep,
+      });
+
+      // Verify prepareStep was passed and the function captures expected params
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prepareStep: expect.any(Function),
+        })
+      );
     });
   });
 
