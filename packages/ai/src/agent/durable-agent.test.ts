@@ -9,6 +9,7 @@ import type {
   LanguageModelV2,
   LanguageModelV2Prompt,
   LanguageModelV2ToolCall,
+  LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
 import type { ToolSet } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
@@ -24,6 +25,30 @@ vi.mock('./stream-text-iterator.js', () => ({
 const { DurableAgent } = await import('./durable-agent.js');
 
 import type { PrepareStepCallback } from './durable-agent.js';
+import type { StreamTextIteratorYieldValue } from './stream-text-iterator.js';
+
+/**
+ * Creates a mock LanguageModelV2 for testing
+ */
+function createMockModel(): LanguageModelV2 {
+  return {
+    specificationVersion: 'v2' as const,
+    provider: 'test',
+    modelId: 'test-model',
+    doGenerate: vi.fn(),
+    doStream: vi.fn(),
+    supportedUrls: {},
+  };
+}
+
+/**
+ * Type for the mock iterator used in tests
+ */
+type MockIterator = AsyncGenerator<
+  StreamTextIteratorYieldValue,
+  LanguageModelV2Prompt,
+  LanguageModelV2ToolResultPart[]
+>;
 
 describe('DurableAgent', () => {
   describe('tool execution error handling', () => {
@@ -41,13 +66,7 @@ describe('DurableAgent', () => {
 
       // We need to test the executeTool function indirectly through the agent
       // Create a mock model that will trigger tool calls
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -84,7 +103,7 @@ describe('DurableAgent', () => {
           .mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       // Execute the stream - this should not throw even though the tool throws FatalError
@@ -123,13 +142,7 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -161,7 +174,7 @@ describe('DurableAgent', () => {
         }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       // Execute should throw because non-FatalErrors are re-thrown
@@ -183,13 +196,7 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -224,7 +231,7 @@ describe('DurableAgent', () => {
           .mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       await agent.stream({
@@ -251,13 +258,7 @@ describe('DurableAgent', () => {
 
   describe('prepareStep callback', () => {
     it('should pass prepareStep callback to streamTextIterator', async () => {
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -274,7 +275,7 @@ describe('DurableAgent', () => {
         next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       const prepareStep: PrepareStepCallback = vi.fn().mockReturnValue({});
@@ -294,13 +295,7 @@ describe('DurableAgent', () => {
     });
 
     it('should allow prepareStep to modify messages', async () => {
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -317,7 +312,7 @@ describe('DurableAgent', () => {
         next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       const injectedMessage = {
@@ -346,13 +341,7 @@ describe('DurableAgent', () => {
     });
 
     it('should allow prepareStep to change model dynamically', async () => {
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -369,7 +358,7 @@ describe('DurableAgent', () => {
         next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       const prepareStep: PrepareStepCallback = ({ stepNumber }) => {
@@ -397,13 +386,7 @@ describe('DurableAgent', () => {
     });
 
     it('should provide step information to prepareStep callback', async () => {
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -420,7 +403,7 @@ describe('DurableAgent', () => {
         next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       const prepareStepCalls: Array<{
@@ -473,13 +456,7 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -530,7 +507,7 @@ describe('DurableAgent', () => {
           .mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       await agent.stream({
@@ -568,13 +545,7 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -635,7 +606,7 @@ describe('DurableAgent', () => {
           .mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       await agent.stream({
@@ -663,13 +634,7 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel: LanguageModelV2 = {
-        specificationVersion: 'v2' as const,
-        provider: 'test',
-        modelId: 'test-model',
-        doGenerate: vi.fn(),
-        doStream: vi.fn(),
-      };
+      const mockModel = createMockModel();
 
       const agent = new DurableAgent({
         model: async () => mockModel,
@@ -759,7 +724,7 @@ describe('DurableAgent', () => {
           .mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as AsyncGenerator
+        mockIterator as unknown as MockIterator
       );
 
       await agent.stream({
