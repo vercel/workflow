@@ -4,4 +4,4 @@
 "@workflow/nitro": patch
 ---
 
-Fix nitro build race condition and builder template literal escaping
+Fix nitro build race condition and make builder file operations atomic

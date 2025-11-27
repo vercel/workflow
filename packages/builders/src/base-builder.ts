@@ -585,7 +585,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
         const outputDir = dirname(outfile);
         await mkdir(outputDir, { recursive: true });
 
-        await writeFile(outfile, workflowFunctionCode);
+        // Atomic write: write to temp file then rename to prevent
+        // file watchers from reading partial file during write
+        const tempPath = `${outfile}.${randomUUID()}.tmp`;
+        await writeFile(tempPath, workflowFunctionCode);
+        await rename(tempPath, outfile);
         return;
       }
 
