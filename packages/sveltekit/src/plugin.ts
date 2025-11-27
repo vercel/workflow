@@ -1,6 +1,6 @@
-import type { HotUpdateOptions, Plugin } from "vite";
-import { SvelteKitBuilder } from "./builder.js";
-import { workflowTransformPlugin } from "@workflow/rollup";
+import type { HotUpdateOptions, Plugin } from 'vite';
+import { SvelteKitBuilder } from './builder.js';
+import { workflowTransformPlugin } from '@workflow/rollup';
 
 export function workflowPlugin(): Plugin[] {
   let builder: SvelteKitBuilder;
@@ -12,7 +12,7 @@ export function workflowPlugin(): Plugin[] {
 
   const enqueue = (task: () => Promise<void>): Promise<void> => {
     rebuildQueue = rebuildQueue.then(task).catch((error) => {
-      console.error("Workflow build failed:", error);
+      console.error('Workflow build failed:', error);
     });
     return rebuildQueue;
   };
@@ -20,7 +20,7 @@ export function workflowPlugin(): Plugin[] {
   return [
     workflowTransformPlugin(),
     {
-      name: "workflow:sveltekit",
+      name: 'workflow:sveltekit',
       configResolved() {
         builder = new SvelteKitBuilder();
       },
@@ -55,7 +55,7 @@ export function workflowPlugin(): Plugin[] {
           return;
         }
 
-        console.log("Workflow file changed, rebuilding...");
+        console.log('Workflow file changed, rebuilding...');
         await enqueue(() => builder.build());
         // Let Vite handle the normal HMR for the changed file
         return;
