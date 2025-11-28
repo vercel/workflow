@@ -2,33 +2,50 @@
 title: Postgres World
 ---
 
-<Callout type="wip">
-This page is a work in progress.
-</Callout>
-
-<Callout type="info">
-
-**This world is a reference implementation, not a production-ready product.** We do not recommend using it in production. However, you can definitely use it as inspiration for a real-world database-backed solution that might run workflow and step workers separately from the triggering applications.
-
-</Callout>
-
-The PostgreSQL world is a reference implementation of a [world](/docs/deploying/world) that's fully backed by PostgreSQL, including job processing (using [pg-boss](https://github.com/timgit/pg-boss)) and streaming (using PostgreSQL's NOTIFY and LISTEN).
+The PostgreSQL world is a reference implementation of a [World](/docs/deploying/world) that's fully backed by PostgreSQL, including job processing (using [pg-boss](https://github.com/timgit/pg-boss)) and streaming (using PostgreSQL's NOTIFY and LISTEN).
 
 This world is designed for long-running processes, so it can receive and dispatch events from a PostgreSQL database, and isn't meant to be deployed on serverless platforms like Vercel due to that nature.
 
-## Setup
-
 <Steps>
 
-### Install the package
+<Step>
+
+## Installation
 
 Install the `@workflow/world-postgres` package:
 
-```bash
-npm install @workflow/world-postgres
+```package-install
+@workflow/world-postgres
 ```
 
-### Set up the database schema
+</Step>
+
+<Step>
+
+## Add Environment Variables
+
+Add the following environment variables to your `.env` file required for workflows:
+
+```bash
+WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+WORKFLOW_POSTGRES_URL="postgres://postgres:password@db.yourdb.co:5432/postgres"
+WORKFLOW_POSTGRES_JOB_PREFIX="workflow_"
+WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10
+```
+
+The world configuration is automatically read from environment variables:
+
+- `WORKFLOW_TARGET_WORLD` - Required, specifies which world implementation to use
+- `WORKFLOW_POSTGRES_URL` - PostgreSQL connection string (defaults to `postgres://world:world@localhost:5432/world`)
+- `WORKFLOW_POSTGRES_JOB_PREFIX` - Prefix for queue job names
+- `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` - Number of concurrent workers (defaults to `10` if not specified)
+
+
+</Step>
+
+<Step>
+
+## Set Up the Database Schema
 
 Run the setup script to create the required database tables:
 
@@ -52,64 +69,93 @@ You should see output like:
 ✅ Database schema created successfully!
 ```
 
-### Configure environment variables
+</Step>
 
-Add the following environment variables to your `.env` file:
+<Step>
 
-```bash
-WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
-WORKFLOW_POSTGRES_URL="postgres://postgres:password@db.yourdb.co:5432/postgres"
-WORKFLOW_POSTGRES_JOB_PREFIX="workflow_"
-WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10
-```
+## Initialize the PostgreSQL World
 
-| Variable                               | Description                        | Default                                       |
-| -------------------------------------- | ---------------------------------- | --------------------------------------------- |
-| `WORKFLOW_TARGET_WORLD`                | Target world implementation to use | Required                                      |
-| `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string       | `postgres://world:world@localhost:5432/world` |
-| `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names         | `workflow_`                                   |
-| `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers       | `10`                                          |
+Starting the PostgreSQL World will vary between different frameworks. The main idea is starting the PostgreSQL World on server startup.
 
-### Initialize the world
+Here are some examples of what it might look like:
+
+### Next.js
 
 Create an `instrumentation.ts` file in your project root to initialize and start the world:
 
-```ts title="instrumentation.ts"
-import { createWorld } from "@workflow/world-postgres";
-
+```ts title="instrumentation.ts" lineNumbers
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "edge") {
-    console.log("Starting workflow workers...");
-
-    const world = createWorld({
-      connectionString: process.env.WORKFLOW_POSTGRES_URL!,
-      jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX || "workflow_",
-      queueConcurrency: parseInt(
-        process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || "10",
-        10
-      ),
-    });
-
-    await world.start?.();
-    console.log("Workflow workers started!");
+    // Dynamic import to avoid edge runtime bundling issues
+    console.log('Starting Postgres World...');
+    const { getWorld } = await import("workflow/runtime");
+    await getWorld().start?.();
+    console.log('Postgres World started');
   }
 }
 ```
 
-### Configure Next.js
+<Callout>
+  Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
+</Callout>
 
-Enable the instrumentation hook in your `next.config.ts`:
+### SvelteKit
 
-```ts title="next.config.ts"
-import type { NextConfig } from "next";
-import { withWorkflow } from "workflow/next";
+Create a file `src/hooks.server.ts`:
 
-const nextConfig: NextConfig = {
-  // … rest of your Next.js config
+```ts title="src/hooks.server.ts" lineNumbers
+import type { ServerInit } from '@sveltejs/kit';
+
+export const init: ServerInit = async () => {
+  if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+    // Dynamic import to avoid edge runtime bundling issues
+    const { getWorld } = await import('workflow/runtime');
+    console.log('Starting Postgres World...');
+    await getWorld().start?.();
+    console.log('Postgres World started');
+  }
 };
-
-export default withWorkflow(nextConfig);
 ```
+
+<Callout>
+  Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
+</Callout>
+
+### Nitro-based Apps
+
+Create a plugin to start the PostgreSQL World. This will be invoked when the Nitro server starts.
+
+```ts title="plugins/start-pg-world.ts" lineNumbers
+import { defineNitroPlugin } from 'nitro/~internal/runtime/plugin';
+
+export default defineNitroPlugin(async () => {
+  if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+    // Dynamic import to avoid edge runtime bundling issues
+    console.log('Starting Postgres World...');
+    const { getWorld } = await import('workflow/runtime');
+    await getWorld().start?.();
+    console.log('Postgres World started');
+  }
+});
+```
+
+Add the plugin to your `nitro.config.ts` file. This enables the plugin:
+
+```ts title="nitro.config.ts"
+import { defineNitroConfig } from 'nitropack';
+
+export default defineNitroConfig({
+  // ... your nitro config
+  modules: ['workflow/nitro'],
+  plugins: ['plugins/start-pg-world.ts'],
+});
+```
+
+<Callout>
+  Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins)
+</Callout>
+
+</Step>
 
 </Steps>
 

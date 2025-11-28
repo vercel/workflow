@@ -41,7 +41,7 @@ export type Step = z.infer<typeof StepSchema>;
 export interface CreateStepRequest {
   stepId: string;
   stepName: string;
-  input: SerializedData[];
+  input: SerializedData;
 }
 
 export interface UpdateStepRequest {

@@ -14,3 +14,16 @@ export const fn3 = async () => {
   return 4;
 };
 
+// Test case: regular function BEFORE step function in same declaration
+// This verifies that processing doesn't skip the step function
+const regularArrow = () => 1, stepAfterRegular = async () => {
+  'use step';
+  return 5;
+};
+
+// Test case: regular function expression BEFORE step function
+const regularFn = function() { return 2; }, stepAfterRegularFn = async function() {
+  'use step';
+  return 6;
+};
+

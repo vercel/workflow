@@ -21,6 +21,10 @@ function isBuiltinModule(moduleName: string): boolean {
   return BUILTIN_MODULES.has(moduleName);
 }
 
+function isBunModule(moduleName: string): boolean {
+  return moduleName === 'bun' || moduleName.startsWith('bun:');
+}
+
 type TypeScriptLib = typeof import('typescript/lib/tsserverlibrary');
 type Program = import('typescript/lib/tsserverlibrary').Program;
 type Diagnostic = import('typescript/lib/tsserverlibrary').Diagnostic;
@@ -391,13 +395,14 @@ export function getCustomDiagnostics(
         ) {
           const moduleName = importDecl.moduleSpecifier.text;
 
-          // Check if it's a disallowed Node.js module
-          if (isBuiltinModule(moduleName)) {
+          // Check if it's a disallowed Node.js or Bun module
+          if (isBuiltinModule(moduleName) || isBunModule(moduleName)) {
+            const moduleType = isBunModule(moduleName) ? 'Bun' : 'Node.js';
             diagnostics.push({
               file: sourceFile,
               start: callNode.getStart(),
               length: callNode.getWidth(),
-              messageText: `Node.js API "${moduleName}" is not available in workflow functions. Consider moving this code to a step function with "use step".`,
+              messageText: `${moduleType} API "${moduleName}" is not available in workflow functions. Consider moving this code to a step function with "use step".`,
               category: ts.DiagnosticCategory.Error,
               code: 9003,
             });

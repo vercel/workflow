@@ -373,7 +373,7 @@ export abstract class BaseBuilder {
       ],
       // Plugin should catch most things, but this lets users hard override
       // if the plugin misses anything that should be externalized
-      external: this.config.externalPackages || [],
+      external: ['bun', 'bun:*', ...(this.config.externalPackages || [])],
     });
 
     const stepsResult = await esbuildCtx.rebuild();

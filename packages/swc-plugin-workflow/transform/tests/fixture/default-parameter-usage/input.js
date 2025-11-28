@@ -1,0 +1,32 @@
+// Test case for functions used in default parameter values
+// The createDefaultDownloadFunction should NOT be removed by DCE
+
+const createDefaultDownloadFunction = (download = defaultDownload) => (requestedDownloads) =>
+  Promise.all(requestedDownloads.map(async (r) => r.isUrlSupportedByModel ? null : download(r)));
+
+async function defaultDownload(request) {
+  return fetch(request.url);
+}
+
+// This function uses createDefaultDownloadFunction in a default parameter value
+// DCE must NOT remove createDefaultDownloadFunction
+async function convertToLanguageModelPrompt({
+  prompt,
+  supportedUrls,
+  download = createDefaultDownloadFunction()
+}) {
+  return { prompt, supportedUrls, download };
+}
+
+export async function myWorkflow(input) {
+  'use workflow';
+
+  const result = await convertToLanguageModelPrompt({
+    prompt: input.prompt,
+    supportedUrls: {},
+    download: undefined
+  });
+
+  return result;
+}
+

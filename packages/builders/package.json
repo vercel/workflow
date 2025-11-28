@@ -1,6 +1,6 @@
 {
   "name": "@workflow/builders",
-  "version": "4.0.1-beta.17",
+  "version": "4.0.1-beta.18",
   "description": "Shared builder infrastructure for Workflow DevKit",
   "type": "module",
   "main": "./dist/index.js",
@@ -39,7 +39,7 @@
     "@workflow/tsconfig": "workspace:*"
   },
   "dependencies": {
-    "@swc/core": "1.11.24",
+    "@swc/core": "catalog:",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/core": "workspace:*",

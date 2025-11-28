@@ -10,6 +10,7 @@ import {
   getCommonRevivers,
   getStreamType,
   getWorkflowReducers,
+  hydrateStepArguments,
   hydrateWorkflowArguments,
 } from './serialization.js';
 import { STREAM_NAME_SYMBOL } from './symbols.js';
@@ -844,7 +845,7 @@ describe('step function serialization', () => {
 
     // Get the reviver and test it directly
     const revivers = getCommonRevivers(vmGlobalThis);
-    const result = revivers.StepFunction(stepName);
+    const result = revivers.StepFunction({ stepId: stepName });
 
     expect(result).toBe(stepFn);
   });
@@ -854,7 +855,7 @@ describe('step function serialization', () => {
 
     let err: Error | undefined;
     try {
-      revivers.StepFunction('nonExistentStep');
+      revivers.StepFunction({ stepId: 'nonExistentStep' });
     } catch (err_) {
       err = err_ as Error;
     }
@@ -895,7 +896,88 @@ describe('step function serialization', () => {
     expect(dehydrated).toContain(42);
   });
 
-  it('should serialize step function to name through reducer', () => {
+  it('should dehydrate and hydrate step function with closure variables', async () => {
+    const stepName = 'step//workflows/test.ts//calculate';
+
+    // Create a step function that accesses closure variables
+    const { __private_getClosureVars } = await import('./private.js');
+    const { contextStorage } = await import('./step/context-storage.js');
+
+    const stepFn = async (x: number) => {
+      const { multiplier, prefix } = __private_getClosureVars();
+      const result = x * multiplier;
+      return `${prefix}${result}`;
+    };
+
+    // Register the step function
+    registerStepFunction(stepName, stepFn);
+
+    // Simulate what useStep() does - attach stepId and closure vars function
+    Object.defineProperty(stepFn, 'stepId', {
+      value: stepName,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    const closureVars = { multiplier: 3, prefix: 'Result: ' };
+    Object.defineProperty(stepFn, '__closureVarsFn', {
+      value: () => closureVars,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
+    // Serialize the step function with closure variables
+    const args = [stepFn, 7];
+    const dehydrated = dehydrateStepArguments(args, globalThis);
+
+    // Verify it serialized
+    expect(dehydrated).toBeDefined();
+    const serialized = JSON.stringify(dehydrated);
+    expect(serialized).toContain(stepName);
+    expect(serialized).toContain('multiplier');
+    expect(serialized).toContain('prefix');
+
+    // Now hydrate it back
+    const hydrated = hydrateStepArguments(
+      dehydrated,
+      [],
+      'test-run-123',
+      vmGlobalThis
+    );
+    expect(Array.isArray(hydrated)).toBe(true);
+    expect(hydrated).toHaveLength(2);
+
+    const hydratedStepFn = hydrated[0];
+    const hydratedArg = hydrated[1];
+
+    expect(typeof hydratedStepFn).toBe('function');
+    expect(hydratedArg).toBe(7);
+
+    // Invoke the hydrated step function within a context
+    const result = await contextStorage.run(
+      {
+        stepMetadata: {
+          stepId: 'test-step',
+          stepStartedAt: new Date(),
+          attempt: 1,
+        },
+        workflowMetadata: {
+          workflowRunId: 'test-run',
+          workflowStartedAt: new Date(),
+          url: 'http://localhost:3000',
+        },
+        ops: [],
+      },
+      () => hydratedStepFn(7)
+    );
+
+    // Verify the closure variables were accessible and used correctly
+    expect(result).toBe('Result: 21');
+  });
+
+  it('should serialize step function to object through reducer', () => {
     const stepName = 'step//workflows/test.ts//anotherStep';
     const stepFn = async () => 'result';
 
@@ -911,7 +993,7 @@ describe('step function serialization', () => {
     const reducer = getWorkflowReducers(globalThis).StepFunction;
     const result = reducer(stepFn);
 
-    // Should return the step name
-    expect(result).toBe(stepName);
+    // Should return object with stepId
+    expect(result).toEqual({ stepId: stepName });
   });
 });

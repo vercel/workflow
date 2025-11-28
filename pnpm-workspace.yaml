@@ -4,16 +4,17 @@ packages:
   - docs
 
 catalog:
-  "@types/node": 22.19.0
   "@biomejs/biome": ^2.2.7
+  "@swc/core": 1.11.24
   "@types/json-schema": ^7.0.15
+  "@types/node": 22.19.0
   "@vercel/functions": ^3.1.4
   "@vercel/oidc": 3.0.5
   "@vercel/queue": 0.0.0-alpha.29
   "@vitest/coverage-v8": ^3.2.4
-  "nitro": "3.0.1-alpha.1"
   ai: 5.0.76
   esbuild: ^0.25.11
+  nitro: 3.0.1-alpha.1
   typescript: ^5.9.3
   vitest: ^3.2.4
   zod: 4.1.11

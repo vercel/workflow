@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.22
+
+### Patch Changes
+
+- 17904fc: Add `prepareStep` argument for DurableAgent to modify messages between AI loop steps
+- 17904fc: Make current messages state available to tool calls
+- Updated dependencies [6dd1750]
+  - workflow@4.0.1-beta.22
+
 ## 4.0.1-beta.21
 
 ### Patch Changes

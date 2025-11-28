@@ -105,6 +105,36 @@ const attributeToDisplayFn: Record<
   // Resolved attributes, won't actually use this function
   metadata: JsonBlock,
   input: (value: unknown) => {
+    // Check if input has args + closure vars structure
+    if (value && typeof value === 'object' && 'args' in value) {
+      const { args, closureVars } = value as {
+        args: unknown[];
+        closureVars?: Record<string, unknown>;
+      };
+      const argCount = Array.isArray(args) ? args.length : 0;
+      const hasClosureVars = closureVars && Object.keys(closureVars).length > 0;
+
+      return (
+        <>
+          <DetailCard summary={`Input (${argCount} arguments)`}>
+            {Array.isArray(args)
+              ? args.map((v, i) => (
+                  <div className="mt-2" key={i}>
+                    {JsonBlock(v)}
+                  </div>
+                ))
+              : JsonBlock(args)}
+          </DetailCard>
+          {hasClosureVars && (
+            <DetailCard summary="Closure Variables">
+              {JsonBlock(closureVars)}
+            </DetailCard>
+          )}
+        </>
+      );
+    }
+
+    // Fallback: treat as plain array or object
     const argCount = Array.isArray(value) ? value.length : 0;
     return (
       <DetailCard summary={`Input (${argCount} arguments)`}>

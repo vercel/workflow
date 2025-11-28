@@ -5,13 +5,13 @@ import { LocalBuilder } from './builders.js';
 import type { Plugin as VitePlugin } from 'vite';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
-import { workflowRollupPlugin } from './rollup.js';
+import { workflowTransformPlugin } from '@workflow/rollup';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder | undefined;
 
   return [
-    workflowRollupPlugin() as VitePlugin,
+    workflowTransformPlugin() as VitePlugin,
     {
       name: 'workflow:nitro',
       nitro: {

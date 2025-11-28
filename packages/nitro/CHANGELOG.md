@@ -1,5 +1,20 @@
 # @vercel/workflow-nitro
 
+## 4.0.1-beta.22
+
+### Patch Changes
+
+- 6dd1750: Refactor to use @workflow/rollup package
+- Updated dependencies [07800c2]
+- Updated dependencies [fb9fd0f]
+- Updated dependencies [b042ba7]
+- Updated dependencies [8b470f0]
+- Updated dependencies [6dd1750]
+  - @workflow/core@4.0.1-beta.19
+  - @workflow/swc-plugin@4.0.1-beta.8
+  - @workflow/builders@4.0.1-beta.18
+  - @workflow/rollup@4.0.0-beta.2
+
 ## 4.0.1-beta.21
 
 ### Patch Changes

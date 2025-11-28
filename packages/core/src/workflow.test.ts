@@ -2304,4 +2304,96 @@ describe('runWorkflow', () => {
       );
     });
   });
+
+  describe('closure variables', () => {
+    it('should serialize and deserialize closure variables for nested step functions', async () => {
+      let error: Error | undefined;
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRun: WorkflowRun = {
+          runId: 'test-run-123',
+          workflowName: 'workflow',
+          status: 'running',
+          input: dehydrateWorkflowArguments([], ops),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        const events: Event[] = [];
+
+        await runWorkflow(
+          `const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
+          async function workflow() {
+            const multiplier = 3;
+            const prefix = 'Result: ';
+            const calculate = useStep('step//input.js//_anonymousStep0', () => ({ multiplier, prefix }));
+            const result = await calculate(7);
+            return result;
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+
+      // Should suspend to create the step
+      assert(error);
+      expect(error.name).toEqual('WorkflowSuspension');
+      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+
+      const step = (error as WorkflowSuspension).steps[0];
+      expect(step).toMatchObject({
+        type: 'step',
+        stepName: 'step//input.js//_anonymousStep0',
+        args: [7],
+        closureVars: { multiplier: 3, prefix: 'Result: ' },
+      });
+    });
+
+    it('should handle step functions without closure variables', async () => {
+      let error: Error | undefined;
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRun: WorkflowRun = {
+          runId: 'test-run-123',
+          workflowName: 'workflow',
+          status: 'running',
+          input: dehydrateWorkflowArguments([], ops),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        const events: Event[] = [];
+
+        await runWorkflow(
+          `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+          async function workflow() {
+            const result = await add(5, 10);
+            return result;
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+
+      // Should suspend to create the step
+      assert(error);
+      expect(error.name).toEqual('WorkflowSuspension');
+      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+
+      const step = (error as WorkflowSuspension).steps[0];
+      expect(step).toMatchObject({
+        type: 'step',
+        stepName: 'add',
+        args: [5, 10],
+      });
+    });
+  });
 });

@@ -7,11 +7,9 @@ async function stepFunctionWithoutExport(a, b) {
     return a - b;
 }
 export async function workflowFunction(a, b) {
-    'use workflow';
-    const result = await stepFunction(a, b);
-    const result2 = await stepFunctionWithoutExport(a, b);
-    return result + result2;
+    throw new Error("You attempted to execute workflow workflowFunction function directly. To start a workflow, use start(workflowFunction) from workflow/api");
 }
+workflowFunction.workflowId = "workflow//input.js//workflowFunction";
 export async function normalFunction(a, b) {
     return a * b;
 }

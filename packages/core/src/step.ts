@@ -1,7 +1,7 @@
 import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
-import { WorkflowSuspension } from './global.js';
+import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { stepLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import type { Serializable } from './schemas.js';
@@ -9,18 +9,28 @@ import { hydrateStepReturnValue } from './serialization.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
-    stepName: string
+    stepName: string,
+    closureVarsFn?: () => Record<string, Serializable>
   ) {
     const stepFunction = (...args: Args): Promise<Result> => {
       const { promise, resolve, reject } = withResolvers<Result>();
 
       const correlationId = `step_${ctx.generateUlid()}`;
-      ctx.invocationsQueue.push({
+
+      const queueItem: StepInvocationQueueItem = {
         type: 'step',
         correlationId,
         stepName,
         args,
-      });
+      };
+
+      // Invoke the closure variables function to get the closure scope
+      const closureVars = closureVarsFn?.();
+      if (closureVars) {
+        queueItem.closureVars = closureVars;
+      }
+
+      ctx.invocationsQueue.push(queueItem);
 
       // Track whether we've already seen a "step_started" event for this step.
       // This is important because after a retryable failure, the step moves back to
@@ -139,6 +149,16 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       enumerable: false,
       configurable: false,
     });
+
+    // Store the closure variables function for serialization
+    if (closureVarsFn) {
+      Object.defineProperty(stepFunction, '__closureVarsFn', {
+        value: closureVarsFn,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      });
+    }
 
     return stepFunction;
   };
