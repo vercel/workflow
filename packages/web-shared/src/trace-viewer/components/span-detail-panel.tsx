@@ -262,17 +262,17 @@ export function SpanDetailPanel({
       {attached && !isMobile ? <PanelResizer /> : null}
       <div className={styles.spanDetailPanelTop}>
         <div className={styles.spanDetailPanelTopInfo}>
-          <div className={styles.spanDetailPanelTruncatedHeading}>
+          {/* Name/ID first */}
+          <span className={styles.spanDetailPanelName} title={span.name}>
+            {span.name}
+          </span>
+          {/* Right side: duration badge, separator, close */}
+          <div className={styles.spanDetailPanelCorner}>
             {selected.isInstrumentationHint ? null : (
               <span className={styles.spanDetailPanelDuration}>
                 {formatDuration(selected.duration)}
               </span>
             )}
-            <span className={styles.spanDetailPanelName} title={span.name}>
-              {span.name}
-            </span>
-          </div>
-          <div className={styles.spanDetailPanelCorner}>
             <div className={styles.spanDetailPanelCloseVerticalRule} />
             <button
               aria-label="Close Span Details"
@@ -284,7 +284,7 @@ export function SpanDetailPanel({
               }
               type="button"
             >
-              <IconCross color="gray-700" size={24} />
+              <IconCross color="gray-700" size={20} />
             </button>
           </div>
         </div>
