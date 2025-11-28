@@ -21,11 +21,21 @@ import {
   type WorldConfig,
 } from '@/lib/config-world';
 
-export function SettingsSidebar() {
+interface SettingsSidebarProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function SettingsSidebar({
+  open: controlledOpen,
+  onOpenChange,
+}: SettingsSidebarProps = {}) {
   const config = useQueryParamConfig();
   const updateConfig = useUpdateConfigQueryParams();
 
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
+  const setIsOpen = onOpenChange || setInternalOpen;
   const [localConfig, setLocalConfig] = useState<WorldConfig>(config);
   const [errors, setErrors] = useState<ValidationError[]>([]);
   const [isValidating, setIsValidating] = useState(false);
@@ -76,14 +86,16 @@ export function SettingsSidebar() {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setIsOpen(true)}
-        className="p-2 rounded-full hover:bg-accent transition-colors"
-        title="Configuration"
-      >
-        <Settings className="h-6 w-6" />
-      </button>
+      {controlledOpen === undefined && (
+        <button
+          type="button"
+          onClick={() => setIsOpen(true)}
+          className="p-2 rounded-full hover:bg-accent transition-colors"
+          title="Configuration"
+        >
+          <Settings className="h-6 w-6" />
+        </button>
+      )}
       {isOpen && (
         <>
           {/* Backdrop */}
@@ -99,13 +111,14 @@ export function SettingsSidebar() {
             <div className="p-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-2xl font-bold">Configuration</h2>
-                <button
+                <Button
                   type="button"
                   onClick={() => setIsOpen(false)}
-                  className="p-2 hover:bg-accent rounded-full transition-colors"
+                  variant="outline"
+                  size="icon"
                 >
                   <X className="h-5 w-5" />
-                </button>
+                </Button>
               </div>
 
               <div className="space-y-4">
@@ -143,7 +156,7 @@ export function SettingsSidebar() {
                         }
                       />
                       {getFieldError('port') && (
-                        <p className="text-sm text-destructive">
+                        <p className="text-sm text-destructive break-words">
                           {getFieldError('port')}
                         </p>
                       )}
@@ -162,11 +175,6 @@ export function SettingsSidebar() {
                           getFieldError('dataDir') ? 'border-destructive' : ''
                         }
                       />
-                      {getFieldError('dataDir') && (
-                        <p className="text-sm text-destructive">
-                          {getFieldError('dataDir')}
-                        </p>
-                      )}
                       <p className="text-xs text-muted-foreground">
                         Path to the workflow data directory. Can be relative or
                         absolute.
@@ -229,13 +237,16 @@ export function SettingsSidebar() {
                 )}
 
                 {errors.length > 0 && (
-                  <Alert variant="destructive">
+                  <Alert
+                    variant="destructive"
+                    className="!bg-destructive/10 !border-destructive"
+                  >
                     <AlertCircle className="h-4 w-4" />
                     <AlertTitle>Configuration Error</AlertTitle>
                     <AlertDescription>
                       <ul className="list-disc list-inside space-y-1">
                         {errors.map((error, idx) => (
-                          <li key={`error-${idx}`}>
+                          <li key={`error-${idx}`} className="break-words">
                             {error.field !== 'general' && (
                               <strong>{error.field}:</strong>
                             )}{' '}

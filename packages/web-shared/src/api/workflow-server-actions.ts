@@ -1,5 +1,7 @@
 'use server';
 
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { hydrateResourceIO } from '@workflow/core/observability';
 import { createWorld, start } from '@workflow/core/runtime';
 import type {
@@ -496,6 +498,39 @@ export async function readStreamServerAction(
         streamId,
         startIndex,
       }),
+    };
+  }
+}
+
+/**
+ * Fetch the workflows manifest from the data directory
+ * The manifest is generated at build time and contains static structure info about workflows
+ */
+export async function fetchWorkflowsManifest(
+  worldEnv: EnvMap
+): Promise<ServerActionResult<any>> {
+  try {
+    // Get the data directory from the world environment config
+    // This contains the correct absolute path passed from the client
+    const dataDir =
+      worldEnv.WORKFLOW_EMBEDDED_DATA_DIR ||
+      process.env.WORKFLOW_EMBEDDED_DATA_DIR ||
+      '.next/workflow-data';
+
+    // If dataDir is absolute, use it directly; otherwise join with cwd
+    const fullPath = path.isAbsolute(dataDir)
+      ? path.join(dataDir, 'workflows.json')
+      : path.join(process.cwd(), dataDir, 'workflows.json');
+
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const manifest = JSON.parse(content);
+
+    return createResponse(manifest);
+  } catch (error) {
+    console.error('Failed to fetch workflows manifest:', error);
+    return {
+      success: false,
+      error: createServerActionError(error, 'fetchWorkflowsManifest', {}),
     };
   }
 }
