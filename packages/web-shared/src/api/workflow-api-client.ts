@@ -64,7 +64,7 @@ export const getErrorMessage = (error: Error | WorkflowAPIError): string => {
 /**
  * Helper to handle server action results and throw WorkflowAPIError on failure
  */
-function unwrapServerActionResult<T>(result: {
+export function unwrapServerActionResult<T>(result: {
   success: boolean;
   data?: T;
   error?: ServerActionError;

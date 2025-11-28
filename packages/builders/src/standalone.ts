@@ -14,6 +14,10 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.buildWorkflowsBundle(options);
     await this.buildWebhookFunction();
 
+    // Build graph manifest from workflow bundle (post-bundle extraction)
+    const workflowBundlePath = this.resolvePath('.swc/workflows.js');
+    await this.buildGraphManifest({ workflowBundlePath });
+
     await this.createClientLibrary();
   }
 
@@ -25,18 +29,20 @@ export class StandaloneBuilder extends BaseBuilder {
     inputFiles: string[];
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
-  }): Promise<void> {
+  }) {
     console.log('Creating steps bundle at', this.config.stepsBundlePath);
 
     const stepsBundlePath = this.resolvePath(this.config.stepsBundlePath);
     await this.ensureDirectory(stepsBundlePath);
 
-    await this.createStepsBundle({
+    const { manifest } = await this.createStepsBundle({
       outfile: stepsBundlePath,
       inputFiles,
       tsBaseUrl,
       tsPaths,
     });
+
+    return manifest;
   }
 
   private async buildWorkflowsBundle({
@@ -74,6 +80,20 @@ export class StandaloneBuilder extends BaseBuilder {
 
     await this.createWebhookBundle({
       outfile: webhookBundlePath,
+    });
+  }
+
+  private async buildGraphManifest({
+    workflowBundlePath,
+  }: {
+    workflowBundlePath: string;
+  }): Promise<void> {
+    const graphManifestPath = this.resolvePath('.swc/graph-manifest.json');
+    await this.ensureDirectory(graphManifestPath);
+
+    await this.createGraphManifest({
+      workflowBundlePath,
+      outfile: graphManifestPath,
     });
   }
 }

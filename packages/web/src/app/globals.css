@@ -2,30 +2,83 @@
 
 /* Scan web-shared package for Tailwind classes */
 @source "../../../web-shared/src";
+@source "../components";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
 
 :root {
-  --background: 0 0% 100%;
-  --foreground: 0 0% 3.9%;
-  --card: 0 0% 100%;
-  --card-foreground: 0 0% 3.9%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 0 0% 3.9%;
-  --primary: 0 0% 9%;
-  --primary-foreground: 0 0% 98%;
-  --secondary: 0 0% 96.1%;
-  --secondary-foreground: 0 0% 9%;
-  --muted: 0 0% 96.1%;
-  --muted-foreground: 0 0% 45.1%;
-  --accent: 0 0% 96.1%;
-  --accent-foreground: 0 0% 9%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 0 0% 89.8%;
-  --input: 0 0% 89.8%;
-  --ring: 0 0% 3.9%;
-  --radius: 0.5rem;
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
 
-  /* Geist Design System Colors */
+  /* Geist Design System Colors - Light Mode */
   /* Backgrounds */
   --ds-background-100: rgb(255 255 255);
   --ds-background-200: rgb(250 250 250);
@@ -41,17 +94,6 @@
   --ds-gray-800: rgb(64 64 64);
   --ds-gray-900: rgb(23 23 23);
   --ds-gray-1000: rgb(0 0 0);
-
-  /* Gray Alpha (with transparency) */
-  --ds-gray-alpha-100: rgb(0 0 0 / 0.02);
-  --ds-gray-alpha-200: rgb(0 0 0 / 0.04);
-  --ds-gray-alpha-300: rgb(0 0 0 / 0.08);
-  --ds-gray-alpha-400: rgb(0 0 0 / 0.12);
-  --ds-gray-alpha-500: rgb(0 0 0 / 0.3);
-  --ds-gray-alpha-600: rgb(0 0 0 / 0.5);
-  --ds-gray-alpha-700: rgb(0 0 0 / 0.6);
-  --ds-gray-alpha-800: rgb(0 0 0 / 0.7);
-  --ds-gray-alpha-900: rgb(0 0 0 / 0.9);
 
   /* Blue */
   --ds-blue-100: rgb(224 242 254);
@@ -101,18 +143,6 @@
   --ds-green-900: rgb(20 83 45);
   --ds-green-1000: rgb(5 46 22);
 
-  /* Teal */
-  --ds-teal-100: rgb(204 251 241);
-  --ds-teal-200: rgb(153 246 228);
-  --ds-teal-300: rgb(94 234 212);
-  --ds-teal-400: rgb(45 212 191);
-  --ds-teal-500: rgb(20 184 166);
-  --ds-teal-600: rgb(13 148 136);
-  --ds-teal-700: rgb(15 118 110);
-  --ds-teal-800: rgb(17 94 89);
-  --ds-teal-900: rgb(19 78 74);
-  --ds-teal-1000: rgb(4 47 46);
-
   /* Purple */
   --ds-purple-100: rgb(243 232 255);
   --ds-purple-200: rgb(233 213 255);
@@ -125,17 +155,17 @@
   --ds-purple-900: rgb(88 28 135);
   --ds-purple-1000: rgb(59 7 100);
 
-  /* Pink */
-  --ds-pink-100: rgb(252 231 243);
-  --ds-pink-200: rgb(251 207 232);
-  --ds-pink-300: rgb(249 168 212);
-  --ds-pink-400: rgb(244 114 182);
-  --ds-pink-500: rgb(236 72 153);
-  --ds-pink-600: rgb(219 39 119);
-  --ds-pink-700: rgb(190 24 93);
-  --ds-pink-800: rgb(157 23 77);
-  --ds-pink-900: rgb(131 24 67);
-  --ds-pink-1000: rgb(80 7 36);
+  /* Teal */
+  --ds-teal-100: rgb(204 251 241);
+  --ds-teal-200: rgb(153 246 228);
+  --ds-teal-300: rgb(94 234 212);
+  --ds-teal-400: rgb(45 212 191);
+  --ds-teal-500: rgb(20 184 166);
+  --ds-teal-600: rgb(13 148 136);
+  --ds-teal-700: rgb(15 118 110);
+  --ds-teal-800: rgb(17 94 89);
+  --ds-teal-900: rgb(19 78 74);
+  --ds-teal-1000: rgb(4 47 46);
 
   /* Shadows */
   --ds-shadow-small: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 24px rgba(0, 0, 0, 0.05);
@@ -143,169 +173,38 @@
   --ds-shadow-large: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 8px 16px rgba(0, 0, 0, 0.10), 0 48px 96px rgba(0, 0, 0, 0.10);
 }
 
-/* Dark mode: applies when system prefers dark (and no .light class override) */
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
-    --ring: 0 0% 83.1%;
-
-    /* Geist Design System Colors - Dark Mode */
-    /* Backgrounds */
-    --ds-background-100: rgb(0 0 0);
-    --ds-background-200: rgb(10 10 10);
-
-    /* Gray Scale */
-    --ds-gray-100: rgb(17 17 17);
-    --ds-gray-200: rgb(23 23 23);
-    --ds-gray-300: rgb(41 41 41);
-    --ds-gray-400: rgb(64 64 64);
-    --ds-gray-500: rgb(115 115 115);
-    --ds-gray-600: rgb(163 163 163);
-    --ds-gray-700: rgb(212 212 212);
-    --ds-gray-800: rgb(229 229 229);
-    --ds-gray-900: rgb(245 245 245);
-    --ds-gray-1000: rgb(255 255 255);
-
-    /* Gray Alpha (with transparency) */
-    --ds-gray-alpha-100: rgb(255 255 255 / 0.02);
-    --ds-gray-alpha-200: rgb(255 255 255 / 0.04);
-    --ds-gray-alpha-300: rgb(255 255 255 / 0.08);
-    --ds-gray-alpha-400: rgb(255 255 255 / 0.12);
-    --ds-gray-alpha-500: rgb(255 255 255 / 0.3);
-    --ds-gray-alpha-600: rgb(255 255 255 / 0.5);
-    --ds-gray-alpha-700: rgb(255 255 255 / 0.6);
-    --ds-gray-alpha-800: rgb(255 255 255 / 0.7);
-    --ds-gray-alpha-900: rgb(255 255 255 / 0.9);
-
-    /* Blue - Dark Mode */
-    --ds-blue-100: rgb(8 47 73);
-    --ds-blue-200: rgb(12 74 110);
-    --ds-blue-300: rgb(7 89 133);
-    --ds-blue-400: rgb(3 105 161);
-    --ds-blue-500: rgb(2 132 199);
-    --ds-blue-600: rgb(14 165 233);
-    --ds-blue-700: rgb(56 189 248);
-    --ds-blue-800: rgb(125 211 252);
-    --ds-blue-900: rgb(186 230 253);
-    --ds-blue-1000: rgb(224 242 254);
-
-    /* Red - Dark Mode */
-    --ds-red-100: rgb(69 10 10);
-    --ds-red-200: rgb(127 29 29);
-    --ds-red-300: rgb(153 27 27);
-    --ds-red-400: rgb(185 28 28);
-    --ds-red-500: rgb(220 38 38);
-    --ds-red-600: rgb(239 68 68);
-    --ds-red-700: rgb(248 113 113);
-    --ds-red-800: rgb(252 165 165);
-    --ds-red-900: rgb(254 202 202);
-    --ds-red-1000: rgb(254 226 226);
-
-    /* Amber - Dark Mode */
-    --ds-amber-100: rgb(69 26 3);
-    --ds-amber-200: rgb(120 53 15);
-    --ds-amber-300: rgb(146 64 14);
-    --ds-amber-400: rgb(180 83 9);
-    --ds-amber-500: rgb(217 119 6);
-    --ds-amber-600: rgb(245 158 11);
-    --ds-amber-700: rgb(251 191 36);
-    --ds-amber-800: rgb(252 211 77);
-    --ds-amber-900: rgb(253 230 138);
-    --ds-amber-1000: rgb(254 243 199);
-
-    /* Green - Dark Mode */
-    --ds-green-100: rgb(5 46 22);
-    --ds-green-200: rgb(20 83 45);
-    --ds-green-300: rgb(22 101 52);
-    --ds-green-400: rgb(21 128 61);
-    --ds-green-500: rgb(22 163 74);
-    --ds-green-600: rgb(34 197 94);
-    --ds-green-700: rgb(74 222 128);
-    --ds-green-800: rgb(134 239 172);
-    --ds-green-900: rgb(187 247 208);
-    --ds-green-1000: rgb(220 252 231);
-
-    /* Teal - Dark Mode */
-    --ds-teal-100: rgb(4 47 46);
-    --ds-teal-200: rgb(19 78 74);
-    --ds-teal-300: rgb(17 94 89);
-    --ds-teal-400: rgb(15 118 110);
-    --ds-teal-500: rgb(13 148 136);
-    --ds-teal-600: rgb(20 184 166);
-    --ds-teal-700: rgb(45 212 191);
-    --ds-teal-800: rgb(94 234 212);
-    --ds-teal-900: rgb(153 246 228);
-    --ds-teal-1000: rgb(204 251 241);
-
-    /* Purple - Dark Mode */
-    --ds-purple-100: rgb(59 7 100);
-    --ds-purple-200: rgb(88 28 135);
-    --ds-purple-300: rgb(107 33 168);
-    --ds-purple-400: rgb(126 34 206);
-    --ds-purple-500: rgb(147 51 234);
-    --ds-purple-600: rgb(168 85 247);
-    --ds-purple-700: rgb(192 132 252);
-    --ds-purple-800: rgb(216 180 254);
-    --ds-purple-900: rgb(233 213 255);
-    --ds-purple-1000: rgb(243 232 255);
-
-    /* Pink - Dark Mode */
-    --ds-pink-100: rgb(80 7 36);
-    --ds-pink-200: rgb(131 24 67);
-    --ds-pink-300: rgb(157 23 77);
-    --ds-pink-400: rgb(190 24 93);
-    --ds-pink-500: rgb(219 39 119);
-    --ds-pink-600: rgb(236 72 153);
-    --ds-pink-700: rgb(244 114 182);
-    --ds-pink-800: rgb(249 168 212);
-    --ds-pink-900: rgb(251 207 232);
-    --ds-pink-1000: rgb(252 231 243);
-
-    /* Shadows - Dark Mode */
-    --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
-    --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
-    --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
-  }
-}
-
-/* Dark mode: applies when .dark class is present (overrides system preference) */
 .dark {
-  --background: 0 0% 3.9%;
-  --foreground: 0 0% 98%;
-  --card: 0 0% 3.9%;
-  --card-foreground: 0 0% 98%;
-  --popover: 0 0% 3.9%;
-  --popover-foreground: 0 0% 98%;
-  --primary: 0 0% 98%;
-  --primary-foreground: 0 0% 9%;
-  --secondary: 0 0% 14.9%;
-  --secondary-foreground: 0 0% 98%;
-  --muted: 0 0% 14.9%;
-  --muted-foreground: 0 0% 63.9%;
-  --accent: 0 0% 14.9%;
-  --accent-foreground: 0 0% 98%;
-  --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 0 0% 14.9%;
-  --input: 0 0% 14.9%;
-  --ring: 0 0% 83.1%;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
 
   /* Geist Design System Colors - Dark Mode */
   /* Backgrounds */
@@ -323,17 +222,6 @@
   --ds-gray-800: rgb(229 229 229);
   --ds-gray-900: rgb(245 245 245);
   --ds-gray-1000: rgb(255 255 255);
-
-  /* Gray Alpha (with transparency) */
-  --ds-gray-alpha-100: rgb(255 255 255 / 0.02);
-  --ds-gray-alpha-200: rgb(255 255 255 / 0.04);
-  --ds-gray-alpha-300: rgb(255 255 255 / 0.08);
-  --ds-gray-alpha-400: rgb(255 255 255 / 0.12);
-  --ds-gray-alpha-500: rgb(255 255 255 / 0.3);
-  --ds-gray-alpha-600: rgb(255 255 255 / 0.5);
-  --ds-gray-alpha-700: rgb(255 255 255 / 0.6);
-  --ds-gray-alpha-800: rgb(255 255 255 / 0.7);
-  --ds-gray-alpha-900: rgb(255 255 255 / 0.9);
 
   /* Blue - Dark Mode */
   --ds-blue-100: rgb(8 47 73);
@@ -383,18 +271,6 @@
   --ds-green-900: rgb(187 247 208);
   --ds-green-1000: rgb(220 252 231);
 
-  /* Teal - Dark Mode */
-  --ds-teal-100: rgb(4 47 46);
-  --ds-teal-200: rgb(19 78 74);
-  --ds-teal-300: rgb(17 94 89);
-  --ds-teal-400: rgb(15 118 110);
-  --ds-teal-500: rgb(13 148 136);
-  --ds-teal-600: rgb(20 184 166);
-  --ds-teal-700: rgb(45 212 191);
-  --ds-teal-800: rgb(94 234 212);
-  --ds-teal-900: rgb(153 246 228);
-  --ds-teal-1000: rgb(204 251 241);
-
   /* Purple - Dark Mode */
   --ds-purple-100: rgb(59 7 100);
   --ds-purple-200: rgb(88 28 135);
@@ -407,17 +283,17 @@
   --ds-purple-900: rgb(233 213 255);
   --ds-purple-1000: rgb(243 232 255);
 
-  /* Pink - Dark Mode */
-  --ds-pink-100: rgb(80 7 36);
-  --ds-pink-200: rgb(131 24 67);
-  --ds-pink-300: rgb(157 23 77);
-  --ds-pink-400: rgb(190 24 93);
-  --ds-pink-500: rgb(219 39 119);
-  --ds-pink-600: rgb(236 72 153);
-  --ds-pink-700: rgb(244 114 182);
-  --ds-pink-800: rgb(249 168 212);
-  --ds-pink-900: rgb(251 207 232);
-  --ds-pink-1000: rgb(252 231 243);
+  /* Teal - Dark Mode */
+  --ds-teal-100: rgb(4 47 46);
+  --ds-teal-200: rgb(19 78 74);
+  --ds-teal-300: rgb(17 94 89);
+  --ds-teal-400: rgb(15 118 110);
+  --ds-teal-500: rgb(13 148 136);
+  --ds-teal-600: rgb(20 184 166);
+  --ds-teal-700: rgb(45 212 191);
+  --ds-teal-800: rgb(94 234 212);
+  --ds-teal-900: rgb(153 246 228);
+  --ds-teal-1000: rgb(204 251 241);
 
   /* Shadows - Dark Mode */
   --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
@@ -425,41 +301,137 @@
   --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
 }
 
-@theme {
-  /* Allow Tailwind's default color palette while also defining custom colors */
-  --color-background: hsl(var(--background));
-  --color-foreground: hsl(var(--foreground));
-  --color-card: hsl(var(--card));
-  --color-card-foreground: hsl(var(--card-foreground));
-  --color-popover: hsl(var(--popover));
-  --color-popover-foreground: hsl(var(--popover-foreground));
-  --color-primary: hsl(var(--primary));
-  --color-primary-foreground: hsl(var(--primary-foreground));
-  --color-secondary: hsl(var(--secondary));
-  --color-secondary-foreground: hsl(var(--secondary-foreground));
-  --color-muted: hsl(var(--muted));
-  --color-muted-foreground: hsl(var(--muted-foreground));
-  --color-accent: hsl(var(--accent));
-  --color-accent-foreground: hsl(var(--accent-foreground));
-  --color-destructive: hsl(var(--destructive));
-  --color-destructive-foreground: hsl(var(--destructive-foreground));
-  --color-border: hsl(var(--border));
-  --color-input: hsl(var(--input));
-  --color-ring: hsl(var(--ring));
+/* System dark mode preference (when no explicit light/dark class is set) */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.488 0.243 264.376);
+    --chart-2: oklch(0.696 0.17 162.48);
+    --chart-3: oklch(0.769 0.188 70.08);
+    --chart-4: oklch(0.627 0.265 303.9);
+    --chart-5: oklch(0.645 0.246 16.439);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
 
-  --radius-sm: 0.375rem;
-  --radius: calc(var(--radius));
-  --radius-md: calc(var(--radius));
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
+    /* Geist Design System Colors - Dark Mode (same as .dark) */
+    --ds-background-100: rgb(0 0 0);
+    --ds-background-200: rgb(10 10 10);
+    --ds-gray-100: rgb(17 17 17);
+    --ds-gray-200: rgb(23 23 23);
+    --ds-gray-300: rgb(41 41 41);
+    --ds-gray-400: rgb(64 64 64);
+    --ds-gray-500: rgb(115 115 115);
+    --ds-gray-600: rgb(163 163 163);
+    --ds-gray-700: rgb(212 212 212);
+    --ds-gray-800: rgb(229 229 229);
+    --ds-gray-900: rgb(245 245 245);
+    --ds-gray-1000: rgb(255 255 255);
+    --ds-blue-100: rgb(8 47 73);
+    --ds-blue-200: rgb(12 74 110);
+    --ds-blue-300: rgb(7 89 133);
+    --ds-blue-400: rgb(3 105 161);
+    --ds-blue-500: rgb(2 132 199);
+    --ds-blue-600: rgb(14 165 233);
+    --ds-blue-700: rgb(56 189 248);
+    --ds-blue-800: rgb(125 211 252);
+    --ds-blue-900: rgb(186 230 253);
+    --ds-blue-1000: rgb(224 242 254);
+    --ds-red-100: rgb(69 10 10);
+    --ds-red-200: rgb(127 29 29);
+    --ds-red-300: rgb(153 27 27);
+    --ds-red-400: rgb(185 28 28);
+    --ds-red-500: rgb(220 38 38);
+    --ds-red-600: rgb(239 68 68);
+    --ds-red-700: rgb(248 113 113);
+    --ds-red-800: rgb(252 165 165);
+    --ds-red-900: rgb(254 202 202);
+    --ds-red-1000: rgb(254 226 226);
+    --ds-amber-100: rgb(69 26 3);
+    --ds-amber-200: rgb(120 53 15);
+    --ds-amber-300: rgb(146 64 14);
+    --ds-amber-400: rgb(180 83 9);
+    --ds-amber-500: rgb(217 119 6);
+    --ds-amber-600: rgb(245 158 11);
+    --ds-amber-700: rgb(251 191 36);
+    --ds-amber-800: rgb(252 211 77);
+    --ds-amber-900: rgb(253 230 138);
+    --ds-amber-1000: rgb(254 243 199);
+    --ds-green-100: rgb(5 46 22);
+    --ds-green-200: rgb(20 83 45);
+    --ds-green-300: rgb(22 101 52);
+    --ds-green-400: rgb(21 128 61);
+    --ds-green-500: rgb(22 163 74);
+    --ds-green-600: rgb(34 197 94);
+    --ds-green-700: rgb(74 222 128);
+    --ds-green-800: rgb(134 239 172);
+    --ds-green-900: rgb(187 247 208);
+    --ds-green-1000: rgb(220 252 231);
+    --ds-purple-100: rgb(59 7 100);
+    --ds-purple-200: rgb(88 28 135);
+    --ds-purple-300: rgb(107 33 168);
+    --ds-purple-400: rgb(126 34 206);
+    --ds-purple-500: rgb(147 51 234);
+    --ds-purple-600: rgb(168 85 247);
+    --ds-purple-700: rgb(192 132 252);
+    --ds-purple-800: rgb(216 180 254);
+    --ds-purple-900: rgb(233 213 255);
+    --ds-purple-1000: rgb(243 232 255);
+    --ds-teal-100: rgb(4 47 46);
+    --ds-teal-200: rgb(19 78 74);
+    --ds-teal-300: rgb(17 94 89);
+    --ds-teal-400: rgb(15 118 110);
+    --ds-teal-500: rgb(13 148 136);
+    --ds-teal-600: rgb(20 184 166);
+    --ds-teal-700: rgb(45 212 191);
+    --ds-teal-800: rgb(94 234 212);
+    --ds-teal-900: rgb(153 246 228);
+    --ds-teal-1000: rgb(204 251 241);
+    --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
+    --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
+    --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+  }
 }
 
-* {
-  border-color: hsl(var(--border));
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground overscroll-none;
+  }
+  html {
+    @apply overscroll-none;
+  }
 }
 
-body {
-  background: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font-feature-settings: "rlig" 1, "calt" 1;
+@keyframes gradient {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
 }

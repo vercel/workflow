@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
 import { connection } from 'next/server';
+import { NuqsAdapter } from 'nuqs/adapters/next/app';
 import { LayoutClient } from './layout-client';
 
 const geistSans = Geist({
@@ -34,7 +35,9 @@ export default async function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <LayoutClient>{children}</LayoutClient>
+        <NuqsAdapter>
+          <LayoutClient>{children}</LayoutClient>
+        </NuqsAdapter>
       </body>
     </html>
   );

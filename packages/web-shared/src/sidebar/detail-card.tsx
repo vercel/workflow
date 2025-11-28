@@ -10,7 +10,7 @@ export function DetailCard({
   return (
     <details className="group">
       <summary
-        className="cursor-pointer rounded-md border px-3 py-2 text-copy-14 hover:brightness-95"
+        className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95"
         style={{
           borderColor: 'var(--ds-gray-300)',
           backgroundColor: 'var(--ds-gray-100)',
@@ -19,7 +19,25 @@ export function DetailCard({
       >
         {summary}
       </summary>
-      <div className="p-2">{children}</div>
+      {/* Expanded content with connecting line */}
+      <div className="relative pl-6 mt-3">
+        {/* Curved connecting line - vertical part from summary */}
+        <div
+          className="absolute left-3 -top-3 w-px h-3"
+          style={{ backgroundColor: 'var(--ds-gray-400)' }}
+        />
+        {/* Curved corner */}
+        <div
+          className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg"
+          style={{ borderColor: 'var(--ds-gray-400)' }}
+        />
+        {/* Horizontal part to content */}
+        <div
+          className="absolute left-6 top-3 w-0 h-px -translate-y-px"
+          style={{ backgroundColor: 'var(--ds-gray-400)' }}
+        />
+        <div>{children}</div>
+      </div>
     </details>
   );
 }

@@ -43,9 +43,23 @@ export async function getNextBuilder() {
         tsPaths: tsConfig.paths,
       };
 
-      const stepsBuildContext = await this.buildStepsFunction(options);
+      const { context: stepsBuildContext } =
+        await this.buildStepsFunction(options);
       const workflowsBundle = await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
+
+      // Write graph manifest to workflow data directory (post-bundle extraction)
+      const workflowDataDir = join(
+        this.config.workingDir,
+        '.next/workflow-data'
+      );
+      await mkdir(workflowDataDir, { recursive: true });
+      const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
+      await this.createGraphManifest({
+        workflowBundlePath,
+        outfile: join(workflowDataDir, 'graph-manifest.json'),
+      });
+
       await this.writeFunctionsConfig(outputDir);
 
       if (this.config.watch) {
@@ -150,7 +164,8 @@ export async function getNextBuilder() {
           options.inputFiles = newInputFiles;
 
           await stepsCtx.dispose();
-          const newStepsCtx = await this.buildStepsFunction(options);
+          const { context: newStepsCtx } =
+            await this.buildStepsFunction(options);
           if (!newStepsCtx) {
             throw new Error(
               'Invariant: expected steps build context after rebuild'
@@ -166,6 +181,25 @@ export async function getNextBuilder() {
             );
           }
           workflowsCtx = newWorkflowsCtx;
+
+          // Rebuild graph manifest to workflow data directory
+          try {
+            const workflowDataDir = join(
+              this.config.workingDir,
+              '.next/workflow-data'
+            );
+            await mkdir(workflowDataDir, { recursive: true });
+            const workflowBundlePath = join(
+              workflowGeneratedDir,
+              'flow/route.js'
+            );
+            await this.createGraphManifest({
+              workflowBundlePath,
+              outfile: join(workflowDataDir, 'graph-manifest.json'),
+            });
+          } catch (error) {
+            console.error('Failed to rebuild graph manifest:', error);
+          }
         };
 
         const logBuildMessages = (
@@ -220,6 +254,25 @@ export async function getNextBuilder() {
             'Rebuilt workflow bundle',
             `${Date.now() - rebuiltWorkflowStart}ms`
           );
+
+          // Rebuild graph manifest to workflow data directory (post-bundle extraction)
+          try {
+            const workflowDataDir = join(
+              this.config.workingDir,
+              '.next/workflow-data'
+            );
+            await mkdir(workflowDataDir, { recursive: true });
+            const workflowBundlePath = join(
+              workflowGeneratedDir,
+              'flow/route.js'
+            );
+            await this.createGraphManifest({
+              workflowBundlePath,
+              outfile: join(workflowDataDir, 'graph-manifest.json'),
+            });
+          } catch (error) {
+            console.error('Failed to rebuild graph manifest:', error);
+          }
         };
 
         const isWatchableFile = (path: string) =>

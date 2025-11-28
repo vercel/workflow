@@ -26,6 +26,7 @@ const EMIT_SOURCEMAPS_FOR_DEBUGGING =
  */
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
+  protected lastWorkflowManifest?: WorkflowManifest;
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -253,6 +254,7 @@ export abstract class BaseBuilder {
    * Steps have full Node.js runtime access and handle side effects, API calls, etc.
    *
    * @param externalizeNonSteps - If true, only bundles step entry points and externalizes other code
+   * @returns Build context (for watch mode) and the collected workflow manifest
    */
   protected async createStepsBundle({
     inputFiles,
@@ -268,7 +270,10 @@ export abstract class BaseBuilder {
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
-  }): Promise<esbuild.BuildContext | undefined> {
+  }): Promise<{
+    context: esbuild.BuildContext | undefined;
+    manifest: WorkflowManifest;
+  }> {
     // These need to handle watching for dev to scan for
     // new entries and changes to existing ones
     const { discoveredSteps: stepFiles } = await this.discoverEntries(
@@ -389,10 +394,14 @@ export abstract class BaseBuilder {
     // Create .gitignore in .swc directory
     await this.createSwcGitignore();
 
+    // Store the manifest for later use (e.g., graph generation in watch mode)
+    this.lastWorkflowManifest = workflowManifest;
+
     if (this.config.watch) {
-      return esbuildCtx;
+      return { context: esbuildCtx, manifest: workflowManifest };
     }
     await esbuildCtx.dispose();
+    return { context: undefined, manifest: workflowManifest };
   }
 
   /**
@@ -836,6 +845,45 @@ export const OPTIONS = handler;`;
       );
     } catch {
       // We're intentionally silently ignoring this error - creating .gitignore isn't critical
+    }
+  }
+
+  /**
+   * Creates a graph manifest JSON file by extracting from the bundled workflow file.
+   * The manifest contains React Flow-compatible graph data for visualizing workflows.
+   */
+  protected async createGraphManifest({
+    workflowBundlePath,
+    outfile,
+  }: {
+    workflowBundlePath: string;
+    outfile: string;
+  }): Promise<void> {
+    const graphBuildStart = Date.now();
+    console.log('Creating workflow graph manifest...');
+
+    try {
+      // Import the graph extractor
+      const { extractGraphFromBundle } = await import('./graph-extractor.js');
+
+      // Extract graph from the bundled workflow file
+      const graphManifest = await extractGraphFromBundle(workflowBundlePath);
+
+      // Write the graph manifest
+      await this.ensureDirectory(outfile);
+      await writeFile(outfile, JSON.stringify(graphManifest, null, 2));
+
+      console.log(
+        `Created graph manifest with ${
+          Object.keys(graphManifest.workflows).length
+        } workflow(s)`,
+        `${Date.now() - graphBuildStart}ms`
+      );
+    } catch (error) {
+      console.warn(
+        'Failed to extract graph from bundle:',
+        error instanceof Error ? error.message : String(error)
+      );
     }
   }
 }

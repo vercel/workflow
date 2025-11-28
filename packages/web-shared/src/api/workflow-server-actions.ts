@@ -499,3 +499,40 @@ export async function readStreamServerAction(
     };
   }
 }
+
+/**
+ * Fetch the workflow graph manifest from the data directory
+ * The manifest is generated at build time and contains static structure info about workflows
+ */
+export async function fetchGraphManifest(
+  worldEnv: EnvMap
+): Promise<ServerActionResult<any>> {
+  try {
+    // Get the data directory from the world environment config
+    // This contains the correct absolute path passed from the client
+    const dataDir =
+      worldEnv.WORKFLOW_EMBEDDED_DATA_DIR ||
+      process.env.WORKFLOW_EMBEDDED_DATA_DIR ||
+      '.next/workflow-data';
+
+    // Read the manifest file
+    const fs = await import('fs/promises');
+    const path = await import('path');
+
+    // If dataDir is absolute, use it directly; otherwise join with cwd
+    const fullPath = path.isAbsolute(dataDir)
+      ? path.join(dataDir, 'graph-manifest.json')
+      : path.join(process.cwd(), dataDir, 'graph-manifest.json');
+
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const manifest = JSON.parse(content);
+
+    return createResponse(manifest);
+  } catch (error) {
+    console.error('Failed to fetch graph manifest:', error);
+    return {
+      success: false,
+      error: createServerActionError(error, 'fetchGraphManifest', {}),
+    };
+  }
+}
