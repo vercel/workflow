@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { start } from 'workflow/api';
-import * as workflows from '@/app/workflows/examples';
+import { allWorkflows } from '@/_workflows';
 import {
   WORKFLOW_DEFINITIONS,
   type WorkflowName,
@@ -22,6 +22,16 @@ export async function POST(request: NextRequest) {
     if (!definition) {
       return NextResponse.json(
         { error: `Workflow "${workflowName}" not found` },
+        { status: 404 }
+      );
+    }
+
+    // Get the workflow file
+    const workflows =
+      allWorkflows[definition.workflowFile as keyof typeof allWorkflows];
+    if (!workflows) {
+      return NextResponse.json(
+        { error: `Workflow file "${definition.workflowFile}" not found` },
         { status: 404 }
       );
     }
