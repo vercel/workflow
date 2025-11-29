@@ -9,6 +9,7 @@ export type WorkflowDefinition = {
 };
 
 // Default arguments for workflows that require them
+// Based on e2e test arguments from packages/core/e2e/e2e.test.ts
 const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   // 1_simple.ts
   simple: [42],
@@ -17,16 +18,23 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   agent: ['What is the weather in Muscat?'],
   // 7_full.ts
   handleUserSignup: ['user@example.com'],
+  // 98_duplicate_case.ts
+  addTenWorkflow: [123],
   // 99_e2e.ts
-  addTenWorkflow: [5],
-  hookWorkflow: [`test-token-${Date.now()}`, 'custom-data'],
-  webhookWorkflow: [
-    `webhook-token-1-${Date.now()}`,
-    `webhook-token-2-${Date.now()}`,
-    `webhook-token-3-${Date.now()}`,
+  hookWorkflow: [
+    Math.random().toString(36).slice(2),
+    Math.random().toString(36).slice(2),
   ],
-  hookCleanupTestWorkflow: [`cleanup-token-${Date.now()}`, 'cleanup-data'],
-  closureVariableWorkflow: [42],
+  webhookWorkflow: [
+    Math.random().toString(36).slice(2),
+    Math.random().toString(36).slice(2),
+    Math.random().toString(36).slice(2),
+  ],
+  hookCleanupTestWorkflow: [
+    Math.random().toString(36).slice(2),
+    Math.random().toString(36).slice(2),
+  ],
+  closureVariableWorkflow: [7],
 };
 
 // Dynamically generate workflow definitions from allWorkflows
