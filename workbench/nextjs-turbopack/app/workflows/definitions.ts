@@ -19,6 +19,19 @@ function toTitleCase(str: string): string {
     .replace(/^./, (s) => s.toUpperCase());
 }
 
+// Default arguments for workflows that require them
+const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
+  addTenWorkflow: [5],
+  hookWorkflow: [`test-token-${Date.now()}`, 'custom-data'],
+  webhookWorkflow: [
+    `webhook-token-1-${Date.now()}`,
+    `webhook-token-2-${Date.now()}`,
+    `webhook-token-3-${Date.now()}`,
+  ],
+  hookCleanupTestWorkflow: [`cleanup-token-${Date.now()}`, 'cleanup-data'],
+  closureVariableWorkflow: [42],
+};
+
 // Dynamically generate workflow definitions from allWorkflows
 export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = Object.entries(
   allWorkflows
@@ -30,7 +43,7 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = Object.entries(
         workflowFile,
         name,
         displayName: toTitleCase(name),
-        defaultArgs: [],
+        defaultArgs: DEFAULT_ARGS_MAP[name] || [],
       }))
   )
   .sort((a, b) => {
