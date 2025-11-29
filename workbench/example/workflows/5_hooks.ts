@@ -17,6 +17,8 @@ async function stepWithGetMetadata() {
   if (Math.random() < 0.5) {
     throw new Error('Retryable error');
   }
+
+  return ctx;
 }
 
 export async function withWorkflowMetadata() {
@@ -24,7 +26,9 @@ export async function withWorkflowMetadata() {
   const ctx = getWorkflowMetadata();
   console.log('workflow context', ctx);
 
-  await stepWithGetMetadata();
+  const stepCtx = await stepWithGetMetadata();
+
+  return { workflowCtx: ctx, stepCtx };
 }
 
 async function initiateOpenAIResponse() {

@@ -28,8 +28,8 @@ catalogs:
       specifier: ^3.2.4
       version: 3.2.4
     ai:
-      specifier: 5.0.76
-      version: 5.0.76
+      specifier: 5.0.104
+      version: 5.0.104
     esbuild:
       specifier: ^0.25.11
       version: 0.25.12
@@ -160,7 +160,7 @@ importers:
         version: link:../packages/world
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -327,7 +327,7 @@ importers:
         version: link:../tsconfig
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       workflow:
         specifier: workspace:*
         version: link:../workflow
@@ -1153,7 +1153,7 @@ importers:
         version: 1.13.0(@opentelemetry/api-logs@0.57.2)(@opentelemetry/api@1.9.0)(@opentelemetry/instrumentation@0.57.2(@opentelemetry/api@1.9.0))(@opentelemetry/resources@1.30.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.57.2(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@1.30.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.9.0))
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1206,7 +1206,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1227,7 +1227,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       hono:
         specifier: ^4.9.10
         version: 4.9.10
@@ -1269,7 +1269,7 @@ importers:
         version: link:../../packages/ai
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -1354,7 +1354,7 @@ importers:
         version: link:../../packages/ai
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -1428,7 +1428,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1458,7 +1458,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       h3:
         specifier: ^1.15.4
         version: 1.15.4
@@ -1489,7 +1489,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1523,7 +1523,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       h3:
         specifier: ^1.15.4
         version: 1.15.4
@@ -1571,7 +1571,7 @@ importers:
         version: link:../../packages/ai
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       exsolve:
         specifier: ^1.0.7
         version: 1.0.7
@@ -1624,7 +1624,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 5.0.76(zod@4.1.11)
+        version: 5.0.104(zod@4.1.11)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1664,6 +1664,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/gateway@2.0.17':
+    resolution: {integrity: sha512-oVAG6q72KsjKlrYdLhWjRO7rcqAR8CjokAbYuyVZoCO4Uh2PH/VzZoxZav71w2ipwlXhHCNaInGYWNs889MMDA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/google@2.0.43':
     resolution: {integrity: sha512-qO6giuoYCX/SdZScP/3VO5Xnbd392zm3HrTkhab/efocZU8J/VVEAcAUE1KJh0qOIAYllofRtpJIUGkRK8Q5rw==}
     engines: {node: '>=18'}
@@ -1690,6 +1696,12 @@ packages:
 
   '@ai-sdk/provider-utils@3.0.17':
     resolution: {integrity: sha512-TR3Gs4I3Tym4Ll+EPdzRdvo/rc8Js6c4nVhFLuvGLX/Y4V9ZcQMa/HTiYsHEgmYrf1zVi6Q145UEZUfleOwOjw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider-utils@3.0.18':
+    resolution: {integrity: sha512-ypv1xXMsgGcNKUP+hglKqtdDuMg68nWHucPPAhIENrbFAI+xCHiqPVN8Zllxyv1TNZwGWUghPxJXU+Mqps0YRQ==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -6571,6 +6583,12 @@ packages:
   agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
+
+  ai@5.0.104:
+    resolution: {integrity: sha512-MZOkL9++nY5PfkpWKBR3Rv+Oygxpb9S16ctv8h91GvrSif7UnNEdPMVZe3bUyMd2djxf0AtBk/csBixP0WwWZQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
 
   ai@5.0.76:
     resolution: {integrity: sha512-ZCxi1vrpyCUnDbtYrO/W8GLvyacV9689f00yshTIQ3mFFphbD7eIv40a2AOZBv3GGRA7SSRYIDnr56wcS/gyQg==}
@@ -12587,6 +12605,13 @@ snapshots:
       '@vercel/oidc': 3.0.5
       zod: 4.1.11
 
+  '@ai-sdk/gateway@2.0.17(zod@4.1.11)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.0
+      '@ai-sdk/provider-utils': 3.0.18(zod@4.1.11)
+      '@vercel/oidc': 3.0.5
+      zod: 4.1.11
+
   '@ai-sdk/google@2.0.43(zod@4.1.11)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
@@ -12613,6 +12638,13 @@ snapshots:
       zod: 4.1.11
 
   '@ai-sdk/provider-utils@3.0.17(zod@4.1.11)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.0
+      '@standard-schema/spec': 1.0.0
+      eventsource-parser: 3.0.6
+      zod: 4.1.11
+
+  '@ai-sdk/provider-utils@3.0.18(zod@4.1.11)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
       '@standard-schema/spec': 1.0.0
@@ -18388,6 +18420,14 @@ snapshots:
   acorn@8.15.0: {}
 
   agent-base@7.1.4: {}
+
+  ai@5.0.104(zod@4.1.11):
+    dependencies:
+      '@ai-sdk/gateway': 2.0.17(zod@4.1.11)
+      '@ai-sdk/provider': 2.0.0
+      '@ai-sdk/provider-utils': 3.0.18(zod@4.1.11)
+      '@opentelemetry/api': 1.9.0
+      zod: 4.1.11
 
   ai@5.0.76(zod@4.1.11):
     dependencies:

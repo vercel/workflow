@@ -57,6 +57,23 @@ export function InvocationsPanel({
     });
   };
 
+  const formatDuration = (startTime: Date, endTime: Date) => {
+    const durationMs = endTime.getTime() - startTime.getTime();
+
+    if (durationMs < 1000) {
+      return `${durationMs}ms`;
+    }
+
+    const seconds = durationMs / 1000;
+    if (seconds < 60) {
+      return `${seconds.toFixed(3)}s`;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds.toFixed(3)}s`;
+  };
+
   const getStatusIcon = (status: InvocationStatus) => {
     switch (status) {
       case 'invoked':
@@ -239,9 +256,18 @@ export function InvocationsPanel({
                       Started: {formatTime(invocation.startTime)}
                     </div>
                     {invocation.endTime && (
-                      <div className="text-muted-foreground">
-                        Ended: {formatTime(invocation.endTime)}
-                      </div>
+                      <>
+                        <div className="text-muted-foreground">
+                          Ended: {formatTime(invocation.endTime)}
+                        </div>
+                        <div className="text-muted-foreground font-mono">
+                          Duration:{' '}
+                          {formatDuration(
+                            invocation.startTime,
+                            invocation.endTime
+                          )}
+                        </div>
+                      </>
                     )}
                   </div>
                 </div>
