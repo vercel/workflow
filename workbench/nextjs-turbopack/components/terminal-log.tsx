@@ -37,15 +37,15 @@ export function TerminalLog({ logs, onClear }: TerminalLogProps) {
   const getLogColor = (type: LogEntry['type']) => {
     switch (type) {
       case 'error':
-        return 'text-destructive';
+        return 'text-red-600 dark:text-red-400';
       case 'info':
-        return 'text-primary';
+        return 'text-cyan-600 dark:text-cyan-400';
       case 'stream':
-        return 'text-blue-500';
+        return 'text-blue-600 dark:text-blue-400';
       case 'result':
-        return 'text-green-600';
+        return 'text-green-600 dark:text-green-400';
       default:
-        return 'text-foreground';
+        return 'text-gray-700 dark:text-gray-300';
     }
   };
 
@@ -75,7 +75,7 @@ export function TerminalLog({ logs, onClear }: TerminalLogProps) {
         </Button>
       </CardHeader>
       <CardContent className="flex-1 overflow-hidden">
-        <div className="h-full bg-black rounded-lg p-4 overflow-y-auto font-mono text-xs text-green-400">
+        <div className="h-full bg-slate-50 dark:bg-black rounded-lg p-4 overflow-y-auto font-mono text-xs">
           {logs.length === 0 ? (
             <div className="text-muted-foreground">
               No logs yet. Start a workflow to see output...
@@ -84,7 +84,9 @@ export function TerminalLog({ logs, onClear }: TerminalLogProps) {
             <div className="space-y-1">
               {logs.map((entry) => (
                 <div key={entry.id} className={getLogColor(entry.type)}>
-                  <span className="text-gray-500">{getLogPrefix(entry)}</span>{' '}
+                  <span className="text-gray-500 dark:text-gray-400">
+                    {getLogPrefix(entry)}
+                  </span>{' '}
                   {entry.message}
                 </div>
               ))}
