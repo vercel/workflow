@@ -27,7 +27,12 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = Object.entries(
 )
   .flatMap(([workflowFile, workflows]) =>
     Object.entries(workflows)
-      .filter(([_, value]) => typeof value === 'function')
+      .filter(
+        ([_, value]) =>
+          typeof value === 'function' &&
+          'workflowId' in value &&
+          typeof value.workflowId === 'string'
+      )
       .map(([name]) => ({
         workflowFile,
         name,
