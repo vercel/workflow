@@ -38,13 +38,25 @@ export default async ({ url }: { req: Request; url: URL }) => {
     const run = getRun(runId);
     const returnValue = await run.returnValue;
     console.log('Return value:', returnValue);
+
+    // Include run metadata in headers
+    const [createdAt, startedAt, completedAt] = await Promise.all([
+      run.createdAt,
+      run.startedAt,
+      run.completedAt,
+    ]);
+    const headers: HeadersInit =
+      returnValue instanceof ReadableStream
+        ? { 'Content-Type': 'application/octet-stream' }
+        : {};
+
+    headers['X-Workflow-Run-Created-At'] = createdAt?.toISOString() || '';
+    headers['X-Workflow-Run-Started-At'] = startedAt?.toISOString() || '';
+    headers['X-Workflow-Run-Completed-At'] = completedAt?.toISOString() || '';
+
     return returnValue instanceof ReadableStream
-      ? new Response(returnValue, {
-          headers: {
-            'Content-Type': 'application/octet-stream',
-          },
-        })
-      : Response.json(returnValue);
+      ? new Response(returnValue, { headers })
+      : Response.json(returnValue, { headers });
   } catch (error) {
     if (error instanceof Error) {
       if (WorkflowRunNotCompletedError.is(error)) {

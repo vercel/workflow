@@ -3,7 +3,7 @@
   "extends": ["//"],
   "tasks": {
     "build": {
-      "outputs": [".output/**", ".nuxt/**", ".nitro/**"]
+      "outputs": [".svelte-kit/**", "build/**"]
     }
   }
 }

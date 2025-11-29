@@ -41,7 +41,7 @@ export async function POST(req: Request) {
       workflowFileItems[workflowFn as keyof typeof workflowFileItems],
       args
     );
-    console.log('Run:', run);
+    console.log('Run:', run.runId);
     return Response.json(run);
   } catch (err) {
     console.error(`Failed to start!!`, err);
