@@ -10,6 +10,14 @@ export type WorkflowDefinition = {
 
 // Default arguments for workflows that require them
 const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
+  // 1_simple.ts
+  simple: [42],
+  // 4_ai.ts
+  ai: ['What is the weather in San Francisco?'],
+  agent: ['What is the weather in Muscat?'],
+  // 7_full.ts
+  handleUserSignup: ['user@example.com'],
+  // 99_e2e.ts
   addTenWorkflow: [5],
   hookWorkflow: [`test-token-${Date.now()}`, 'custom-data'],
   webhookWorkflow: [

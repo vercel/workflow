@@ -1282,9 +1282,15 @@ importers:
       lucide-react:
         specifier: 0.555.0
         version: 0.555.0(react@19.1.1)
+      mixpart:
+        specifier: 0.0.4
+        version: 0.0.4
       next:
         specifier: 16.0.1
         version: 16.0.1(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1)
+      openai:
+        specifier: 6.9.1
+        version: 6.9.1(ws@8.18.3)(zod@4.1.11)
       react:
         specifier: ^19.0.0
         version: 19.1.1
@@ -1361,9 +1367,15 @@ importers:
       lucide-react:
         specifier: 0.555.0
         version: 0.555.0(react@19.1.1)
+      mixpart:
+        specifier: 0.0.4
+        version: 0.0.4
       next:
         specifier: 16.0.1
         version: 16.0.1(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1)
+      openai:
+        specifier: 6.9.1
+        version: 6.9.1(ws@8.18.3)(zod@4.1.11)
       react:
         specifier: ^19.0.0
         version: 19.1.1
@@ -10047,6 +10059,18 @@ packages:
 
   openai@6.6.0:
     resolution: {integrity: sha512-1yWk4cBsHF5Bq9TreHYOHY7pbqdlT74COnm8vPx7WKn36StS+Hyk8DdAitnLaw67a5Cudkz5EmlFQjSrNnrA2w==}
+    hasBin: true
+    peerDependencies:
+      ws: ^8.18.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      ws:
+        optional: true
+      zod:
+        optional: true
+
+  openai@6.9.1:
+    resolution: {integrity: sha512-vQ5Rlt0ZgB3/BNmTa7bIijYFhz3YBceAA3Z4JuoMSBftBF9YqFHIEhZakSs+O/Ad7EaoEimZvHxD5ylRjN11Lg==}
     hasBin: true
     peerDependencies:
       ws: ^8.18.0
@@ -22797,6 +22821,11 @@ snapshots:
       zod: 4.1.11
 
   openai@6.6.0(ws@8.18.3)(zod@4.1.11):
+    optionalDependencies:
+      ws: 8.18.3
+      zod: 4.1.11
+
+  openai@6.9.1(ws@8.18.3)(zod@4.1.11):
     optionalDependencies:
       ws: 8.18.3
       zod: 4.1.11
