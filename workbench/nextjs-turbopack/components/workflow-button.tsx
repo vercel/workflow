@@ -34,9 +34,11 @@ export function WorkflowButton({ workflow, onStart }: WorkflowButtonProps) {
                   </code>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground line-clamp-1">
-                {workflow.description || workflow.workflowFile}
-              </p>
+              {hasArgs && (
+                <p className="text-xs text-muted-foreground font-mono line-clamp-1">
+                  {JSON.stringify(workflow.defaultArgs)}
+                </p>
+              )}
             </div>
           </TooltipTrigger>
           <TooltipContent side="right" className="max-w-md">
