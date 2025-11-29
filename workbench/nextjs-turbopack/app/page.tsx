@@ -324,13 +324,33 @@ export default function Home() {
             {/* Left Column - Workflow List */}
             <div className="space-y-3">
               <h2 className="text-lg font-semibold">Available Workflows</h2>
-              <div className="space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
-                {WORKFLOW_DEFINITIONS.map((workflow) => (
-                  <WorkflowButton
-                    key={`${workflow.workflowFile}:${workflow.name}`}
-                    workflow={workflow}
-                    onStart={startWorkflow}
-                  />
+              <div className="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
+                {Object.entries(
+                  WORKFLOW_DEFINITIONS.reduce(
+                    (acc, workflow) => {
+                      if (!acc[workflow.workflowFile]) {
+                        acc[workflow.workflowFile] = [];
+                      }
+                      acc[workflow.workflowFile].push(workflow);
+                      return acc;
+                    },
+                    {} as Record<string, typeof WORKFLOW_DEFINITIONS>
+                  )
+                ).map(([workflowFile, workflows]) => (
+                  <div key={workflowFile} className="space-y-2">
+                    <h3 className="text-xs font-mono text-muted-foreground px-1">
+                      {workflowFile}
+                    </h3>
+                    <div className="space-y-2">
+                      {workflows.map((workflow) => (
+                        <WorkflowButton
+                          key={`${workflow.workflowFile}:${workflow.name}`}
+                          workflow={workflow}
+                          onStart={startWorkflow}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
