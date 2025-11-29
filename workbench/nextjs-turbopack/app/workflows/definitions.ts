@@ -8,17 +8,6 @@ export type WorkflowDefinition = {
   defaultArgs: unknown[];
 };
 
-// Helper to convert camelCase or PascalCase to Title Case
-function toTitleCase(str: string): string {
-  // Remove "Workflow" suffix if present
-  const withoutSuffix = str.replace(/Workflow$/, '');
-  // Add space before capital letters and capitalize first letter
-  return withoutSuffix
-    .replace(/([A-Z])/g, ' $1')
-    .trim()
-    .replace(/^./, (s) => s.toUpperCase());
-}
-
 // Default arguments for workflows that require them
 const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   addTenWorkflow: [5],
@@ -42,7 +31,7 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = Object.entries(
       .map(([name]) => ({
         workflowFile,
         name,
-        displayName: toTitleCase(name),
+        displayName: name,
         defaultArgs: DEFAULT_ARGS_MAP[name] || [],
       }))
   )
