@@ -24,7 +24,7 @@ export function WorkflowButton({ workflow, onStart }: WorkflowButtonProps) {
           <TooltipTrigger asChild>
             <div className="flex-1 min-w-0 cursor-help">
               <div className="flex items-baseline gap-2">
-                <h3 className="text-sm font-semibold truncate">
+                <h3 className="text-sm font-semibold font-mono truncate">
                   {workflow.displayName}
                 </h3>
                 {hasArgs && (
@@ -41,7 +41,9 @@ export function WorkflowButton({ workflow, onStart }: WorkflowButtonProps) {
           </TooltipTrigger>
           <TooltipContent side="right" className="max-w-md">
             <div className="space-y-1">
-              <div className="font-semibold">{workflow.displayName}</div>
+              <div className="font-semibold font-mono">
+                {workflow.displayName}
+              </div>
               <div className="text-xs opacity-80 font-mono">
                 {workflow.workflowFile}
               </div>
