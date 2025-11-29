@@ -35,13 +35,16 @@ export function WorkflowButton({ workflow, onStart }: WorkflowButtonProps) {
                 )}
               </div>
               <p className="text-xs text-muted-foreground line-clamp-1">
-                {workflow.description}
+                {workflow.description || workflow.workflowFile}
               </p>
             </div>
           </TooltipTrigger>
           <TooltipContent side="right" className="max-w-md">
             <div className="space-y-1">
               <div className="font-semibold">{workflow.displayName}</div>
+              <div className="text-xs opacity-80 font-mono">
+                {workflow.workflowFile}
+              </div>
               {hasArgs ? (
                 <>
                   <div className="text-xs opacity-80">Default Arguments:</div>

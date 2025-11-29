@@ -327,7 +327,7 @@ export default function Home() {
               <div className="space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
                 {WORKFLOW_DEFINITIONS.map((workflow) => (
                   <WorkflowButton
-                    key={workflow.name}
+                    key={`${workflow.workflowFile}:${workflow.name}`}
                     workflow={workflow}
                     onStart={startWorkflow}
                   />
