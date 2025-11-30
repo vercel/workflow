@@ -27,10 +27,11 @@ export interface KnownWorld {
  */
 export const KNOWN_WORLDS: KnownWorld[] = [
   {
-    id: 'embedded',
-    displayName: 'Embedded',
+    id: 'local',
+    displayName: 'Local',
     packageName: null,
-    description: 'Local file-based storage, ideal for development',
+    description:
+      'Local file-based storage with no dependencies, ideal for development',
     isBuiltIn: true,
   },
   {
