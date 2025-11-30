@@ -35,7 +35,7 @@ export function createQueue(
     const payload = {
       id: queueId,
       data: body,
-      attempt: 0,
+      attempt: 1,
       messageId,
       idempotencyKey: opts?.idempotencyKey,
       queueName: `${prefix}${queueId}`,
