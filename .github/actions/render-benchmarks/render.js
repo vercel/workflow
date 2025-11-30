@@ -78,6 +78,8 @@ try {
         let maxTimeSec = '-';
         let overheadSec = '-';
 
+        let firstByteSec = null;
+
         if (workflowTimings?.summary?.[bench.name]) {
           const summary = workflowTimings.summary[bench.name];
           workflowTimeSec = formatSec(summary.avgExecutionTimeMs);
@@ -90,13 +92,21 @@ try {
             maxTimeSec = formatSec(summary.maxExecutionTimeMs);
           }
 
+          // Get first byte time if available (for stream benchmarks)
+          if (summary.avgFirstByteTimeMs !== undefined) {
+            firstByteSec = formatSec(summary.avgFirstByteTimeMs);
+          }
+
           // Calculate overhead (wall time - workflow time)
           const overheadMs = bench.mean - summary.avgExecutionTimeMs;
           overheadSec = formatSec(overheadMs);
         }
 
+        // Add TTFB annotation for stream benchmarks
+        const ttfbAnnotation =
+          firstByteSec !== null ? ` (TTFB: ${firstByteSec}s)` : '';
         console.log(
-          `| ${bench.name} | ${workflowTimeSec}s | ${minTimeSec}s | ${maxTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${bench.sampleCount} |`
+          `| ${bench.name}${ttfbAnnotation} | ${workflowTimeSec}s | ${minTimeSec}s | ${maxTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${bench.sampleCount} |`
         );
       }
       console.log('');
@@ -116,6 +126,9 @@ try {
   );
   console.log('- **Overhead**: Testbench overhead (Wall Time - Workflow Time)');
   console.log('- **Samples**: Number of benchmark iterations run');
+  console.log(
+    '- **TTFB**: Time to First Byte - time from workflow start until first stream byte received (stream benchmarks only)'
+  );
   console.log('</details>');
 } catch (error) {
   console.error(`Error rendering benchmark results: ${error.message}`);

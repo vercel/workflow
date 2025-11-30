@@ -75,7 +75,7 @@ function loadTimingData(benchmarkFile) {
 
 // Collect all benchmark data
 function collectBenchmarkData(resultFiles) {
-  // Structure: { [benchmarkName]: { [app]: { [backend]: { wallTime, workflowTime, overhead, min, max, samples } } } }
+  // Structure: { [benchmarkName]: { [app]: { [backend]: { wallTime, workflowTime, overhead, min, max, samples, firstByteTime } } } }
   const data = {};
 
   for (const file of resultFiles) {
@@ -107,8 +107,13 @@ function collectBenchmarkData(resultFiles) {
 
             // Get workflow timing if available
             let workflowTimeMs = null;
+            let firstByteTimeMs = null;
             if (timings?.summary?.[benchName]) {
               workflowTimeMs = timings.summary[benchName].avgExecutionTimeMs;
+              // Get TTFB for stream benchmarks
+              if (timings.summary[benchName].avgFirstByteTimeMs !== undefined) {
+                firstByteTimeMs = timings.summary[benchName].avgFirstByteTimeMs;
+              }
             }
 
             data[benchName][app][backend] = {
@@ -119,6 +124,7 @@ function collectBenchmarkData(resultFiles) {
               min: bench.min,
               max: bench.max,
               samples: bench.sampleCount,
+              firstByteTime: firstByteTimeMs,
             };
           }
         }
@@ -203,13 +209,27 @@ function renderComparison(data) {
     const fastestTime =
       fastest.metrics.workflowTime ?? fastest.metrics.wallTime;
 
+    // Check if any data point has TTFB (for stream benchmarks)
+    const hasFirstByteTime = dataPoints.some(
+      (dp) => dp.metrics.firstByteTime !== null
+    );
+
     // Render table - Workflow Time is primary metric
-    console.log(
-      '| Backend | Framework | Workflow Time | Wall Time | Overhead | vs Fastest |'
-    );
-    console.log(
-      '|:--------|:----------|--------------:|----------:|---------:|-----------:|'
-    );
+    if (hasFirstByteTime) {
+      console.log(
+        '| Backend | Framework | Workflow Time | TTFB | Wall Time | Overhead | vs Fastest |'
+      );
+      console.log(
+        '|:--------|:----------|--------------:|-----:|----------:|---------:|-----------:|'
+      );
+    } else {
+      console.log(
+        '| Backend | Framework | Workflow Time | Wall Time | Overhead | vs Fastest |'
+      );
+      console.log(
+        '|:--------|:----------|--------------:|----------:|---------:|-----------:|'
+      );
+    }
 
     for (const { app, backend, metrics } of dataPoints) {
       const backendInfo = backendConfig[backend] || {
@@ -226,15 +246,23 @@ function renderComparison(data) {
       const wallTimeSec = formatSec(metrics.wallTime);
       const overheadSec =
         metrics.overhead !== null ? formatSec(metrics.overhead) : '-';
+      const firstByteSec =
+        metrics.firstByteTime !== null ? formatSec(metrics.firstByteTime) : '-';
 
       const currentTime = metrics.workflowTime ?? metrics.wallTime;
       const factor = isFastest
         ? '1.00x'
         : `${(currentTime / fastestTime).toFixed(2)}x`;
 
-      console.log(
-        `| ${backendInfo.emoji} ${backendInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
-      );
+      if (hasFirstByteTime) {
+        console.log(
+          `| ${backendInfo.emoji} ${backendInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${firstByteSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
+        );
+      } else {
+        console.log(
+          `| ${backendInfo.emoji} ${backendInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
+        );
+      }
     }
     console.log('');
   }
@@ -337,6 +365,9 @@ function renderComparison(data) {
   console.log('<summary>Column Definitions</summary>\n');
   console.log(
     '- **Workflow Time**: Runtime reported by workflow (completedAt - createdAt) - *primary metric*'
+  );
+  console.log(
+    '- **TTFB**: Time to First Byte - time from workflow start until first stream byte received (stream benchmarks only)'
   );
   console.log(
     '- **Wall Time**: Total testbench time (trigger workflow + poll for result)'
