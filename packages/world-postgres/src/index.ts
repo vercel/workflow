@@ -6,10 +6,14 @@ import { createFunctionProxy } from './proxies/function-proxy.js';
 import { createHttpProxy } from './proxies/http-proxy.js';
 import { createQueue } from './queue.js';
 import {
+  createGraphileWorkerFunctionProxyQueue,
+  createGraphileWorkerHttpProxyQueue,
   createPgBossFunctionProxyQueue,
   createPgBossHttpProxyQueue,
 } from './queue-drivers/factories.js';
+import { createGraphileWorkerQueue } from './queue-drivers/graphile.js';
 import { createPgBossQueue } from './queue-drivers/pgboss.js';
+import type { QueueDriver } from './queue-drivers/types.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -18,6 +22,22 @@ import {
 } from './storage.js';
 import { createStreamer } from './streamer.js';
 
+/**
+ * Get the default queue factory based on WORKFLOW_QUEUE_DRIVER env var.
+ * Defaults to pg-boss for backwards compatibility.
+ *
+ * Set WORKFLOW_QUEUE_DRIVER=graphile to use Graphile Worker.
+ */
+function getDefaultQueueFactory(): () => QueueDriver {
+  const driver = process.env.WORKFLOW_QUEUE_DRIVER || 'pgboss';
+
+  if (driver === 'graphile') {
+    return createGraphileWorkerHttpProxyQueue;
+  }
+
+  return createPgBossHttpProxyQueue;
+}
+
 export function createWorld(
   opts: PostgresWorldConfig = {}
 ): World & { start(): Promise<void> } {
@@ -25,7 +45,7 @@ export function createWorld(
 
   const queueDriver = opts.queueFactory
     ? opts.queueFactory()
-    : createPgBossHttpProxyQueue();
+    : getDefaultQueueFactory()();
 
   const postgres = createPostgres(config.connectionString);
   const drizzle = createClient(postgres);
@@ -62,4 +82,9 @@ export {
   createPgBossQueue,
   createPgBossFunctionProxyQueue,
   createPgBossHttpProxyQueue,
+};
+export {
+  createGraphileWorkerQueue,
+  createGraphileWorkerFunctionProxyQueue,
+  createGraphileWorkerHttpProxyQueue,
 };
