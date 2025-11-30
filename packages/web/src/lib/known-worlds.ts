@@ -22,7 +22,7 @@ export interface KnownWorld {
 /**
  * List of known worlds that can be configured in the UI.
  *
- * Built-in worlds (embedded, vercel) are always available as they're bundled
+ * Built-in worlds (local, vercel) are always available as they're bundled
  * with @workflow/core. Third-party worlds need to be installed separately.
  */
 export const KNOWN_WORLDS: KnownWorld[] = [

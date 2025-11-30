@@ -1,7 +1,7 @@
 'use server';
 
-import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { KNOWN_WORLDS, type KnownWorld } from './known-worlds';
 
@@ -37,7 +37,7 @@ export interface WorldAvailability {
 /**
  * Check which world packages are installed.
  *
- * Built-in worlds (embedded, vercel) are always available.
+ * Built-in worlds (local, vercel) are always available.
  * Third-party worlds are checked by attempting to resolve their package.
  */
 export async function checkWorldsAvailability(): Promise<WorldAvailability[]> {
