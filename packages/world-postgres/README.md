@@ -56,7 +56,8 @@ const world = createWorld({
 The package supports flexible queues and execution patterns, letting you choose how jobs are queued and where the steps and workflows execution will be happen.
 
 ### Queue Strategy
-- **Built-in pg-boss** (default): Reliable PostgreSQL-backed job queue
+- **pg-boss** (default): Reliable PostgreSQL-backed job queue
+- **Graphile Worker**: PostgreSQL queue using native LISTEN/NOTIFY for lower latency
 - **Custom queue**: Implement your own queue system (Redis, SQS, RabbitMQ, etc.)
 
 ### Execution Proxy Strategy
@@ -123,6 +124,26 @@ const world = createWorld({
 });
 
 setWorld(world);
+
+await world.start();
+```
+
+### Graphile Worker + HTTP Proxy
+
+Use Graphile Worker for lower latency job processing via PostgreSQL LISTEN/NOTIFY:
+
+```bash
+WORKFLOW_QUEUE_DRIVER=graphile
+```
+
+Or programmatically:
+
+```typescript
+import { createWorld, createGraphileWorkerHttpProxyQueue } from "@workflow/world-postgres";
+
+const world = createWorld({
+  queueFactory: createGraphileWorkerHttpProxyQueue,
+});
 
 await world.start();
 ```
@@ -201,7 +222,7 @@ export async function handleQueueMessage(message: MessageData) {
 
 This package uses PostgreSQL with the following components:
 
-- **pg-boss**: For queue processing and job management
+- **pg-boss** or **Graphile Worker**: For queue processing and job management
 - **Drizzle ORM**: For database operations and schema management
 - **postgres**: For PostgreSQL client connections
 
@@ -247,6 +268,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 | `WORKFLOW_TARGET_WORLD`                | Package name to use as workflow world        | -                                               | All patterns               |
 | `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                 | `postgres://world:world@localhost:5432/world`   | All patterns               |
 | `WORKFLOW_POSTGRES_SECURITY_TOKEN`     | Security token for queue worker auth         | `secret`                                        | **Required in production** |
+| `WORKFLOW_QUEUE_DRIVER`                | Queue driver to use (`pgboss` or `graphile`) | `pgboss`                                        | Optional                   |
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                   | `workflow_`                                     | Optional                   |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                 | `10`                                            | Optional                   |
 | `WORKFLOW_POSTGRES_APP_URL`            | Base URL for HTTP proxy                      | -                                               | Pattern 1 (HTTP proxy)     |
@@ -257,7 +279,7 @@ All environment variables can be overridden by passing configuration programmati
 ## Features
 
 - **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL with schema isolation
-- **Flexible Queue System**: Use built-in pg-boss or integrate any queue system (Redis, SQS, RabbitMQ, etc.)
+- **Flexible Queue System**: Choose between pg-boss (polling), Graphile Worker (LISTEN/NOTIFY), or custom queue
 - **Multiple Execution Strategies**: HTTP proxy for distributed systems, function proxy for co-located workers
 - **Streaming**: Real-time event streaming capabilities
 - **Health Checks**: Built-in connection health monitoring
