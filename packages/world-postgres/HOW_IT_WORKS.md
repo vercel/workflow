@@ -13,7 +13,7 @@ graph LR
     Client --> PG[pg-boss queue]
     PG --> Worker[Embedded Worker]
     Worker --> HTTP[HTTP fetch]
-    HTTP --> EW[Embedded World]
+    HTTP --> EW[Local World]
 
     PG -.-> F["${prefix}flows<br/>(workflows)"]
     PG -.-> S["${prefix}steps<br/>(steps)"]
