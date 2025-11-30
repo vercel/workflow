@@ -1,7 +1,11 @@
 'use server';
 
+import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { KNOWN_WORLDS, type KnownWorld } from './known-worlds';
+
+const require = createRequire(join(process.cwd(), 'index.js'));
 
 export interface WorldConfig {
   backend?: string;
@@ -18,6 +22,48 @@ export interface WorldConfig {
 export interface ValidationError {
   field: string;
   message: string;
+}
+
+export interface WorldAvailability {
+  id: string;
+  displayName: string;
+  packageName: string | null;
+  description: string;
+  isBuiltIn: boolean;
+  isInstalled: boolean;
+  installCommand?: string;
+}
+
+/**
+ * Check which world packages are installed.
+ *
+ * Built-in worlds (embedded, vercel) are always available.
+ * Third-party worlds are checked by attempting to resolve their package.
+ */
+export async function checkWorldsAvailability(): Promise<WorldAvailability[]> {
+  return KNOWN_WORLDS.map((world: KnownWorld) => {
+    const availability: WorldAvailability = {
+      id: world.id,
+      displayName: world.displayName,
+      packageName: world.packageName,
+      description: world.description,
+      isBuiltIn: world.isBuiltIn,
+      isInstalled: world.isBuiltIn, // Built-in worlds are always installed
+    };
+
+    // For non-built-in worlds, try to resolve the package
+    if (!world.isBuiltIn && world.packageName) {
+      try {
+        require.resolve(world.packageName);
+        availability.isInstalled = true;
+      } catch {
+        availability.isInstalled = false;
+        availability.installCommand = `npm install ${world.packageName}`;
+      }
+    }
+
+    return availability;
+  });
 }
 
 // Validate configuration and return errors if any
