@@ -2,4 +2,4 @@
 "@workflow/world-postgres": patch
 ---
 
-poll faster in pg-boss, as it is a polling-based queue
+Increase polling interval for pg-boss to reduce interval between steps

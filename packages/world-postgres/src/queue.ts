@@ -87,7 +87,8 @@ export function createQueue(
         await boss.work(
           jobName,
           {
-            // turns out pg-boss is not using NOTIFY/LISTEN for job polling
+            // The default is 2s, which is far too slow for running steps in quick succession.
+            // The min is 0.5s, which is still too slow. We should move to a pg NOTIFY/LISTEN-based job system.
             pollingIntervalSeconds: 0.5,
           },
           work
