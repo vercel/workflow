@@ -62,15 +62,15 @@ By default, workflow data is stored in `.workflow-data/` in your project root. T
 **Environment variable:**
 
 ```bash
-export WORKFLOW_EMBEDDED_DATA_DIR=./custom-workflow-data
+export WORKFLOW_LOCAL_DATA_DIR=./custom-workflow-data
 ```
 
 **Programmatically:**
 
 ```typescript
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld({ dataDir: './custom-workflow-data' });
+const world = createLocalWorld({ dataDir: './custom-workflow-data' });
 ```
 
 ### Port
@@ -80,10 +80,10 @@ By default, the local world **automatically detects** which port your applicatio
 **Auto-detection example** (recommended):
 
 ```typescript
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 
 // Port is automatically detected - no configuration needed!
-const world = createEmbeddedWorld();
+const world = createLocalWorld();
 ```
 
 If auto-detection fails, the world will fall back to the `PORT` environment variable, then to port `3000`.
@@ -93,9 +93,9 @@ If auto-detection fails, the world will fall back to the `PORT` environment vari
 You can override the auto-detected port by specifying it explicitly:
 
 ```typescript
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 
-const world = createEmbeddedWorld({ port: 3000 });
+const world = createLocalWorld({ port: 3000 });
 ```
 
 ### Base URL
@@ -111,21 +111,21 @@ For advanced use cases like HTTPS or custom hostnames, you can override the enti
 **Environment variable:**
 
 ```bash
-export WORKFLOW_EMBEDDED_BASE_URL=https://local.example.com:3000
+export WORKFLOW_LOCAL_BASE_URL=https://local.example.com:3000
 ```
 
 **Programmatically:**
 
 ```typescript
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 
 // HTTPS
-const world = createEmbeddedWorld({
+const world = createLocalWorld({
   baseUrl: 'https://localhost:3000'
 });
 
 // Custom hostname
-const world = createEmbeddedWorld({
+const world = createLocalWorld({
   baseUrl: 'https://local.example.com:3000'
 });
 ```
@@ -203,12 +203,12 @@ For production deployments, use the [Vercel World](/docs/deploying/world/vercel-
 
 ## API Reference
 
-### `createEmbeddedWorld`
+### `createLocalWorld`
 
 Creates a local world instance:
 
 ```typescript
-function createEmbeddedWorld(
+function createLocalWorld(
   args?: Partial<{
     dataDir: string;
     port: number;
@@ -220,9 +220,9 @@ function createEmbeddedWorld(
 **Parameters:**
 
 - `args` - Optional configuration object:
-  - `dataDir` - Directory for storing workflow data (default: `.workflow-data/` or `WORKFLOW_EMBEDDED_DATA_DIR` env var)
+  - `dataDir` - Directory for storing workflow data (default: `.workflow-data/` or `WORKFLOW_LOCAL_DATA_DIR` env var)
   - `port` - Port override for queue transport (default: auto-detected → `PORT` env var → `3000`)
-  - `baseUrl` - Full base URL override for queue transport (default: `http://localhost:{port}` or `WORKFLOW_EMBEDDED_BASE_URL` env var)
+  - `baseUrl` - Full base URL override for queue transport (default: `http://localhost:{port}` or `WORKFLOW_LOCAL_BASE_URL` env var)
 
 **Returns:**
 
@@ -231,24 +231,24 @@ function createEmbeddedWorld(
 **Examples:**
 
 ```typescript
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 
 // Use all defaults (recommended - auto-detects port)
-const world = createEmbeddedWorld();
+const world = createLocalWorld();
 
 // Custom data directory
-const world = createEmbeddedWorld({ dataDir: './my-data' });
+const world = createLocalWorld({ dataDir: './my-data' });
 
 // Override port
-const world = createEmbeddedWorld({ port: 3000 });
+const world = createLocalWorld({ port: 3000 });
 
 // HTTPS with custom hostname
-const world = createEmbeddedWorld({
+const world = createLocalWorld({
   baseUrl: 'https://local.example.com:3000'
 });
 
 // Multiple options
-const world = createEmbeddedWorld({
+const world = createLocalWorld({
   dataDir: './my-data',
   baseUrl: 'https://localhost:3000'
 });
