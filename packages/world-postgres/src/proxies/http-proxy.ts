@@ -7,25 +7,26 @@ export function createHttpProxy(opts: {
   baseUrl?: string;
   securityToken: string;
 }): WkfProxy {
-  const resolveBaseUrl = (): string => {
+  // Resolve baseUrl lazily at request time to support dynamic port detection
+  const getBaseUrl = (): string => {
     if (opts.baseUrl) return opts.baseUrl;
     if (opts.port) return `http://localhost:${opts.port}`;
+    // Check for PORT env var (set by server after binding)
+    if (process.env.PORT) return `http://localhost:${process.env.PORT}`;
     return 'http://localhost:3000';
   };
-
-  const baseUrl = resolveBaseUrl();
 
   return {
     proxyWorkflow: async (message: MessageData): Promise<Response> => {
       return fetch(
-        `${baseUrl}/.well-known/workflow/v1/flow`,
+        `${getBaseUrl()}/.well-known/workflow/v1/flow`,
         prepareRequestParams(message, opts.securityToken)
       );
     },
 
     proxyStep: async (message: MessageData): Promise<Response> => {
       return fetch(
-        `${baseUrl}/.well-known/workflow/v1/step`,
+        `${getBaseUrl()}/.well-known/workflow/v1/step`,
         prepareRequestParams(message, opts.securityToken)
       );
     },
