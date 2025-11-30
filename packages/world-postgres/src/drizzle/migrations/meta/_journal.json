@@ -15,13 +15,6 @@
       "when": 1763903867386,
       "tag": "0001_tricky_sersi",
       "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1763679632642,
-      "tag": "0002_striped_lifeguard",
-      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "id": "a1cbf36d-8801-4509-80c4-8bab67191377",
+  "id": "f77ab195-d6cd-4b67-8411-14161b64275f",
   "prevId": "fbf17a09-4b7e-4939-9ee9-89ada6e197b1",
   "version": "7",
   "dialect": "postgresql",
@@ -42,6 +42,12 @@
         "payload": {
           "name": "payload",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payload_cbor": {
+          "name": "payload_cbor",
+          "type": "bytea",
           "primaryKey": false,
           "notNull": false
         }
@@ -137,6 +143,12 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "metadata_cbor": {
+          "name": "metadata_cbor",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -194,6 +206,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "output_cbor": {
+          "name": "output_cbor",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
+        },
         "deployment_id": {
           "name": "deployment_id",
           "type": "varchar",
@@ -219,11 +237,23 @@
           "primaryKey": false,
           "notNull": false
         },
+        "execution_context_cbor": {
+          "name": "execution_context_cbor",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
+        },
         "input": {
           "name": "input",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "input_cbor": {
+          "name": "input_cbor",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
         },
         "error": {
           "name": "error",
@@ -330,11 +360,23 @@
           "name": "input",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "input_cbor": {
+          "name": "input_cbor",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
         },
         "output": {
           "name": "output",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_cbor": {
+          "name": "output_cbor",
+          "type": "bytea",
           "primaryKey": false,
           "notNull": false
         },
