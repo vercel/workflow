@@ -37,7 +37,7 @@ export interface WorldAvailability {
 /**
  * Check which world packages are installed.
  *
- * Built-in worlds (embedded, vercel) are always available.
+ * Built-in worlds (local, vercel) are always available.
  * Third-party worlds are checked by attempting to resolve their package.
  */
 export async function checkWorldsAvailability(): Promise<WorldAvailability[]> {
