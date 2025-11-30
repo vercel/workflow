@@ -42,16 +42,17 @@ export async function tenParallelStepsWorkflow() {
 // Step that generates a stream with 10 chunks
 async function genBenchStream(): Promise<ReadableStream<Uint8Array>> {
   'use step';
-  const stream = new ReadableStream<Uint8Array>({
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
     async start(controller) {
-      const encoder = new TextEncoder();
       for (let i = 0; i < 10; i++) {
         controller.enqueue(encoder.encode(`${i}\n`));
+        // Small delay to avoid synchronous close issues on local world
+        await new Promise((resolve) => setTimeout(resolve, 10));
       }
       controller.close();
     },
   });
-  return stream;
 }
 
 // Step that transforms a stream by doubling each number
