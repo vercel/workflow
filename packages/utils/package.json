@@ -37,7 +37,6 @@
     "@types/ms": "2.1.0",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "execa": "9.6.1",
     "vitest": "catalog:"
   },
   "dependencies": {
