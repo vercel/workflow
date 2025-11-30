@@ -1,0 +1,19 @@
+name: 'Render Benchmark Results'
+description: 'Renders vitest benchmark results as markdown in GitHub step summary'
+inputs:
+  benchmark-file:
+    description: 'Path to the vitest benchmark JSON output file'
+    required: true
+  app-name:
+    description: 'Name of the app being benchmarked'
+    required: true
+  backend:
+    description: 'Backend type (local, postgres, vercel)'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Render benchmark results
+      shell: bash
+      run: |
+        node ${{ github.action_path }}/render.js "${{ inputs.benchmark-file }}" "${{ inputs.app-name }}" "${{ inputs.backend }}" >> $GITHUB_STEP_SUMMARY
