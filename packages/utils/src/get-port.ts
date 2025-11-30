@@ -2,6 +2,17 @@ import { readdir, readFile, readlink } from 'node:fs/promises';
 import { execa } from 'execa';
 
 /**
+ * Parses a port string and returns it if valid (0-65535), otherwise undefined.
+ */
+function parsePort(value: string, radix = 10): number | undefined {
+  const port = parseInt(value, radix);
+  if (!Number.isNaN(port) && port >= 0 && port <= 65535) {
+    return port;
+  }
+  return undefined;
+}
+
+/**
  * Gets listening ports for the current process on Linux by reading /proc filesystem.
  * This approach requires no external commands and works on all Linux systems.
  */
@@ -80,9 +91,8 @@ async function getLinuxPort(pid: number): Promise<number | undefined> {
         const portHex = localAddr.slice(colonIndex + 1);
         if (!portHex) continue;
 
-        const port = parseInt(portHex, 16);
-        // Validate port is a valid number and within valid range (0-65535)
-        if (!Number.isNaN(port) && port >= 0 && port <= 65535) {
+        const port = parsePort(portHex, 16);
+        if (port !== undefined) {
           inodeToPort.set(inode, port);
         }
       }
@@ -134,14 +144,7 @@ export async function getPort(): Promise<number | undefined> {
             input: lsofResult.stdout,
           }
         );
-        const parsedPort = parseInt(awkResult.stdout.trim(), 10);
-        if (
-          !Number.isNaN(parsedPort) &&
-          parsedPort >= 0 &&
-          parsedPort <= 65535
-        ) {
-          port = parsedPort;
-        }
+        port = parsePort(awkResult.stdout.trim());
         break;
       }
 
@@ -163,13 +166,8 @@ export async function getPort(): Promise<number | undefined> {
               .trim()
               .match(/^\s*TCP\s+(?:\[[\da-f:]+\]|[\d.]+):(\d+)\s+/i);
             if (match) {
-              const parsedPort = parseInt(match[1], 10);
-              if (
-                !Number.isNaN(parsedPort) &&
-                parsedPort >= 0 &&
-                parsedPort <= 65535
-              ) {
-                port = parsedPort;
+              port = parsePort(match[1]);
+              if (port !== undefined) {
                 break;
               }
             }
