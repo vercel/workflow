@@ -28,14 +28,6 @@
   "dependencies": {
     "next": "15.5.4"
   },
-  "peerDependencies": {
-    "@workflow/world-postgres": "*"
-  },
-  "peerDependenciesMeta": {
-    "@workflow/world-postgres": {
-      "optional": true
-    }
-  },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@radix-ui/react-alert-dialog": "1.1.5",
