@@ -1,5 +1,8 @@
 import { readdir, readFile, readlink } from 'node:fs/promises';
-import { execa } from 'execa';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Parses a port string and returns it if valid (0-65535), otherwise undefined.
@@ -135,7 +138,7 @@ export async function getPort(): Promise<number | undefined> {
         break;
       }
       case 'darwin': {
-        const lsofResult = await execa('lsof', [
+        const { stdout } = await execFileAsync('lsof', [
           '-a',
           '-i',
           '-P',
@@ -143,28 +146,39 @@ export async function getPort(): Promise<number | undefined> {
           '-p',
           pid.toString(),
         ]);
-        const awkResult = await execa(
-          'awk',
-          ['/LISTEN/ {split($9,a,":"); print a[length(a)]; exit}'],
-          {
-            input: lsofResult.stdout,
+        // Parse lsof output in JS instead of piping to awk
+        // Find first LISTEN line and extract port from address (e.g., "*:3000" or "127.0.0.1:3000")
+        const lines = stdout.split('\n');
+        for (const line of lines) {
+          if (line.includes('LISTEN')) {
+            // Column 9 (0-indexed: 8) contains the address like "*:3000" or "127.0.0.1:3000"
+            const parts = line.trim().split(/\s+/);
+            const addr = parts[8];
+            if (addr) {
+              const colonIndex = addr.lastIndexOf(':');
+              if (colonIndex !== -1) {
+                port = parsePort(addr.slice(colonIndex + 1));
+                if (port !== undefined) {
+                  break;
+                }
+              }
+            }
           }
-        );
-        port = parsePort(awkResult.stdout.trim());
+        }
         break;
       }
 
       case 'win32': {
         // Use cmd to run the piped command
-        const result = await execa('cmd', [
+        const { stdout } = await execFileAsync('cmd', [
           '/c',
           `netstat -ano | findstr ${pid} | findstr LISTENING`,
         ]);
 
-        const stdout = result.stdout.trim();
+        const trimmedOutput = stdout.trim();
 
-        if (stdout) {
-          const lines = stdout.split('\n');
+        if (trimmedOutput) {
+          const lines = trimmedOutput.split('\n');
           for (const line of lines) {
             // Extract port from the local address column
             // Matches both IPv4 (e.g., "127.0.0.1:3000") and IPv6 bracket notation (e.g., "[::1]:3000")
