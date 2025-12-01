@@ -12,9 +12,9 @@ function parsePort(value: string, radix = 10): number | undefined {
   return undefined;
 }
 
-// Build /proc paths dynamically to prevent @vercel/nft from tracing them as dependencies.
-// NFT does static analysis and tries to bundle any file path literals it finds.
-// Since /proc is a virtual filesystem that changes at runtime, this causes build failures.
+// NOTE: We build /proc paths dynamically to prevent @vercel/nft from tracing them.
+// NFT's static analysis tries to bundle any file path literal it finds (e.g., '/proc/net/tcp').
+// Since /proc is a virtual Linux filesystem, this causes build failures in @sveltejs/adapter-vercel.
 const join = (arr: string[], sep: string) => arr.join(sep);
 const PROC_ROOT = join(['', 'proc'], '/');
 
