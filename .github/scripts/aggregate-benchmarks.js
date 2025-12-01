@@ -3,7 +3,19 @@
 const fs = require('fs');
 const path = require('path');
 
-const [, , resultsDir = '.'] = process.argv;
+// Parse command line arguments
+const args = process.argv.slice(2);
+let resultsDir = '.';
+let baselineDir = null;
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--baseline' && args[i + 1]) {
+    baselineDir = args[i + 1];
+    i++;
+  } else if (!args[i].startsWith('--')) {
+    resultsDir = args[i];
+  }
+}
 
 // World display config
 const worldConfig = {
@@ -22,6 +34,26 @@ const frameworkConfig = {
 // Format milliseconds as seconds
 function formatSec(ms, decimals = 3) {
   return (ms / 1000).toFixed(decimals);
+}
+
+// Format delta between current and baseline values
+// Returns string like "+12.3%" (slower) or "-5.2%" (faster) or "" if no baseline
+function formatDelta(current, baseline) {
+  if (
+    baseline === null ||
+    baseline === undefined ||
+    current === null ||
+    current === undefined
+  ) {
+    return '';
+  }
+  const percentChange = ((current - baseline) / baseline) * 100;
+  if (Math.abs(percentChange) < 0.5) {
+    return ' (~)';
+  }
+  const sign = percentChange > 0 ? '+' : '';
+  const emoji = percentChange > 5 ? ' 🔺' : percentChange < -5 ? ' 🟢' : '';
+  return ` (${sign}${percentChange.toFixed(1)}%${emoji})`;
 }
 
 // Find all benchmark result files
@@ -178,7 +210,14 @@ function isStreamBenchmark(benchData, apps, backends) {
 }
 
 // Render a single benchmark table
-function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
+function renderBenchmarkTable(
+  benchName,
+  benchData,
+  baselineBenchData,
+  apps,
+  backends,
+  isStream
+) {
   console.log(`## ${benchName}\n`);
 
   // Collect all data points (including missing ones) for all app/backend combinations
@@ -187,7 +226,8 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
   for (const app of apps) {
     for (const backend of backends) {
       const metrics = benchData[app]?.[backend];
-      const dataPoint = { app, backend, metrics: metrics || null };
+      const baseline = baselineBenchData?.[app]?.[backend] || null;
+      const dataPoint = { app, backend, metrics: metrics || null, baseline };
       dataPoints.push(dataPoint);
       if (metrics) {
         validDataPoints.push(dataPoint);
@@ -238,7 +278,7 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
     );
   }
 
-  for (const { app, backend, metrics } of dataPoints) {
+  for (const { app, backend, metrics, baseline } of dataPoints) {
     const worldInfo = worldConfig[backend] || {
       emoji: '',
       label: backend,
@@ -249,11 +289,11 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
     if (!metrics) {
       if (isStream) {
         console.log(
-          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ! _missing_ | - | - | - | - |`
+          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - | - |`
         );
       } else {
         console.log(
-          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ! _missing_ | - | - | - |`
+          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - |`
         );
       }
       continue;
@@ -262,13 +302,29 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
     const isFastest = metrics === fastest.metrics;
     const medal = isFastest ? '🥇 ' : '';
 
+    // Format workflow time with delta
     const workflowTimeSec =
       metrics.workflowTime !== null ? formatSec(metrics.workflowTime) : '-';
+    const workflowDelta = formatDelta(
+      metrics.workflowTime,
+      baseline?.workflowTime
+    );
+
+    // Format wall time with delta
     const wallTimeSec = formatSec(metrics.wallTime);
+    const wallDelta = formatDelta(metrics.wallTime, baseline?.wallTime);
+
+    // Format overhead (no delta needed, it's derived)
     const overheadSec =
       metrics.overhead !== null ? formatSec(metrics.overhead) : '-';
+
+    // Format TTFB with delta for stream benchmarks
     const firstByteSec =
       metrics.firstByteTime !== null ? formatSec(metrics.firstByteTime) : '-';
+    const ttfbDelta = formatDelta(
+      metrics.firstByteTime,
+      baseline?.firstByteTime
+    );
 
     const currentTime = metrics.workflowTime ?? metrics.wallTime;
     const factor = isFastest
@@ -277,11 +333,11 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
 
     if (isStream) {
       console.log(
-        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${firstByteSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${firstByteSec}s${ttfbDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${factor} |`
       );
     } else {
       console.log(
-        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${factor} |`
       );
     }
   }
@@ -289,7 +345,7 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
 }
 
 // Render the comparison tables
-function renderComparison(data) {
+function renderComparison(data, baselineData) {
   const { apps, backends } = getAppsAndBackends(data);
 
   if (Object.keys(data).length === 0) {
@@ -299,6 +355,13 @@ function renderComparison(data) {
 
   console.log('<!-- benchmark-results -->\n');
   console.log('## 📊 Benchmark Results\n');
+
+  // Show baseline comparison note if baseline data is available
+  if (baselineData && Object.keys(baselineData).length > 0) {
+    console.log(
+      '> 📈 _Comparing against baseline from `main` branch. Green 🟢 = faster, Red 🔺 = slower._\n'
+    );
+  }
 
   // Separate benchmarks into regular and stream categories
   const regularBenchmarks = [];
@@ -315,7 +378,15 @@ function renderComparison(data) {
   // Render regular benchmarks first
   if (regularBenchmarks.length > 0) {
     for (const [benchName, benchData] of regularBenchmarks) {
-      renderBenchmarkTable(benchName, benchData, apps, backends, false);
+      const baselineBenchData = baselineData?.[benchName] || null;
+      renderBenchmarkTable(
+        benchName,
+        benchData,
+        baselineBenchData,
+        apps,
+        backends,
+        false
+      );
     }
   }
 
@@ -328,7 +399,15 @@ function renderComparison(data) {
     );
 
     for (const [benchName, benchData] of streamBenchmarks) {
-      renderBenchmarkTable(benchName, benchData, apps, backends, true);
+      const baselineBenchData = baselineData?.[benchName] || null;
+      renderBenchmarkTable(
+        benchName,
+        benchData,
+        baselineBenchData,
+        apps,
+        backends,
+        true
+      );
     }
   }
 
@@ -495,4 +574,14 @@ if (resultFiles.length === 0) {
 }
 
 const data = collectBenchmarkData(resultFiles);
-renderComparison(data);
+
+// Load baseline data if provided
+let baselineData = null;
+if (baselineDir) {
+  const baselineFiles = findBenchmarkFiles(baselineDir);
+  if (baselineFiles.length > 0) {
+    baselineData = collectBenchmarkData(baselineFiles);
+  }
+}
+
+renderComparison(data, baselineData);
