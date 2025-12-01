@@ -40,7 +40,6 @@
     "vitest": "catalog:"
   },
   "dependencies": {
-    "execa": "9.6.0",
     "ms": "2.1.3"
   }
 }
