@@ -55,61 +55,109 @@ try {
 
   for (const file of data.files) {
     for (const group of file.groups) {
-      // Workflow Time is primary metric, Wall Time is secondary
-      console.log(
-        '| Benchmark | Workflow Time (avg) | Min | Max | Wall Time | Overhead | Samples |'
-      );
-      console.log(
-        '|:----------|--------------------:|----:|----:|----------:|---------:|--------:|'
-      );
+      // Separate regular and stream benchmarks
+      const regularBenchmarks = [];
+      const streamBenchmarks = [];
 
       for (const bench of group.benchmarks) {
-        // Skip benchmarks without valid timing data (failed or timed out)
-        if (bench.mean === undefined || bench.mean === null) {
-          console.log(`| ${bench.name} | ⚠️ No data | - | - | - | - | 0 |`);
-          continue;
+        const summary = workflowTimings?.summary?.[bench.name];
+        if (summary?.avgFirstByteTimeMs !== undefined) {
+          streamBenchmarks.push(bench);
+        } else {
+          regularBenchmarks.push(bench);
         }
-
-        const wallTimeSec = formatSec(bench.mean);
-
-        // Get workflow execution time if available
-        let workflowTimeSec = '-';
-        let minTimeSec = '-';
-        let maxTimeSec = '-';
-        let overheadSec = '-';
-
-        let firstByteSec = null;
-
-        if (workflowTimings?.summary?.[bench.name]) {
-          const summary = workflowTimings.summary[bench.name];
-          workflowTimeSec = formatSec(summary.avgExecutionTimeMs);
-
-          // Get min/max if available
-          if (summary.minExecutionTimeMs !== undefined) {
-            minTimeSec = formatSec(summary.minExecutionTimeMs);
-          }
-          if (summary.maxExecutionTimeMs !== undefined) {
-            maxTimeSec = formatSec(summary.maxExecutionTimeMs);
-          }
-
-          // Get first byte time if available (for stream benchmarks)
-          if (summary.avgFirstByteTimeMs !== undefined) {
-            firstByteSec = formatSec(summary.avgFirstByteTimeMs);
-          }
-
-          // Calculate overhead (wall time - workflow time)
-          const overheadMs = bench.mean - summary.avgExecutionTimeMs;
-          overheadSec = formatSec(overheadMs);
-        }
-
-        // Add TTFB annotation for stream benchmarks
-        const ttfbAnnotation =
-          firstByteSec !== null ? ` (TTFB: ${firstByteSec}s)` : '';
-        console.log(
-          `| ${bench.name}${ttfbAnnotation} | ${workflowTimeSec}s | ${minTimeSec}s | ${maxTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${bench.sampleCount} |`
-        );
       }
-      console.log('');
+
+      // Render regular benchmarks
+      if (regularBenchmarks.length > 0) {
+        console.log(
+          '| Benchmark | Workflow Time (avg) | Min | Max | Wall Time | Overhead | Samples |'
+        );
+        console.log(
+          '|:----------|--------------------:|----:|----:|----------:|---------:|--------:|'
+        );
+
+        for (const bench of regularBenchmarks) {
+          // Skip benchmarks without valid timing data (failed or timed out)
+          if (bench.mean === undefined || bench.mean === null) {
+            console.log(`| ${bench.name} | ⚠️ No data | - | - | - | - | 0 |`);
+            continue;
+          }
+
+          const wallTimeSec = formatSec(bench.mean);
+          let workflowTimeSec = '-';
+          let minTimeSec = '-';
+          let maxTimeSec = '-';
+          let overheadSec = '-';
+
+          if (workflowTimings?.summary?.[bench.name]) {
+            const summary = workflowTimings.summary[bench.name];
+            workflowTimeSec = formatSec(summary.avgExecutionTimeMs);
+            if (summary.minExecutionTimeMs !== undefined) {
+              minTimeSec = formatSec(summary.minExecutionTimeMs);
+            }
+            if (summary.maxExecutionTimeMs !== undefined) {
+              maxTimeSec = formatSec(summary.maxExecutionTimeMs);
+            }
+            const overheadMs = bench.mean - summary.avgExecutionTimeMs;
+            overheadSec = formatSec(overheadMs);
+          }
+
+          console.log(
+            `| ${bench.name} | ${workflowTimeSec}s | ${minTimeSec}s | ${maxTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${bench.sampleCount} |`
+          );
+        }
+        console.log('');
+      }
+
+      // Render stream benchmarks with TTFB column
+      if (streamBenchmarks.length > 0) {
+        console.log('**Stream Benchmarks**\n');
+        console.log(
+          '| Benchmark | Workflow Time (avg) | TTFB | Min | Max | Wall Time | Overhead | Samples |'
+        );
+        console.log(
+          '|:----------|--------------------:|-----:|----:|----:|----------:|---------:|--------:|'
+        );
+
+        for (const bench of streamBenchmarks) {
+          // Skip benchmarks without valid timing data (failed or timed out)
+          if (bench.mean === undefined || bench.mean === null) {
+            console.log(
+              `| ${bench.name} | ⚠️ No data | - | - | - | - | - | 0 |`
+            );
+            continue;
+          }
+
+          const wallTimeSec = formatSec(bench.mean);
+          let workflowTimeSec = '-';
+          let minTimeSec = '-';
+          let maxTimeSec = '-';
+          let overheadSec = '-';
+          let ttfbSec = '-';
+
+          if (workflowTimings?.summary?.[bench.name]) {
+            const summary = workflowTimings.summary[bench.name];
+            workflowTimeSec = formatSec(summary.avgExecutionTimeMs);
+            if (summary.minExecutionTimeMs !== undefined) {
+              minTimeSec = formatSec(summary.minExecutionTimeMs);
+            }
+            if (summary.maxExecutionTimeMs !== undefined) {
+              maxTimeSec = formatSec(summary.maxExecutionTimeMs);
+            }
+            if (summary.avgFirstByteTimeMs !== undefined) {
+              ttfbSec = formatSec(summary.avgFirstByteTimeMs);
+            }
+            const overheadMs = bench.mean - summary.avgExecutionTimeMs;
+            overheadSec = formatSec(overheadMs);
+          }
+
+          console.log(
+            `| ${bench.name} | ${workflowTimeSec}s | ${ttfbSec}s | ${minTimeSec}s | ${maxTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${bench.sampleCount} |`
+          );
+        }
+        console.log('');
+      }
     }
   }
 
