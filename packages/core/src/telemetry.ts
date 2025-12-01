@@ -1,4 +1,5 @@
-import type { Span, SpanOptions } from '@opentelemetry/api';
+import type * as api from '@opentelemetry/api';
+import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
 import { once } from '@workflow/utils';
 
 // ============================================================
@@ -118,9 +119,7 @@ export async function getSpanContextForTraceCarrier(
 }
 
 export async function getActiveSpan() {
-  const otel = await OtelApi.value;
-  if (!otel) return null;
-  return otel.trace.getActiveSpan();
+  return await withOtel((otel) => otel.trace.getActiveSpan());
 }
 
 export function instrumentObject<T extends object>(prefix: string, o: T): T {
@@ -136,4 +135,24 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
     }
   }
   return handlers;
+}
+
+export async function getSpanKind(field: keyof typeof SpanKind) {
+  return withOtel((x) => x.SpanKind[field]);
+}
+
+export async function withOtel<T>(
+  fn: (otel: typeof api) => T
+): Promise<Awaited<T> | undefined> {
+  const otel = await OtelApi.value;
+  if (!otel) return undefined;
+  return await fn(otel);
+}
+
+export function linkToCurrentContext(): Promise<[api.Link] | undefined> {
+  return withOtel((otel): [api.Link] | undefined => {
+    const context = otel.trace.getActiveSpan()?.spanContext();
+    if (!context) return;
+    return [{ context }];
+  });
 }
