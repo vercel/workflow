@@ -31,6 +31,7 @@ export function workflowPlugin(): Plugin[] {
           content = await read();
         } catch {
           // File might have been deleted - trigger rebuild to update generated routes
+          console.log('Workflow file changed, rebuilding...');
           await enqueue(() => builder.build());
           return;
         }
