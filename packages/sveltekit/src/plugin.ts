@@ -1,21 +1,11 @@
 import type { HotUpdateOptions, Plugin } from 'vite';
 import { SvelteKitBuilder } from './builder.js';
 import { workflowTransformPlugin } from '@workflow/rollup';
+import { createBuildQueue } from '@workflow/builders';
 
 export function workflowPlugin(): Plugin[] {
   let builder: SvelteKitBuilder;
-
-  // Build queue to serialize builds and prevent race conditions
-  // when rapid file changes trigger concurrent hotUpdate calls.
-  // Similar pattern to packages/next/src/builder.ts
-  let rebuildQueue = Promise.resolve();
-
-  const enqueue = (task: () => Promise<void>): Promise<void> => {
-    rebuildQueue = rebuildQueue.then(task).catch((error) => {
-      console.error('Workflow build failed:', error);
-    });
-    return rebuildQueue;
-  };
+  const enqueue = createBuildQueue();
 
   return [
     workflowTransformPlugin(),

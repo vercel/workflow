@@ -4,4 +4,4 @@
 "@workflow/nitro": patch
 ---
 
-Fix nitro build race condition and make builder file operations atomic
+Fix Nitro and SvelteKit build race conditions and make writing debug file atomic

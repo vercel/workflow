@@ -6,21 +6,11 @@ import type { Plugin as VitePlugin } from 'vite';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 import { workflowTransformPlugin } from '@workflow/rollup';
+import { createBuildQueue } from '@workflow/builders';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
-
-  // Build queue to serialize builds and prevent race conditions
-  // when rapid file changes trigger concurrent hotUpdate calls.
-  // Similar pattern to packages/next/src/builder.ts
-  let rebuildQueue = Promise.resolve();
-
-  const enqueue = (task: () => Promise<void>): Promise<void> => {
-    rebuildQueue = rebuildQueue.then(task).catch((error) => {
-      console.error('Workflow build failed:', error);
-    });
-    return rebuildQueue;
-  };
+  const enqueue = createBuildQueue();
 
   return [
     workflowTransformPlugin() as VitePlugin,
