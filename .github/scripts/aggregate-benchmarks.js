@@ -5,8 +5,8 @@ const path = require('path');
 
 const [, , resultsDir = '.'] = process.argv;
 
-// Backend display config
-const backendConfig = {
+// World display config
+const worldConfig = {
   local: { emoji: '💻', label: 'Local' },
   postgres: { emoji: '🐘', label: 'Postgres' },
   vercel: { emoji: '▲', label: 'Vercel' },
@@ -15,7 +15,7 @@ const backendConfig = {
 // Framework display config
 const frameworkConfig = {
   'nextjs-turbopack': { label: 'Next.js (Turbopack)' },
-  nitro: { label: 'Nitro' },
+  'nitro-v3': { label: 'Nitro' },
   express: { label: 'Express' },
 };
 
@@ -224,22 +224,22 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
   // Render table - different columns for stream vs regular benchmarks
   if (isStream) {
     console.log(
-      '| Backend | Framework | Workflow Time | TTFB | Wall Time | Overhead | vs Fastest |'
+      '| World | Framework | Workflow Time | TTFB | Wall Time | Overhead | vs Fastest |'
     );
     console.log(
-      '|:--------|:----------|--------------:|-----:|----------:|---------:|-----------:|'
+      '|:------|:----------|--------------:|-----:|----------:|---------:|-----------:|'
     );
   } else {
     console.log(
-      '| Backend | Framework | Workflow Time | Wall Time | Overhead | vs Fastest |'
+      '| World | Framework | Workflow Time | Wall Time | Overhead | vs Fastest |'
     );
     console.log(
-      '|:--------|:----------|--------------:|----------:|---------:|-----------:|'
+      '|:------|:----------|--------------:|----------:|---------:|-----------:|'
     );
   }
 
   for (const { app, backend, metrics } of dataPoints) {
-    const backendInfo = backendConfig[backend] || {
+    const worldInfo = worldConfig[backend] || {
       emoji: '',
       label: backend,
     };
@@ -249,11 +249,11 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
     if (!metrics) {
       if (isStream) {
         console.log(
-          `| ${backendInfo.emoji} ${backendInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - | - |`
+          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ! _missing_ | - | - | - | - |`
         );
       } else {
         console.log(
-          `| ${backendInfo.emoji} ${backendInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - |`
+          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ! _missing_ | - | - | - |`
         );
       }
       continue;
@@ -277,11 +277,11 @@ function renderBenchmarkTable(benchName, benchData, apps, backends, isStream) {
 
     if (isStream) {
       console.log(
-        `| ${backendInfo.emoji} ${backendInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${firstByteSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${firstByteSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
       );
     } else {
       console.log(
-        `| ${backendInfo.emoji} ${backendInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s | ${wallTimeSec}s | ${overheadSec}s | ${factor} |`
       );
     }
   }
@@ -332,13 +332,13 @@ function renderComparison(data) {
     }
   }
 
-  // Summary: Best framework per backend (by Workflow Time)
-  console.log('## Summary: Fastest Framework by Backend\n');
-  console.log('| Backend | Fastest Framework | Workflow Time |');
-  console.log('|:--------|:------------------|---------------:|');
+  // Summary: Best framework per world (by Workflow Time)
+  console.log('## Summary: Fastest Framework by World\n');
+  console.log('| World | Fastest Framework | Workflow Time |');
+  console.log('|:------|:------------------|---------------:|');
 
   for (const backend of backends) {
-    const backendInfo = backendConfig[backend] || { emoji: '', label: backend };
+    const worldInfo = worldConfig[backend] || { emoji: '', label: backend };
     let fastestApp = null;
     let fastestTime = Infinity;
 
@@ -372,16 +372,16 @@ function renderComparison(data) {
         label: fastestApp,
       };
       console.log(
-        `| ${backendInfo.emoji} ${backendInfo.label} | ${frameworkInfo.label} | ${formatSec(fastestTime)}s (avg) |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ${formatSec(fastestTime)}s (avg) |`
       );
     }
   }
   console.log('');
 
-  // Summary: Best backend per framework (by Workflow Time)
-  console.log('## Summary: Fastest Backend by Framework\n');
-  console.log('| Framework | Fastest Backend | Workflow Time |');
-  console.log('|:----------|:----------------|---------------:|');
+  // Summary: Best world per framework (by Workflow Time)
+  console.log('## Summary: Fastest World by Framework\n');
+  console.log('| Framework | Fastest World | Workflow Time |');
+  console.log('|:----------|:--------------|---------------:|');
 
   for (const app of apps) {
     const frameworkInfo = frameworkConfig[app] || { label: app };
@@ -414,12 +414,12 @@ function renderComparison(data) {
     }
 
     if (fastestBackend) {
-      const backendInfo = backendConfig[fastestBackend] || {
+      const worldInfo = worldConfig[fastestBackend] || {
         emoji: '',
         label: fastestBackend,
       };
       console.log(
-        `| ${frameworkInfo.label} | ${backendInfo.emoji} ${backendInfo.label} | ${formatSec(fastestTime)}s (avg) |`
+        `| ${frameworkInfo.label} | ${worldInfo.emoji} ${worldInfo.label} | ${formatSec(fastestTime)}s (avg) |`
       );
     }
   }
@@ -442,10 +442,10 @@ function renderComparison(data) {
     '- **vs Fastest**: How much slower compared to the fastest configuration for this benchmark'
   );
   console.log('');
-  console.log('**Backends:**');
-  console.log('- 💻 Local: In-memory filesystem backend');
-  console.log('- 🐘 Postgres: PostgreSQL database backend');
-  console.log('- ▲ Vercel: Vercel production backend');
+  console.log('**Worlds:**');
+  console.log('- 💻 Local: In-memory filesystem world');
+  console.log('- 🐘 Postgres: PostgreSQL database world');
+  console.log('- ▲ Vercel: Vercel production world');
   console.log('</details>');
 }
 

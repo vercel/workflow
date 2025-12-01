@@ -33,9 +33,9 @@ function formatSec(ms, decimals = 3) {
   return (ms / 1000).toFixed(decimals);
 }
 
-// Get backend emoji
-function getBackendEmoji(backend) {
-  switch (backend) {
+// Get world emoji
+function getWorldEmoji(world) {
+  switch (world) {
     case 'vercel':
       return '▲';
     case 'postgres':
@@ -50,8 +50,8 @@ function getBackendEmoji(backend) {
 try {
   const data = JSON.parse(fs.readFileSync(benchmarkFile, 'utf-8'));
 
-  const emoji = getBackendEmoji(backend);
-  console.log(`## ${emoji} Benchmark Results: ${appName} (${backend})\n`);
+  const emoji = getWorldEmoji(backend);
+  console.log(`## ${emoji} Benchmark Results: ${appName} (${backend} world)\n`);
 
   for (const file of data.files) {
     for (const group of file.groups) {
