@@ -180,6 +180,9 @@ export const QueueMessageId = SemanticConvention<MessageId>(
   'queue.messageId'
 );
 
+/** Time taken to enqueue the message in milliseconds */
+export const QueueOverheadMs = SemanticConvention<number>('queue.overhead_ms');
+
 // Deployment attributes
 
 /** Unique identifier for the deployment environment */

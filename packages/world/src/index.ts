@@ -13,7 +13,9 @@ export {
   MessageId,
   QueuePayloadSchema,
   QueuePrefix,
+  StepInvokePayloadSchema,
   ValidQueueName,
+  WorkflowInvokePayloadSchema,
 } from './queue.js';
 export type * from './runs.js';
 export {

@@ -24,6 +24,7 @@ export type TraceCarrier = z.infer<typeof TraceCarrierSchema>;
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
+  requestedAt: z.coerce.date().optional(),
 });
 
 export const StepInvokePayloadSchema = z.object({
@@ -32,6 +33,7 @@ export const StepInvokePayloadSchema = z.object({
   workflowStartedAt: z.number(),
   stepId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
+  requestedAt: z.coerce.date().optional(),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;

@@ -9,24 +9,20 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { getPort } from '@workflow/utils/get-port';
-import type {
-  Event,
-  WorkflowRun,
-  WorkflowRunStatus,
-  World,
+import {
+  type Event,
+  StepInvokePayloadSchema,
+  WorkflowInvokePayloadSchema,
+  type WorkflowRun,
+  type WorkflowRunStatus,
+  type World,
 } from '@workflow/world';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import { parseWorkflowName } from './parse-name.js';
 import { getStepFunction } from './private.js';
 import { getWorld, getWorldHandlers } from './runtime/world.js';
-import {
-  type Serializable,
-  type StepInvokePayload,
-  StepInvokePayloadSchema,
-  type WorkflowInvokePayload,
-  WorkflowInvokePayloadSchema,
-} from './schemas.js';
+import type { Serializable } from './schemas.js';
 import {
   dehydrateStepArguments,
   dehydrateStepReturnValue,
@@ -277,8 +273,11 @@ export function workflowEntrypoint(workflowCode: string) {
   return getWorldHandlers().createQueueHandler(
     '__wkf_workflow_',
     async (message_, metadata) => {
-      const { runId, traceCarrier: traceContext } =
-        WorkflowInvokePayloadSchema.parse(message_);
+      const {
+        runId,
+        traceCarrier: traceContext,
+        requestedAt,
+      } = WorkflowInvokePayloadSchema.parse(message_);
       // Extract the workflow name from the topic name
       const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
       const spanLinks = await linkToCurrentContext();
@@ -295,6 +294,7 @@ export function workflowEntrypoint(workflowCode: string) {
               ...Attribute.WorkflowOperation('execute'),
               ...Attribute.QueueName(metadata.queueName),
               ...Attribute.QueueMessageId(metadata.messageId),
+              ...getQueueOverhead({ requestedAt }),
             });
 
             // TODO: validate `workflowName` exists before consuming message?
@@ -438,7 +438,8 @@ export function workflowEntrypoint(workflowCode: string) {
                           workflowStartedAt,
                           stepId: step.stepId,
                           traceCarrier: await serializeTraceCarrier(),
-                        } satisfies StepInvokePayload,
+                          requestedAt: new Date(),
+                        },
                         {
                           idempotencyKey: queueItem.correlationId,
                         }
@@ -599,6 +600,7 @@ export const stepEntrypoint =
         workflowStartedAt,
         stepId,
         traceCarrier: traceContext,
+        requestedAt,
       } = StepInvokePayloadSchema.parse(message_);
       const spanLinks = await linkToCurrentContext();
       // Execute step within the propagated trace context
@@ -619,6 +621,7 @@ export const stepEntrypoint =
               ...Attribute.StepAttempt(metadata.attempt),
               ...Attribute.QueueName(metadata.queueName),
               ...Attribute.QueueMessageId(metadata.messageId),
+              ...getQueueOverhead({ requestedAt }),
             });
 
             const stepFn = getStepFunction(stepName);
@@ -912,7 +915,8 @@ export const stepEntrypoint =
             await queueMessage(world, `__wkf_workflow_${workflowName}`, {
               runId: workflowRunId,
               traceCarrier: await serializeTraceCarrier(),
-            } satisfies WorkflowInvokePayload);
+              requestedAt: new Date(),
+            });
           }
         );
       });
@@ -938,6 +942,20 @@ async function queueMessage(
       span?.setAttributes(Attribute.QueueMessageId(messageId));
     }
   );
+}
+
+/**
+ * Calculates the queue overhead time in milliseconds for a given message.
+ */
+function getQueueOverhead(message: { requestedAt?: Date }) {
+  if (!message.requestedAt) return;
+  try {
+    return Attribute.QueueOverheadMs(
+      Date.now() - message.requestedAt.getTime()
+    );
+  } catch {
+    return;
+  }
 }
 
 // this is a no-op placeholder as the client is
