@@ -6,8 +6,11 @@ import { WorkflowButton } from '@/components/workflow-button';
 import { TerminalLog } from '@/components/terminal-log';
 import { InvocationsPanel } from '@/components/invocations-panel';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { Button } from '@/components/ui/button';
 import { useWorkflowStorage } from '@/hooks';
 import { BrowserWorkflowDemo } from '@/components/browser-workflow-demo';
+import Link from 'next/link';
+import { MessageSquareIcon } from 'lucide-react';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'server' | 'browser'>('server');
@@ -314,13 +317,21 @@ export default function Home() {
     <TooltipProvider delayDuration={0}>
       <div className="min-h-screen bg-background p-6">
         <div className="max-w-[1800px] mx-auto space-y-6">
-          <div className="space-y-1">
-            <h1 className="text-3xl font-bold tracking-tight">
-              Workflow DevKit Examples
-            </h1>
-            <p className="text-muted-foreground">
-              Select a workflow to start a run and view its output
-            </p>
+          <div className="flex items-start justify-between">
+            <div className="space-y-1">
+              <h1 className="text-3xl font-bold tracking-tight">
+                Workflow DevKit Examples
+              </h1>
+              <p className="text-muted-foreground">
+                Select a workflow to start a run and view its output
+              </p>
+            </div>
+            <Link href="/chat">
+              <Button>
+                <MessageSquareIcon className="size-4 mr-2" />
+                AI Chat Demo
+              </Button>
+            </Link>
           </div>
 
           {/* Tab navigation */}

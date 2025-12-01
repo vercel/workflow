@@ -526,16 +526,21 @@ export async function buildBrowserWorker(
   // Create a temporary directory for the build
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-browser-'));
 
+  // Map temp file names to original source directories for import resolution
+  const tempToOriginalDir = new Map<string, string>();
+
   try {
     // Write the browser-compatible private shim
     const shimPath = path.join(tmpDir, 'workflow-private-shim.js');
     fs.writeFileSync(shimPath, generatePrivateShim(), 'utf-8');
 
-    // Write each transformed workflow file
+    // Write each transformed workflow file and track original paths
     for (let i = 0; i < transformedWorkflows.length; i++) {
       const tw = transformedWorkflows[i];
       const workflowFilePath = path.join(tmpDir, `workflow_${i}.js`);
       fs.writeFileSync(workflowFilePath, tw.code, 'utf-8');
+      // Map temp file to original source directory
+      tempToOriginalDir.set(workflowFilePath, path.dirname(tw.path));
     }
 
     // Generate and write the entry file
@@ -548,6 +553,36 @@ export async function buildBrowserWorker(
 
     // Output directly to public folder with the expected filename
     const workerPath = path.join(outputDir, '__workflow-worker.js');
+
+    // Create esbuild plugin to resolve relative imports from original source locations
+    const resolveFromOriginalPlugin: esbuild.Plugin = {
+      name: 'resolve-from-original',
+      setup(build) {
+        // Intercept relative imports in temp workflow files
+        build.onResolve({ filter: /^\.\.?\// }, (args) => {
+          // Check if this import is from a temp workflow file
+          const importerDir = tempToOriginalDir.get(args.importer);
+          if (importerDir) {
+            // Resolve relative to the original source directory
+            const resolvedPath = path.resolve(importerDir, args.path);
+            // Try with .ts, .tsx, .js extensions
+            const extensions = ['', '.ts', '.tsx', '.js', '.jsx'];
+            for (const ext of extensions) {
+              const fullPath = resolvedPath + ext;
+              if (fs.existsSync(fullPath)) {
+                return { path: fullPath };
+              }
+              // Also try /index variants
+              const indexPath = path.join(resolvedPath, `index${ext || '.ts'}`);
+              if (fs.existsSync(indexPath)) {
+                return { path: indexPath };
+              }
+            }
+          }
+          return undefined; // Let esbuild handle it normally
+        });
+      },
+    };
 
     // Bundle with esbuild
     await esbuild.build({
@@ -564,7 +599,8 @@ export async function buildBrowserWorker(
       define: {
         'process.env.NODE_ENV': '"production"',
       },
-      // No banner needed for regular Worker (only was needed for SharedWorker)
+      // Use plugin to resolve relative imports from original locations
+      plugins: [resolveFromOriginalPlugin],
       // Handle node: protocol imports
       platform: 'browser',
       // Log level
