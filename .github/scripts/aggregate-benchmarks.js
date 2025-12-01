@@ -332,94 +332,131 @@ function renderComparison(data) {
     }
   }
 
-  // Summary: Best framework per world (by Workflow Time)
-  console.log('## Summary: Fastest Framework by World\n');
-  console.log('| World | Fastest Framework | Workflow Time |');
-  console.log('|:------|:------------------|---------------:|');
+  // Summary: Count wins per framework (within each world) and per world (within each framework)
+  const allBenchmarks = [...regularBenchmarks, ...streamBenchmarks];
 
-  for (const backend of backends) {
-    const worldInfo = worldConfig[backend] || { emoji: '', label: backend };
-    let fastestApp = null;
-    let fastestTime = Infinity;
+  // Count wins: for each world, which framework wins most benchmarks
+  const frameworkWinsByWorld = {}; // { backend: { app: count } }
+  // Count wins: for each framework, which world wins most benchmarks
+  const worldWinsByFramework = {}; // { app: { backend: count } }
 
-    // Average workflow time across all benchmarks for this backend
-    const appTotals = {};
-    const appCounts = {};
+  for (const [benchName, benchData] of allBenchmarks) {
+    // For each world, find the fastest framework
+    for (const backend of backends) {
+      let fastestApp = null;
+      let fastestTime = Infinity;
 
-    for (const benchData of Object.values(data)) {
       for (const app of apps) {
         const metrics = benchData[app]?.[backend];
         if (metrics) {
           const time = metrics.workflowTime ?? metrics.wallTime;
-          appTotals[app] = (appTotals[app] || 0) + time;
-          appCounts[app] = (appCounts[app] || 0) + 1;
+          if (time < fastestTime) {
+            fastestTime = time;
+            fastestApp = app;
+          }
         }
+      }
+
+      if (fastestApp) {
+        if (!frameworkWinsByWorld[backend]) {
+          frameworkWinsByWorld[backend] = {};
+        }
+        frameworkWinsByWorld[backend][fastestApp] =
+          (frameworkWinsByWorld[backend][fastestApp] || 0) + 1;
       }
     }
 
+    // For each framework, find the fastest world
     for (const app of apps) {
-      if (appCounts[app] > 0) {
-        const avgTime = appTotals[app] / appCounts[app];
-        if (avgTime < fastestTime) {
-          fastestTime = avgTime;
-          fastestApp = app;
+      let fastestBackend = null;
+      let fastestTime = Infinity;
+
+      for (const backend of backends) {
+        const metrics = benchData[app]?.[backend];
+        if (metrics) {
+          const time = metrics.workflowTime ?? metrics.wallTime;
+          if (time < fastestTime) {
+            fastestTime = time;
+            fastestBackend = backend;
+          }
         }
+      }
+
+      if (fastestBackend) {
+        if (!worldWinsByFramework[app]) {
+          worldWinsByFramework[app] = {};
+        }
+        worldWinsByFramework[app][fastestBackend] =
+          (worldWinsByFramework[app][fastestBackend] || 0) + 1;
+      }
+    }
+  }
+
+  // Summary: Best framework per world (by wins)
+  console.log('---\n');
+  console.log('## Summary: Fastest Framework by World\n');
+  console.log(`_Winner determined by most benchmark wins_\n`);
+  console.log('| World | 🥇 Fastest Framework | Wins |');
+  console.log('|:------|:---------------------|-----:|');
+
+  for (const backend of backends) {
+    const worldInfo = worldConfig[backend] || { emoji: '', label: backend };
+    const frameworkWins = frameworkWinsByWorld[backend] || {};
+
+    // Find framework with most wins
+    let bestApp = null;
+    let bestWins = 0;
+    for (const [app, wins] of Object.entries(frameworkWins)) {
+      if (wins > bestWins) {
+        bestWins = wins;
+        bestApp = app;
       }
     }
 
-    if (fastestApp) {
-      const frameworkInfo = frameworkConfig[fastestApp] || {
-        label: fastestApp,
-      };
+    if (bestApp) {
+      const frameworkInfo = frameworkConfig[bestApp] || { label: bestApp };
+      // Count total benchmarks for this world (benchmarks that have data for this world)
+      const totalForWorld = allBenchmarks.filter(([, bd]) =>
+        apps.some((a) => bd[a]?.[backend])
+      ).length;
       console.log(
-        `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ${formatSec(fastestTime)}s (avg) |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ${bestWins}/${totalForWorld} |`
       );
     }
   }
   console.log('');
 
-  // Summary: Best world per framework (by Workflow Time)
+  // Summary: Best world per framework (by wins)
   console.log('## Summary: Fastest World by Framework\n');
-  console.log('| Framework | Fastest World | Workflow Time |');
-  console.log('|:----------|:--------------|---------------:|');
+  console.log(`_Winner determined by most benchmark wins_\n`);
+  console.log('| Framework | 🥇 Fastest World | Wins |');
+  console.log('|:----------|:-----------------|-----:|');
 
   for (const app of apps) {
     const frameworkInfo = frameworkConfig[app] || { label: app };
-    let fastestBackend = null;
-    let fastestTime = Infinity;
+    const worldWins = worldWinsByFramework[app] || {};
 
-    // Average workflow time across all benchmarks for this app
-    const backendTotals = {};
-    const backendCounts = {};
-
-    for (const benchData of Object.values(data)) {
-      for (const backend of backends) {
-        const metrics = benchData[app]?.[backend];
-        if (metrics) {
-          const time = metrics.workflowTime ?? metrics.wallTime;
-          backendTotals[backend] = (backendTotals[backend] || 0) + time;
-          backendCounts[backend] = (backendCounts[backend] || 0) + 1;
-        }
+    // Find world with most wins
+    let bestBackend = null;
+    let bestWins = 0;
+    for (const [backend, wins] of Object.entries(worldWins)) {
+      if (wins > bestWins) {
+        bestWins = wins;
+        bestBackend = backend;
       }
     }
 
-    for (const backend of backends) {
-      if (backendCounts[backend] > 0) {
-        const avgTime = backendTotals[backend] / backendCounts[backend];
-        if (avgTime < fastestTime) {
-          fastestTime = avgTime;
-          fastestBackend = backend;
-        }
-      }
-    }
-
-    if (fastestBackend) {
-      const worldInfo = worldConfig[fastestBackend] || {
+    if (bestBackend) {
+      const worldInfo = worldConfig[bestBackend] || {
         emoji: '',
-        label: fastestBackend,
+        label: bestBackend,
       };
+      // Count total benchmarks for this framework (benchmarks that have data for this framework)
+      const totalForFramework = allBenchmarks.filter(([, bd]) =>
+        backends.some((b) => bd[app]?.[b])
+      ).length;
       console.log(
-        `| ${frameworkInfo.label} | ${worldInfo.emoji} ${worldInfo.label} | ${formatSec(fastestTime)}s (avg) |`
+        `| ${frameworkInfo.label} | ${worldInfo.emoji} ${worldInfo.label} | ${bestWins}/${totalForFramework} |`
       );
     }
   }
