@@ -9,6 +9,8 @@ const [, , resultsDir = '.'] = process.argv;
 const backendConfig = {
   local: { emoji: '💻', label: 'Local' },
   postgres: { emoji: '🐘', label: 'Postgres' },
+  'postgres-pgboss': { emoji: '🐘', label: 'Postgres (pg-boss)' },
+  'postgres-graphile': { emoji: '🐘', label: 'Postgres (graphile)' },
   vercel: { emoji: '▲', label: 'Vercel' },
 };
 
@@ -49,9 +51,35 @@ function findBenchmarkFiles(dir) {
 // Parse filename to extract app and backend
 function parseFilename(filename) {
   // Format: bench-results-{app}-{backend}.json
-  const match = filename.match(/bench-results-(.+)-(\w+)\.json$/);
-  if (!match) return null;
-  return { app: match[1], backend: match[2] };
+  // Backend can be: local, postgres, postgres-pgboss, postgres-graphile, vercel
+  const knownBackends = [
+    'postgres-pgboss',
+    'postgres-graphile',
+    'postgres',
+    'local',
+    'vercel',
+  ];
+
+  const baseName = filename
+    .replace(/\.json$/, '')
+    .replace(/^bench-results-/, '');
+  if (!baseName) return null;
+
+  // Try each known backend (longest first to match postgres-pgboss before postgres)
+  for (const backend of knownBackends) {
+    if (baseName.endsWith(`-${backend}`)) {
+      const app = baseName.slice(0, -(backend.length + 1));
+      return { app, backend };
+    }
+  }
+
+  // Fallback: last segment after hyphen
+  const lastHyphen = baseName.lastIndexOf('-');
+  if (lastHyphen === -1) return null;
+  return {
+    app: baseName.slice(0, lastHyphen),
+    backend: baseName.slice(lastHyphen + 1),
+  };
 }
 
 // Load timing data for a benchmark file
@@ -147,11 +175,20 @@ function getAppsAndBackends(data) {
     }
   }
 
-  // Sort: local, postgres, vercel for backends
-  const backendOrder = ['local', 'postgres', 'vercel'];
-  const sortedBackends = [...backends].sort(
-    (a, b) => backendOrder.indexOf(a) - backendOrder.indexOf(b)
-  );
+  // Sort: local, postgres variants, vercel for backends
+  const backendOrder = [
+    'local',
+    'postgres',
+    'postgres-pgboss',
+    'postgres-graphile',
+    'vercel',
+  ];
+  const sortedBackends = [...backends].sort((a, b) => {
+    const aIdx = backendOrder.indexOf(a);
+    const bIdx = backendOrder.indexOf(b);
+    // Unknown backends go to the end
+    return (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
+  });
 
   // Sort apps alphabetically
   const sortedApps = [...apps].sort();
@@ -348,7 +385,10 @@ function renderComparison(data) {
   console.log('');
   console.log('**Backends:**');
   console.log('- 💻 Local: In-memory filesystem backend');
-  console.log('- 🐘 Postgres: PostgreSQL database backend');
+  console.log('- 🐘 Postgres (pg-boss): PostgreSQL with pg-boss queue driver');
+  console.log(
+    '- 🐘 Postgres (graphile): PostgreSQL with Graphile Worker queue driver'
+  );
   console.log('- ▲ Vercel: Vercel production backend');
   console.log('</details>');
 }
