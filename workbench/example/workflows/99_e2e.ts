@@ -577,15 +577,10 @@ async function doubleValue(value: number) {
 }
 
 // Step function that spawns another workflow using start()
-async function spawnChildWorkflow(
-  childWorkflowFn: (
-    value: number
-  ) => Promise<{ childResult: number; originalValue: number }>,
-  value: number
-) {
+async function spawnChildWorkflow(value: number) {
   'use step';
   // start() can only be called inside a step function, not directly in workflow code
-  const childRun = await start(childWorkflowFn, [value]);
+  const childRun = await start(childWorkflow, [value]);
   return childRun.runId;
 }
 
@@ -600,7 +595,7 @@ async function awaitWorkflowResult<T>(runId: string) {
 export async function spawnWorkflowFromStepWorkflow(inputValue: number) {
   'use workflow';
   // Spawn the child workflow from inside a step function
-  const childRunId = await spawnChildWorkflow(childWorkflow, inputValue);
+  const childRunId = await spawnChildWorkflow(inputValue);
 
   // Wait for the child workflow to complete (also in a step)
   const childResult = await awaitWorkflowResult<{
