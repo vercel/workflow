@@ -177,7 +177,7 @@ export const QueueName = SemanticConvention<string>('queue.name');
 /** The message id being handled */
 export const QueueMessageId = SemanticConvention<MessageId>(
   'messaging.message.id',
-  'queue.messageId'
+  'queue.message.id'
 );
 
 /** Time taken to enqueue the message in milliseconds */
