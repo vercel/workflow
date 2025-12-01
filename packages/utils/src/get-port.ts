@@ -15,7 +15,8 @@ function parsePort(value: string, radix = 10): number | undefined {
 // Build /proc paths dynamically to prevent @vercel/nft from tracing them as dependencies.
 // NFT does static analysis and tries to bundle any file path literals it finds.
 // Since /proc is a virtual filesystem that changes at runtime, this causes build failures.
-const PROC_ROOT = ['', 'proc'].join('/');
+const join = (arr: string[], sep: string) => arr.join(sep);
+const PROC_ROOT = join(['', 'proc'], '/');
 
 /**
  * Gets listening ports for the current process on Linux by reading /proc filesystem.
