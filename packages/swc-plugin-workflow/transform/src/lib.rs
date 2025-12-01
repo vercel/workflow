@@ -144,6 +144,7 @@ pub enum TransformMode {
     Step,
     Workflow,
     Client,
+    Browser,
 }
 
 #[derive(Debug)]
@@ -212,6 +213,8 @@ pub struct StepTransform {
     current_var_context: Option<String>,
     // Track module-level imports to exclude from closure variables
     module_imports: HashSet<String>,
+    // Track if we need to add the browser workflow client import (for browser mode)
+    needs_browser_client_import: bool,
 }
 
 // Structure to track variable names and their access patterns
@@ -857,7 +860,7 @@ impl StepTransform {
                                     *stmt = Stmt::Decl(var_decl);
                                     return;
                                 }
-                                TransformMode::Client => {
+                                TransformMode::Client | TransformMode::Browser => {
                                     // In client mode, just remove the directive and keep the function
                                     self.remove_use_step_directive(&mut fn_decl.function.body);
                                     return;
@@ -900,7 +903,7 @@ impl StepTransform {
                                         })];
                                     }
                                 }
-                                TransformMode::Client => {
+                                TransformMode::Client | TransformMode::Browser => {
                                     self.remove_use_step_directive(&mut fn_decl.function.body);
                                     stmt.visit_mut_children_with(self);
                                 }
@@ -990,6 +993,19 @@ impl StepTransform {
                                     .push((fn_name.clone(), fn_span));
                                 stmt.visit_mut_children_with(self);
                             }
+                            TransformMode::Browser => {
+                                self.remove_use_workflow_directive(&mut fn_decl.function.body);
+                                let workflow_id = self.create_id(Some(&fn_name), fn_span, true);
+                                let new_body = self.create_browser_client_call_body(
+                                    &workflow_id,
+                                    &fn_decl.function.params,
+                                );
+                                fn_decl.function.body = Some(new_body);
+                                self.needs_browser_client_import = true;
+                                self.workflow_functions_needing_id
+                                    .push((fn_name.clone(), fn_span));
+                                stmt.visit_mut_children_with(self);
+                            }
                         }
                     }
                 } else {
@@ -1070,6 +1086,7 @@ impl StepTransform {
             object_property_workflow_conversions: Vec::new(),
             current_var_context: None,
             module_imports: HashSet::new(),
+            needs_browser_client_import: false,
         }
     }
 
@@ -1108,6 +1125,129 @@ impl StepTransform {
         }
 
         name
+    }
+
+    // Generate browser client call body for browser mode
+    // Creates: return __browserWorkflowClient.run(workflowId, [param1, param2, ...])
+    fn create_browser_client_call_body(&self, workflow_id: &str, params: &[Param]) -> BlockStmt {
+        // Create array of parameter references
+        let param_array_elems: Vec<Option<ExprOrSpread>> = params
+            .iter()
+            .filter_map(|param| {
+                if let Pat::Ident(ident) = &param.pat {
+                    Some(Some(ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Ident(ident.id.clone())),
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Create the array literal: [param1, param2, ...]
+        let params_array = Expr::Array(ArrayLit {
+            span: DUMMY_SP,
+            elems: param_array_elems,
+        });
+
+        // Create: __browserWorkflowClient.run(workflowId, [...params])
+        let call_expr = Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(Expr::Ident(Ident::new(
+                    "__browserWorkflowClient".into(),
+                    DUMMY_SP,
+                    SyntaxContext::empty(),
+                ))),
+                prop: MemberProp::Ident(IdentName::new("run".into(), DUMMY_SP)),
+            }))),
+            args: vec![
+                ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(Expr::Lit(Lit::Str(Str {
+                        span: DUMMY_SP,
+                        value: workflow_id.into(),
+                        raw: None,
+                    }))),
+                },
+                ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(params_array),
+                },
+            ],
+            type_args: None,
+        });
+
+        // Create return statement
+        BlockStmt {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            stmts: vec![Stmt::Return(ReturnStmt {
+                span: DUMMY_SP,
+                arg: Some(Box::new(call_expr)),
+            })],
+        }
+    }
+
+    // Generate browser client call body for arrow functions
+    // Similar to above but works with arrow function params
+    fn create_browser_client_call_body_arrow(&self, workflow_id: &str, params: &[Pat]) -> BlockStmtOrExpr {
+        // Create array of parameter references
+        let param_array_elems: Vec<Option<ExprOrSpread>> = params
+            .iter()
+            .filter_map(|param| {
+                if let Pat::Ident(ident) = param {
+                    Some(Some(ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Ident(ident.id.clone())),
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Create the array literal: [param1, param2, ...]
+        let params_array = Expr::Array(ArrayLit {
+            span: DUMMY_SP,
+            elems: param_array_elems,
+        });
+
+        // Create: __browserWorkflowClient.run(workflowId, [...params])
+        let call_expr = Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                span: DUMMY_SP,
+                obj: Box::new(Expr::Ident(Ident::new(
+                    "__browserWorkflowClient".into(),
+                    DUMMY_SP,
+                    SyntaxContext::empty(),
+                ))),
+                prop: MemberProp::Ident(IdentName::new("run".into(), DUMMY_SP)),
+            }))),
+            args: vec![
+                ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(Expr::Lit(Lit::Str(Str {
+                        span: DUMMY_SP,
+                        value: workflow_id.into(),
+                        raw: None,
+                    }))),
+                },
+                ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(params_array),
+                },
+            ],
+            type_args: None,
+        });
+
+        // Return as expression body
+        BlockStmtOrExpr::Expr(Box::new(call_expr))
     }
 
     // Collect all declared identifiers in the module to avoid naming collisions
@@ -1479,7 +1619,7 @@ impl StepTransform {
                                             step_id,
                                         ));
                                     }
-                                    TransformMode::Client => {
+                                    TransformMode::Client | TransformMode::Browser => {
                                         // In client mode, just remove the directive (already done above)
                                     }
                                 }
@@ -1538,7 +1678,7 @@ impl StepTransform {
                     step_id,
                 ));
             }
-            TransformMode::Client => {
+            TransformMode::Client | TransformMode::Browser => {
                 // In client mode, just remove the directive
             }
         }
@@ -2942,7 +3082,7 @@ impl VisitMut for StepTransform {
                             ));
                         }
                     }
-                    TransformMode::Client => {
+                    TransformMode::Client | TransformMode::Browser => {
                         // No imports needed for client mode since step functions are not transformed
                     }
                 }
@@ -3268,7 +3408,7 @@ impl VisitMut for StepTransform {
                                 module_items.push(self.create_private_imports(true, false));
                             }
                         }
-                        TransformMode::Client => {
+                        TransformMode::Client | TransformMode::Browser => {
                             // No imports needed for workflow mode
                         }
                     }
@@ -3471,7 +3611,7 @@ impl VisitMut for StepTransform {
                     let should_remove = match self.mode {
                         TransformMode::Step => value == "use step" || value == "use workflow",
                         TransformMode::Workflow => value == "use workflow",
-                        TransformMode::Client => value == "use step" || value == "use workflow",
+                        TransformMode::Client | TransformMode::Browser => value == "use step" || value == "use workflow",
                     };
                     if should_remove {
                         items.remove(0);
@@ -3677,7 +3817,7 @@ impl VisitMut for StepTransform {
             item.visit_mut_with(self);
 
             // After visiting the item, check if we need to add a workflowId assignment
-            if matches!(self.mode, TransformMode::Client | TransformMode::Step) {
+            if matches!(self.mode, TransformMode::Client | TransformMode::Step | TransformMode::Browser) {
                 match item {
                     ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
                         if let Decl::Fn(fn_decl) = &export_decl.decl {
@@ -4064,6 +4204,35 @@ impl VisitMut for StepTransform {
             }
         }
 
+        // In browser mode, add import for __browserWorkflowClient if needed
+        if self.mode == TransformMode::Browser && self.needs_browser_client_import {
+            // Create import: import { __browserWorkflowClient } from '@workflow/world-browser/client';
+            let import_item = ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
+                span: DUMMY_SP,
+                specifiers: vec![ImportSpecifier::Named(ImportNamedSpecifier {
+                    span: DUMMY_SP,
+                    local: Ident::new(
+                        "__browserWorkflowClient".into(),
+                        DUMMY_SP,
+                        SyntaxContext::empty(),
+                    ),
+                    imported: None,
+                    is_type_only: false,
+                })],
+                src: Box::new(Str {
+                    span: DUMMY_SP,
+                    value: "@workflow/world-browser/client".into(),
+                    raw: None,
+                }),
+                type_only: false,
+                with: None,
+                phase: ImportPhase::Evaluation,
+            }));
+            
+            // Insert at the beginning of the module
+            items.insert(0, import_item);
+        }
+
         // Perform dead code elimination in workflow and client mode
         self.remove_dead_code(items);
     }
@@ -4092,7 +4261,7 @@ impl VisitMut for StepTransform {
                         // For workflow mode, we need to replace the entire declaration
                         // This will be handled at a higher level
                     }
-                    TransformMode::Client => {
+                    TransformMode::Client | TransformMode::Browser => {
                         // Step functions are completely removed in client mode
                         // This will be handled at a higher level
                     }
@@ -4117,7 +4286,7 @@ impl VisitMut for StepTransform {
                         // For workflow mode, we need to replace the entire declaration
                         // This will be handled at a higher level
                     }
-                    TransformMode::Client => {
+                    TransformMode::Client | TransformMode::Browser => {
                         // Workflow functions are transformed in client mode
                         // This will be handled at a higher level
                     }
@@ -4206,7 +4375,7 @@ impl VisitMut for StepTransform {
                                     fn_decl.function.span,
                                 ));
                             }
-                            TransformMode::Client => {
+                            TransformMode::Client | TransformMode::Browser => {
                                 // In client mode, just remove the directive and keep the function as-is
                                 self.remove_use_step_directive(&mut fn_decl.function.body);
                                 export_decl.visit_mut_children_with(self);
@@ -4287,6 +4456,18 @@ impl VisitMut for StepTransform {
                                     }
                                 }
 
+                                self.workflow_functions_needing_id
+                                    .push((fn_name.clone(), fn_decl.function.span));
+                            }
+                            TransformMode::Browser => {
+                                self.remove_use_workflow_directive(&mut fn_decl.function.body);
+                                let workflow_id = self.create_id(Some(&fn_name), fn_decl.function.span, true);
+                                let new_body = self.create_browser_client_call_body(
+                                    &workflow_id,
+                                    &fn_decl.function.params,
+                                );
+                                fn_decl.function.body = Some(new_body);
+                                self.needs_browser_client_import = true;
                                 self.workflow_functions_needing_id
                                     .push((fn_name.clone(), fn_decl.function.span));
                             }
@@ -4400,7 +4581,7 @@ impl VisitMut for StepTransform {
                                                         self.create_step_initializer(&step_id),
                                                     );
                                                 }
-                                                TransformMode::Client => {
+                                                TransformMode::Client | TransformMode::Browser => {
                                                     // In client mode, just remove the directive and keep the function as-is
                                                     self.remove_use_step_directive(
                                                         &mut fn_expr.function.body,
@@ -4475,7 +4656,7 @@ impl VisitMut for StepTransform {
                                                         fn_expr.function.span,
                                                     ));
                                                 }
-                                                TransformMode::Client => {
+                                                TransformMode::Client | TransformMode::Browser => {
                                                     // Only replace with throw if function has inline directive
                                                     let has_inline_directive = self
                                                         .has_use_workflow_directive(
@@ -4571,7 +4752,7 @@ impl VisitMut for StepTransform {
                                                         self.create_step_initializer(&step_id),
                                                     );
                                                 }
-                                                TransformMode::Client => {
+                                                TransformMode::Client | TransformMode::Browser => {
                                                     // In client mode, just remove the directive and keep the function as-is
                                                     self.remove_use_step_directive_arrow(
                                                         &mut arrow_expr.body,
@@ -4652,7 +4833,7 @@ impl VisitMut for StepTransform {
                                                         arrow_expr.span,
                                                     ));
                                                 }
-                                                TransformMode::Client => {
+                                                TransformMode::Client | TransformMode::Browser => {
                                                     // Only replace with throw if function has inline directive
                                                     let has_inline_directive = self
                                                         .has_workflow_directive_arrow(
@@ -4847,7 +5028,7 @@ impl VisitMut for StepTransform {
                                                 })];
                                             }
                                         }
-                                        TransformMode::Client => {
+                                        TransformMode::Client | TransformMode::Browser => {
                                             // In client mode, just remove the directive and keep the function as-is
                                             self.remove_use_step_directive(
                                                 &mut fn_expr.function.body,
@@ -4910,7 +5091,7 @@ impl VisitMut for StepTransform {
                                                 &mut fn_expr.function.body,
                                             );
                                         }
-                                        TransformMode::Client => {
+                                        TransformMode::Client | TransformMode::Browser => {
                                             // Replace workflow function body with error throw
                                             self.remove_use_workflow_directive(
                                                 &mut fn_expr.function.body,
@@ -5090,7 +5271,7 @@ impl VisitMut for StepTransform {
                                                     &closure_vars,
                                                 ));
                                             }
-                                            TransformMode::Client => {
+                                            TransformMode::Client | TransformMode::Browser => {
                                                 // In client mode, just remove the directive and keep the function
                                                 self.remove_use_step_directive_arrow(
                                                     &mut arrow_expr.body,
@@ -5147,7 +5328,7 @@ impl VisitMut for StepTransform {
                                                     Box::new(proxy_call),
                                                 ));
                                             }
-                                            TransformMode::Client => {
+                                            TransformMode::Client | TransformMode::Browser => {
                                                 // In client mode, just remove the directive and keep the function as-is
                                                 self.remove_use_step_directive_arrow(
                                                     &mut arrow_expr.body,
@@ -5214,7 +5395,7 @@ impl VisitMut for StepTransform {
                                                 &mut arrow_expr.body,
                                             );
                                         }
-                                        TransformMode::Client => {
+                                        TransformMode::Client | TransformMode::Browser => {
                                             // Replace workflow function body with error throw
                                             self.remove_use_workflow_directive_arrow(
                                                 &mut arrow_expr.body,
@@ -5491,7 +5672,7 @@ impl VisitMut for StepTransform {
                                 *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
                                 return; // Don't visit children since we replaced the expr
                             }
-                            TransformMode::Client => {
+                            TransformMode::Client | TransformMode::Browser => {
                                 // In client mode, just remove the directive and keep the function
                                 self.remove_use_step_directive(&mut fn_expr.function.body);
                             }
@@ -5615,7 +5796,7 @@ impl VisitMut for StepTransform {
                                 *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
                                 return; // Don't visit children since we replaced the expr
                             }
-                            TransformMode::Client => {
+                            TransformMode::Client | TransformMode::Browser => {
                                 // In client mode, just remove the directive and keep the function
                                 self.remove_use_step_directive_arrow(&mut arrow_expr.body);
                             }
@@ -5659,7 +5840,7 @@ impl VisitMut for StepTransform {
                         self.workflow_function_names.insert("default".to_string());
 
                         match self.mode {
-                            TransformMode::Step | TransformMode::Client => {
+                            TransformMode::Step | TransformMode::Client | TransformMode::Browser => {
                                 // In step/client mode, replace workflow function body with error throw
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
 
@@ -5796,7 +5977,7 @@ impl VisitMut for StepTransform {
                                     })];
                                 }
                             }
-                            TransformMode::Client => {
+                            TransformMode::Client | TransformMode::Browser => {
                                 // Transform step function body to use step run call
                                 self.remove_use_step_directive(&mut fn_expr.function.body);
                             }
@@ -5829,7 +6010,7 @@ impl VisitMut for StepTransform {
                         self.workflow_function_names.insert("default".to_string());
 
                         match self.mode {
-                            TransformMode::Step | TransformMode::Client => {
+                            TransformMode::Step | TransformMode::Client | TransformMode::Browser => {
                                 // In step/client mode, replace workflow function body with error throw
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
                                 let error_msg = format!(
@@ -5927,7 +6108,7 @@ impl VisitMut for StepTransform {
                         self.workflow_function_names.insert("default".to_string());
 
                         match self.mode {
-                            TransformMode::Step | TransformMode::Client => {
+                            TransformMode::Step | TransformMode::Client | TransformMode::Browser => {
                                 // In step/client mode, replace arrow body with throw error
                                 self.remove_use_workflow_directive_arrow(&mut arrow_expr.body);
                                 let error_msg = format!(
@@ -6186,7 +6367,7 @@ impl VisitMut for StepTransform {
                                                                 &closure_vars,
                                                             );
                                                     }
-                                                    TransformMode::Client => {
+                                                    TransformMode::Client | TransformMode::Browser => {
                                                         // Just remove directive
                                                         self.remove_use_step_directive_arrow(
                                                             &mut arrow_expr.body,
@@ -6278,7 +6459,7 @@ impl VisitMut for StepTransform {
                                                                 &closure_vars,
                                                             );
                                                     }
-                                                    TransformMode::Client => {
+                                                    TransformMode::Client | TransformMode::Browser => {
                                                         // Just remove directive
                                                         self.remove_use_step_directive(
                                                             &mut fn_expr.function.body,
@@ -6392,7 +6573,7 @@ impl VisitMut for StepTransform {
                                                         ),
                                                     }));
                                             }
-                                            TransformMode::Client => {
+                                            TransformMode::Client | TransformMode::Browser => {
                                                 // Just remove directive
                                                 self.remove_use_step_directive(
                                                     &mut method_prop.function.body,

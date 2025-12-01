@@ -1,0 +1,68 @@
+{
+  "name": "@workflow/world-browser",
+  "version": "0.0.1",
+  "description": "Browser-based World implementation for Workflow DevKit using SharedWorker and Turso WASM",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-browser"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/sdk.d.ts",
+      "default": "./dist/client/sdk.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "default": "./dist/worker/index.js"
+    },
+    "./react": {
+      "types": "./dist/client/react.d.ts",
+      "default": "./dist/client/react.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tursodatabase/database-wasm": "0.3.2",
+    "@workflow/errors": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "seedrandom": "3.0.5",
+    "ulid": "3.0.1",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/react": "^19",
+    "@types/seedrandom": "3.0.8",
+    "@workflow/tsconfig": "workspace:*",
+    "react": "^18.0.0 || ^19.0.0",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}

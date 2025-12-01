@@ -31,6 +31,7 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
+    "esbuild": "catalog:",
     "semver": "7.7.3",
     "watchpack": "2.4.4"
   },

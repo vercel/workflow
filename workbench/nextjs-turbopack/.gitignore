@@ -43,3 +43,5 @@ next-env.d.ts
 
 # workflow
 _workflows.ts
+public/__workflow-worker.js
+public/turso.wasm32-wasi.wasm
