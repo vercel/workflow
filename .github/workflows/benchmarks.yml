@@ -139,7 +139,7 @@ jobs:
 
   # Phase 2b: Postgres benchmarks (with postgres service)
   benchmark-postgres:
-    name: Benchmark Postgres (${{ matrix.app }})
+    name: Benchmark Postgres/${{ matrix.queue-driver }} (${{ matrix.app }})
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 30
@@ -148,6 +148,7 @@ jobs:
       matrix:
         # Note: Use actual directory names, not symlinks (nitro -> nitro-v3)
         app: [nextjs-turbopack, nitro-v3, express]
+        queue-driver: [pgboss, graphile]
 
     services:
       postgres:
@@ -169,6 +170,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
+      WORKFLOW_QUEUE_DRIVER: ${{ matrix.queue-driver }}
 
     steps:
       - uses: actions/checkout@v4
@@ -207,22 +209,22 @@ jobs:
           echo "Waiting for server to start..."
           sleep 15
           cd ../..
-          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app }}-postgres.json
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app }}-postgres-${{ matrix.queue-driver }}.json
 
       - name: Render benchmark results
         uses: ./.github/actions/render-benchmarks
         with:
-          benchmark-file: bench-results-${{ matrix.app }}-postgres.json
+          benchmark-file: bench-results-${{ matrix.app }}-postgres-${{ matrix.queue-driver }}.json
           app-name: ${{ matrix.app }}
-          backend: postgres
+          backend: postgres-${{ matrix.queue-driver }}
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
-          name: bench-results-${{ matrix.app }}-postgres
+          name: bench-results-${{ matrix.app }}-postgres-${{ matrix.queue-driver }}
           path: |
-            bench-results-${{ matrix.app }}-postgres.json
-            bench-timings-${{ matrix.app }}-postgres.json
+            bench-results-${{ matrix.app }}-postgres-${{ matrix.queue-driver }}.json
+            bench-timings-${{ matrix.app }}-postgres-${{ matrix.queue-driver }}.json
 
   # Phase 2c: Vercel benchmarks (needs build artifacts for packages)
   benchmark-vercel:
