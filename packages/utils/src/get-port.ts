@@ -12,20 +12,25 @@ function parsePort(value: string, radix = 10): number | undefined {
   return undefined;
 }
 
+// Build /proc paths dynamically to prevent @vercel/nft from tracing them as dependencies.
+// NFT does static analysis and tries to bundle any file path literals it finds.
+// Since /proc is a virtual filesystem that changes at runtime, this causes build failures.
+const PROC_ROOT = ['', 'proc'].join('/');
+
 /**
  * Gets listening ports for the current process on Linux by reading /proc filesystem.
  * This approach requires no external commands and works on all Linux systems.
  */
 async function getLinuxPort(pid: number): Promise<number | undefined> {
   const listenState = '0A'; // TCP LISTEN state in /proc/net/tcp
-  const tcpFiles = ['/proc/net/tcp', '/proc/net/tcp6'] as const;
+  const tcpFiles = [`${PROC_ROOT}/net/tcp`, `${PROC_ROOT}/net/tcp6`] as const;
 
   // Step 1: Get socket inodes from /proc/<pid>/fd/ in order
   // We preserve order to maintain deterministic behavior (return first port)
   // Use both array (for order) and Set (for O(1) lookup)
   const socketInodes: string[] = [];
   const socketInodesSet = new Set<string>();
-  const fdPath = `/proc/${pid}/fd`;
+  const fdPath = `${PROC_ROOT}/${pid}/fd`;
 
   try {
     const fds = await readdir(fdPath);
