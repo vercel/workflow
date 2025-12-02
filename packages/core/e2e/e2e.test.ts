@@ -776,4 +776,27 @@ describe('e2e', () => {
       expect(returnValue).toBe('Result: 21');
     }
   );
+
+  test(
+    'stepExhaustsRetriesWorkflow - workflow fails when step exhausts max retries',
+    { timeout: 120_000 },
+    async () => {
+      // This workflow has a step that always throws a regular error.
+      // After exhausting max retries (default 3), the error should bubble up
+      // to the workflow function. Since the workflow doesn't handle it,
+      // the workflow run should enter a failed state.
+      const run = await triggerWorkflow('stepExhaustsRetriesWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The workflow should fail with WorkflowRunFailedError
+      expect(returnValue).toHaveProperty('name');
+      expect(returnValue.name).toBe('WorkflowRunFailedError');
+
+      // Verify the run is in failed status
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('failed');
+      expect(runData.error).toBeDefined();
+      expect(runData.error.message).toContain('failed after max retries');
+    }
+  );
 });

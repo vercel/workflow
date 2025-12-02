@@ -559,3 +559,21 @@ export async function closureVariableWorkflow(baseValue: number) {
   const output = await calculate();
   return output;
 }
+
+//////////////////////////////////////////////////////////
+
+// Step that always throws a regular error (not FatalError)
+// This will exhaust max retries and the error should bubble up to the workflow
+async function stepThatAlwaysFailsWithRegularError() {
+  'use step';
+  throw new Error('This step always fails with a regular error');
+}
+
+// Workflow that calls a step that always fails
+// The step will exhaust max retries and the error should bubble up,
+// causing the workflow run to enter a failed state
+export async function stepExhaustsRetriesWorkflow() {
+  'use workflow';
+  await stepThatAlwaysFailsWithRegularError();
+  return 'never reached';
+}
