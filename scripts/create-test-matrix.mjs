@@ -54,6 +54,12 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
+  astro: {
+    generatedStepPath: 'src/pages/.well-known/workflow/v1/step.js',
+    generatedWorkflowPath: 'src/pages/.well-known/workflow/v1/flow.js',
+    apiFilePath: 'src/pages/api/chat.ts',
+    apiFileImportPath: '../..',
+    workflowsDir: 'src/workflows',
   },
 };
 
@@ -122,6 +128,9 @@ matrix.app.push({
   name: 'fastify',
   project: 'workbench-fastify-workflow',
   ...DEV_TEST_CONFIGS.fastify,
+  name: 'astro',
+  project: 'workbench-astro-workflow',
+  ...DEV_TEST_CONFIGS.astro,
 });
 
 console.log(JSON.stringify(matrix));

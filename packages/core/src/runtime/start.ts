@@ -1,8 +1,9 @@
 import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
+import type { WorkflowInvokePayload } from '@workflow/world';
 import { Run } from '../runtime.js';
-import type { Serializable, WorkflowInvokePayload } from '../schemas.js';
+import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
@@ -58,7 +59,7 @@ export async function start<TArgs extends unknown[], TResult>(
 ) {
   return await waitedUntil(() => {
     // @ts-expect-error this field is added by our client transform
-    const workflowName = workflow.workflowId;
+    const workflowName = workflow?.workflowId;
 
     if (!workflowName) {
       throw new WorkflowRuntimeError(

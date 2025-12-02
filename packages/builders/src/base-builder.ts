@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import chalk from 'chalk';
 import { parse } from 'comment-json';
@@ -185,7 +185,8 @@ export abstract class BaseBuilder {
     debugData: object,
     merge?: boolean
   ): Promise<void> {
-    const targetPath = `${outfile}.debug.json`;
+    const prefix = this.config.debugFilePrefix || '';
+    const targetPath = `${dirname(outfile)}/${prefix}${basename(outfile)}.debug.json`;
     let existing = {};
 
     try {

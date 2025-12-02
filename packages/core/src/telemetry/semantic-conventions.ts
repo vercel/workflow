@@ -37,15 +37,16 @@
  * @packageDocumentation
  */
 
-import type { Step, WorkflowRun } from '@workflow/world';
+import type { MessageId, Step, WorkflowRun } from '@workflow/world';
 
 /**
  * Creates a semantic convention function that returns an attribute object.
  * @param name - The attribute name following OpenTelemetry semantic conventions
  * @returns A function that takes a value and returns an attribute object
  */
-function SemanticConvention<T>(name: string) {
-  return (value: T) => ({ [name]: value });
+function SemanticConvention<T>(...names: string[]) {
+  return (value: T) =>
+    Object.fromEntries(names.map((name) => [name, value] as const));
 }
 
 // Workflow attributes
@@ -172,6 +173,15 @@ export const StepRetryWillRetry = SemanticConvention<boolean>(
 
 /** Name of the queue being used for message processing */
 export const QueueName = SemanticConvention<string>('queue.name');
+
+/** The message id being handled */
+export const QueueMessageId = SemanticConvention<MessageId>(
+  'messaging.message.id',
+  'queue.message.id'
+);
+
+/** Time taken to enqueue the message in milliseconds */
+export const QueueOverheadMs = SemanticConvention<number>('queue.overhead_ms');
 
 // Deployment attributes
 

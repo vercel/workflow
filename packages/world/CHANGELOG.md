@@ -1,5 +1,12 @@
 # @workflow/world
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- 10c5b91: Export QueueOptions type
+- bdde1bd: track queue overhead with opentelemetry
+
 ## 4.0.1-beta.7
 
 ### Patch Changes

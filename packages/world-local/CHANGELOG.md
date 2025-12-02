@@ -1,5 +1,21 @@
 # @workflow/world-local
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- 6e8e828: Silently ignore stream already closed errors
+- 2faddf3: Move `@workflow/errors` package to "dependencies" instead of "devDependencies"
+- 8d4562e: Rename leftover references to "embedded world" to be "local world"
+- Updated dependencies [bc9b628]
+- Updated dependencies [34f3f86]
+- Updated dependencies [cd451e0]
+- Updated dependencies [10c5b91]
+- Updated dependencies [bdde1bd]
+  - @workflow/utils@4.0.1-beta.5
+  - @workflow/world@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.7
+
 ## 4.0.1-beta.13
 
 ### Patch Changes
@@ -40,15 +56,15 @@
 
 ### Major Changes
 
-- aa015af: BREAKING: Change `createEmbeddedWorld` API signature from positional parameters to config object. Add baseUrl configuration support.
+- aa015af: BREAKING: Change `createLocalWorld` API signature from positional parameters to config object. Add baseUrl configuration support.
 
   **Breaking change:**
 
-  - `createEmbeddedWorld(dataDir?, port?)` → `createEmbeddedWorld(args?: Partial<Config>)`
+  - `createLocalWorld(dataDir?, port?)` → `createLocalWorld(args?: Partial<Config>)`
 
   **New features:**
 
-  - Add `baseUrl` config option for HTTPS and custom hostnames (via config or `WORKFLOW_EMBEDDED_BASE_URL` env var)
+  - Add `baseUrl` config option for HTTPS and custom hostnames (via config or `WORKFLOW_LOCAL_BASE_URL` env var)
   - Support for port 0 (OS-assigned port)
 
 ### Patch Changes
