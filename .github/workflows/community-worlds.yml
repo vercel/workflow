@@ -125,7 +125,7 @@ jobs:
         ports:
           - 6379:6379
         options: >-
-          --health-cmd redis-cli ping
+          --health-cmd "redis-cli ping"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -154,48 +154,6 @@ jobs:
 
       - name: Install Redis World
         run: pnpm --filter nextjs-turbopack add @workflow-worlds/redis
-
-      - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
-
-      - name: Resolve symlinks
-        run: ./scripts/resolve-symlinks.sh workbench/nextjs-turbopack
-
-      - name: Run E2E Tests
-        run: cd workbench/nextjs-turbopack && pnpm dev & echo "starting tests in 15 seconds" && sleep 15 && pnpm vitest run packages/core/e2e/dev.test.ts && sleep 10 && pnpm run test:e2e
-        env:
-          APP_NAME: "nextjs-turbopack"
-          DEPLOYMENT_URL: "http://localhost:3000"
-          DEV_TEST_CONFIG: '{"name":"nextjs-turbopack","project":"workbench-nextjs-turbopack-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
-
-  e2e-starter:
-    name: E2E Starter (In-Memory) World Tests
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    env:
-      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
-      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Starter (In-Memory) World
-        run: pnpm --filter nextjs-turbopack add @workflow-worlds/starter
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'

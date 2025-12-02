@@ -74,10 +74,12 @@ function generateJob(world, isE2E = true, isBenchmark = false) {
         }
       }
       if (service.healthCheck) {
+        // Health cmd with spaces needs special quoting for Docker
+        const healthCmd = service.healthCheck.cmd.includes(' ')
+          ? `"${service.healthCheck.cmd}"`
+          : service.healthCheck.cmd;
         lines.push(`        options: >-`);
-        lines.push(
-          `          --health-cmd ${yamlString(service.healthCheck.cmd)}`
-        );
+        lines.push(`          --health-cmd ${healthCmd}`);
         lines.push(
           `          --health-interval ${service.healthCheck.interval}`
         );

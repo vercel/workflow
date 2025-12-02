@@ -64,18 +64,6 @@
           }
         }
       ]
-    },
-    {
-      "id": "starter",
-      "package": "@workflow-worlds/starter",
-      "name": "Starter (In-Memory)",
-      "description": "In-memory World template for building custom implementations",
-      "repository": "https://github.com/mizzle-dev/workflow-worlds",
-      "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/starter",
-      "env": {
-        "WORKFLOW_TARGET_WORLD": "@workflow-worlds/starter"
-      },
-      "services": []
     }
   ]
 }
