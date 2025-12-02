@@ -25,7 +25,7 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: @workflow-worlds/turso
+      WORKFLOW_TARGET_WORLD: "@workflow-worlds/turso"
       WORKFLOW_TURSO_DATABASE_URL: "file:workflow.db"
     steps:
       - name: Checkout Repo
@@ -78,7 +78,7 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: @workflow-worlds/mongodb
+      WORKFLOW_TARGET_WORLD: "@workflow-worlds/mongodb"
       WORKFLOW_MONGODB_URI: "mongodb://localhost:27017"
       WORKFLOW_MONGODB_DATABASE_NAME: workflow
     steps:
@@ -132,7 +132,7 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: @workflow-worlds/redis
+      WORKFLOW_TARGET_WORLD: "@workflow-worlds/redis"
       WORKFLOW_REDIS_URI: "redis://localhost:6379"
     steps:
       - name: Checkout Repo
@@ -175,7 +175,7 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: @workflow-worlds/starter
+      WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4

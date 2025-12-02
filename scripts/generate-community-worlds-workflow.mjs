@@ -29,7 +29,11 @@ function yamlString(str) {
     str.includes('"') ||
     str.includes('\n') ||
     str.startsWith(' ') ||
-    str.endsWith(' ')
+    str.endsWith(' ') ||
+    str.startsWith('@') ||
+    str.startsWith('*') ||
+    str.startsWith('&') ||
+    str.startsWith('!')
   ) {
     return `"${str.replace(/"/g, '\\"')}"`;
   }
