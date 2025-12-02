@@ -1,14 +1,20 @@
 'use client';
 
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import { WORKFLOW_DEFINITIONS } from '@/app/workflows/definitions';
 import { WorkflowButton } from '@/components/workflow-button';
 import { TerminalLog } from '@/components/terminal-log';
 import { InvocationsPanel } from '@/components/invocations-panel';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { Button } from '@/components/ui/button';
 import { useWorkflowStorage } from '@/hooks';
+import { BrowserWorkflowDemo } from '@/components/browser-workflow-demo';
+import Link from 'next/link';
+import { MessageSquareIcon } from 'lucide-react';
 
 export default function Home() {
+  const [activeTab, setActiveTab] = useState<'server' | 'browser'>('server');
+
   // Track active stream abort controllers
   const streamAbortControllers = useRef<Map<string, AbortController>>(
     new Map()
@@ -311,64 +317,106 @@ export default function Home() {
     <TooltipProvider delayDuration={0}>
       <div className="min-h-screen bg-background p-6">
         <div className="max-w-[1800px] mx-auto space-y-6">
-          <div className="space-y-1">
-            <h1 className="text-3xl font-bold tracking-tight">
-              Workflow DevKit Examples
-            </h1>
-            <p className="text-muted-foreground">
-              Select a workflow to start a run and view its output
-            </p>
+          <div className="flex items-start justify-between">
+            <div className="space-y-1">
+              <h1 className="text-3xl font-bold tracking-tight">
+                Workflow DevKit Examples
+              </h1>
+              <p className="text-muted-foreground">
+                Select a workflow to start a run and view its output
+              </p>
+            </div>
+            <Link href="/chat">
+              <Button>
+                <MessageSquareIcon className="size-4 mr-2" />
+                AI Chat Demo
+              </Button>
+            </Link>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left Column - Workflow List */}
-            <div className="space-y-3">
-              <h2 className="text-lg font-semibold">Available Workflows</h2>
-              <div className="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
-                {Object.entries(
-                  WORKFLOW_DEFINITIONS.reduce(
-                    (acc, workflow) => {
-                      if (!acc[workflow.workflowFile]) {
-                        acc[workflow.workflowFile] = [];
-                      }
-                      acc[workflow.workflowFile].push(workflow);
-                      return acc;
-                    },
-                    {} as Record<string, typeof WORKFLOW_DEFINITIONS>
-                  )
-                ).map(([workflowFile, workflows]) => (
-                  <div key={workflowFile} className="space-y-2">
-                    <h3 className="text-xs font-mono text-muted-foreground px-1">
-                      {workflowFile}
-                    </h3>
-                    <div className="space-y-2">
-                      {workflows.map((workflow) => (
-                        <WorkflowButton
-                          key={`${workflow.workflowFile}:${workflow.name}`}
-                          workflow={workflow}
-                          onStart={startWorkflow}
-                        />
-                      ))}
+          {/* Tab navigation */}
+          <div className="flex gap-2 border-b">
+            <button
+              onClick={() => setActiveTab('server')}
+              className={`px-4 py-2 font-medium ${
+                activeTab === 'server'
+                  ? 'border-b-2 border-blue-500 text-blue-600'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Server Workflows
+            </button>
+            <button
+              onClick={() => setActiveTab('browser')}
+              className={`px-4 py-2 font-medium ${
+                activeTab === 'browser'
+                  ? 'border-b-2 border-blue-500 text-blue-600'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Browser Workflows
+            </button>
+          </div>
+
+          {/* Browser Workflows Tab */}
+          {activeTab === 'browser' && (
+            <div className="max-w-2xl">
+              <BrowserWorkflowDemo />
+            </div>
+          )}
+
+          {/* Server Workflows Tab */}
+          {activeTab === 'server' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Left Column - Workflow List */}
+              <div className="space-y-3">
+                <h2 className="text-lg font-semibold">Available Workflows</h2>
+                <div className="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto pr-2">
+                  {Object.entries(
+                    WORKFLOW_DEFINITIONS.reduce(
+                      (acc, workflow) => {
+                        if (!acc[workflow.workflowFile]) {
+                          acc[workflow.workflowFile] = [];
+                        }
+                        acc[workflow.workflowFile].push(workflow);
+                        return acc;
+                      },
+                      {} as Record<string, typeof WORKFLOW_DEFINITIONS>
+                    )
+                  ).map(([workflowFile, workflows]) => (
+                    <div key={workflowFile} className="space-y-2">
+                      <h3 className="text-xs font-mono text-muted-foreground px-1">
+                        {workflowFile}
+                      </h3>
+                      <div className="space-y-2">
+                        {workflows.map((workflow) => (
+                          <WorkflowButton
+                            key={`${workflow.workflowFile}:${workflow.name}`}
+                            workflow={workflow}
+                            onStart={startWorkflow}
+                          />
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              </div>
+
+              {/* Middle Column - Invocations */}
+              <div className="h-[calc(100vh-180px)]">
+                <InvocationsPanel
+                  invocations={invocations}
+                  onDisconnect={disconnectStream}
+                  onReconnect={reconnectStream}
+                />
+              </div>
+
+              {/* Right Column - Terminal Log */}
+              <div className="h-[calc(100vh-180px)]">
+                <TerminalLog logs={logs} onClear={clearAll} />
               </div>
             </div>
-
-            {/* Middle Column - Invocations */}
-            <div className="h-[calc(100vh-180px)]">
-              <InvocationsPanel
-                invocations={invocations}
-                onDisconnect={disconnectStream}
-                onReconnect={reconnectStream}
-              />
-            </div>
-
-            {/* Right Column - Terminal Log */}
-            <div className="h-[calc(100vh-180px)]">
-              <TerminalLog logs={logs} onClear={clearAll} />
-            </div>
-          </div>
+          )}
         </div>
       </div>
     </TooltipProvider>

@@ -2,6 +2,49 @@ import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
 
+/**
+ * Browser workflow configuration.
+ */
+export interface BrowserWorkflowConfig {
+  /**
+   * Glob patterns for files containing browser workflows.
+   * These files will be transformed with 'browser' mode instead of 'client' mode.
+   * @example ['src/workflows/browser/**\/*.ts']
+   */
+  include: string[];
+
+  /**
+   * Path to custom SharedWorker entry file (optional).
+   * If not provided, a default worker entry will be generated.
+   */
+  workerEntry?: string;
+
+  /**
+   * OPFS database path for browser storage.
+   * @default 'workflows.db'
+   */
+  database?: string;
+}
+
+/**
+ * Workflow configuration options.
+ */
+export interface WorkflowOptions {
+  workflows?: {
+    embedded?: {
+      port?: number;
+      dataDir?: string;
+    };
+  };
+
+  /**
+   * Browser workflow configuration.
+   * When provided, enables browser-based workflow execution using SharedWorker.
+   * Files matching the include patterns will be transformed to call the browser workflow client.
+   */
+  browser?: BrowserWorkflowConfig;
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -9,16 +52,7 @@ export function withWorkflow(
         phase: string,
         ctx: { defaultConfig: NextConfig }
       ) => Promise<NextConfig>),
-  {
-    workflows,
-  }: {
-    workflows?: {
-      embedded?: {
-        port?: number;
-        dataDir?: string;
-      };
-    };
-  } = {}
+  { workflows, browser }: WorkflowOptions = {}
 ) {
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
@@ -32,6 +66,17 @@ export function withWorkflow(
   } else {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
       process.env.WORKFLOW_TARGET_WORLD = 'vercel';
+    }
+  }
+
+  // Store browser workflow config for the loader
+  if (browser) {
+    process.env.WORKFLOW_BROWSER_INCLUDE = JSON.stringify(browser.include);
+    if (browser.workerEntry) {
+      process.env.WORKFLOW_BROWSER_WORKER_ENTRY = browser.workerEntry;
+    }
+    if (browser.database) {
+      process.env.WORKFLOW_BROWSER_DATABASE = browser.database;
     }
   }
 
@@ -126,8 +171,25 @@ export function withWorkflow(
       });
 
       await workflowBuilder.build();
+
+      // Build browser worker if browser config is provided
+      if (browser) {
+        const { createBrowserWorkerBuilder } = await import(
+          './browser-worker-builder.js'
+        );
+        // Output to public directory so it's served as a static file
+        const browserBuilder = createBrowserWorkerBuilder(
+          browser,
+          process.cwd(),
+          'public'
+        );
+        await browserBuilder.build();
+      }
+
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';
     }
+
+    // No rewrites needed - worker is served directly from public folder
 
     return nextConfig;
   };

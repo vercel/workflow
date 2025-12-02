@@ -49,3 +49,23 @@ fn client_mode(input: PathBuf) {
         },
     );
 }
+
+#[testing::fixture("tests/fixture/**/input.js")]
+fn browser_mode(input: PathBuf) {
+    let browser_output = input.parent().unwrap().join("output-browser.js");
+    // Browser mode tests only run when there's an explicit browser output file
+    // This allows gradual rollout of browser mode test coverage
+    if !browser_output.exists() {
+        return;
+    }
+    test_fixture(
+        Default::default(),
+        &|_| visit_mut_pass(StepTransform::new(TransformMode::Browser, input.file_name().unwrap().to_string_lossy().to_string())),
+        &input,
+        &browser_output,
+        FixtureTestConfig {
+            module: Some(true),
+            ..Default::default()
+        },
+    );
+}
