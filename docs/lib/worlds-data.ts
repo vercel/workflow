@@ -101,6 +101,10 @@ async function getWorkflowArtifacts(runId: number): Promise<GitHubArtifact[]> {
  * Extract world ID from artifact name
  */
 function extractWorldId(artifactName: string): string | null {
+  // E2E results for community worlds: e2e-results-community-{world}
+  if (artifactName.startsWith('e2e-results-community-')) {
+    return artifactName.replace('e2e-results-community-', '');
+  }
   // E2E results: e2e-results-{world} or e2e-dev-results-{world}
   if (artifactName.startsWith('e2e-results-')) {
     return artifactName.replace('e2e-results-', '');
