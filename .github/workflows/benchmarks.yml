@@ -440,23 +440,25 @@ jobs:
 
   benchmark-community-mongodb:
     name: Benchmark Community World (MongoDB)
-    uses: ./.github/workflows/benchmark-community-world-mongodb.yml
+    uses: ./.github/workflows/benchmark-community-world.yml
     needs: build
     with:
       world-id: mongodb
       world-name: MongoDB
       world-package: "@workflow-worlds/mongodb"
+      service-type: mongodb
       env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/mongodb","WORKFLOW_MONGODB_URI":"mongodb://localhost:27017","WORKFLOW_MONGODB_DATABASE_NAME":"workflow"}'
     secrets: inherit
 
   benchmark-community-redis:
     name: Benchmark Community World (Redis)
-    uses: ./.github/workflows/benchmark-community-world-redis.yml
+    uses: ./.github/workflows/benchmark-community-world.yml
     needs: build
     with:
       world-id: redis
       world-name: Redis
       world-package: "@workflow-worlds/redis"
+      service-type: redis
       env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/redis","WORKFLOW_REDIS_URI":"redis://localhost:6379"}'
     secrets: inherit
 

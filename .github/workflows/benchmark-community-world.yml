@@ -1,4 +1,5 @@
-# Reusable workflow for running benchmarks against a community world (no services)
+# Reusable workflow for running benchmarks against a community world
+# Supports optional service containers (mongodb, redis) via service-type input
 # Called by benchmarks.yml
 
 name: Benchmark Community World
@@ -7,7 +8,7 @@ on:
   workflow_call:
     inputs:
       world-id:
-        description: 'World identifier (turso, etc.)'
+        description: 'World identifier (turso, mongodb, etc.)'
         required: true
         type: string
       world-name:
@@ -28,9 +29,16 @@ on:
         required: false
         type: string
         default: '{}'
+      service-type:
+        description: 'Service container to run (none, mongodb, redis)'
+        required: false
+        type: string
+        default: 'none'
 
 jobs:
+  # Job for worlds that don't need services
   benchmark:
+    if: ${{ inputs.service-type == 'none' || inputs.service-type == '' }}
     name: Benchmark ${{ inputs.world-name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -43,27 +51,10 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          toolchain: stable
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build all packages
-        run: pnpm turbo run build --filter='!./workbench/*'
+          build-packages: 'true'
 
       - name: Install ${{ inputs.world-name }} World
         run: pnpm --filter ${{ inputs.app-name }} add ${{ inputs.world-package }}
@@ -73,7 +64,150 @@ jobs:
 
       - name: Set environment variables
         run: |
-          # Parse JSON env vars and export them
+          echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
+
+      - name: Build workbench
+        run: pnpm turbo run build --filter='./workbench/${{ inputs.app-name }}'
+
+      - name: Run benchmarks
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          APP_NAME: ${{ inputs.app-name }}
+          WORKFLOW_BENCH_BACKEND: ${{ inputs.world-id }}
+        run: |
+          cd workbench/${{ inputs.app-name }}
+          pnpm start &
+          echo "Waiting for server to start..."
+          sleep 15
+          cd ../..
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+          app-name: ${{ inputs.app-name }}
+          backend: ${{ inputs.world-id }}
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}
+          path: |
+            bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+            bench-timings-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+
+  # Job for MongoDB-based worlds
+  benchmark-mongodb:
+    if: ${{ inputs.service-type == 'mongodb' }}
+    name: Benchmark ${{ inputs.world-name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Install ${{ inputs.world-name }} World
+        run: pnpm --filter ${{ inputs.app-name }} add ${{ inputs.world-package }}
+
+      - name: Resolve symlinks
+        run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
+
+      - name: Set environment variables
+        run: |
+          echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
+
+      - name: Build workbench
+        run: pnpm turbo run build --filter='./workbench/${{ inputs.app-name }}'
+
+      - name: Run benchmarks
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          APP_NAME: ${{ inputs.app-name }}
+          WORKFLOW_BENCH_BACKEND: ${{ inputs.world-id }}
+        run: |
+          cd workbench/${{ inputs.app-name }}
+          pnpm start &
+          echo "Waiting for server to start..."
+          sleep 15
+          cd ../..
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+          app-name: ${{ inputs.app-name }}
+          backend: ${{ inputs.world-id }}
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}
+          path: |
+            bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+            bench-timings-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+
+  # Job for Redis-based worlds
+  benchmark-redis:
+    if: ${{ inputs.service-type == 'redis' }}
+    name: Benchmark ${{ inputs.world-name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Install ${{ inputs.world-name }} World
+        run: pnpm --filter ${{ inputs.app-name }} add ${{ inputs.world-package }}
+
+      - name: Resolve symlinks
+        run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
+
+      - name: Set environment variables
+        run: |
           echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
 
       - name: Build workbench
