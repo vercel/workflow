@@ -51,13 +51,13 @@ function generateJob(world, isE2E = true, isBenchmark = false) {
   lines.push(`  ${jobId}:`);
   lines.push(`    name: ${jobName}`);
   lines.push(`    runs-on: ubuntu-latest`);
+  lines.push(`    needs: build`);
 
   if (isE2E) {
     lines.push(`    continue-on-error: true`);
   }
 
   if (isBenchmark) {
-    lines.push(`    needs: build`);
     lines.push(`    timeout-minutes: 30`);
   }
 
@@ -114,14 +114,13 @@ function generateJob(world, isE2E = true, isBenchmark = false) {
   lines.push(`          cache: "pnpm"`);
   lines.push(``);
 
-  if (isBenchmark) {
-    lines.push(`      - name: Download build artifacts`);
-    lines.push(`        uses: actions/download-artifact@v4`);
-    lines.push(`        with:`);
-    lines.push(`          name: build-artifacts`);
-    lines.push(`          path: .`);
-    lines.push(``);
-  }
+  // Download build artifacts (shared by both E2E and benchmark jobs)
+  lines.push(`      - name: Download build artifacts`);
+  lines.push(`        uses: actions/download-artifact@v4`);
+  lines.push(`        with:`);
+  lines.push(`          name: build-artifacts`);
+  lines.push(`          path: .`);
+  lines.push(``);
 
   lines.push(`      - name: Install Dependencies`);
   lines.push(`        run: pnpm install --frozen-lockfile`);
@@ -131,12 +130,6 @@ function generateJob(world, isE2E = true, isBenchmark = false) {
     `        run: pnpm --filter nextjs-turbopack add ${world.package}`
   );
   lines.push(``);
-
-  if (!isBenchmark) {
-    lines.push(`      - name: Run Initial Build`);
-    lines.push(`        run: pnpm turbo run build --filter='!./workbench/*'`);
-    lines.push(``);
-  }
 
   lines.push(`      - name: Resolve symlinks`);
   lines.push(
@@ -204,7 +197,7 @@ function generateJob(world, isE2E = true, isBenchmark = false) {
   return lines.join('\n');
 }
 
-// Generate build job (needed for benchmarks)
+// Generate build job (shared by E2E and benchmark jobs)
 function generateBuildJob() {
   const lines = [];
   lines.push(`  build:`);
@@ -350,11 +343,9 @@ function generateE2EWorkflow(includeBenchmarks = true) {
   lines.push(``);
   lines.push(`jobs:`);
 
-  // Generate build job (needed for benchmarks)
-  if (includeBenchmarks) {
-    lines.push(generateBuildJob());
-    lines.push(``);
-  }
+  // Generate build job (shared by all jobs)
+  lines.push(generateBuildJob());
+  lines.push(``);
 
   // Generate E2E jobs for each world
   for (const world of manifest.worlds) {

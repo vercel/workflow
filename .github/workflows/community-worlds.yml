@@ -56,6 +56,7 @@ jobs:
   e2e-turso:
     name: E2E Turso World Tests
     runs-on: ubuntu-latest
+    needs: build
     continue-on-error: true
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -77,14 +78,17 @@ jobs:
           node-version: 22.x
           cache: "pnpm"
 
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Turso World
         run: pnpm --filter nextjs-turbopack add @workflow-worlds/turso
-
-      - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/nextjs-turbopack
@@ -99,6 +103,7 @@ jobs:
   e2e-mongodb:
     name: E2E MongoDB World Tests
     runs-on: ubuntu-latest
+    needs: build
     continue-on-error: true
     services:
       mongodb:
@@ -131,14 +136,17 @@ jobs:
           node-version: 22.x
           cache: "pnpm"
 
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install MongoDB World
         run: pnpm --filter nextjs-turbopack add @workflow-worlds/mongodb
-
-      - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/nextjs-turbopack
@@ -153,6 +161,7 @@ jobs:
   e2e-redis:
     name: E2E Redis World Tests
     runs-on: ubuntu-latest
+    needs: build
     continue-on-error: true
     services:
       redis:
@@ -184,14 +193,17 @@ jobs:
           node-version: 22.x
           cache: "pnpm"
 
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Redis World
         run: pnpm --filter nextjs-turbopack add @workflow-worlds/redis
-
-      - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/nextjs-turbopack
