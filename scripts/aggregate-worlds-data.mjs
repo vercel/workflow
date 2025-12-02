@@ -47,19 +47,9 @@ try {
   process.exit(1);
 }
 
-// Combine all worlds into a single list with type info
+// Get all worlds from manifest (now a flat array with type field)
 function getAllWorlds() {
-  const worlds = [];
-
-  for (const world of manifest.official || []) {
-    worlds.push({ ...world, type: 'official' });
-  }
-
-  for (const world of manifest.community || []) {
-    worlds.push({ ...world, type: 'community' });
-  }
-
-  return worlds;
+  return manifest.worlds || [];
 }
 
 // Find all E2E result files

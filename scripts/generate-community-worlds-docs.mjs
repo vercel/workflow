@@ -17,8 +17,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, '..');
 
 // Read the manifest
-const manifestPath = path.join(rootDir, 'community-worlds.json');
+const manifestPath = path.join(rootDir, 'worlds-manifest.json');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+// Filter to only community worlds
+const communityWorlds = manifest.worlds.filter((w) => w.type === 'community');
 
 // Generate the community worlds list
 function generateCommunityWorldsList() {
@@ -26,11 +28,11 @@ function generateCommunityWorldsList() {
   lines.push('## Community Worlds');
   lines.push('');
   lines.push(
-    '> These worlds are maintained by the community and tested in CI. See the [community-worlds.json](https://github.com/vercel/workflow/blob/main/community-worlds.json) manifest for configuration details.'
+    '> These worlds are maintained by the community and tested in CI. See the [worlds-manifest.json](https://github.com/vercel/workflow/blob/main/worlds-manifest.json) for configuration details.'
   );
   lines.push('');
 
-  for (const world of manifest.worlds) {
+  for (const world of communityWorlds) {
     const name = world.name;
     const pkg = world.package;
     const description = world.description;
@@ -75,7 +77,7 @@ if (communityWorldsRegex.test(docsContent)) {
 fs.writeFileSync(docsPath, docsContent);
 
 console.log(`Updated ${docsPath}`);
-console.log(`  - ${manifest.worlds.length} community world(s) documented`);
-for (const world of manifest.worlds) {
+console.log(`  - ${communityWorlds.length} community world(s) documented`);
+for (const world of communityWorlds) {
   console.log(`    - ${world.name} (${world.package})`);
 }

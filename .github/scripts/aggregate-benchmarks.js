@@ -25,22 +25,24 @@ const worldConfig = {
 };
 
 // Load community worlds from manifest and add to worldConfig
-const communityWorldsPath = path.join(__dirname, '../../community-worlds.json');
-if (fs.existsSync(communityWorldsPath)) {
+const worldsManifestPath = path.join(__dirname, '../../worlds-manifest.json');
+if (fs.existsSync(worldsManifestPath)) {
   try {
-    const communityWorlds = JSON.parse(
-      fs.readFileSync(communityWorldsPath, 'utf-8')
+    const worldsManifest = JSON.parse(
+      fs.readFileSync(worldsManifestPath, 'utf-8')
     );
-    for (const world of communityWorlds.worlds || []) {
-      // Use world.id as the key, with a community emoji
-      worldConfig[world.id] = {
-        emoji: '🌐',
-        label: world.name,
-        community: true,
-      };
+    for (const world of worldsManifest.worlds || []) {
+      // Only add community worlds (official ones are already defined above)
+      if (world.type === 'community') {
+        worldConfig[world.id] = {
+          emoji: '🌐',
+          label: world.name,
+          community: true,
+        };
+      }
     }
   } catch (e) {
-    console.error(`Warning: Could not load community worlds: ${e.message}`);
+    console.error(`Warning: Could not load worlds manifest: ${e.message}`);
   }
 }
 

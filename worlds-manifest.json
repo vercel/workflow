@@ -1,8 +1,9 @@
 {
   "$schema": "./worlds-manifest.schema.json",
-  "official": [
+  "worlds": [
     {
       "id": "local",
+      "type": "official",
       "package": "@workflow/world-local",
       "name": "Local",
       "description": "Filesystem-based world for local development and testing",
@@ -12,6 +13,7 @@
     },
     {
       "id": "postgres",
+      "type": "official",
       "package": "@workflow/world-postgres",
       "name": "Postgres",
       "description": "PostgreSQL-based world for multi-host deployments",
@@ -42,6 +44,7 @@
     },
     {
       "id": "vercel",
+      "type": "official",
       "package": "@workflow/world-vercel",
       "name": "Vercel",
       "description": "Production-ready world for Vercel platform deployments",
@@ -51,11 +54,23 @@
       },
       "services": [],
       "requiresDeployment": true
-    }
-  ],
-  "community": [
+    },
+    {
+      "id": "starter",
+      "type": "community",
+      "package": "@workflow-worlds/starter",
+      "name": "Starter",
+      "description": "Starter template for building Workflow DevKit Worlds",
+      "repository": "https://github.com/mizzle-dev/workflow-worlds",
+      "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/starter",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@workflow-worlds/starter"
+      },
+      "services": []
+    },
     {
       "id": "turso",
+      "type": "community",
       "package": "@workflow-worlds/turso",
       "name": "Turso",
       "description": "Turso/libSQL World for embedded or remote SQLite databases",
@@ -69,6 +84,7 @@
     },
     {
       "id": "mongodb",
+      "type": "community",
       "package": "@workflow-worlds/mongodb",
       "name": "MongoDB",
       "description": "MongoDB World using native driver",
@@ -95,6 +111,7 @@
     },
     {
       "id": "redis",
+      "type": "community",
       "package": "@workflow-worlds/redis",
       "name": "Redis",
       "description": "Redis World using BullMQ for queues, Redis Streams for output",
@@ -120,6 +137,7 @@
     },
     {
       "id": "jazz",
+      "type": "community",
       "package": "workflow-world-jazz",
       "name": "Jazz",
       "description": "Jazz Cloud world for local-first sync and real-time collaboration",
