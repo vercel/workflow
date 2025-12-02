@@ -82,6 +82,27 @@ The Vercel world supports multiple environments:
 
 Each environment has isolated workflow data, ensuring that development and testing don't interfere with production workflows.
 
+## Remote Access Configuration
+
+To inspect production workflows from your local machine using [observability tools](/docs/observability), you can use CLI flags to configure remote access.
+
+In most cases, these flags are not necessary. The CLI automatically retrieves authentication tokens from the Vercel CLI's token storage and infers team and project IDs based on the current working directory and Vercel project linking status.
+
+### CLI Flags
+
+If you need to override the automatic configuration, you can pass configuration via CLI flags:
+
+```bash
+npx workflow inspect runs \
+  --backend vercel \
+  --env production \
+  --project my-project \
+  --team my-team \
+  --authToken <your-token>
+```
+
+Learn more about remote inspection in the [Observability](/docs/observability) section.
+
 ## Team Support
 
 If your project belongs to a Vercel team, the Vercel world automatically integrates with team permissions:

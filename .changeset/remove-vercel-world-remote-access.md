@@ -1,4 +1,4 @@
 ---
 ---
 
-Remove confusing "Remote Access Configuration" section from Vercel World documentation
+Simplify "Remote Access Configuration" section in Vercel World documentation
