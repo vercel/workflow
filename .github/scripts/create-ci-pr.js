@@ -23,7 +23,7 @@ module.exports = async ({ github, context, core, exec }, prDetails) => {
     head: ciBranchName,
     base: prDetails.base_ref,
     body: `🤖 **Automated CI Test PR**
-    
+
 This is an automated PR created to run CI tests for PR #${prDetails.number} by @${prDetails.user}.
 
 **Original PR:** #${prDetails.number}
