@@ -11,10 +11,10 @@ const E2E_ARTIFACT_PATTERNS = [
   'e2e-results-local',
   'e2e-results-postgres',
   'e2e-results-vercel',
-  'e2e-dev-results-starter',
-  'e2e-dev-results-turso',
-  'e2e-dev-results-mongodb',
-  'e2e-dev-results-redis',
+  'e2e-results-starter',
+  'e2e-results-turso',
+  'e2e-results-mongodb',
+  'e2e-results-redis',
 ];
 
 const BENCH_ARTIFACT_PATTERNS = [
