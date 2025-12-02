@@ -223,7 +223,9 @@ function getAppsAndBackends(data) {
 function isStreamBenchmark(benchData, apps, backends) {
   for (const app of apps) {
     for (const backend of backends) {
-      if (benchData[app]?.[backend]?.firstByteTime !== null) {
+      const firstByteTime = benchData[app]?.[backend]?.firstByteTime;
+      // Must be a number (not null or undefined) to be a stream benchmark
+      if (typeof firstByteTime === 'number') {
         return true;
       }
     }
