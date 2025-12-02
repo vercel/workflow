@@ -2684,9 +2684,24 @@ impl StepTransform {
             let workflow_entries: Vec<String> = sorted_workflow_names
                 .into_iter()
                 .map(|fn_name| {
-                    // Use the export name for the workflow ID (e.g., "default" not "__default")
                     let fn_name_str: &str = fn_name;
-                    let workflow_id = self.create_id(Some(fn_name_str), DUMMY_SP, true);
+                    // Look up the actual const/function name for this export
+                    let actual_name = self
+                        .workflow_export_to_const_name
+                        .get(fn_name_str)
+                        .map(|s| s.as_str())
+                        .unwrap_or(fn_name_str);
+                    // For auto-generated __default names (anonymous default exports),
+                    // normalize to "default" for the workflow ID
+                    let id_name =
+                        if (actual_name == "__default" || actual_name.starts_with("__default$"))
+                            && fn_name_str == "default"
+                        {
+                            "default"
+                        } else {
+                            actual_name
+                        };
+                    let workflow_id = self.create_id(Some(id_name), DUMMY_SP, true);
                     format!("\"{}\":{{\"workflowId\":\"{}\"}}", fn_name_str, workflow_id)
                 })
                 .collect();
