@@ -127,6 +127,30 @@ export async function runWorkflow(
       );
     };
 
+    // Override timeout/interval functions to throw helpful errors
+    // These are not supported in workflow functions because they rely on
+    // asynchronous scheduling which breaks deterministic replay
+    const timeoutErrorMessage = `Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions. Use the "sleep" function from "workflow" for time-based delays.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW}`;
+
+    (vmGlobalThis as any).setTimeout = () => {
+      throw new vmGlobalThis.Error(timeoutErrorMessage);
+    };
+    (vmGlobalThis as any).setInterval = () => {
+      throw new vmGlobalThis.Error(timeoutErrorMessage);
+    };
+    (vmGlobalThis as any).clearTimeout = () => {
+      throw new vmGlobalThis.Error(timeoutErrorMessage);
+    };
+    (vmGlobalThis as any).clearInterval = () => {
+      throw new vmGlobalThis.Error(timeoutErrorMessage);
+    };
+    (vmGlobalThis as any).setImmediate = () => {
+      throw new vmGlobalThis.Error(timeoutErrorMessage);
+    };
+    (vmGlobalThis as any).clearImmediate = () => {
+      throw new vmGlobalThis.Error(timeoutErrorMessage);
+    };
+
     // `Request` and `Response` are special built-in classes that invoke steps
     // for the `json()`, `text()` and `arrayBuffer()` instance methods
     class Request implements globalThis.Request {
