@@ -110,6 +110,20 @@ export function withWorkflow(
     ) {
       const shouldWatch = process.env.NODE_ENV === 'development';
       const NextBuilder = await getNextBuilder();
+
+      // Try .jsonc first (Next.js 16.0.2-canary.29>), fall back to .json (<Next.js 16.0.2-canary.27)
+      let serverExternalPackages: string[] = [];
+      try {
+        serverExternalPackages = require('next/dist/lib/server-external-packages.jsonc');
+      } catch {
+        try {
+          serverExternalPackages = require('next/dist/lib/server-external-packages.json');
+        } catch {
+          // If neither exists, continue with empty array
+          console.warn('Could not load Next.js server-external-packages file');
+        }
+      }
+
       const workflowBuilder = new NextBuilder({
         watch: shouldWatch,
         // discover workflows from pages/app entries
@@ -120,7 +134,7 @@ export function withWorkflow(
         stepsBundlePath: '', // not used in base
         webhookBundlePath: '', // node used in base
         externalPackages: [
-          ...require('next/dist/lib/server-external-packages.json'),
+          ...serverExternalPackages,
           ...(nextConfig.serverExternalPackages || []),
         ],
       });
