@@ -1,0 +1,185 @@
+{
+  "$schema": "./worlds-status.schema.json",
+  "lastUpdated": "2024-12-01T12:00:00Z",
+  "commit": "abc123",
+  "branch": "main",
+  "worlds": {
+    "local": {
+      "type": "official",
+      "name": "Local",
+      "package": "@workflow/world-local",
+      "description": "Filesystem-based world for local development and testing",
+      "docs": "/docs/deploying/world/local-world",
+      "e2e": {
+        "status": "passing",
+        "total": 24,
+        "passed": 24,
+        "failed": 0,
+        "skipped": 0,
+        "progress": 100,
+        "lastRun": "2024-12-01T12:00:00Z"
+      },
+      "benchmark": {
+        "status": "measured",
+        "metrics": {
+          "workflow with no steps": { "mean": 45, "min": 40, "max": 55 },
+          "workflow with 1 step": { "mean": 156, "min": 140, "max": 180 },
+          "workflow with 10 sequential steps": {
+            "mean": 890,
+            "min": 850,
+            "max": 950
+          }
+        },
+        "lastRun": "2024-12-01T12:00:00Z"
+      }
+    },
+    "postgres": {
+      "type": "official",
+      "name": "Postgres",
+      "package": "@workflow/world-postgres",
+      "description": "PostgreSQL-based world for multi-host deployments",
+      "docs": "/docs/deploying/world/postgres-world",
+      "e2e": {
+        "status": "passing",
+        "total": 24,
+        "passed": 24,
+        "failed": 0,
+        "skipped": 0,
+        "progress": 100,
+        "lastRun": "2024-12-01T12:00:00Z"
+      },
+      "benchmark": {
+        "status": "measured",
+        "metrics": {
+          "workflow with no steps": { "mean": 68, "min": 60, "max": 80 },
+          "workflow with 1 step": { "mean": 203, "min": 180, "max": 230 },
+          "workflow with 10 sequential steps": {
+            "mean": 1150,
+            "min": 1100,
+            "max": 1220
+          }
+        },
+        "lastRun": "2024-12-01T12:00:00Z"
+      }
+    },
+    "vercel": {
+      "type": "official",
+      "name": "Vercel",
+      "package": "@workflow/world-vercel",
+      "description": "Production-ready world for Vercel platform deployments",
+      "docs": "/docs/deploying/world/vercel-world",
+      "e2e": {
+        "status": "passing",
+        "total": 24,
+        "passed": 24,
+        "failed": 0,
+        "skipped": 0,
+        "progress": 100,
+        "lastRun": "2024-12-01T12:00:00Z"
+      },
+      "benchmark": {
+        "status": "measured",
+        "metrics": {
+          "workflow with no steps": { "mean": 120, "min": 100, "max": 150 },
+          "workflow with 1 step": { "mean": 450, "min": 400, "max": 520 },
+          "workflow with 10 sequential steps": {
+            "mean": 2800,
+            "min": 2600,
+            "max": 3100
+          }
+        },
+        "lastRun": "2024-12-01T12:00:00Z"
+      }
+    },
+    "turso": {
+      "type": "community",
+      "name": "Turso",
+      "package": "@workflow-worlds/turso",
+      "description": "Turso/libSQL World for embedded or remote SQLite databases",
+      "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/turso",
+      "repository": "https://github.com/mizzle-dev/workflow-worlds",
+      "e2e": {
+        "status": "partial",
+        "total": 24,
+        "passed": 20,
+        "failed": 3,
+        "skipped": 1,
+        "progress": 83.3,
+        "lastRun": "2024-12-01T12:00:00Z"
+      },
+      "benchmark": {
+        "status": "measured",
+        "metrics": {
+          "workflow with no steps": { "mean": 52, "min": 45, "max": 62 },
+          "workflow with 1 step": { "mean": 180, "min": 160, "max": 210 },
+          "workflow with 10 sequential steps": {
+            "mean": 980,
+            "min": 920,
+            "max": 1050
+          }
+        },
+        "lastRun": "2024-12-01T12:00:00Z"
+      }
+    },
+    "mongodb": {
+      "type": "community",
+      "name": "MongoDB",
+      "package": "@workflow-worlds/mongodb",
+      "description": "MongoDB World using native driver",
+      "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/mongodb",
+      "repository": "https://github.com/mizzle-dev/workflow-worlds",
+      "e2e": {
+        "status": "partial",
+        "total": 24,
+        "passed": 15,
+        "failed": 7,
+        "skipped": 2,
+        "progress": 62.5,
+        "lastRun": "2024-12-01T12:00:00Z"
+      },
+      "benchmark": {
+        "status": "measured",
+        "metrics": {
+          "workflow with no steps": { "mean": 75, "min": 65, "max": 90 },
+          "workflow with 1 step": { "mean": 220, "min": 195, "max": 255 },
+          "workflow with 10 sequential steps": {
+            "mean": 1280,
+            "min": 1200,
+            "max": 1380
+          }
+        },
+        "lastRun": "2024-12-01T12:00:00Z"
+      }
+    },
+    "redis": {
+      "type": "community",
+      "name": "Redis",
+      "package": "@workflow-worlds/redis",
+      "description": "Redis World using BullMQ for queues, Redis Streams for output",
+      "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/redis",
+      "repository": "https://github.com/mizzle-dev/workflow-worlds",
+      "e2e": {
+        "status": "partial",
+        "total": 24,
+        "passed": 12,
+        "failed": 10,
+        "skipped": 2,
+        "progress": 50.0,
+        "lastRun": "2024-12-01T12:00:00Z"
+      },
+      "benchmark": {
+        "status": "measured",
+        "metrics": {
+          "workflow with no steps": { "mean": 58, "min": 50, "max": 70 },
+          "workflow with 1 step": { "mean": 195, "min": 175, "max": 220 },
+          "workflow with 10 sequential steps": {
+            "mean": 1050,
+            "min": 980,
+            "max": 1130
+          }
+        },
+        "lastRun": "2024-12-01T12:00:00Z"
+      }
+    }
+  }
+}
