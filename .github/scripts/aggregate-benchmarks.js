@@ -17,12 +17,32 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-// World display config
+// World display config - built-in worlds
 const worldConfig = {
   local: { emoji: '💻', label: 'Local' },
   postgres: { emoji: '🐘', label: 'Postgres' },
   vercel: { emoji: '▲', label: 'Vercel' },
 };
+
+// Load community worlds from manifest and add to worldConfig
+const communityWorldsPath = path.join(__dirname, '../../community-worlds.json');
+if (fs.existsSync(communityWorldsPath)) {
+  try {
+    const communityWorlds = JSON.parse(
+      fs.readFileSync(communityWorldsPath, 'utf-8')
+    );
+    for (const world of communityWorlds.worlds || []) {
+      // Use world.id as the key, with a community emoji
+      worldConfig[world.id] = {
+        emoji: '🌐',
+        label: world.name,
+        community: true,
+      };
+    }
+  } catch (e) {
+    console.error(`Warning: Could not load community worlds: ${e.message}`);
+  }
+}
 
 // Framework display config
 const frameworkConfig = {
@@ -562,6 +582,12 @@ function renderComparison(data, baselineData) {
   console.log('- 💻 Local: In-memory filesystem world');
   console.log('- 🐘 Postgres: PostgreSQL database world');
   console.log('- ▲ Vercel: Vercel production world');
+  // Add community worlds to legend
+  for (const [id, config] of Object.entries(worldConfig)) {
+    if (config.community) {
+      console.log(`- 🌐 ${config.label}: Community world`);
+    }
+  }
   console.log('</details>');
 }
 

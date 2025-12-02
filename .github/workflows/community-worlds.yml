@@ -1,3 +1,7 @@
+# AUTO-GENERATED FILE - DO NOT EDIT DIRECTLY
+# This file is generated from community-worlds.json
+# Run: node scripts/generate-community-worlds-workflow.mjs
+
 name: Community Worlds E2E Tests
 
 on:
@@ -21,9 +25,8 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: "@workflow-worlds/turso"
+      WORKFLOW_TARGET_WORLD: @workflow-worlds/turso
       WORKFLOW_TURSO_DATABASE_URL: "file:workflow.db"
-
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -72,14 +75,12 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: "@workflow-worlds/mongodb"
+      WORKFLOW_TARGET_WORLD: @workflow-worlds/mongodb
       WORKFLOW_MONGODB_URI: "mongodb://localhost:27017"
-      WORKFLOW_MONGODB_DATABASE_NAME: "workflow"
-
+      WORKFLOW_MONGODB_DATABASE_NAME: workflow
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -124,17 +125,15 @@ jobs:
         ports:
           - 6379:6379
         options: >-
-          --health-cmd "redis-cli ping"
+          --health-cmd redis-cli ping
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: "@workflow-worlds/redis"
+      WORKFLOW_TARGET_WORLD: @workflow-worlds/redis
       WORKFLOW_REDIS_URI: "redis://localhost:6379"
-
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -170,14 +169,13 @@ jobs:
           DEV_TEST_CONFIG: '{"name":"nextjs-turbopack","project":"workbench-nextjs-turbopack-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
 
   e2e-starter:
-    name: E2E Starter World Tests (In-Memory)
+    name: E2E Starter (In-Memory) World Tests
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
-      WORKFLOW_TARGET_WORLD: "@workflow-worlds/starter"
-
+      WORKFLOW_TARGET_WORLD: @workflow-worlds/starter
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -196,7 +194,7 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Starter World
+      - name: Install Starter (In-Memory) World
         run: pnpm --filter nextjs-turbopack add @workflow-worlds/starter
 
       - name: Run Initial Build
