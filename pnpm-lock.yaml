@@ -815,6 +815,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@workflow/builders':
+        specifier: workspace:*
+        version: link:../builders
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig

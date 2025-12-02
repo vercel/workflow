@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@workflow/builders": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "vite": "7.1.12"
   }

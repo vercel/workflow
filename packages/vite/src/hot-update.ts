@@ -1,8 +1,5 @@
 import type { Plugin, HotUpdateOptions } from 'vite';
-
-interface BaseBuilder {
-  build(): Promise<void>;
-}
+import type { BaseBuilder } from '@workflow/builders';
 
 export interface WorkflowHotUpdatePluginOptions {
   /**
