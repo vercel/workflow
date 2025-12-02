@@ -364,3 +364,34 @@ jobs:
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
+
+  # Community World E2E Tests
+  e2e-community-turso:
+    name: E2E Community World (Turso)
+    uses: ./.github/workflows/e2e-community-world.yml
+    with:
+      world-id: turso
+      world-name: Turso
+      world-package: "@workflow-worlds/turso"
+      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/turso","WORKFLOW_TURSO_DATABASE_URL":"file:workflow.db"}'
+    secrets: inherit
+
+  e2e-community-mongodb:
+    name: E2E Community World (MongoDB)
+    uses: ./.github/workflows/e2e-community-world-mongodb.yml
+    with:
+      world-id: mongodb
+      world-name: MongoDB
+      world-package: "@workflow-worlds/mongodb"
+      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/mongodb","WORKFLOW_MONGODB_URI":"mongodb://localhost:27017","WORKFLOW_MONGODB_DATABASE_NAME":"workflow"}'
+    secrets: inherit
+
+  e2e-community-redis:
+    name: E2E Community World (Redis)
+    uses: ./.github/workflows/e2e-community-world-redis.yml
+    with:
+      world-id: redis
+      world-name: Redis
+      world-package: "@workflow-worlds/redis"
+      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/redis","WORKFLOW_REDIS_URI":"redis://localhost:6379"}'
+    secrets: inherit
