@@ -43,7 +43,7 @@ export const getEnvVars = (): Record<string, string> => {
     WORKFLOW_VERCEL_PROXY_URL: env.WORKFLOW_VERCEL_PROXY_URL || '',
     WORKFLOW_LOCAL_UI: env.WORKFLOW_LOCAL_UI || '',
     PORT: env.PORT || '',
-    WORKFLOW_EMBEDDED_DATA_DIR: env.WORKFLOW_EMBEDDED_DATA_DIR || '',
+    WORKFLOW_LOCAL_DATA_DIR: env.WORKFLOW_LOCAL_DATA_DIR || '',
   };
 };
 
@@ -75,10 +75,10 @@ async function findWorkflowDataDir(cwd: string) {
 }
 
 /**
- * Overwrites process.env variables related to embedded world configuration,
+ * Overwrites process.env variables related to local world configuration,
  * if relevant environment variables aren't set already.
  */
-export const inferEmbeddedWorldEnvVars = async () => {
+export const inferLocalWorldEnvVars = async () => {
   const envVars = getEnvVars();
   if (!envVars.PORT) {
     logger.warn(
@@ -89,12 +89,12 @@ export const inferEmbeddedWorldEnvVars = async () => {
   }
 
   // Paths to check, in order of preference
-  if (!envVars.WORKFLOW_EMBEDDED_DATA_DIR) {
+  if (!envVars.WORKFLOW_LOCAL_DATA_DIR) {
     const cwd = getWorkflowConfig().workingDir;
 
     const localPath = await findWorkflowDataDir(cwd);
     if (localPath) {
-      envVars.WORKFLOW_EMBEDDED_DATA_DIR = localPath;
+      envVars.WORKFLOW_LOCAL_DATA_DIR = localPath;
       writeEnvVars(envVars);
       return;
     }
@@ -104,7 +104,7 @@ export const inferEmbeddedWorldEnvVars = async () => {
     if (repoRoot) {
       const repoPath = await findWorkflowDataDir(repoRoot);
       if (repoPath) {
-        envVars.WORKFLOW_EMBEDDED_DATA_DIR = repoPath;
+        envVars.WORKFLOW_LOCAL_DATA_DIR = repoPath;
         writeEnvVars(envVars);
         return;
       }

@@ -1,5 +1,23 @@
 # @vercel/workflow-nitro
 
+## 4.0.1-beta.23
+
+### Patch Changes
+
+- 3c19e90: Fix Nitro and SvelteKit build race conditions and make writing debug file atomic
+- Updated dependencies [d53bf90]
+- Updated dependencies [0f1645b]
+- Updated dependencies [3c19e90]
+- Updated dependencies [1ac5592]
+- Updated dependencies [5b91861]
+- Updated dependencies [bdde1bd]
+- Updated dependencies [0cacb99]
+- Updated dependencies [8d4562e]
+  - @workflow/builders@4.0.1-beta.19
+  - @workflow/core@4.0.1-beta.20
+  - @workflow/swc-plugin@4.0.1-beta.9
+  - @workflow/rollup@4.0.0-beta.3
+
 ## 4.0.1-beta.22
 
 ### Patch Changes

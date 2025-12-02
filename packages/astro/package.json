@@ -1,0 +1,40 @@
+{
+  "name": "@workflow/astro",
+  "version": "4.0.0-beta.2",
+  "description": "Astro integration for Workflow DevKit",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/astro"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist"
+  },
+  "dependencies": {
+    "@swc/core": "1.11.24",
+    "@workflow/builders": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/rollup": "workspace:*",
+    "exsolve": "^1.0.7",
+    "pathe": "^2.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "astro": "5.16.0"
+  }
+}

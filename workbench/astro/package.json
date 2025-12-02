@@ -1,0 +1,27 @@
+{
+  "name": "@workflow/example-astro",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js ./src/workflows src/lib/_workflows.ts",
+    "predev": "pnpm generate:workflows",
+    "prebuild": "pnpm generate:workflows",
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "start": "node scripts/start-with-pg.mjs"
+  },
+  "dependencies": {
+    "@astrojs/node": "9.5.0",
+    "@astrojs/vercel": "^9.0.0",
+    "ai": "catalog:",
+    "astro": "^5.15.6",
+    "lodash.chunk": "^4.2.0",
+    "openai": "6.9.0",
+    "workflow": "workspace:*",
+    "@workflow/world-postgres": "workspace:*",
+    "zod": "catalog:"
+  }
+}

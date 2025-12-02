@@ -25,22 +25,22 @@ const getConnectionInfo = (
     return { provider: 'Vercel', parts };
   }
 
-  if (backend === 'embedded') {
-    // Embedded backend
+  if (backend === 'local') {
+    // Local backend
     const parts: string[] = [];
     if (config.dataDir) {
       parts.push(`dir: ${config.dataDir}`);
     }
     if (config.port) parts.push(`port: ${config.port}`);
 
-    return { provider: 'Embedded', parts };
+    return { provider: 'Local', parts };
   }
 
   return { provider: config.backend || 'unknown', parts: [] };
 };
 
 export function ConnectionStatus({ config }: ConnectionStatusProps) {
-  const backend = config.backend || 'embedded';
+  const backend = config.backend || 'local';
   const { provider, parts } = getConnectionInfo(backend, config);
 
   return (

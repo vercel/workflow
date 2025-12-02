@@ -34,8 +34,8 @@ export function SettingsSidebar() {
   const { data: worldsAvailability = [], isLoading: isLoadingWorlds } =
     useWorldsAvailability();
 
-  const backend = localConfig.backend || 'embedded';
-  const isEmbedded = backend === 'embedded';
+  const backend = localConfig.backend || 'local';
+  const isLocal = backend === 'local';
   const isPostgres = backend === 'postgres';
 
   // Update local config when query params change
@@ -117,7 +117,7 @@ export function SettingsSidebar() {
                 <div className="space-y-2">
                   <Label htmlFor="backend">Backend</Label>
                   <Select
-                    value={localConfig.backend || 'embedded'}
+                    value={localConfig.backend || 'local'}
                     onValueChange={(value) =>
                       handleInputChange('backend', value)
                     }
@@ -138,7 +138,7 @@ export function SettingsSidebar() {
                         ))
                       ) : (
                         <>
-                          <SelectItem value="embedded">Embedded</SelectItem>
+                          <SelectItem value="local">Local</SelectItem>
                           <SelectItem value="vercel">Vercel</SelectItem>
                           <SelectItem value="postgres">PostgreSQL</SelectItem>
                         </>
@@ -170,7 +170,7 @@ export function SettingsSidebar() {
                   })()}
                 </div>
 
-                {isEmbedded && (
+                {isLocal && (
                   <>
                     <div className="space-y-2">
                       <Label htmlFor="port">Port</Label>
@@ -244,7 +244,7 @@ export function SettingsSidebar() {
                   </>
                 )}
 
-                {!isEmbedded && !isPostgres && (
+                {!isLocal && !isPostgres && (
                   <>
                     <div className="space-y-2">
                       <Label htmlFor="env">Environment</Label>

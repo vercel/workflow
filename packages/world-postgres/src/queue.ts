@@ -7,7 +7,7 @@ import {
   type QueuePrefix,
   type ValidQueueName,
 } from '@workflow/world';
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 import type PgBoss from 'pg-boss';
 import { monotonicFactory } from 'ulid';
 import { MessageData } from './boss.js';
@@ -19,8 +19,8 @@ import type { PostgresWorldConfig } from './config.js';
  *   - `step` for step jobs
  *
  * When a message is queued, it is sent to pg-boss with the appropriate job type.
- * When a job is processed, it is deserialized and then re-queued into the _embedded world_, showing that
- * we can reuse the embedded world, mix and match worlds to build
+ * When a job is processed, it is deserialized and then re-queued into the _local world_, showing that
+ * we can reuse the local world, mix and match worlds to build
  * hybrid architectures, and even migrate between worlds.
  */
 export function createQueue(
@@ -28,7 +28,7 @@ export function createQueue(
   config: PostgresWorldConfig
 ): Queue & { start(): Promise<void> } {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  const embeddedWorld = createEmbeddedWorld({ dataDir: undefined, port });
+  const localWorld = createLocalWorld({ dataDir: undefined, port });
 
   const transport = new JsonTransport();
   const generateMessageId = monotonicFactory();
@@ -39,7 +39,7 @@ export function createQueue(
     __wkf_step_: `${prefix}steps`,
   } as const satisfies Record<QueuePrefix, string>;
 
-  const createQueueHandler = embeddedWorld.createQueueHandler;
+  const createQueueHandler = localWorld.createQueueHandler;
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     return 'postgres';
@@ -106,7 +106,7 @@ export function createQueue(
       );
       const message = QueuePayloadSchema.parse(body);
       const queueName = `${queue}${messageData.id}` as const;
-      await embeddedWorld.queue(queueName, message, {
+      await localWorld.queue(queueName, message, {
         idempotencyKey: messageData.idempotencyKey,
       });
     }

@@ -1,6 +1,6 @@
 {
   "name": "workflow",
-  "version": "4.0.1-beta.22",
+  "version": "4.0.1-beta.23",
   "description": "Workflow DevKit - Build durable, resilient, and observable workflows",
   "main": "dist/typescript-plugin.cjs",
   "type": "module",
@@ -41,6 +41,7 @@
     "./nitro": "./dist/nitro.js",
     "./nuxt": "./dist/nuxt.js",
     "./sveltekit": "./dist/sveltekit.js",
+    "./astro": "./dist/astro.js",
     "./vite": "./dist/vite.js",
     "./runtime": "./dist/runtime.js"
   },
@@ -52,6 +53,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@workflow/astro": "workspace:*",
     "@workflow/cli": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
