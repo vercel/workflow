@@ -59,7 +59,7 @@ export async function start<TArgs extends unknown[], TResult>(
 ) {
   return await waitedUntil(() => {
     // @ts-expect-error this field is added by our client transform
-    const workflowName = workflow.workflowId;
+    const workflowName = workflow?.workflowId;
 
     if (!workflowName) {
       throw new WorkflowRuntimeError(
