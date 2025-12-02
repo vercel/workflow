@@ -1,7 +1,6 @@
 import { waitUntil } from '@vercel/functions';
 import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
-import type { Hook } from '@workflow/world';
-import type { WorkflowInvokePayload } from '../schemas.js';
+import type { Hook, WorkflowInvokePayload } from '@workflow/world';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,

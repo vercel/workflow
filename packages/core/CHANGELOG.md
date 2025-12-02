@@ -1,5 +1,26 @@
 # @workflow/core
 
+## 4.0.1-beta.20
+
+### Patch Changes
+
+- 0f1645b: Ignore rejections in `waitedUntil` promise
+- bdde1bd: track queue overhead with opentelemetry
+- 8d4562e: Rename leftover references to "embedded world" to be "local world"
+- Updated dependencies [bc9b628]
+- Updated dependencies [34f3f86]
+- Updated dependencies [cd451e0]
+- Updated dependencies [6e8e828]
+- Updated dependencies [10c5b91]
+- Updated dependencies [bdde1bd]
+- Updated dependencies [2faddf3]
+- Updated dependencies [8d4562e]
+  - @workflow/utils@4.0.1-beta.5
+  - @workflow/world-local@4.0.1-beta.14
+  - @workflow/world@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.7
+  - @workflow/world-vercel@4.0.1-beta.14
+
 ## 4.0.1-beta.19
 
 ### Patch Changes

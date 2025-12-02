@@ -10,6 +10,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
+import { getRun, start } from 'workflow/api';
 import { callThrower } from './helpers.js';
 
 //////////////////////////////////////////////////////////
@@ -558,4 +559,53 @@ export async function closureVariableWorkflow(baseValue: number) {
 
   const output = await calculate();
   return output;
+}
+
+//////////////////////////////////////////////////////////
+
+// Child workflow that will be spawned from another workflow
+export async function childWorkflow(value: number) {
+  'use workflow';
+  // Do some processing
+  const doubled = await doubleValue(value);
+  return { childResult: doubled, originalValue: value };
+}
+
+async function doubleValue(value: number) {
+  'use step';
+  return value * 2;
+}
+
+// Step function that spawns another workflow using start()
+async function spawnChildWorkflow(value: number) {
+  'use step';
+  // start() can only be called inside a step function, not directly in workflow code
+  const childRun = await start(childWorkflow, [value]);
+  return childRun.runId;
+}
+
+// Step function that waits for a workflow run to complete and returns its result
+async function awaitWorkflowResult<T>(runId: string) {
+  'use step';
+  const run = getRun<T>(runId);
+  const result = await run.returnValue;
+  return result;
+}
+
+export async function spawnWorkflowFromStepWorkflow(inputValue: number) {
+  'use workflow';
+  // Spawn the child workflow from inside a step function
+  const childRunId = await spawnChildWorkflow(inputValue);
+
+  // Wait for the child workflow to complete (also in a step)
+  const childResult = await awaitWorkflowResult<{
+    childResult: number;
+    originalValue: number;
+  }>(childRunId);
+
+  return {
+    parentInput: inputValue,
+    childRunId,
+    childResult,
+  };
 }

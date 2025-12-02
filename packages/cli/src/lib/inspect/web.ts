@@ -369,7 +369,7 @@ function envToQueryParams(
     WORKFLOW_VERCEL_PROJECT: 'project',
     WORKFLOW_VERCEL_TEAM: 'team',
     PORT: 'port',
-    WORKFLOW_EMBEDDED_DATA_DIR: 'dataDir',
+    WORKFLOW_LOCAL_DATA_DIR: 'dataDir',
   };
 
   for (const [envName, paramName] of Object.entries(envToQueryParamMappings)) {

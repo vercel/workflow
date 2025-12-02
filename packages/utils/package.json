@@ -1,7 +1,7 @@
 {
   "name": "@workflow/utils",
   "description": "Utility functions for Workflow DevKit",
-  "version": "4.0.1-beta.4",
+  "version": "4.0.1-beta.5",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -40,7 +40,6 @@
     "vitest": "catalog:"
   },
   "dependencies": {
-    "execa": "9.6.0",
     "ms": "2.1.3"
   }
 }

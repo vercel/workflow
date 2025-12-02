@@ -1,7 +1,7 @@
 {
   "name": "@workflow/errors",
   "description": "A package for standardizing errors in Workflow DevKit",
-  "version": "4.0.1-beta.6",
+  "version": "4.0.1-beta.7",
   "type": "module",
   "main": "dist/index.js",
   "files": [

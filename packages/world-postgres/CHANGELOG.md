@@ -1,5 +1,20 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.16
+
+### Patch Changes
+
+- ef8e0e5: Increase polling interval for pg-boss to reduce interval between steps
+- 8d4562e: Rename leftover references to "embedded world" to be "local world"
+- Updated dependencies [6e8e828]
+- Updated dependencies [10c5b91]
+- Updated dependencies [bdde1bd]
+- Updated dependencies [2faddf3]
+- Updated dependencies [8d4562e]
+  - @workflow/world-local@4.0.1-beta.14
+  - @workflow/world@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.7
+
 ## 4.1.0-beta.15
 
 ### Patch Changes

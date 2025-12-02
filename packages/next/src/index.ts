@@ -13,7 +13,7 @@ export function withWorkflow(
     workflows,
   }: {
     workflows?: {
-      embedded?: {
+      local?: {
         port?: number;
         dataDir?: string;
       };
@@ -22,10 +22,10 @@ export function withWorkflow(
 ) {
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
-      process.env.WORKFLOW_TARGET_WORLD = 'embedded';
-      process.env.WORKFLOW_EMBEDDED_DATA_DIR = '.next/workflow-data';
+      process.env.WORKFLOW_TARGET_WORLD = 'local';
+      process.env.WORKFLOW_LOCAL_DATA_DIR = '.next/workflow-data';
     }
-    const maybePort = workflows?.embedded?.port;
+    const maybePort = workflows?.local?.port;
     if (maybePort) {
       process.env.PORT = maybePort.toString();
     }

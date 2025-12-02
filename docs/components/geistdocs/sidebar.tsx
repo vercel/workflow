@@ -61,7 +61,13 @@ export const Folder = ({ item, level, children }: FolderProps) => {
         <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <ul>{children}</ul>
+        <ul
+          style={{
+            marginLeft: `${level * 1}rem`,
+          }}
+        >
+          {children}
+        </ul>
       </CollapsibleContent>
     </Collapsible>
   );

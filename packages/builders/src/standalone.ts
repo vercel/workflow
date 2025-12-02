@@ -1,6 +1,14 @@
 import { BaseBuilder } from './base-builder.js';
+import type { WorkflowConfig } from './types.js';
 
 export class StandaloneBuilder extends BaseBuilder {
+  constructor(config: WorkflowConfig) {
+    super({
+      ...config,
+      dirs: ['.'],
+    });
+  }
+
   async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     const tsConfig = await this.getTsConfigOptions();

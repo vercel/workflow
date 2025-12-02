@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.0.1-beta.19",
+  "version": "4.0.1-beta.20",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -41,7 +41,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
-    "test": "cross-env WORKFLOW_TARGET_WORLD=embedded vitest run src",
+    "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run src",
     "test:e2e": "vitest run e2e",
     "typecheck": "tsc --noEmit"
   },

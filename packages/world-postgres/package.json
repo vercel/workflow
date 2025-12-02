@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-postgres",
-  "version": "4.1.0-beta.15",
+  "version": "4.1.0-beta.16",
   "description": "A reference World implementation based on PostgreSQL",
   "type": "module",
   "main": "dist/index.js",

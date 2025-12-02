@@ -2,13 +2,13 @@ import { getPort } from '@workflow/utils/get-port';
 import { once } from './util.js';
 
 const getDataDirFromEnv = () => {
-  return process.env.WORKFLOW_EMBEDDED_DATA_DIR || '.workflow-data';
+  return process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data';
 };
 
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
 
 const getBaseUrlFromEnv = () => {
-  return process.env.WORKFLOW_EMBEDDED_BASE_URL;
+  return process.env.WORKFLOW_LOCAL_BASE_URL;
 };
 
 export type Config = {
@@ -26,7 +26,7 @@ export const config = once<Config>(() => {
 
 /**
  * Resolves the base URL for queue requests following the priority order:
- * 1. config.baseUrl (highest priority - full override from args or WORKFLOW_EMBEDDED_BASE_URL env var)
+ * 1. config.baseUrl (highest priority - full override from args or WORKFLOW_LOCAL_BASE_URL env var)
  * 2. config.port (explicit port override from args)
  * 3. PORT env var (explicit configuration)
  * 4. Auto-detected port via getPort (detect actual listening port)
