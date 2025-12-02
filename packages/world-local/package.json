@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@vercel/queue": "catalog:",
+    "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "async-sema": "3.1.1",
@@ -42,7 +43,6 @@
     "@opentelemetry/api": "1.9.0",
     "@types/ms": "0.7.34",
     "@types/node": "catalog:",
-    "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "ms": "2.1.3",
     "vitest": "catalog:"
