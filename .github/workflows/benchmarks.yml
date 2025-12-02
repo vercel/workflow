@@ -415,58 +415,37 @@ jobs:
             bench-results-${{ matrix.app.name }}-vercel.json
             bench-timings-${{ matrix.app.name }}-vercel.json
 
-  # Phase 2d: Community World benchmarks
-  benchmark-community-starter:
-    name: Benchmark Community World (Starter)
-    uses: ./.github/workflows/benchmark-community-world.yml
-    needs: build
-    with:
-      world-id: starter
-      world-name: Starter
-      world-package: "@workflow-worlds/starter"
-      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/starter"}'
-    secrets: inherit
+  # Phase 2d: Community World benchmarks (dynamically generated from worlds-manifest.json)
+  getCommunityWorldsMatrix:
+    name: Get Community Worlds Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-matrix
+        run: echo "matrix=$(node ./scripts/create-community-worlds-matrix.mjs)" >> $GITHUB_OUTPUT
 
-  benchmark-community-turso:
-    name: Benchmark Community World (Turso)
+  benchmark-community:
+    name: Benchmark Community World (${{ matrix.world.name }})
+    needs: [build, getCommunityWorldsMatrix]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.getCommunityWorldsMatrix.outputs.matrix) }}
     uses: ./.github/workflows/benchmark-community-world.yml
-    needs: build
     with:
-      world-id: turso
-      world-name: Turso
-      world-package: "@workflow-worlds/turso"
-      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/turso","WORKFLOW_TURSO_DATABASE_URL":"file:workflow.db"}'
-    secrets: inherit
-
-  benchmark-community-mongodb:
-    name: Benchmark Community World (MongoDB)
-    uses: ./.github/workflows/benchmark-community-world.yml
-    needs: build
-    with:
-      world-id: mongodb
-      world-name: MongoDB
-      world-package: "@workflow-worlds/mongodb"
-      service-type: mongodb
-      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/mongodb","WORKFLOW_MONGODB_URI":"mongodb://localhost:27017","WORKFLOW_MONGODB_DATABASE_NAME":"workflow"}'
-    secrets: inherit
-
-  benchmark-community-redis:
-    name: Benchmark Community World (Redis)
-    uses: ./.github/workflows/benchmark-community-world.yml
-    needs: build
-    with:
-      world-id: redis
-      world-name: Redis
-      world-package: "@workflow-worlds/redis"
-      service-type: redis
-      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/redis","WORKFLOW_REDIS_URI":"redis://localhost:6379"}'
+      world-id: ${{ matrix.world.id }}
+      world-name: ${{ matrix.world.name }}
+      world-package: ${{ matrix.world.package }}
+      service-type: ${{ matrix.world.service-type }}
+      env-vars: ${{ matrix.world.env-vars }}
     secrets: inherit
 
   # Phase 3: Aggregate all benchmark results and create comparison
   summary:
     name: Benchmark Summary
     runs-on: ubuntu-latest
-    needs: [benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community-starter, benchmark-community-turso, benchmark-community-mongodb, benchmark-community-redis]
+    needs: [benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community]
     if: always() && !cancelled()
     timeout-minutes: 10
 
@@ -517,20 +496,14 @@ jobs:
           LOCAL_STATUS="${{ needs.benchmark-local.result }}"
           POSTGRES_STATUS="${{ needs.benchmark-postgres.result }}"
           VERCEL_STATUS="${{ needs.benchmark-vercel.result }}"
-          STARTER_STATUS="${{ needs.benchmark-community-starter.result }}"
-          TURSO_STATUS="${{ needs.benchmark-community-turso.result }}"
-          MONGODB_STATUS="${{ needs.benchmark-community-mongodb.result }}"
-          REDIS_STATUS="${{ needs.benchmark-community-redis.result }}"
+          COMMUNITY_STATUS="${{ needs.benchmark-community.result }}"
 
           echo "local=$LOCAL_STATUS" >> $GITHUB_OUTPUT
           echo "postgres=$POSTGRES_STATUS" >> $GITHUB_OUTPUT
           echo "vercel=$VERCEL_STATUS" >> $GITHUB_OUTPUT
-          echo "starter=$STARTER_STATUS" >> $GITHUB_OUTPUT
-          echo "turso=$TURSO_STATUS" >> $GITHUB_OUTPUT
-          echo "mongodb=$MONGODB_STATUS" >> $GITHUB_OUTPUT
-          echo "redis=$REDIS_STATUS" >> $GITHUB_OUTPUT
+          echo "community=$COMMUNITY_STATUS" >> $GITHUB_OUTPUT
 
-          if [[ "$LOCAL_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$VERCEL_STATUS" == "failure" || "$STARTER_STATUS" == "failure" || "$TURSO_STATUS" == "failure" || "$MONGODB_STATUS" == "failure" || "$REDIS_STATUS" == "failure" ]]; then
+          if [[ "$LOCAL_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$VERCEL_STATUS" == "failure" || "$COMMUNITY_STATUS" == "failure" ]]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
           else
             echo "has_failures=false" >> $GITHUB_OUTPUT
@@ -556,10 +529,7 @@ jobs:
             - Local: ${{ needs.benchmark-local.result }}
             - Postgres: ${{ needs.benchmark-postgres.result }}
             - Vercel: ${{ needs.benchmark-vercel.result }}
-            - Starter (community): ${{ needs.benchmark-community-starter.result }}
-            - Turso (community): ${{ needs.benchmark-community-turso.result }}
-            - MongoDB (community): ${{ needs.benchmark-community-mongodb.result }}
-            - Redis (community): ${{ needs.benchmark-community-redis.result }}
+            - Community Worlds: ${{ needs.benchmark-community.result }}
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 

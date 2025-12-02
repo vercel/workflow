@@ -367,45 +367,28 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
 
-  # Community World E2E Tests
-  e2e-community-starter:
-    name: E2E Community World (Starter)
-    uses: ./.github/workflows/e2e-community-world.yml
-    with:
-      world-id: starter
-      world-name: Starter
-      world-package: "@workflow-worlds/starter"
-      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/starter"}'
-    secrets: inherit
+  # Community World E2E Tests (dynamically generated from worlds-manifest.json)
+  getCommunityWorldsMatrix:
+    name: Get Community Worlds Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: set-matrix
+        run: echo "matrix=$(node ./scripts/create-community-worlds-matrix.mjs)" >> $GITHUB_OUTPUT
 
-  e2e-community-turso:
-    name: E2E Community World (Turso)
+  e2e-community:
+    name: E2E Community World (${{ matrix.world.name }})
+    needs: getCommunityWorldsMatrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.getCommunityWorldsMatrix.outputs.matrix) }}
     uses: ./.github/workflows/e2e-community-world.yml
     with:
-      world-id: turso
-      world-name: Turso
-      world-package: "@workflow-worlds/turso"
-      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/turso","WORKFLOW_TURSO_DATABASE_URL":"file:workflow.db"}'
-    secrets: inherit
-
-  e2e-community-mongodb:
-    name: E2E Community World (MongoDB)
-    uses: ./.github/workflows/e2e-community-world.yml
-    with:
-      world-id: mongodb
-      world-name: MongoDB
-      world-package: "@workflow-worlds/mongodb"
-      service-type: mongodb
-      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/mongodb","WORKFLOW_MONGODB_URI":"mongodb://localhost:27017","WORKFLOW_MONGODB_DATABASE_NAME":"workflow"}'
-    secrets: inherit
-
-  e2e-community-redis:
-    name: E2E Community World (Redis)
-    uses: ./.github/workflows/e2e-community-world.yml
-    with:
-      world-id: redis
-      world-name: Redis
-      world-package: "@workflow-worlds/redis"
-      service-type: redis
-      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/redis","WORKFLOW_REDIS_URI":"redis://localhost:6379"}'
+      world-id: ${{ matrix.world.id }}
+      world-name: ${{ matrix.world.name }}
+      world-package: ${{ matrix.world.package }}
+      service-type: ${{ matrix.world.service-type }}
+      env-vars: ${{ matrix.world.env-vars }}
     secrets: inherit
