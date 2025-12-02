@@ -83,6 +83,7 @@ jobs:
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ inputs.app-name }}
+          WORKFLOW_BENCH_BACKEND: ${{ inputs.world-id }}
         run: |
           cd workbench/${{ inputs.app-name }}
           pnpm start &
