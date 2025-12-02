@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@vercel/oidc": "catalog:",
-    "@vercel/queue": "catalog:",
+    "@vercel/queue": "https://files-k9gpcub20-tootallnate-hobby.vercel.app",
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
     "zod": "catalog:"
