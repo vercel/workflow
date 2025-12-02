@@ -368,6 +368,16 @@ jobs:
           DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
 
   # Community World E2E Tests
+  e2e-community-starter:
+    name: E2E Community World (Starter)
+    uses: ./.github/workflows/e2e-community-world.yml
+    with:
+      world-id: starter
+      world-name: Starter
+      world-package: "@workflow-worlds/starter"
+      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/starter"}'
+    secrets: inherit
+
   e2e-community-turso:
     name: E2E Community World (Turso)
     uses: ./.github/workflows/e2e-community-world.yml

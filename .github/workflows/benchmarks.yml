@@ -416,6 +416,17 @@ jobs:
             bench-timings-${{ matrix.app.name }}-vercel.json
 
   # Phase 2d: Community World benchmarks
+  benchmark-community-starter:
+    name: Benchmark Community World (Starter)
+    uses: ./.github/workflows/benchmark-community-world.yml
+    needs: build
+    with:
+      world-id: starter
+      world-name: Starter
+      world-package: "@workflow-worlds/starter"
+      env-vars: '{"WORKFLOW_TARGET_WORLD":"@workflow-worlds/starter"}'
+    secrets: inherit
+
   benchmark-community-turso:
     name: Benchmark Community World (Turso)
     uses: ./.github/workflows/benchmark-community-world.yml
@@ -453,7 +464,7 @@ jobs:
   summary:
     name: Benchmark Summary
     runs-on: ubuntu-latest
-    needs: [benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community-turso, benchmark-community-mongodb, benchmark-community-redis]
+    needs: [benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community-starter, benchmark-community-turso, benchmark-community-mongodb, benchmark-community-redis]
     if: always() && !cancelled()
     timeout-minutes: 10
 
@@ -504,6 +515,7 @@ jobs:
           LOCAL_STATUS="${{ needs.benchmark-local.result }}"
           POSTGRES_STATUS="${{ needs.benchmark-postgres.result }}"
           VERCEL_STATUS="${{ needs.benchmark-vercel.result }}"
+          STARTER_STATUS="${{ needs.benchmark-community-starter.result }}"
           TURSO_STATUS="${{ needs.benchmark-community-turso.result }}"
           MONGODB_STATUS="${{ needs.benchmark-community-mongodb.result }}"
           REDIS_STATUS="${{ needs.benchmark-community-redis.result }}"
@@ -511,11 +523,12 @@ jobs:
           echo "local=$LOCAL_STATUS" >> $GITHUB_OUTPUT
           echo "postgres=$POSTGRES_STATUS" >> $GITHUB_OUTPUT
           echo "vercel=$VERCEL_STATUS" >> $GITHUB_OUTPUT
+          echo "starter=$STARTER_STATUS" >> $GITHUB_OUTPUT
           echo "turso=$TURSO_STATUS" >> $GITHUB_OUTPUT
           echo "mongodb=$MONGODB_STATUS" >> $GITHUB_OUTPUT
           echo "redis=$REDIS_STATUS" >> $GITHUB_OUTPUT
 
-          if [[ "$LOCAL_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$VERCEL_STATUS" == "failure" || "$TURSO_STATUS" == "failure" || "$MONGODB_STATUS" == "failure" || "$REDIS_STATUS" == "failure" ]]; then
+          if [[ "$LOCAL_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$VERCEL_STATUS" == "failure" || "$STARTER_STATUS" == "failure" || "$TURSO_STATUS" == "failure" || "$MONGODB_STATUS" == "failure" || "$REDIS_STATUS" == "failure" ]]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
           else
             echo "has_failures=false" >> $GITHUB_OUTPUT
@@ -541,6 +554,7 @@ jobs:
             - Local: ${{ needs.benchmark-local.result }}
             - Postgres: ${{ needs.benchmark-postgres.result }}
             - Vercel: ${{ needs.benchmark-vercel.result }}
+            - Starter (community): ${{ needs.benchmark-community-starter.result }}
             - Turso (community): ${{ needs.benchmark-community-turso.result }}
             - MongoDB (community): ${{ needs.benchmark-community-mongodb.result }}
             - Redis (community): ${{ needs.benchmark-community-redis.result }}

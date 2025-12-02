@@ -2,6 +2,18 @@
   "$schema": "./community-worlds.schema.json",
   "worlds": [
     {
+      "id": "starter",
+      "package": "@workflow-worlds/starter",
+      "name": "Starter",
+      "description": "Starter template for building Workflow DevKit Worlds",
+      "repository": "https://github.com/mizzle-dev/workflow-worlds",
+      "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/starter",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@workflow-worlds/starter"
+      },
+      "services": []
+    },
+    {
       "id": "turso",
       "package": "@workflow-worlds/turso",
       "name": "Turso",
