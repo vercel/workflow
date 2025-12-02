@@ -1,6 +1,5 @@
 ---
 "@workflow/world-vercel": patch
-"@workflow/world-local": patch
 ---
 
-Update @vercel/queue dependency
+Update @vercel/queue dependency and use new Client class to simplify custom header/path overwrites
