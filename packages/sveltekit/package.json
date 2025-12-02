@@ -27,16 +27,17 @@
   "dependencies": {
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
     "@workflow/rollup": "workspace:*",
-    "fs-extra": "^11.3.2",
+    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/vite": "workspace:*",
     "exsolve": "^1.0.7",
+    "fs-extra": "^11.3.2",
     "pathe": "^2.0.3"
   },
   "devDependencies": {
     "@types/fs-extra": "11.0.4",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "vite": "7.1.11"
+    "vite": "7.1.12"
   }
 }

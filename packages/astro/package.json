@@ -27,8 +27,9 @@
   "dependencies": {
     "@swc/core": "1.15.3",
     "@workflow/builders": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
     "@workflow/rollup": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/vite": "workspace:*",
     "exsolve": "^1.0.7",
     "pathe": "^2.0.3"
   },

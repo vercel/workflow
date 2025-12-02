@@ -27,10 +27,11 @@
   },
   "dependencies": {
     "@swc/core": "catalog:",
-    "@workflow/swc-plugin": "workspace:*",
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/rollup": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/vite": "workspace:*",
     "exsolve": "1.0.7",
     "pathe": "2.0.3"
   },
