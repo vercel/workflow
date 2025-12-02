@@ -180,6 +180,29 @@
         },
         "lastRun": "2024-12-01T12:00:00Z"
       }
+    },
+    "jazz": {
+      "type": "community",
+      "name": "Jazz",
+      "package": "workflow-world-jazz",
+      "description": "Jazz Cloud world for local-first sync and real-time collaboration",
+      "docs": "https://github.com/garden-co/workflow-world-jazz",
+      "repository": "https://github.com/garden-co/workflow-world-jazz",
+      "e2e": {
+        "status": "pending",
+        "total": 24,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 24,
+        "progress": 0,
+        "lastRun": null,
+        "note": "Requires external credentials (JAZZ_API_KEY, JAZZ_WORKER_ACCOUNT, JAZZ_WORKER_SECRET)"
+      },
+      "benchmark": {
+        "status": "pending",
+        "metrics": null,
+        "lastRun": null
+      }
     }
   }
 }

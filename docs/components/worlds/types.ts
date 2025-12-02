@@ -10,7 +10,8 @@ export interface WorldE2E {
     status: 'passed' | 'failed' | 'skipped';
     duration?: number;
   }>;
-  lastRun: string;
+  lastRun: string | null;
+  note?: string;
 }
 
 export interface BenchmarkMetric {
@@ -27,8 +28,8 @@ export interface BenchmarkMetric {
 
 export interface WorldBenchmark {
   status: 'measured' | 'pending';
-  metrics: Record<string, BenchmarkMetric>;
-  lastRun: string;
+  metrics: Record<string, BenchmarkMetric> | null;
+  lastRun: string | null;
 }
 
 export interface World {

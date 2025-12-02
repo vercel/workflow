@@ -117,6 +117,20 @@
           }
         }
       ]
+    },
+    {
+      "id": "jazz",
+      "package": "workflow-world-jazz",
+      "name": "Jazz",
+      "description": "Jazz Cloud world for local-first sync and real-time collaboration",
+      "repository": "https://github.com/garden-co/workflow-world-jazz",
+      "docs": "https://github.com/garden-co/workflow-world-jazz",
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "workflow-world-jazz"
+      },
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Requires JAZZ_API_KEY, JAZZ_WORKER_ACCOUNT, and JAZZ_WORKER_SECRET from Jazz Cloud"
     }
   ]
 }

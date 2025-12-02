@@ -185,13 +185,30 @@ function generateJob(world, isE2E = true, isBenchmark = false) {
     });
 
     lines.push(`      - name: Run E2E Tests`);
+    lines.push(`        id: e2e-tests`);
+    lines.push(`        run: |`);
+    lines.push(`          cd workbench/nextjs-turbopack && pnpm dev &`);
+    lines.push(`          echo "starting tests in 15 seconds" && sleep 15`);
     lines.push(
-      `        run: cd workbench/nextjs-turbopack && pnpm dev & echo "starting tests in 15 seconds" && sleep 15 && pnpm vitest run packages/core/e2e/dev.test.ts && sleep 10 && pnpm run test:e2e`
+      `          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-dev-results-${world.id}.json || true`
+    );
+    lines.push(`          sleep 10`);
+    lines.push(
+      `          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-results-${world.id}.json || true`
     );
     lines.push(`        env:`);
     lines.push(`          APP_NAME: "nextjs-turbopack"`);
     lines.push(`          DEPLOYMENT_URL: "http://localhost:3000"`);
     lines.push(`          DEV_TEST_CONFIG: '${devTestConfig}'`);
+    lines.push(``);
+    lines.push(`      - name: Upload E2E results`);
+    lines.push(`        uses: actions/upload-artifact@v4`);
+    lines.push(`        if: always()`);
+    lines.push(`        with:`);
+    lines.push(`          name: e2e-results-${world.id}`);
+    lines.push(`          path: |`);
+    lines.push(`            e2e-dev-results-${world.id}.json`);
+    lines.push(`            e2e-results-${world.id}.json`);
   }
 
   return lines.join('\n');
@@ -254,33 +271,110 @@ function generateSummaryJob(includeBenchmarks = false) {
   lines.push(`    needs: [${needsList}]`);
   lines.push(`    if: always()`);
   lines.push(`    steps:`);
+
+  // Download all E2E result artifacts
+  lines.push(`      - name: Download all E2E results`);
+  lines.push(`        uses: actions/download-artifact@v4`);
+  lines.push(`        with:`);
+  lines.push(`          pattern: e2e-results-*`);
+  lines.push(`          path: e2e-results`);
+  lines.push(`          merge-multiple: false`);
+  lines.push(``);
+
+  if (includeBenchmarks) {
+    lines.push(`      - name: Download all benchmark results`);
+    lines.push(`        uses: actions/download-artifact@v4`);
+    lines.push(`        with:`);
+    lines.push(`          pattern: bench-results-*`);
+    lines.push(`          path: bench-results`);
+    lines.push(`          merge-multiple: false`);
+    lines.push(``);
+  }
+
   lines.push(`      - name: Generate Summary`);
   lines.push(`        uses: actions/github-script@v7`);
   lines.push(`        with:`);
   lines.push(`          script: |`);
+  lines.push(`            const fs = require('fs');`);
+  lines.push(`            const path = require('path');`);
+  lines.push(`            `);
   lines.push(
     `            const worlds = ${JSON.stringify(manifest.worlds.map((w) => ({ id: w.id, name: w.name, package: w.package })))};`
   );
+  lines.push(`            `);
+  lines.push(`            // Parse vitest JSON results`);
+  lines.push(`            function parseVitestResults(filePath) {`);
+  lines.push(`              try {`);
+  lines.push(`                if (!fs.existsSync(filePath)) return null;`);
+  lines.push(
+    `                const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));`
+  );
+  lines.push(`                return {`);
+  lines.push(`                  passed: data.numPassedTests || 0,`);
+  lines.push(`                  failed: data.numFailedTests || 0,`);
+  lines.push(`                  skipped: data.numPendingTests || 0,`);
+  lines.push(
+    `                  total: (data.numPassedTests || 0) + (data.numFailedTests || 0) + (data.numPendingTests || 0),`
+  );
+  lines.push(`                  success: data.success`);
+  lines.push(`                };`);
+  lines.push(`              } catch (e) {`);
+  lines.push(
+    `                console.log(\`Failed to parse \${filePath}: \${e}\`);`
+  );
+  lines.push(`                return null;`);
+  lines.push(`              }`);
+  lines.push(`            }`);
+  lines.push(`            `);
+  lines.push(`            // Collect results for each world`);
+  lines.push(`            const results = {};`);
+  lines.push(`            for (const world of worlds) {`);
+  lines.push(
+    `              const devResultsPath = path.join('e2e-results', \`e2e-results-\${world.id}\`, \`e2e-dev-results-\${world.id}.json\`);`
+  );
+  lines.push(
+    `              const e2eResultsPath = path.join('e2e-results', \`e2e-results-\${world.id}\`, \`e2e-results-\${world.id}.json\`);`
+  );
+  lines.push(`              `);
+  lines.push(
+    `              const devResults = parseVitestResults(devResultsPath);`
+  );
+  lines.push(
+    `              const e2eResults = parseVitestResults(e2eResultsPath);`
+  );
+  lines.push(`              `);
+  lines.push(`              // Combine dev + e2e results`);
+  lines.push(`              results[world.id] = {`);
+  lines.push(
+    `                passed: (devResults?.passed || 0) + (e2eResults?.passed || 0),`
+  );
+  lines.push(
+    `                failed: (devResults?.failed || 0) + (e2eResults?.failed || 0),`
+  );
+  lines.push(
+    `                skipped: (devResults?.skipped || 0) + (e2eResults?.skipped || 0),`
+  );
+  lines.push(
+    `                total: (devResults?.total || 0) + (e2eResults?.total || 0),`
+  );
+  lines.push(
+    `                hasResults: devResults !== null || e2eResults !== null`
+  );
+  lines.push(`              };`);
+  lines.push(`            }`);
   lines.push(`            `);
   lines.push(
     `            let summary = '## Community Worlds E2E Test Results\\n\\n';`
   );
   lines.push(
-    `            summary += '| World | Package | E2E Status |${includeBenchmarks ? ' Benchmark Status |' : ''}\\n';`
+    `            summary += '| World | Package | Tests | Passed | Failed | Skipped |${includeBenchmarks ? ' Benchmark |' : ''}\\n';`
   );
   lines.push(
-    `            summary += '|:------|:--------|:-----------|${includeBenchmarks ? ':-----------------|' : ''}\\n';`
+    `            summary += '|:------|:--------|------:|-------:|-------:|--------:|${includeBenchmarks ? ':----------|' : ''}\\n';`
   );
   lines.push(`            `);
-  lines.push(`            const e2eResults = {`);
-  for (const world of manifest.worlds) {
-    lines.push(
-      `              '${world.id}': '\${{ needs.e2e-${world.id}.result }}',`
-    );
-  }
-  lines.push(`            };`);
+
   if (includeBenchmarks) {
-    lines.push(`            `);
     lines.push(`            const benchmarkResults = {`);
     for (const world of manifest.worlds) {
       lines.push(
@@ -288,28 +382,31 @@ function generateSummaryJob(includeBenchmarks = false) {
       );
     }
     lines.push(`            };`);
+    lines.push(`            `);
   }
-  lines.push(`            `);
-  lines.push(
-    `            const getEmoji = (result) => result === 'success' ? '✅' : result === 'failure' ? '❌' : result === 'skipped' ? '⏭️' : '❓';`
-  );
-  lines.push(`            `);
+
   lines.push(`            for (const world of worlds) {`);
-  lines.push(`              const e2eResult = e2eResults[world.id];`);
+  lines.push(`              const r = results[world.id];`);
+  lines.push(
+    `              const status = !r.hasResults ? '⚠️' : r.failed === 0 ? '✅' : '❌';`
+  );
   if (includeBenchmarks) {
     lines.push(`              const benchResult = benchmarkResults[world.id];`);
     lines.push(
-      `              summary += \`| \${world.name} | \\\`\${world.package}\\\` | \${getEmoji(e2eResult)} \${e2eResult} | \${getEmoji(benchResult)} \${benchResult} |\\n\`;`
+      `              const benchEmoji = benchResult === 'success' ? '✅' : benchResult === 'failure' ? '❌' : '⏭️';`
+    );
+    lines.push(
+      `              summary += \`| \${status} \${world.name} | \\\`\${world.package}\\\` | \${r.total} | \${r.passed} | \${r.failed} | \${r.skipped} | \${benchEmoji} \${benchResult} |\\n\`;`
     );
   } else {
     lines.push(
-      `              summary += \`| \${world.name} | \\\`\${world.package}\\\` | \${getEmoji(e2eResult)} \${e2eResult} |\\n\`;`
+      `              summary += \`| \${status} \${world.name} | \\\`\${world.package}\\\` | \${r.total} | \${r.passed} | \${r.failed} | \${r.skipped} |\\n\`;`
     );
   }
   lines.push(`            }`);
   lines.push(`            `);
   lines.push(
-    `            summary += '\\n> Note: These tests use \`continue-on-error: true\` so failures are informational only.\\n';`
+    `            summary += '\\n> Tests run with \`continue-on-error: true\` - failures are informational.\\n';`
   );
   lines.push(`            `);
   lines.push(`            await core.summary.addRaw(summary).write();`);

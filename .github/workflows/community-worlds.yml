@@ -94,11 +94,26 @@ jobs:
         run: ./scripts/resolve-symlinks.sh workbench/nextjs-turbopack
 
       - name: Run E2E Tests
-        run: cd workbench/nextjs-turbopack && pnpm dev & echo "starting tests in 15 seconds" && sleep 15 && pnpm vitest run packages/core/e2e/dev.test.ts && sleep 10 && pnpm run test:e2e
+        id: e2e-tests
+        run: |
+          cd workbench/nextjs-turbopack && pnpm dev &
+          echo "starting tests in 15 seconds" && sleep 15
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-dev-results-turso.json || true
+          sleep 10
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-results-turso.json || true
         env:
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"nextjs-turbopack","project":"workbench-nextjs-turbopack-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
+
+      - name: Upload E2E results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results-turso
+          path: |
+            e2e-dev-results-turso.json
+            e2e-results-turso.json
 
   e2e-mongodb:
     name: E2E MongoDB World Tests
@@ -152,11 +167,26 @@ jobs:
         run: ./scripts/resolve-symlinks.sh workbench/nextjs-turbopack
 
       - name: Run E2E Tests
-        run: cd workbench/nextjs-turbopack && pnpm dev & echo "starting tests in 15 seconds" && sleep 15 && pnpm vitest run packages/core/e2e/dev.test.ts && sleep 10 && pnpm run test:e2e
+        id: e2e-tests
+        run: |
+          cd workbench/nextjs-turbopack && pnpm dev &
+          echo "starting tests in 15 seconds" && sleep 15
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-dev-results-mongodb.json || true
+          sleep 10
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-results-mongodb.json || true
         env:
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"nextjs-turbopack","project":"workbench-nextjs-turbopack-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
+
+      - name: Upload E2E results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results-mongodb
+          path: |
+            e2e-dev-results-mongodb.json
+            e2e-results-mongodb.json
 
   e2e-redis:
     name: E2E Redis World Tests
@@ -209,11 +239,26 @@ jobs:
         run: ./scripts/resolve-symlinks.sh workbench/nextjs-turbopack
 
       - name: Run E2E Tests
-        run: cd workbench/nextjs-turbopack && pnpm dev & echo "starting tests in 15 seconds" && sleep 15 && pnpm vitest run packages/core/e2e/dev.test.ts && sleep 10 && pnpm run test:e2e
+        id: e2e-tests
+        run: |
+          cd workbench/nextjs-turbopack && pnpm dev &
+          echo "starting tests in 15 seconds" && sleep 15
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-dev-results-redis.json || true
+          sleep 10
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-results-redis.json || true
         env:
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"nextjs-turbopack","project":"workbench-nextjs-turbopack-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
+
+      - name: Upload E2E results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results-redis
+          path: |
+            e2e-dev-results-redis.json
+            e2e-results-redis.json
 
   benchmark-turso:
     name: Benchmark Turso World
@@ -452,21 +497,69 @@ jobs:
     needs: [e2e-turso, e2e-mongodb, e2e-redis, benchmark-turso, benchmark-mongodb, benchmark-redis]
     if: always()
     steps:
+      - name: Download all E2E results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-results-*
+          path: e2e-results
+          merge-multiple: false
+
+      - name: Download all benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-results-*
+          path: bench-results
+          merge-multiple: false
+
       - name: Generate Summary
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const path = require('path');
+            
             const worlds = [{"id":"turso","name":"Turso","package":"@workflow-worlds/turso"},{"id":"mongodb","name":"MongoDB","package":"@workflow-worlds/mongodb"},{"id":"redis","name":"Redis","package":"@workflow-worlds/redis"}];
             
-            let summary = '## Community Worlds E2E Test Results\n\n';
-            summary += '| World | Package | E2E Status | Benchmark Status |\n';
-            summary += '|:------|:--------|:-----------|:-----------------|\n';
+            // Parse vitest JSON results
+            function parseVitestResults(filePath) {
+              try {
+                if (!fs.existsSync(filePath)) return null;
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                return {
+                  passed: data.numPassedTests || 0,
+                  failed: data.numFailedTests || 0,
+                  skipped: data.numPendingTests || 0,
+                  total: (data.numPassedTests || 0) + (data.numFailedTests || 0) + (data.numPendingTests || 0),
+                  success: data.success
+                };
+              } catch (e) {
+                console.log(`Failed to parse ${filePath}: ${e}`);
+                return null;
+              }
+            }
             
-            const e2eResults = {
-              'turso': '${{ needs.e2e-turso.result }}',
-              'mongodb': '${{ needs.e2e-mongodb.result }}',
-              'redis': '${{ needs.e2e-redis.result }}',
-            };
+            // Collect results for each world
+            const results = {};
+            for (const world of worlds) {
+              const devResultsPath = path.join('e2e-results', `e2e-results-${world.id}`, `e2e-dev-results-${world.id}.json`);
+              const e2eResultsPath = path.join('e2e-results', `e2e-results-${world.id}`, `e2e-results-${world.id}.json`);
+              
+              const devResults = parseVitestResults(devResultsPath);
+              const e2eResults = parseVitestResults(e2eResultsPath);
+              
+              // Combine dev + e2e results
+              results[world.id] = {
+                passed: (devResults?.passed || 0) + (e2eResults?.passed || 0),
+                failed: (devResults?.failed || 0) + (e2eResults?.failed || 0),
+                skipped: (devResults?.skipped || 0) + (e2eResults?.skipped || 0),
+                total: (devResults?.total || 0) + (e2eResults?.total || 0),
+                hasResults: devResults !== null || e2eResults !== null
+              };
+            }
+            
+            let summary = '## Community Worlds E2E Test Results\n\n';
+            summary += '| World | Package | Tests | Passed | Failed | Skipped | Benchmark |\n';
+            summary += '|:------|:--------|------:|-------:|-------:|--------:|:----------|\n';
             
             const benchmarkResults = {
               'turso': '${{ needs.benchmark-turso.result }}',
@@ -474,14 +567,14 @@ jobs:
               'redis': '${{ needs.benchmark-redis.result }}',
             };
             
-            const getEmoji = (result) => result === 'success' ? '✅' : result === 'failure' ? '❌' : result === 'skipped' ? '⏭️' : '❓';
-            
             for (const world of worlds) {
-              const e2eResult = e2eResults[world.id];
+              const r = results[world.id];
+              const status = !r.hasResults ? '⚠️' : r.failed === 0 ? '✅' : '❌';
               const benchResult = benchmarkResults[world.id];
-              summary += `| ${world.name} | \`${world.package}\` | ${getEmoji(e2eResult)} ${e2eResult} | ${getEmoji(benchResult)} ${benchResult} |\n`;
+              const benchEmoji = benchResult === 'success' ? '✅' : benchResult === 'failure' ? '❌' : '⏭️';
+              summary += `| ${status} ${world.name} | \`${world.package}\` | ${r.total} | ${r.passed} | ${r.failed} | ${r.skipped} | ${benchEmoji} ${benchResult} |\n`;
             }
             
-            summary += '\n> Note: These tests use `continue-on-error: true` so failures are informational only.\n';
+            summary += '\n> Tests run with `continue-on-error: true` - failures are informational.\n';
             
             await core.summary.addRaw(summary).write();
