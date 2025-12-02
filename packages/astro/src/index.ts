@@ -1,1 +1,1 @@
-export { workflow } from './plugin.js';
+export { workflowPlugin as workflow } from './plugin.js';

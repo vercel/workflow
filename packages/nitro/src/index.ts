@@ -1,32 +1,32 @@
-import type { Nitro, NitroModule, RollupConfig } from "nitro/types";
-import { join } from "pathe";
-import { LocalBuilder, VercelBuilder } from "./builders.js";
-import { workflowTransformPlugin } from "@workflow/rollup";
-import type { ModuleOptions } from "./types";
+import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
+import { join } from 'pathe';
+import { LocalBuilder, VercelBuilder } from './builders.js';
+import { workflowTransformPlugin } from '@workflow/rollup';
+import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
 
 export default {
-  name: "workflow/nitro",
+  name: 'workflow/nitro',
   async setup(nitro: Nitro) {
     const isVercelDeploy =
-      !nitro.options.dev && nitro.options.preset === "vercel";
+      !nitro.options.dev && nitro.options.preset === 'vercel';
 
     // Add transform plugin
-    nitro.hooks.hook("rollup:before", (_nitro: Nitro, config: RollupConfig) => {
+    nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
       (config.plugins as Array<unknown>).push(workflowTransformPlugin());
     });
 
     // NOTE: Temporary workaround for debug unenv mock
     if (!nitro.options.workflow?._vite) {
-      nitro.options.alias["debug"] ??= "debug";
+      nitro.options.alias['debug'] ??= 'debug';
     }
 
     // NOTE: Externalize .nitro/workflow to prevent dev reloads
     if (nitro.options.dev) {
       nitro.options.externals ||= {};
       nitro.options.externals.external ||= [];
-      const outDir = join(nitro.options.buildDir, "workflow");
+      const outDir = join(nitro.options.buildDir, 'workflow');
       nitro.options.externals.external.push((id) => id.startsWith(outDir));
     }
 
@@ -36,13 +36,13 @@ export default {
       nitro.options.typescript.tsConfig.compilerOptions ||= {};
       nitro.options.typescript.tsConfig.compilerOptions.plugins ||= [];
       nitro.options.typescript.tsConfig.compilerOptions.plugins.push({
-        name: "workflow",
+        name: 'workflow',
       });
     }
 
     // Generate functions for vercel build
     if (isVercelDeploy) {
-      nitro.hooks.hook("compiled", async () => {
+      nitro.hooks.hook('compiled', async () => {
         await new VercelBuilder(nitro).build();
       });
     }
@@ -50,33 +50,33 @@ export default {
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
       const builder = new LocalBuilder(nitro);
-      nitro.hooks.hook("build:before", async () => {
+      nitro.hooks.hook('build:before', async () => {
         await builder.build();
       });
 
       // Allows for HMR
       if (nitro.options.dev) {
-        nitro.hooks.hook("dev:reload", async () => {
+        nitro.hooks.hook('dev:reload', async () => {
           await builder.build();
         });
       }
 
       addVirtualHandler(
         nitro,
-        "/.well-known/workflow/v1/webhook/:token",
-        "workflow/webhook.mjs",
+        '/.well-known/workflow/v1/webhook/:token',
+        'workflow/webhook.mjs'
       );
 
       addVirtualHandler(
         nitro,
-        "/.well-known/workflow/v1/step",
-        "workflow/steps.mjs",
+        '/.well-known/workflow/v1/step',
+        'workflow/steps.mjs'
       );
 
       addVirtualHandler(
         nitro,
-        "/.well-known/workflow/v1/flow",
-        "workflow/workflows.mjs",
+        '/.well-known/workflow/v1/flow',
+        'workflow/workflows.mjs'
       );
     }
   },

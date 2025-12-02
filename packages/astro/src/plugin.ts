@@ -1,9 +1,11 @@
 import type { AstroIntegration, HookParameters } from 'astro';
 import { LocalBuilder, VercelBuilder } from './builder.js';
 import { workflowTransformPlugin } from '@workflow/rollup';
+import { createBuildQueue } from '@workflow/builders';
 
-export function workflow(): AstroIntegration {
+export function workflowPlugin(): AstroIntegration {
   const builder = new LocalBuilder();
+  const enqueue = createBuildQueue();
 
   return {
     name: 'workflow:astro',
@@ -31,7 +33,7 @@ export function workflow(): AstroIntegration {
 
                 // TODO: Move this to @workflow/vite or something since this is vite specific
                 async hotUpdate(options) {
-                  const { file, server, read } = options;
+                  const { file, read } = options;
 
                   // Check if this is a TS/JS file that might contain workflow directives
                   const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -45,22 +47,9 @@ export function workflow(): AstroIntegration {
                     content = await read();
                   } catch {
                     // File might have been deleted - trigger rebuild to update generated routes
-                    console.log(
-                      'Workflow file deleted, regenerating routes...'
-                    );
-                    try {
-                      await builder.build();
-                    } catch (buildError) {
-                      // Build might fail if files are being deleted during test cleanup
-                      // Log but don't crash - the next successful change will trigger a rebuild
-                      console.error(
-                        'Build failed during file deletion:',
-                        buildError
-                      );
-                    }
-
-                    server.ws.send({ type: 'full-reload', path: '*' });
-                    return [];
+                    console.log('Workflow file changed, rebuilding...');
+                    await enqueue(() => builder.build());
+                    return;
                   }
 
                   const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
@@ -73,25 +62,10 @@ export function workflow(): AstroIntegration {
                     return;
                   }
 
-                  // Rebuild everything - simpler and more reliable than tracking individual files
-                  console.log('Workflow file changed, regenerating routes...');
-                  try {
-                    await builder.build();
-                  } catch (buildError) {
-                    // Build might fail if files are being modified/deleted during test cleanup
-                    // Log but don't crash - the next successful change will trigger a rebuild
-                    console.error('Build failed during HMR:', buildError);
-                    return [];
-                  }
-
-                  // Trigger full reload of workflow routes
-                  server.ws.send({
-                    type: 'full-reload',
-                    path: '*',
-                  });
-
-                  // Prevent Vite from processing this HMR update
-                  return [];
+                  console.log('Workflow file changed, rebuilding...');
+                  await enqueue(() => builder.build());
+                  // Let Vite handle the normal HMR for the changed file
+                  return;
                 },
               },
             ],
