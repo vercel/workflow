@@ -16,18 +16,13 @@ function loadServerExternalPackages(): string[] {
     );
     const content = readFileSync(jsoncPath, 'utf-8');
     return JSONC.parse(content) as string[];
-  } catch (jsoncError) {
-    try {
-      // Fall back to .json (older Next.js versions)
-      const jsonPath = require.resolve(
-        'next/dist/lib/server-external-packages.json'
-      );
-      const content = readFileSync(jsonPath, 'utf-8');
-      return JSON.parse(content) as string[];
-    } catch (jsonError) {
-      console.warn('Could not load server-external-packages from Next.js');
-      return [];
-    }
+  } catch {
+    // Fall back to .json (older Next.js versions)
+    const jsonPath = require.resolve(
+      'next/dist/lib/server-external-packages.json'
+    );
+    const content = readFileSync(jsonPath, 'utf-8');
+    return JSON.parse(content) as string[];
   }
 }
 
