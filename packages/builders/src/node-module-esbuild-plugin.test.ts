@@ -1,7 +1,18 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-// @ts-expect-error
-import http from 'node:http'; // DON'T REMOVE THIS IMPORT, needed for testing
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+// @ts-expect-error - Intentionally unused import for testing getViolationLocation
+// with an import that exists but is never referenced in code
+import http from 'node:http';
+import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+
+// Resolve symlinks in tmpdir to avoid macOS /var -> /private/var issues
+const realTmpdir = realpathSync(tmpdir());
 import * as esbuild from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import {
@@ -16,7 +27,7 @@ async function buildWorkflowWithViolation(
   source: string,
   overrides: Partial<esbuild.BuildOptions> = {}
 ) {
-  const tempDir = mkdtempSync(join(process.cwd(), 'node-module-plugin-test-'));
+  const tempDir = mkdtempSync(join(realTmpdir, 'node-module-plugin-test-'));
   const entryFile = join(tempDir, 'workflow.ts');
   writeFileSync(entryFile, source);
   const relativeEntry = relative(process.cwd(), entryFile);
@@ -141,9 +152,7 @@ describe('workflow-node-module-error plugin', () => {
     // (e.g., "fake-package") instead of the internal built-in (e.g., "stream").
     //
     // We create a real node_modules directory structure to simulate this scenario.
-    const tempDir = mkdtempSync(
-      join(process.cwd(), 'node-module-plugin-test-')
-    );
+    const tempDir = mkdtempSync(join(realTmpdir, 'node-module-plugin-test-'));
     const nodeModulesDir = join(tempDir, 'node_modules', 'fake-package');
     const { mkdirSync } = await import('node:fs');
     mkdirSync(nodeModulesDir, { recursive: true });
@@ -271,9 +280,7 @@ describe('workflow-node-module-error plugin', () => {
       }
     `;
 
-    const tempDir = mkdtempSync(
-      join(process.cwd(), 'node-module-plugin-test-')
-    );
+    const tempDir = mkdtempSync(join(realTmpdir, 'node-module-plugin-test-'));
     const entryFile = join(tempDir, 'workflow.ts');
     writeFileSync(entryFile, testCode);
 

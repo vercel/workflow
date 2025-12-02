@@ -67,7 +67,7 @@ export function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/*
+/**
  * Get the imported identifier from a specifier.
  * @param specifier - The specifier to get the imported identifier from.
  * @returns The imported identifier.
@@ -210,7 +210,7 @@ export function getViolationLocation(
   }
 }
 
-/*
+/**
  * Get the module type label for error messages.
  * @param modulePath - The module path to check.
  * @returns The module type label.
@@ -222,8 +222,10 @@ function getModuleTypeLabel(modulePath: string): string {
   return 'Node.js';
 }
 
-/*
- * Create a plugin to detect violations of the Node.js module usage rule.
+/**
+ * Create an esbuild plugin to detect violations of the Node.js module usage rule.
+ * This plugin prevents workflow functions from importing Node.js or Bun built-in
+ * modules, which are not available in the sandboxed workflow runtime.
  */
 export function createNodeModuleErrorPlugin(): esbuild.Plugin {
   return {
