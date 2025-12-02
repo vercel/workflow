@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.15
+
+### Patch Changes
+
+- e9494d5: Update `@vercel/queue` to use new QueueClient class to simplify custom header/path overwrites
+
 ## 4.0.1-beta.14
 
 ### Patch Changes

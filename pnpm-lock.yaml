@@ -22,8 +22,8 @@ catalogs:
       specifier: 3.0.5
       version: 3.0.5
     '@vercel/queue':
-      specifier: 0.0.0-alpha.29
-      version: 0.0.0-alpha.29
+      specifier: 0.0.0-alpha.33
+      version: 0.0.0-alpha.33
     '@vitest/coverage-v8':
       specifier: ^3.2.4
       version: 3.2.4
@@ -1012,7 +1012,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.0.0-alpha.29
+        version: 0.0.0-alpha.33
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1058,7 +1058,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.0.0-alpha.29
+        version: 0.0.0-alpha.33
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1156,7 +1156,7 @@ importers:
         version: 3.0.5
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.0.0-alpha.29
+        version: 0.0.0-alpha.33
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -6481,8 +6481,8 @@ packages:
       '@opentelemetry/sdk-metrics': '>=1.19.0 <2.0.0'
       '@opentelemetry/sdk-trace-base': '>=1.19.0 <2.0.0'
 
-  '@vercel/queue@0.0.0-alpha.29':
-    resolution: {integrity: sha512-legz939klri0R3JVIA3Wxnvt6usJcSxutIlZdnKCtfmhnDrti79ZdGLtJZTjX6AnfSxwCJshGbqEOWRgLCer2A==}
+  '@vercel/queue@0.0.0-alpha.33':
+    resolution: {integrity: sha512-IP5+B8Hw/hD0Nd6s+Fbg7cnGBVx9BB9Knwv3qvA5hEn+GslC9RaThLWiTNNPloPeMaeyIA64BFuJKVpaIADc4g==}
     engines: {node: '>=20.0.0'}
     hasBin: true
 
@@ -18711,7 +18711,7 @@ snapshots:
       '@opentelemetry/sdk-metrics': 1.30.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/sdk-trace-base': 1.30.1(@opentelemetry/api@1.9.0)
 
-  '@vercel/queue@0.0.0-alpha.29':
+  '@vercel/queue@0.0.0-alpha.33':
     dependencies:
       '@vercel/oidc': 3.0.5
       mixpart: 0.0.5-alpha.1

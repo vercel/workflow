@@ -1,6 +1,6 @@
 {
   "name": "@workflow/builders",
-  "version": "4.0.1-beta.19",
+  "version": "4.0.1-beta.20",
   "description": "Shared builder infrastructure for Workflow DevKit",
   "type": "module",
   "main": "./dist/index.js",
