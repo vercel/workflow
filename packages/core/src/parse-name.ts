@@ -23,7 +23,7 @@ function parseName(
   let shortName = functionNameParts.at(-1) ?? '';
   const functionName = functionNameParts.join('//');
   const filename = path.split('/').at(-1) ?? '';
-  const fileNameWithoutExtension = filename.split('.').at(-1) ?? '';
+  const fileNameWithoutExtension = filename.split('.').at(0) ?? '';
 
   // Default exports will use the file name as the short name
   if (shortName === '__default' && fileNameWithoutExtension) {
