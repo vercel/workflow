@@ -27,6 +27,14 @@ const configParsers = {
 
 // Create a serializer for config params
 const serializeConfig = createSerializer(configParsers);
+export const resolveTargetWorld = (backend?: string) => {
+  switch (backend) {
+    case 'postgres':
+      return '@workflow/world-postgres';
+    default:
+      return backend;
+  }
+};
 
 /**
  * Hook that reads query params and returns the current config
@@ -99,12 +107,14 @@ export function buildUrlWithConfig(
 
 export const worldConfigToEnvMap = (config: WorldConfig): EnvMap => {
   return {
-    WORKFLOW_TARGET_WORLD: config.backend,
+    WORKFLOW_TARGET_WORLD: resolveTargetWorld(config.backend),
     WORKFLOW_VERCEL_ENV: config.env,
     WORKFLOW_VERCEL_AUTH_TOKEN: config.authToken,
     WORKFLOW_VERCEL_PROJECT: config.project,
     WORKFLOW_VERCEL_TEAM: config.team,
     PORT: config.port,
     WORKFLOW_EMBEDDED_DATA_DIR: config.dataDir,
+    // Postgres env vars
+    WORKFLOW_POSTGRES_URL: config.postgresUrl,
   };
 };

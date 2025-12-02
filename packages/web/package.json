@@ -26,7 +26,7 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "next": "15.5.4",
+    "next": "16.0.6",
     "nuqs": "^2.2.5",
     "@xyflow/react": "12.9.3"
   },
@@ -56,6 +56,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "sonner": "2.0.7",
+    "swr": "2.3.6",
     "tailwind-merge": "2.5.5",
     "tailwindcss": "4",
     "typescript": "catalog:"

@@ -1,0 +1,514 @@
+name: Performance Benchmarks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: # Allow manual triggers
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Phase 0: Update PR comment to show benchmarks are running
+  pr-comment-start:
+    name: Create PR Comment
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 2
+
+    steps:
+      - name: Find existing benchmark comment
+        uses: peter-evans/find-comment@v3
+        id: find-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- benchmark-results -->'
+
+      - name: Get existing comment body
+        if: steps.find-comment.outputs.comment-id != ''
+        id: get-comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: ${{ steps.find-comment.outputs.comment-id }}
+            });
+            // Extract the results section (everything after the header and running message)
+            const body = comment.data.body;
+            // Remove any existing stale warning and running message
+            let resultsSection = body
+              .replace(/<!-- benchmark-results -->\n## 📊 Benchmark Results\n\n> ⚠️ \*\*Results below are stale\*\*[^\n]*\n\n/g, '')
+              .replace(/<!-- benchmark-results -->\n## 📊 Benchmark Results\n\n/g, '')
+              .replace(/⏳ \*\*Benchmarks are running\.\.\.\*\*\n\n---\n_Started at:[^_]*_\n\n---\n\n/g, '')
+              .replace(/⏳ \*\*Benchmarks are running\.\.\.\*\*\n\n---\n_Started at:[^_]*_/g, '')
+              .trim();
+
+            // If there's actual content left (benchmark tables), save it
+            if (resultsSection && resultsSection.includes('|')) {
+              core.setOutput('has-results', 'true');
+              core.setOutput('previous-results', resultsSection);
+            } else {
+              core.setOutput('has-results', 'false');
+            }
+
+      - name: Create new benchmark comment
+        if: steps.find-comment.outputs.comment-id == ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          message: |
+            <!-- benchmark-results -->
+            ## 📊 Benchmark Results
+
+            ⏳ **Benchmarks are running...**
+
+            This comment will be updated with the results when the benchmarks complete.
+
+            ---
+            _Started at: ${{ github.event.pull_request.updated_at }}_
+
+      - name: Update existing benchmark comment with stale warning
+        if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          message: |
+            <!-- benchmark-results -->
+            ## 📊 Benchmark Results
+
+            > ⚠️ **Results below are stale** and not from the latest commit. This comment will be updated when CI completes on the latest run.
+
+            ⏳ **Benchmarks are running...**
+
+            ---
+            _Started at: ${{ github.event.pull_request.updated_at }}_
+
+            ---
+
+            ${{ steps.get-comment.outputs.previous-results }}
+
+      - name: Update existing benchmark comment without results
+        if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results != 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          message: |
+            <!-- benchmark-results -->
+            ## 📊 Benchmark Results
+
+            ⏳ **Benchmarks are running...**
+
+            This comment will be updated with the results when the benchmarks complete.
+
+            ---
+            _Started at: ${{ github.event.pull_request.updated_at }}_
+
+  # Phase 1: Build all packages (not workbenches)
+  build:
+    name: Build Packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm turbo run build --filter='!./workbench/*'
+
+      # Cache node_modules and package build outputs
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            node_modules
+            packages/*/dist
+          retention-days: 1
+
+  # Phase 2a: Local benchmarks (no postgres)
+  benchmark-local:
+    name: Benchmark Local (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Note: Use actual directory names, not symlinks (nitro -> nitro-v3)
+        app: [nextjs-turbopack, nitro-v3, express]
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # For PRs, download baseline results from main branch
+      - name: Download baseline from main branch
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: benchmarks.yml
+          branch: main
+          name: baseline-benchmark-results
+          path: baseline-results
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Build workbench
+        run: pnpm turbo run build --filter='./workbench/${{ matrix.app }}'
+
+      - name: Run benchmarks
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          APP_NAME: ${{ matrix.app }}
+        run: |
+          cd workbench/${{ matrix.app }}
+          pnpm start &
+          echo "Waiting for server to start..."
+          sleep 15
+          cd ../..
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app }}-local.json
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-${{ matrix.app }}-local.json
+          app-name: ${{ matrix.app }}
+          backend: local
+          baseline-file: baseline-results/bench-results-${{ matrix.app }}-local.json
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ matrix.app }}-local
+          path: |
+            bench-results-${{ matrix.app }}-local.json
+            bench-timings-${{ matrix.app }}-local.json
+
+  # Phase 2b: Postgres benchmarks (with postgres service)
+  benchmark-postgres:
+    name: Benchmark Postgres (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Note: Use actual directory names, not symlinks (nitro -> nitro-v3)
+        app: [nextjs-turbopack, nitro-v3, express]
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: world
+          POSTGRES_PASSWORD: world
+          POSTGRES_DB: world
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+      WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # For PRs, download baseline results from main branch
+      - name: Download baseline from main branch
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: benchmarks.yml
+          branch: main
+          name: baseline-benchmark-results
+          path: baseline-results
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Setup PostgreSQL database
+        run: ./packages/world-postgres/bin/setup.js
+
+      # Build workbench with postgres world (build output differs based on target world)
+      - name: Build workbench for postgres
+        run: pnpm turbo run build --filter='./workbench/${{ matrix.app }}'
+
+      - name: Run benchmarks
+        env:
+          DEPLOYMENT_URL: "http://localhost:3000"
+          APP_NAME: ${{ matrix.app }}
+        run: |
+          cd workbench/${{ matrix.app }}
+          pnpm start &
+          echo "Waiting for server to start..."
+          sleep 15
+          cd ../..
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app }}-postgres.json
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-${{ matrix.app }}-postgres.json
+          app-name: ${{ matrix.app }}
+          backend: postgres
+          baseline-file: baseline-results/bench-results-${{ matrix.app }}-postgres.json
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ matrix.app }}-postgres
+          path: |
+            bench-results-${{ matrix.app }}-postgres.json
+            bench-timings-${{ matrix.app }}-postgres.json
+
+  # Phase 2c: Vercel benchmarks (needs build artifacts for packages)
+  benchmark-vercel:
+    name: Benchmark Vercel (${{ matrix.app.name }})
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - name: "nextjs-turbopack"
+            project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+          - name: "nitro-v3"
+            project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
+          - name: "express"
+            project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # For PRs, download baseline results from main branch
+      - name: Download baseline from main branch
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: benchmarks.yml
+          branch: main
+          name: baseline-benchmark-results
+          path: baseline-results
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Wait for Vercel deployment
+        id: waitForDeployment
+        uses: ./.github/actions/wait-for-vercel-project
+        with:
+          team-id: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          project-id: ${{ matrix.app.project-id }}
+          vercel-token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          timeout: 1000
+          check-interval: 15
+          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+
+      - name: Run benchmarks
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+        run: |
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app.name }}-vercel.json
+
+      - name: Render benchmark results
+        uses: ./.github/actions/render-benchmarks
+        with:
+          benchmark-file: bench-results-${{ matrix.app.name }}-vercel.json
+          app-name: ${{ matrix.app.name }}
+          backend: vercel
+          baseline-file: baseline-results/bench-results-${{ matrix.app.name }}-vercel.json
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ matrix.app.name }}-vercel
+          path: |
+            bench-results-${{ matrix.app.name }}-vercel.json
+            bench-timings-${{ matrix.app.name }}-vercel.json
+
+  # Phase 3: Aggregate all benchmark results and create comparison
+  summary:
+    name: Benchmark Summary
+    runs-on: ubuntu-latest
+    needs: [benchmark-local, benchmark-postgres, benchmark-vercel]
+    if: always() && !cancelled()
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-results-*
+          path: benchmark-results
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: find benchmark-results -type f -name "*.json" | sort
+
+      # For PRs, try to download baseline results from the latest main branch run
+      - name: Download baseline from main branch
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: benchmarks.yml
+          branch: main
+          name: baseline-benchmark-results
+          path: baseline-results
+          search_artifacts: true
+          if_no_artifact_found: warn
+
+      - name: Aggregate and compare benchmarks
+        id: aggregate
+        run: |
+          # Check if baseline results exist
+          BASELINE_ARG=""
+          if [ -d "baseline-results" ] && [ "$(ls -A baseline-results 2>/dev/null)" ]; then
+            echo "Found baseline results from main branch"
+            BASELINE_ARG="--baseline baseline-results"
+          else
+            echo "No baseline results found, showing results without comparison"
+          fi
+          # Capture output to both file and step summary
+          node .github/scripts/aggregate-benchmarks.js benchmark-results $BASELINE_ARG | tee benchmark-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Check benchmark job statuses
+        id: check-status
+        run: |
+          # Check if any benchmark jobs failed
+          LOCAL_STATUS="${{ needs.benchmark-local.result }}"
+          POSTGRES_STATUS="${{ needs.benchmark-postgres.result }}"
+          VERCEL_STATUS="${{ needs.benchmark-vercel.result }}"
+
+          echo "local=$LOCAL_STATUS" >> $GITHUB_OUTPUT
+          echo "postgres=$POSTGRES_STATUS" >> $GITHUB_OUTPUT
+          echo "vercel=$VERCEL_STATUS" >> $GITHUB_OUTPUT
+
+          if [[ "$LOCAL_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$VERCEL_STATUS" == "failure" ]]; then
+            echo "has_failures=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_failures=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update PR comment with results
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          path: benchmark-summary.md
+
+      - name: Append failure notice to PR comment
+        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          append: true
+          message: |
+
+            ---
+            ⚠️ **Some benchmark jobs failed:**
+            - Local: ${{ needs.benchmark-local.result }}
+            - Postgres: ${{ needs.benchmark-postgres.result }}
+            - Vercel: ${{ needs.benchmark-vercel.result }}
+
+            Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+      # On main branch, save results as baseline for future PR comparisons
+      - name: Upload baseline results
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-benchmark-results
+          path: benchmark-results/
+          retention-days: 90
