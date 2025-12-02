@@ -1122,9 +1122,9 @@ describe('Storage', () => {
         expect(hook.runId).toBe(testRunId);
         expect(hook.hookId).toBe('hook_123');
         expect(hook.token).toBe('my-hook-token');
-        expect(hook.ownerId).toBe('embedded-owner');
-        expect(hook.projectId).toBe('embedded-project');
-        expect(hook.environment).toBe('embedded');
+        expect(hook.ownerId).toBe('local-owner');
+        expect(hook.projectId).toBe('local-project');
+        expect(hook.environment).toBe('local');
         expect(hook.createdAt).toBeInstanceOf(Date);
 
         // Verify file was created

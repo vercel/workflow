@@ -75,6 +75,8 @@ jobs:
             project-id: "prj_p0GIEsfl53L7IwVbosPvi9rPSOYW"
           - name: "express"
             project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
+          - name: "astro"
+            project-id: "prj_YDAXj3K8LM0hgejuIMhioz2yLgTI"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -191,7 +193,7 @@ jobs:
         run: cd workbench/${{ matrix.app.name }} && pnpm dev & echo "starting tests in 10 seconds" && sleep 10 && pnpm vitest run packages/core/e2e/dev.test.ts && sleep 10 && pnpm run test:e2e
         env:
           APP_NAME: ${{ matrix.app.name }}
-          DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || '3000' }}"
+          DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
 
   e2e-local-prod:
@@ -243,7 +245,7 @@ jobs:
         run: cd workbench/${{ matrix.app.name }} && pnpm start & echo "starting tests in 10 seconds" && sleep 10 && pnpm run test:e2e
         env:
           APP_NAME: ${{ matrix.app.name }}
-          DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || '3000' }}"
+          DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
 
   e2e-local-postgres:
     name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
@@ -314,7 +316,7 @@ jobs:
         run: cd workbench/${{ matrix.app.name }} && pnpm start & echo "starting tests in 10 seconds" && sleep 10 && pnpm run test:e2e
         env:
           APP_NAME: ${{ matrix.app.name }}
-          DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || '3000' }}"
+          DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
 
   e2e-windows:
     name: E2E Windows Tests

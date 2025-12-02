@@ -7,10 +7,19 @@ import type { WorldConfig } from '@/lib/config-world';
 
 // Default configuration
 const DEFAULT_CONFIG: WorldConfig = {
-  backend: 'embedded',
+  backend: 'local',
   dataDir: './.next/workflow-data',
   port: '3000',
   env: 'production',
+};
+
+export const resolveTargetWorld = (backend?: string) => {
+  switch (backend) {
+    case 'postgres':
+      return '@workflow/world-postgres';
+    default:
+      return backend;
+  }
 };
 
 // Config query param keys
@@ -22,6 +31,7 @@ const CONFIG_PARAM_KEYS = [
   'team',
   'port',
   'dataDir',
+  'postgresUrl',
 ] as const;
 
 /**
@@ -133,12 +143,14 @@ export function buildUrlWithConfig(
 
 export const worldConfigToEnvMap = (config: WorldConfig): EnvMap => {
   return {
-    WORKFLOW_TARGET_WORLD: config.backend,
+    WORKFLOW_TARGET_WORLD: resolveTargetWorld(config.backend),
     WORKFLOW_VERCEL_ENV: config.env,
     WORKFLOW_VERCEL_AUTH_TOKEN: config.authToken,
     WORKFLOW_VERCEL_PROJECT: config.project,
     WORKFLOW_VERCEL_TEAM: config.team,
     PORT: config.port,
-    WORKFLOW_EMBEDDED_DATA_DIR: config.dataDir,
+    WORKFLOW_LOCAL_DATA_DIR: config.dataDir,
+    // Postgres env vars
+    WORKFLOW_POSTGRES_URL: config.postgresUrl,
   };
 };

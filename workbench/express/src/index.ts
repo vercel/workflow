@@ -1,5 +1,4 @@
 import express from 'express';
-import { toFetchHandler } from 'srvx/node';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from '../_workflows.js';
@@ -134,6 +133,19 @@ app.get('/api/trigger', async (req, res) => {
     const returnValue = await run.returnValue;
     console.log('Return value:', returnValue);
 
+    // Include run metadata in headers
+    const [createdAt, startedAt, completedAt] = await Promise.all([
+      run.createdAt,
+      run.startedAt,
+      run.completedAt,
+    ]);
+    res.setHeader('X-Workflow-Run-Created-At', createdAt?.toISOString() || '');
+    res.setHeader('X-Workflow-Run-Started-At', startedAt?.toISOString() || '');
+    res.setHeader(
+      'X-Workflow-Run-Completed-At',
+      completedAt?.toISOString() || ''
+    );
+
     if (returnValue instanceof ReadableStream) {
       // Set headers for streaming response
       res.setHeader('Content-Type', 'application/octet-stream');
@@ -208,4 +220,4 @@ app.post('/api/test-direct-step-call', async (req, res) => {
   return res.json({ result });
 });
 
-export default toFetchHandler(app as any);
+export default app;

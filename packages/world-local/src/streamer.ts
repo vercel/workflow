@@ -216,7 +216,11 @@ export function createStreamer(basedir: string): Streamer {
 
           if (isComplete) {
             removeListeners();
-            controller.close();
+            try {
+              controller.close();
+            } catch (e) {
+              // Ignore if controller is already closed (e.g., from closeListener event)
+            }
             return;
           }
         },

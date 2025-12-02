@@ -1,5 +1,19 @@
 # @workflow/ai
 
+## 4.0.1-beta.24
+
+### Patch Changes
+
+- workflow@4.0.1-beta.24
+
+## 4.0.1-beta.23
+
+### Patch Changes
+
+- 172e015: Add AI provider step wrapper functions
+- Updated dependencies [1ac5592]
+  - workflow@4.0.1-beta.23
+
 ## 4.0.1-beta.22
 
 ### Patch Changes

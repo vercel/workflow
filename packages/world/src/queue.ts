@@ -24,6 +24,7 @@ export type TraceCarrier = z.infer<typeof TraceCarrierSchema>;
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
+  requestedAt: z.coerce.date().optional(),
 });
 
 export const StepInvokePayloadSchema = z.object({
@@ -32,6 +33,7 @@ export const StepInvokePayloadSchema = z.object({
   workflowStartedAt: z.number(),
   stepId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
+  requestedAt: z.coerce.date().optional(),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
@@ -42,6 +44,11 @@ export const QueuePayloadSchema = z.union([
   StepInvokePayloadSchema,
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
+
+export interface QueueOptions {
+  deploymentId?: string;
+  idempotencyKey?: string;
+}
 
 export interface Queue {
   getDeploymentId(): Promise<string>;
@@ -56,10 +63,7 @@ export interface Queue {
   queue(
     queueName: ValidQueueName,
     message: QueuePayload,
-    opts?: {
-      deploymentId?: string;
-      idempotencyKey?: string;
-    }
+    opts?: QueueOptions
   ): Promise<{ messageId: MessageId }>;
 
   /**
