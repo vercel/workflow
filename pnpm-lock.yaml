@@ -21,9 +21,6 @@ catalogs:
     '@vercel/oidc':
       specifier: 3.0.5
       version: 3.0.5
-    '@vercel/queue':
-      specifier: 0.0.0-alpha.29
-      version: 0.0.0-alpha.29
     '@vitest/coverage-v8':
       specifier: ^3.2.4
       version: 3.2.4
@@ -48,6 +45,7 @@ catalogs:
 
 overrides:
   rfc6902: 5.1.2
+  '@vercel/queue': https://files-k9gpcub20-tootallnate-hobby.vercel.app
 
 importers:
 
@@ -1011,8 +1009,8 @@ importers:
   packages/world-local:
     dependencies:
       '@vercel/queue':
-        specifier: 'catalog:'
-        version: 0.0.0-alpha.29
+        specifier: https://files-k9gpcub20-tootallnate-hobby.vercel.app
+        version: https://files-k9gpcub20-tootallnate-hobby.vercel.app
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1057,8 +1055,8 @@ importers:
   packages/world-postgres:
     dependencies:
       '@vercel/queue':
-        specifier: 'catalog:'
-        version: 0.0.0-alpha.29
+        specifier: https://files-k9gpcub20-tootallnate-hobby.vercel.app
+        version: https://files-k9gpcub20-tootallnate-hobby.vercel.app
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1155,8 +1153,8 @@ importers:
         specifier: 'catalog:'
         version: 3.0.5
       '@vercel/queue':
-        specifier: 'catalog:'
-        version: 0.0.0-alpha.29
+        specifier: https://files-k9gpcub20-tootallnate-hobby.vercel.app
+        version: https://files-k9gpcub20-tootallnate-hobby.vercel.app
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -6481,8 +6479,9 @@ packages:
       '@opentelemetry/sdk-metrics': '>=1.19.0 <2.0.0'
       '@opentelemetry/sdk-trace-base': '>=1.19.0 <2.0.0'
 
-  '@vercel/queue@0.0.0-alpha.29':
-    resolution: {integrity: sha512-legz939klri0R3JVIA3Wxnvt6usJcSxutIlZdnKCtfmhnDrti79ZdGLtJZTjX6AnfSxwCJshGbqEOWRgLCer2A==}
+  '@vercel/queue@https://files-k9gpcub20-tootallnate-hobby.vercel.app':
+    resolution: {tarball: https://files-k9gpcub20-tootallnate-hobby.vercel.app}
+    version: 0.0.0-alpha.32
     engines: {node: '>=20.0.0'}
     hasBin: true
 
@@ -18711,7 +18710,7 @@ snapshots:
       '@opentelemetry/sdk-metrics': 1.30.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/sdk-trace-base': 1.30.1(@opentelemetry/api@1.9.0)
 
-  '@vercel/queue@0.0.0-alpha.29':
+  '@vercel/queue@https://files-k9gpcub20-tootallnate-hobby.vercel.app':
     dependencies:
       '@vercel/oidc': 3.0.5
       mixpart: 0.0.5-alpha.1
