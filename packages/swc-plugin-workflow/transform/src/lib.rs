@@ -2229,7 +2229,20 @@ impl StepTransform {
 
     // Create a statement that adds workflowId property to a function (client mode)
     fn create_workflow_id_assignment(&self, fn_name: &str, span: swc_core::common::Span) -> Stmt {
-        let workflow_id = self.create_id(Some(fn_name), span, true);
+        // For workflow ID generation, normalize auto-generated __default variants to "default"
+        // Only do this if the name was auto-generated for an anonymous default export,
+        // not if the user explicitly named their function "__default"
+        let id_name = if (fn_name == "__default" || fn_name.starts_with("__default$"))
+            && self
+                .workflow_export_to_const_name
+                .get("default")
+                .map_or(false, |const_name| const_name == fn_name)
+        {
+            "default"
+        } else {
+            fn_name
+        };
+        let workflow_id = self.create_id(Some(id_name), span, true);
 
         // Create: functionName.workflowId = "workflowId"
         Stmt::Expr(ExprStmt {
@@ -2671,14 +2684,9 @@ impl StepTransform {
             let workflow_entries: Vec<String> = sorted_workflow_names
                 .into_iter()
                 .map(|fn_name| {
-                    // Check if this export name has a different const name (e.g., "default" -> "__default")
+                    // Use the export name for the workflow ID (e.g., "default" not "__default")
                     let fn_name_str: &str = fn_name;
-                    let actual_name = self
-                        .workflow_export_to_const_name
-                        .get(fn_name_str)
-                        .map(|s| s.as_str())
-                        .unwrap_or(fn_name_str);
-                    let workflow_id = self.create_id(Some(actual_name), DUMMY_SP, true);
+                    let workflow_id = self.create_id(Some(fn_name_str), DUMMY_SP, true);
                     format!("\"{}\":{{\"workflowId\":\"{}\"}}", fn_name_str, workflow_id)
                 })
                 .collect();
