@@ -19,7 +19,7 @@ export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config);
   const queueClient = new Client({
-    baseUrl: usingProxy ? `${baseUrl}/queues/v2/messages` : undefined,
+    baseUrl: usingProxy ? baseUrl : undefined,
     basePath: usingProxy ? '/queues/v2/messages' : undefined,
     token: usingProxy ? config?.token : undefined,
     headers: Object.fromEntries(headers.entries()),
