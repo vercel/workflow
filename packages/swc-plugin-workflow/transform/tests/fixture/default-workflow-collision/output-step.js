@@ -3,9 +3,8 @@
 const __default = "existing variable";
 // Use it to avoid unused variable
 console.log(__default);
-// Anonymous default export should get unique name (__default$1)
-export default async function() {
-    'use workflow';
-    const result = await someStep();
-    return result;
-}
+const __default$1 = async function() {
+    throw new Error("You attempted to execute workflow __default$1 function directly. To start a workflow, use start(__default$1) from workflow/api");
+};
+__default$1.workflowId = "workflow//input.js//__default$1";
+export default __default$1;

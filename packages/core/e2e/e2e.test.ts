@@ -707,7 +707,7 @@ describe('e2e', () => {
   );
 
   test(
-    'stepFunctionPassingWorkflow - step function references can be passed as arguments',
+    'stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)',
     { timeout: 60_000 },
     async () => {
       // This workflow passes a step function reference to another step
@@ -735,6 +735,45 @@ describe('e2e', () => {
         (event) => event.eventType === 'step_completed'
       );
       expect(stepCompletedEvents).toHaveLength(1);
+    }
+  );
+
+  test(
+    'stepFunctionWithClosureWorkflow - step function with closure variables passed as argument',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow creates a nested step function with closure variables,
+      // then passes it to another step which invokes it.
+      // The closure variables should be serialized and preserved across the call.
+      const run = await triggerWorkflow('stepFunctionWithClosureWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // Expected: "Wrapped: Result: 21"
+      // - calculate(7) uses closure vars: prefix="Result: ", multiplier=3
+      // - 7 * 3 = 21, prefixed with "Result: " = "Result: 21"
+      // - stepThatCallsStepFn wraps it: "Wrapped: Result: 21"
+      expect(returnValue).toBe('Wrapped: Result: 21');
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe('Wrapped: Result: 21');
+    }
+  );
+
+  test(
+    'closureVariableWorkflow - nested step functions with closure variables',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow uses a nested step function that references closure variables
+      // from the parent workflow scope (multiplier, prefix, baseValue)
+      const run = await triggerWorkflow('closureVariableWorkflow', [7]);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // Expected: baseValue (7) * multiplier (3) = 21, prefixed with "Result: "
+      expect(returnValue).toBe('Result: 21');
     }
   );
 });

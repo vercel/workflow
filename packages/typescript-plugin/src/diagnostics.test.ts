@@ -105,7 +105,7 @@ describe('getCustomDiagnostics', () => {
     });
   });
 
-  describe('Error 9003: Node.js API usage in workflows', () => {
+  describe('Error 9003: Node.js or Bun API usage in workflows', () => {
     it('warns when using fs with default import', () => {
       const source = `
         import fs from 'fs';
@@ -194,6 +194,117 @@ describe('getCustomDiagnostics', () => {
           'use step';
           const data = fs.readFileSync('/tmp/test.txt', 'utf-8');
           return data;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectNoDiagnostic(diagnostics, 9003);
+    });
+
+    it('does not warn when Bun is used in step function', () => {
+      const source = `
+        import { RedisClient } from 'bun';
+
+        async function myStep() {
+          'use step';
+          new RedisClient();
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectNoDiagnostic(diagnostics, 9003);
+    });
+
+    it('warns when Bun module is used in workflow function', () => {
+      const source = `
+        import { file } from 'bun';
+
+        export async function myWorkflow() {
+          'use workflow';
+          const f = file('/tmp/test.txt');
+          return f;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9003,
+        messageIncludes: 'bun',
+      });
+    });
+
+    it('shows Bun in error message when Bun module is used', () => {
+      const source = `
+        import { file } from 'bun';
+
+        export async function myWorkflow() {
+          'use workflow';
+          const f = file('/tmp/test.txt');
+          return f;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9003,
+        messageIncludes: 'Bun API',
+      });
+    });
+
+    it('warns when bun:sqlite is used in workflow function', () => {
+      const source = `
+        import { Database } from 'bun:sqlite';
+
+        export async function myWorkflow() {
+          'use workflow';
+          Database.open(':memory:');
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9003,
+        messageIncludes: 'bun:sqlite',
+      });
+    });
+
+    it('warns when bun:ffi is used in workflow function', () => {
+      const source = `
+        import { dlopen } from 'bun:ffi';
+
+        export async function myWorkflow() {
+          'use workflow';
+          const lib = dlopen('./lib.so', {});
+          return lib;
+        }
+      `;
+
+      const { program } = createTestProgram(source);
+      const diagnostics = getCustomDiagnostics('test.ts', program, ts);
+
+      expectDiagnostic(diagnostics, {
+        code: 9003,
+        messageIncludes: 'bun:ffi',
+      });
+    });
+
+    it('does not warn when bun:sqlite is used in step function', () => {
+      const source = `
+        import { Database } from 'bun:sqlite';
+
+        async function myStep() {
+          'use step';
+          Database.open(':memory:');
         }
       `;
 

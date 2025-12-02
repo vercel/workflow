@@ -1,1 +1,1 @@
-../nitro-v3/LICENSE.md
+../../LICENSE.md

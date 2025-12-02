@@ -1,5 +1,12 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- fb9fd0f: Add support for closure scope vars in step functions
+- 8b470f0: Apply SWC transformation on step functions returned from factory function
+
 ## 4.0.1-beta.7
 
 ### Patch Changes

@@ -6,4 +6,5 @@ export const contextStorage = /* @__PURE__ */ new AsyncLocalStorage<{
   stepMetadata: StepMetadata;
   workflowMetadata: WorkflowMetadata;
   ops: Promise<void>[];
+  closureVars?: Record<string, any>;
 }>();

@@ -5,6 +5,7 @@ export interface StepInvocationQueueItem {
   correlationId: string;
   stepName: string;
   args: Serializable[];
+  closureVars?: Record<string, Serializable>;
 }
 
 export interface HookInvocationQueueItem {

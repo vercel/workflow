@@ -1,7 +1,7 @@
 /** biome-ignore-all lint/correctness/useUniqueElementIds: <not relevant> */
 'use client';
 
-import { AlertCircle, Settings, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Settings, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,7 @@ import {
   validateWorldConfig,
   type WorldConfig,
 } from '@/lib/config-world';
+import { useWorldsAvailability } from '@/lib/hooks';
 
 export function SettingsSidebar() {
   const config = useQueryParamConfig();
@@ -30,8 +31,12 @@ export function SettingsSidebar() {
   const [errors, setErrors] = useState<ValidationError[]>([]);
   const [isValidating, setIsValidating] = useState(false);
 
+  const { data: worldsAvailability = [], isLoading: isLoadingWorlds } =
+    useWorldsAvailability();
+
   const backend = localConfig.backend || 'embedded';
   const isEmbedded = backend === 'embedded';
+  const isPostgres = backend === 'postgres';
 
   // Update local config when query params change
   useEffect(() => {
@@ -121,10 +126,48 @@ export function SettingsSidebar() {
                       <SelectValue placeholder="Select backend" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="embedded">Embedded</SelectItem>
-                      <SelectItem value="vercel">Vercel</SelectItem>
+                      {isLoadingWorlds ? (
+                        <SelectItem value="loading" disabled>
+                          Loading worlds...
+                        </SelectItem>
+                      ) : worldsAvailability.length > 0 ? (
+                        worldsAvailability.map((world) => (
+                          <SelectItem key={world.id} value={world.id}>
+                            {world.displayName}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <>
+                          <SelectItem value="embedded">Embedded</SelectItem>
+                          <SelectItem value="vercel">Vercel</SelectItem>
+                          <SelectItem value="postgres">PostgreSQL</SelectItem>
+                        </>
+                      )}
                     </SelectContent>
                   </Select>
+                  {/* Show warning if selected world is not installed */}
+                  {(() => {
+                    const selectedWorld = worldsAvailability.find(
+                      (w) => w.id === backend
+                    );
+                    if (selectedWorld && !selectedWorld.isInstalled) {
+                      return (
+                        <div className="flex items-start gap-2 p-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
+                          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                          <div className="text-xs">
+                            <p className="font-medium">Package not installed</p>
+                            <p className="mt-1 text-muted-foreground">
+                              Run:{' '}
+                              <code className="bg-muted px-1 py-0.5 rounded">
+                                {selectedWorld.installCommand}
+                              </code>
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
 
                 {isEmbedded && (
@@ -175,7 +218,33 @@ export function SettingsSidebar() {
                   </>
                 )}
 
-                {!isEmbedded && (
+                {isPostgres && (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="postgresUrl">Connection URL</Label>
+                      <Input
+                        id="postgresUrl"
+                        value={localConfig.postgresUrl || ''}
+                        onChange={(e) =>
+                          handleInputChange('postgresUrl', e.target.value)
+                        }
+                        placeholder="postgres://user:pass@host:5432/db"
+                        className={
+                          getFieldError('postgresUrl')
+                            ? 'border-destructive'
+                            : ''
+                        }
+                      />
+                      {getFieldError('postgresUrl') && (
+                        <p className="text-sm text-destructive">
+                          {getFieldError('postgresUrl')}
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {!isEmbedded && !isPostgres && (
                   <>
                     <div className="space-y-2">
                       <Label htmlFor="env">Environment</Label>
@@ -250,7 +319,13 @@ export function SettingsSidebar() {
                 <div className="flex flex-col gap-2 pt-4">
                   <Button
                     onClick={handleValidateAndApply}
-                    disabled={isValidating || !hasChanges}
+                    disabled={
+                      isValidating ||
+                      !hasChanges ||
+                      worldsAvailability.some(
+                        (w) => w.id === backend && !w.isInstalled
+                      )
+                    }
                     className="w-full"
                   >
                     {isValidating ? 'Validating...' : 'Apply Configuration'}

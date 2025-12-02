@@ -389,8 +389,11 @@ export function workflowEntrypoint(workflowCode: string) {
                 if (queueItem.type === 'step') {
                   // Handle step operations
                   const ops: Promise<void>[] = [];
-                  const dehydratedArgs = dehydrateStepArguments(
-                    queueItem.args,
+                  const dehydratedInput = dehydrateStepArguments(
+                    {
+                      args: queueItem.args,
+                      closureVars: queueItem.closureVars,
+                    },
                     err.globalThis
                   );
 
@@ -398,7 +401,7 @@ export function workflowEntrypoint(workflowCode: string) {
                     const step = await world.steps.create(runId, {
                       stepId: queueItem.correlationId,
                       stepName: queueItem.stepName,
-                      input: dehydratedArgs as Serializable[],
+                      input: dehydratedInput as Serializable,
                     });
 
                     waitUntil(
@@ -678,9 +681,15 @@ export const stepEntrypoint =
                 `Step "${stepId}" has no "startedAt" timestamp`
               );
             }
-            // Hydrate the step input arguments
+            // Hydrate the step input arguments and closure variables
             const ops: Promise<void>[] = [];
-            const args = hydrateStepArguments(step.input, ops, workflowRunId);
+            const hydratedInput = hydrateStepArguments(
+              step.input,
+              ops,
+              workflowRunId
+            );
+
+            const args = hydratedInput.args;
 
             span?.setAttributes({
               ...Attribute.StepArgumentsCount(args.length),
@@ -703,8 +712,9 @@ export const stepEntrypoint =
                     : `http://localhost:${port ?? 3000}`,
                 },
                 ops,
+                closureVars: hydratedInput.closureVars,
               },
-              () => stepFn(...args)
+              () => stepFn.apply(null, args)
             );
 
             // NOTE: None of the code from this point is guaranteed to run

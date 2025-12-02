@@ -54,7 +54,7 @@ export async function POST(req: Request) {
     }
 
     const run = await start(workflow as any, args);
-    console.log('Run:', run);
+    console.log('Run:', run.runId);
     return Response.json(run);
   } catch (err) {
     console.error(`Failed to start!!`, err);
