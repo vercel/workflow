@@ -194,7 +194,6 @@ app.post("/api/signup", async (req, reply) => {
 // Wait for Fastify to be ready before handling requests
 await app.ready();
 
-
 export default (req: any, res: any) => {
   app.server.emit("request", req, res);
 };
