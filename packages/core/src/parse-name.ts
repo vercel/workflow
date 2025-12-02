@@ -10,15 +10,30 @@ function parseName(
   if (typeof name !== 'string') {
     return null;
   }
+  // Looks like {prefix}//{filepath}//{function_name}"
+  // Where:
+  // - {prefix} is either 'workflow' or 'step'
+  // - {filepath} is the path to the file
+  // - {function_name} is the name of the function
   const [prefix, path, ...functionNameParts] = name.split('//');
   if (prefix !== tag || !path || functionNameParts.length === 0) {
     return null;
   }
 
+  let shortName = functionNameParts.at(-1) ?? '';
+  const functionName = functionNameParts.join('//');
+  const filename = path.split('/').at(-1) ?? '';
+  const fileNameWithoutExtension = filename.split('.').at(-1) ?? '';
+
+  // Default exports will use the file name as the short name
+  if (shortName === '__default' && fileNameWithoutExtension) {
+    shortName = fileNameWithoutExtension;
+  }
+
   return {
-    shortName: functionNameParts.at(-1) ?? '',
+    shortName,
     path,
-    functionName: functionNameParts.join('//'),
+    functionName,
   };
 }
 
