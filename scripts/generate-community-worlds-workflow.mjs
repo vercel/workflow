@@ -204,8 +204,128 @@ function generateJob(world, isE2E = true, isBenchmark = false) {
   return lines.join('\n');
 }
 
+// Generate build job (needed for benchmarks)
+function generateBuildJob() {
+  const lines = [];
+  lines.push(`  build:`);
+  lines.push(`    name: Build Packages`);
+  lines.push(`    runs-on: ubuntu-latest`);
+  lines.push(`    timeout-minutes: 30`);
+  lines.push(`    env:`);
+  lines.push(`      TURBO_TOKEN: \${{ secrets.TURBO_TOKEN }}`);
+  lines.push(`      TURBO_TEAM: \${{ vars.TURBO_TEAM }}`);
+  lines.push(``);
+  lines.push(`    steps:`);
+  lines.push(`      - uses: actions/checkout@v4`);
+  lines.push(``);
+  lines.push(`      - uses: pnpm/action-setup@v3`);
+  lines.push(`        with:`);
+  lines.push(`          version: 10.14.0`);
+  lines.push(``);
+  lines.push(`      - uses: actions/setup-node@v4`);
+  lines.push(`        with:`);
+  lines.push(`          node-version: 22.x`);
+  lines.push(`          cache: 'pnpm'`);
+  lines.push(``);
+  lines.push(`      - name: Install dependencies`);
+  lines.push(`        run: pnpm install --frozen-lockfile`);
+  lines.push(``);
+  lines.push(`      - name: Build all packages`);
+  lines.push(`        run: pnpm turbo run build --filter='!./workbench/*'`);
+  lines.push(``);
+  lines.push(`      - name: Upload build artifacts`);
+  lines.push(`        uses: actions/upload-artifact@v4`);
+  lines.push(`        with:`);
+  lines.push(`          name: build-artifacts`);
+  lines.push(`          path: |`);
+  lines.push(`            node_modules`);
+  lines.push(`            packages/*/dist`);
+  lines.push(`          retention-days: 1`);
+
+  return lines.join('\n');
+}
+
+// Generate summary job that collects test results
+function generateSummaryJob(includeBenchmarks = false) {
+  const worldIds = manifest.worlds.map((w) => w.id);
+  const e2eNeeds = worldIds.map((id) => `e2e-${id}`);
+  const benchmarkNeeds = includeBenchmarks
+    ? worldIds.map((id) => `benchmark-${id}`)
+    : [];
+  const needsList = [...e2eNeeds, ...benchmarkNeeds].join(', ');
+
+  const lines = [];
+  lines.push(`  summary:`);
+  lines.push(`    name: Test Results Summary`);
+  lines.push(`    runs-on: ubuntu-latest`);
+  lines.push(`    needs: [${needsList}]`);
+  lines.push(`    if: always()`);
+  lines.push(`    steps:`);
+  lines.push(`      - name: Generate Summary`);
+  lines.push(`        uses: actions/github-script@v7`);
+  lines.push(`        with:`);
+  lines.push(`          script: |`);
+  lines.push(
+    `            const worlds = ${JSON.stringify(manifest.worlds.map((w) => ({ id: w.id, name: w.name, package: w.package })))};`
+  );
+  lines.push(`            `);
+  lines.push(
+    `            let summary = '## Community Worlds E2E Test Results\\n\\n';`
+  );
+  lines.push(
+    `            summary += '| World | Package | E2E Status |${includeBenchmarks ? ' Benchmark Status |' : ''}\\n';`
+  );
+  lines.push(
+    `            summary += '|:------|:--------|:-----------|${includeBenchmarks ? ':-----------------|' : ''}\\n';`
+  );
+  lines.push(`            `);
+  lines.push(`            const e2eResults = {`);
+  for (const world of manifest.worlds) {
+    lines.push(
+      `              '${world.id}': '\${{ needs.e2e-${world.id}.result }}',`
+    );
+  }
+  lines.push(`            };`);
+  if (includeBenchmarks) {
+    lines.push(`            `);
+    lines.push(`            const benchmarkResults = {`);
+    for (const world of manifest.worlds) {
+      lines.push(
+        `              '${world.id}': '\${{ needs.benchmark-${world.id}.result }}',`
+      );
+    }
+    lines.push(`            };`);
+  }
+  lines.push(`            `);
+  lines.push(
+    `            const getEmoji = (result) => result === 'success' ? '✅' : result === 'failure' ? '❌' : result === 'skipped' ? '⏭️' : '❓';`
+  );
+  lines.push(`            `);
+  lines.push(`            for (const world of worlds) {`);
+  lines.push(`              const e2eResult = e2eResults[world.id];`);
+  if (includeBenchmarks) {
+    lines.push(`              const benchResult = benchmarkResults[world.id];`);
+    lines.push(
+      `              summary += \`| \${world.name} | \\\`\${world.package}\\\` | \${getEmoji(e2eResult)} \${e2eResult} | \${getEmoji(benchResult)} \${benchResult} |\\n\`;`
+    );
+  } else {
+    lines.push(
+      `              summary += \`| \${world.name} | \\\`\${world.package}\\\` | \${getEmoji(e2eResult)} \${e2eResult} |\\n\`;`
+    );
+  }
+  lines.push(`            }`);
+  lines.push(`            `);
+  lines.push(
+    `            summary += '\\n> Note: These tests use \`continue-on-error: true\` so failures are informational only.\\n';`
+  );
+  lines.push(`            `);
+  lines.push(`            await core.summary.addRaw(summary).write();`);
+
+  return lines.join('\n');
+}
+
 // Generate E2E workflow
-function generateE2EWorkflow() {
+function generateE2EWorkflow(includeBenchmarks = true) {
   const lines = [];
 
   // Header comment
@@ -213,7 +333,7 @@ function generateE2EWorkflow() {
   lines.push(`# This file is generated from community-worlds.json`);
   lines.push(`# Run: node scripts/generate-community-worlds-workflow.mjs`);
   lines.push(``);
-  lines.push(`name: Community Worlds E2E Tests`);
+  lines.push(`name: Community Worlds Tests`);
   lines.push(``);
   lines.push(`on:`);
   lines.push(`  push:`);
@@ -230,11 +350,29 @@ function generateE2EWorkflow() {
   lines.push(``);
   lines.push(`jobs:`);
 
-  // Generate a job for each world
+  // Generate build job (needed for benchmarks)
+  if (includeBenchmarks) {
+    lines.push(generateBuildJob());
+    lines.push(``);
+  }
+
+  // Generate E2E jobs for each world
   for (const world of manifest.worlds) {
     lines.push(generateJob(world, true, false));
     lines.push(``);
   }
+
+  // Generate benchmark jobs for each world
+  if (includeBenchmarks) {
+    for (const world of manifest.worlds) {
+      lines.push(generateJob(world, false, true));
+      lines.push(``);
+    }
+  }
+
+  // Generate summary job
+  lines.push(generateSummaryJob(includeBenchmarks));
+  lines.push(``);
 
   return lines.join('\n');
 }
