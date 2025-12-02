@@ -247,6 +247,12 @@ function renderBenchmarkTable(
   const validDataPoints = [];
   for (const app of apps) {
     for (const backend of backends) {
+      // Skip community worlds for non-nextjs-turbopack frameworks (we only test them with nextjs-turbopack)
+      const isCommunityWorld = worldConfig[backend]?.community === true;
+      if (isCommunityWorld && app !== 'nextjs-turbopack') {
+        continue;
+      }
+
       const metrics = benchData[app]?.[backend];
       const baseline = baselineBenchData?.[app]?.[backend] || null;
       const dataPoint = { app, backend, metrics: metrics || null, baseline };
@@ -447,6 +453,12 @@ function renderComparison(data, baselineData) {
       let fastestApp = null;
       let fastestTime = Infinity;
 
+      // Skip community worlds in framework comparison (they only run against nextjs-turbopack)
+      const isCommunityWorld = worldConfig[backend]?.community === true;
+      if (isCommunityWorld) {
+        continue;
+      }
+
       for (const app of apps) {
         const metrics = benchData[app]?.[backend];
         if (metrics) {
@@ -473,6 +485,12 @@ function renderComparison(data, baselineData) {
       let fastestTime = Infinity;
 
       for (const backend of backends) {
+        // Skip community worlds for non-nextjs-turbopack frameworks
+        const isCommunityWorld = worldConfig[backend]?.community === true;
+        if (isCommunityWorld && app !== 'nextjs-turbopack') {
+          continue;
+        }
+
         const metrics = benchData[app]?.[backend];
         if (metrics) {
           const time = metrics.workflowTime ?? metrics.wallTime;
@@ -501,6 +519,13 @@ function renderComparison(data, baselineData) {
   console.log('|:------|:---------------------|-----:|');
 
   for (const backend of backends) {
+    // Skip community worlds in "Fastest Framework by World" summary
+    // (they only run against nextjs-turbopack, so framework comparison doesn't apply)
+    const isCommunityWorld = worldConfig[backend]?.community === true;
+    if (isCommunityWorld) {
+      continue;
+    }
+
     const worldInfo = worldConfig[backend] || { emoji: '', label: backend };
     const frameworkWins = frameworkWinsByWorld[backend] || {};
 
