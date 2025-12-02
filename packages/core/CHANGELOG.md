@@ -1,5 +1,13 @@
 # @workflow/core
 
+## 4.0.1-beta.21
+
+### Patch Changes
+
+- 2f0840b: Better error when passing an invalid workflow value to `start()`
+- Updated dependencies [e9494d5]
+  - @workflow/world-vercel@4.0.1-beta.15
+
 ## 4.0.1-beta.20
 
 ### Patch Changes

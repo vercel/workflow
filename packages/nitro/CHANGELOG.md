@@ -1,5 +1,16 @@
 # @vercel/workflow-nitro
 
+## 4.0.1-beta.24
+
+### Patch Changes
+
+- Updated dependencies [2f0840b]
+- Updated dependencies [555d7a6]
+  - @workflow/core@4.0.1-beta.21
+  - @workflow/swc-plugin@4.0.1-beta.10
+  - @workflow/builders@4.0.1-beta.20
+  - @workflow/rollup@4.0.0-beta.4
+
 ## 4.0.1-beta.23
 
 ### Patch Changes
