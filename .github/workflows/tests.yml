@@ -28,24 +28,12 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          toolchain: stable
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+          setup-rust: 'true'
+          install-args: '--ignore-scripts'
+          build-packages: 'false'
 
       - name: Run Unit Tests
         run: pnpm test --filter='!./docs'
@@ -84,19 +72,10 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+          build-packages: 'false'
 
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
@@ -132,16 +111,11 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
+          install-dependencies: 'false'
+          build-packages: 'false'
 
       - id: set-matrix
         run: echo "matrix=$(node ./scripts/create-test-matrix.mjs)" >> $GITHUB_OUTPUT
@@ -162,16 +136,11 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
+          install-dependencies: 'false'
+          build-packages: 'false'
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
@@ -212,16 +181,11 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
+          install-dependencies: 'false'
+          build-packages: 'false'
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
@@ -280,16 +244,11 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
+          install-dependencies: 'false'
+          build-packages: 'false'
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
@@ -375,6 +334,13 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          install-dependencies: 'false'
+          build-packages: 'false'
+
       - id: set-matrix
         run: echo "matrix=$(node ./scripts/create-community-worlds-matrix.mjs)" >> $GITHUB_OUTPUT
 

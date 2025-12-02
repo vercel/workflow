@@ -1,5 +1,5 @@
 name: 'Setup Workflow Dev Environment'
-description: 'Setup Node.js, pnpm, Rust, and install dependencies for Workflow development. Note: Checkout must be done before calling this action.'
+description: 'Setup Node.js, pnpm, and optionally Rust for Workflow development. Note: Checkout must be done before calling this action.'
 
 inputs:
   node-version:
@@ -10,6 +10,18 @@ inputs:
     description: 'pnpm version to use'
     required: false
     default: '10.14.0'
+  setup-rust:
+    description: 'Whether to setup Rust toolchain'
+    required: false
+    default: 'false'
+  install-dependencies:
+    description: 'Whether to install dependencies'
+    required: false
+    default: 'true'
+  install-args:
+    description: 'Additional arguments for pnpm install (e.g., --ignore-scripts)'
+    required: false
+    default: ''
   build-packages:
     description: 'Whether to build packages (excludes workbenches)'
     required: false
@@ -19,6 +31,7 @@ runs:
   using: 'composite'
   steps:
     - name: Setup Rust
+      if: ${{ inputs.setup-rust == 'true' }}
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: stable
@@ -35,8 +48,9 @@ runs:
         cache: 'pnpm'
 
     - name: Install Dependencies
+      if: ${{ inputs.install-dependencies == 'true' }}
       shell: bash
-      run: pnpm install --frozen-lockfile
+      run: pnpm install --frozen-lockfile ${{ inputs.install-args }}
 
     - name: Build all packages
       if: ${{ inputs.build-packages == 'true' }}

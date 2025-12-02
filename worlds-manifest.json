@@ -1,5 +1,4 @@
 {
-  "$schema": "./worlds-manifest.schema.json",
   "worlds": [
     {
       "id": "local",

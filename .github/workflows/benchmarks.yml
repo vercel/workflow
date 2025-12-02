@@ -121,20 +121,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build all packages
-        run: pnpm turbo run build --filter='!./workbench/*'
+          build-packages: 'true'
 
       # Cache node_modules and package build outputs
       - name: Upload build artifacts
@@ -165,13 +155,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
+          install-dependencies: 'false'
+          build-packages: 'false'
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -262,13 +250,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
+          install-dependencies: 'false'
+          build-packages: 'false'
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -347,13 +333,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
+          install-dependencies: 'false'
+          build-packages: 'false'
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -423,6 +407,13 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          install-dependencies: 'false'
+          build-packages: 'false'
+
       - id: set-matrix
         run: echo "matrix=$(node ./scripts/create-community-worlds-matrix.mjs)" >> $GITHUB_OUTPUT
 

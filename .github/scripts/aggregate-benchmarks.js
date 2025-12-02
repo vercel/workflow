@@ -415,61 +415,57 @@ function renderComparison(data, baselineData) {
     }
   }
 
-  // Helper to render a section (local dev or production)
-  const renderSection = (sectionBackends, isProduction) => {
-    if (sectionBackends.length === 0) return;
+  // Helper to render both local dev and production tables for a benchmark
+  const renderBenchmarkWithEnvironments = (benchName, benchData, isStream) => {
+    const baselineBenchData = baselineData?.[benchName] || null;
 
-    // Render regular benchmarks
-    for (const [benchName, benchData] of regularBenchmarks) {
-      const baselineBenchData = baselineData?.[benchName] || null;
+    console.log(`## ${benchName}\n`);
+
+    // Render Local Development table
+    if (localDevBackends.length > 0) {
+      console.log('#### 💻 Local Development\n');
       renderBenchmarkTable(
         benchName,
         benchData,
         baselineBenchData,
         apps,
-        sectionBackends,
-        false
+        localDevBackends,
+        isStream,
+        { showHeading: false }
       );
     }
 
-    // Render stream benchmarks in a separate section
-    if (streamBenchmarks.length > 0) {
-      console.log('#### Stream Benchmarks\n');
-      console.log(
-        '_Stream benchmarks include Time to First Byte (TTFB) metrics._\n'
+    // Render Production table
+    if (productionBackends.length > 0) {
+      console.log('#### ▲ Production (Vercel)\n');
+      renderBenchmarkTable(
+        benchName,
+        benchData,
+        baselineBenchData,
+        apps,
+        productionBackends,
+        isStream,
+        { showHeading: false }
       );
-
-      for (const [benchName, benchData] of streamBenchmarks) {
-        const baselineBenchData = baselineData?.[benchName] || null;
-        renderBenchmarkTable(
-          benchName,
-          benchData,
-          baselineBenchData,
-          apps,
-          sectionBackends,
-          true
-        );
-      }
     }
   };
 
-  // Render Local Development section
-  if (localDevBackends.length > 0) {
-    console.log('### 💻 Local Development\n');
-    console.log(
-      '_These benchmarks run against local development servers (localhost). Results reflect local machine performance._\n'
-    );
-    renderSection(localDevBackends, false);
+  // Render regular benchmarks
+  for (const [benchName, benchData] of regularBenchmarks) {
+    renderBenchmarkWithEnvironments(benchName, benchData, false);
   }
 
-  // Render Production section (Vercel)
-  if (productionBackends.length > 0) {
+  // Render stream benchmarks in a separate section
+  if (streamBenchmarks.length > 0) {
     console.log('---\n');
-    console.log('### ▲ Production (Vercel)\n');
+    console.log('## Stream Benchmarks\n');
     console.log(
-      '_These benchmarks run against deployed Vercel preview/production environments. Results reflect real-world production performance._\n'
+      '_Stream benchmarks include Time to First Byte (TTFB) metrics._\n'
     );
-    renderSection(productionBackends, true);
+
+    for (const [benchName, benchData] of streamBenchmarks) {
+      renderBenchmarkWithEnvironments(benchName, benchData, true);
+    }
   }
 
   // Summary: Count wins per framework (within each world) and per world (within each framework)
