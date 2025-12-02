@@ -71,9 +71,9 @@ jobs:
         run: |
           cd workbench/${{ inputs.app-name }} && pnpm dev &
           echo "Waiting for dev server to start..." && sleep 15
-          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-dev-results-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
           sleep 10
-          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-results-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}.json || true
         env:
           APP_NAME: ${{ inputs.app-name }}
           DEPLOYMENT_URL: "http://localhost:3000"
@@ -87,10 +87,12 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-results-${{ inputs.world-id }}
+          name: e2e-results-community-${{ inputs.world-id }}
           path: |
-            e2e-dev-results-${{ inputs.world-id }}.json
-            e2e-results-${{ inputs.world-id }}.json
+            e2e-community-${{ inputs.world-id }}-dev.json
+            e2e-community-${{ inputs.world-id }}.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Job for MongoDB-based worlds
   e2e-mongodb:
@@ -138,9 +140,9 @@ jobs:
         run: |
           cd workbench/${{ inputs.app-name }} && pnpm dev &
           echo "Waiting for dev server to start..." && sleep 15
-          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-dev-results-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
           sleep 10
-          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-results-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}.json || true
         env:
           APP_NAME: ${{ inputs.app-name }}
           DEPLOYMENT_URL: "http://localhost:3000"
@@ -154,10 +156,12 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-results-${{ inputs.world-id }}
+          name: e2e-results-community-${{ inputs.world-id }}
           path: |
-            e2e-dev-results-${{ inputs.world-id }}.json
-            e2e-results-${{ inputs.world-id }}.json
+            e2e-community-${{ inputs.world-id }}-dev.json
+            e2e-community-${{ inputs.world-id }}.json
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Job for Redis-based worlds
   e2e-redis:
@@ -205,9 +209,9 @@ jobs:
         run: |
           cd workbench/${{ inputs.app-name }} && pnpm dev &
           echo "Waiting for dev server to start..." && sleep 15
-          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-dev-results-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
           sleep 10
-          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-results-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}.json || true
         env:
           APP_NAME: ${{ inputs.app-name }}
           DEPLOYMENT_URL: "http://localhost:3000"
@@ -221,7 +225,9 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-results-${{ inputs.world-id }}
+          name: e2e-results-community-${{ inputs.world-id }}
           path: |
-            e2e-dev-results-${{ inputs.world-id }}.json
-            e2e-results-${{ inputs.world-id }}.json
+            e2e-community-${{ inputs.world-id }}-dev.json
+            e2e-community-${{ inputs.world-id }}.json
+          retention-days: 7
+          if-no-files-found: ignore
