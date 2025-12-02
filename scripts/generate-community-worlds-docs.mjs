@@ -67,7 +67,7 @@ const communityWorldsRegex = /## Community Worlds[\s\S]*$/;
 const newSection = generateCommunityWorldsList();
 
 if (communityWorldsRegex.test(docsContent)) {
-  docsContent = docsContent.replace(communityWorldsRegex, newSection);
+  docsContent = docsContent.replace(communityWorldsRegex, newSection + '\n');
 } else {
   // If section doesn't exist, append it before the end
   docsContent = docsContent.trim() + '\n\n' + newSection + '\n';

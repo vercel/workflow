@@ -65,12 +65,13 @@ export function WorldCard({ id, world }: WorldCardProps) {
   const isExternal = world.docs.startsWith('http');
 
   // Calculate average benchmark time
-  const avgBenchmark = world.benchmark?.metrics
-    ? Object.values(world.benchmark.metrics).reduce(
-        (sum, m) => sum + m.mean,
-        0
-      ) / Object.values(world.benchmark.metrics).length
-    : null;
+  const metricsValues = world.benchmark?.metrics
+    ? Object.values(world.benchmark.metrics)
+    : [];
+  const avgBenchmark =
+    metricsValues.length > 0
+      ? metricsValues.reduce((sum, m) => sum + m.mean, 0) / metricsValues.length
+      : null;
 
   return (
     <Card className="relative overflow-hidden">
