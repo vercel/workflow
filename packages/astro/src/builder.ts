@@ -5,21 +5,8 @@ import {
   VercelBuildOutputAPIBuilder,
   createBaseBuilderConfig,
   type AstroConfig,
+  NORMALIZE_REQUEST_CODE,
 } from '@workflow/builders';
-
-// NOTE: This is the same as SvelteKit request converter, should merge
-const NORMALIZE_REQUEST_CONVERTER = `
-async function normalizeRequestConverter(request) {
-  const options = {
-    method: request.method,
-    headers: new Headers(request.headers)
-  };
-  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
-    options.body = await request.arrayBuffer();
-  }
-  return new Request(request.url, options);
-}
-`;
 
 const WORKFLOW_ROUTES = [
   {
@@ -105,9 +92,9 @@ export class LocalBuilder extends BaseBuilder {
     // Normalize request, needed for preserving request through astro
     stepsRouteContent = stepsRouteContent.replace(
       /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
-      `${NORMALIZE_REQUEST_CONVERTER}
+      `${NORMALIZE_REQUEST_CODE}
 export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequestConverter(request);
+  const normalRequest = await normalizeRequest(request);
   return stepEntrypoint(normalRequest);
 }
 
@@ -143,9 +130,9 @@ export const prerender = false;`
     // Normalize request, needed for preserving request through astro
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
-      `${NORMALIZE_REQUEST_CONVERTER}
+      `${NORMALIZE_REQUEST_CODE}
 export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequestConverter(request);
+  const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
 }
 
@@ -185,9 +172,9 @@ export const prerender = false;`
     // Normalize request, needed for preserving request through astro
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
-      `${NORMALIZE_REQUEST_CONVERTER}
+      `${NORMALIZE_REQUEST_CODE}
 const createHandler = (method) => async ({ request, params, platform }) => {
-  const normalRequest = await normalizeRequestConverter(request);
+  const normalRequest = await normalizeRequest(request);
   const response = await handler(normalRequest, params.token);
   return response;
 };

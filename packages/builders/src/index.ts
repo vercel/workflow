@@ -19,3 +19,4 @@ export type {
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 export { createBuildQueue } from './build-queue.js';
+export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
