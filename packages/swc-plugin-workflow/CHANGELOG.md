@@ -1,5 +1,12 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.9
+
+### Patch Changes
+
+- 5b91861: Apply workflow function transformation in "step" mode
+- 0cacb99: Support nested "use step" declarations in non-workflow functions
+
 ## 4.0.1-beta.8
 
 ### Patch Changes

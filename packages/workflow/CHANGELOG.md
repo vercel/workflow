@@ -1,5 +1,26 @@
 # workflow
 
+## 4.0.1-beta.23
+
+### Patch Changes
+
+- 1ac5592: Add @workflow/astro package
+- Updated dependencies [0f1645b]
+- Updated dependencies [3c19e90]
+- Updated dependencies [1ac5592]
+- Updated dependencies [bdde1bd]
+- Updated dependencies [8d4562e]
+  - @workflow/core@4.0.1-beta.20
+  - @workflow/sveltekit@4.0.0-beta.17
+  - @workflow/nitro@4.0.1-beta.23
+  - @workflow/astro@4.0.0-beta.2
+  - @workflow/next@4.0.1-beta.23
+  - @workflow/cli@4.0.1-beta.23
+  - @workflow/errors@4.0.1-beta.7
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.12
+  - @workflow/rollup@4.0.0-beta.3
+
 ## 4.0.1-beta.22
 
 ### Patch Changes
