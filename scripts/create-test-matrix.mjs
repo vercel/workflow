@@ -54,6 +54,7 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
+  },
   astro: {
     generatedStepPath: 'src/pages/.well-known/workflow/v1/step.js',
     generatedWorkflowPath: 'src/pages/.well-known/workflow/v1/flow.js',
