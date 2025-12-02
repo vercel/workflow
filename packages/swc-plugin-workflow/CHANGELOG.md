@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- 555d7a6: Normalize anonymous default export workflow IDs to "default"
+
 ## 4.0.1-beta.9
 
 ### Patch Changes
