@@ -88,7 +88,7 @@ export function WorkflowsList({
 
                 return (
                   <TableRow
-                    key={workflow.workflowName}
+                    key={workflow.workflowId}
                     className="cursor-pointer"
                     onClick={() => handleViewWorkflow(workflow)}
                   >

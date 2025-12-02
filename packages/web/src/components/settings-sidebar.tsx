@@ -223,6 +223,32 @@ export function SettingsSidebar({
                         absolute.
                       </p>
                     </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="manifestPath">Manifest Path</Label>
+                      <Input
+                        id="manifestPath"
+                        value={localConfig.manifestPath || ''}
+                        onChange={(e) =>
+                          handleInputChange('manifestPath', e.target.value)
+                        }
+                        placeholder="app/.well-known/workflow/v1/manifest.json"
+                        className={
+                          getFieldError('manifestPath')
+                            ? 'border-destructive'
+                            : ''
+                        }
+                      />
+                      {getFieldError('manifestPath') && (
+                        <p className="text-sm text-destructive break-words">
+                          {getFieldError('manifestPath')}
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        Path to the workflow manifest file. Leave empty to use
+                        default locations.
+                      </p>
+                    </div>
                   </>
                 )}
 

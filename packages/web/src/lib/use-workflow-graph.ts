@@ -8,7 +8,11 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import type { WorkflowGraphManifest } from '@/lib/workflow-graph-types';
+import { adaptManifest } from '@/lib/manifest-adapter';
+import type {
+  RawWorkflowsManifest,
+  WorkflowGraphManifest,
+} from '@/lib/workflow-graph-types';
 
 /**
  * Hook to fetch the workflow graph manifest from the workflow data directory
@@ -30,9 +34,28 @@ export function useWorkflowGraphManifest(config: WorldConfig) {
 
     try {
       const env = worldConfigToEnvMap(config);
+      console.log('[useWorkflowGraphManifest] Fetching with env:', env);
       const serverResult = await fetchWorkflowsManifest(env);
-      const result = unwrapServerActionResult(serverResult);
-      setManifest(result);
+      console.log('[useWorkflowGraphManifest] Server result:', serverResult);
+      const rawManifest = unwrapServerActionResult(
+        serverResult
+      ) as RawWorkflowsManifest;
+      console.log(
+        '[useWorkflowGraphManifest] Raw manifest after unwrap:',
+        rawManifest
+      );
+      console.log(
+        '[useWorkflowGraphManifest] Workflows in raw:',
+        Object.keys(rawManifest?.workflows || {})
+      );
+
+      // Transform the new manifest format to the format expected by UI components
+      const adaptedManifest = adaptManifest(rawManifest);
+      console.log(
+        '[useWorkflowGraphManifest] Adapted manifest workflows:',
+        Object.keys(adaptedManifest.workflows)
+      );
+      setManifest(adaptedManifest);
     } catch (err) {
       const error =
         err instanceof WorkflowAPIError

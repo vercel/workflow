@@ -503,34 +503,95 @@ export async function readStreamServerAction(
 }
 
 /**
- * Fetch the workflows manifest from the data directory
+ * Fetch the workflows manifest from the workflow route directory
  * The manifest is generated at build time and contains static structure info about workflows
+ *
+ * Configuration priority:
+ * 1. WORKFLOW_MANIFEST_PATH - explicit path to the manifest file
+ * 2. Standard Next.js app router locations (app/.well-known/workflow/v1/manifest.json)
+ * 3. WORKFLOW_EMBEDDED_DATA_DIR - legacy data directory
  */
 export async function fetchWorkflowsManifest(
   worldEnv: EnvMap
 ): Promise<ServerActionResult<any>> {
-  try {
-    // Get the data directory from the world environment config
-    // This contains the correct absolute path passed from the client
-    const dataDir =
-      worldEnv.WORKFLOW_EMBEDDED_DATA_DIR ||
-      process.env.WORKFLOW_EMBEDDED_DATA_DIR ||
-      '.next/workflow-data';
+  const cwd = process.cwd();
 
-    // If dataDir is absolute, use it directly; otherwise join with cwd
-    const fullPath = path.isAbsolute(dataDir)
-      ? path.join(dataDir, 'workflows.json')
-      : path.join(process.cwd(), dataDir, 'workflows.json');
+  console.log('[fetchWorkflowsManifest] cwd:', cwd);
+  console.log(
+    '[fetchWorkflowsManifest] WORKFLOW_MANIFEST_PATH from env:',
+    worldEnv.WORKFLOW_MANIFEST_PATH
+  );
 
-    const content = await fs.readFile(fullPath, 'utf-8');
-    const manifest = JSON.parse(content);
+  // Helper to resolve path (absolute or relative to cwd)
+  const resolvePath = (p: string) =>
+    path.isAbsolute(p) ? p : path.join(cwd, p);
 
-    return createResponse(manifest);
-  } catch (error) {
-    console.error('Failed to fetch workflows manifest:', error);
-    return {
-      success: false,
-      error: createServerActionError(error, 'fetchWorkflowsManifest', {}),
-    };
+  // Build list of paths to try, in priority order
+  const manifestPaths: string[] = [];
+
+  // 1. Explicit manifest path configuration (highest priority)
+  if (worldEnv.WORKFLOW_MANIFEST_PATH) {
+    manifestPaths.push(resolvePath(worldEnv.WORKFLOW_MANIFEST_PATH));
   }
+  if (process.env.WORKFLOW_MANIFEST_PATH) {
+    manifestPaths.push(resolvePath(process.env.WORKFLOW_MANIFEST_PATH));
+  }
+
+  // 2. Standard Next.js app router locations
+  manifestPaths.push(
+    path.join(cwd, 'app/.well-known/workflow/v1/manifest.json'),
+    path.join(cwd, 'src/app/.well-known/workflow/v1/manifest.json')
+  );
+
+  // 3. Legacy data directory locations
+  if (worldEnv.WORKFLOW_EMBEDDED_DATA_DIR) {
+    manifestPaths.push(
+      path.join(
+        resolvePath(worldEnv.WORKFLOW_EMBEDDED_DATA_DIR),
+        'manifest.json'
+      )
+    );
+  }
+  if (process.env.WORKFLOW_EMBEDDED_DATA_DIR) {
+    manifestPaths.push(
+      path.join(
+        resolvePath(process.env.WORKFLOW_EMBEDDED_DATA_DIR),
+        'manifest.json'
+      )
+    );
+  }
+
+  console.log('[fetchWorkflowsManifest] Trying paths:', manifestPaths);
+
+  // Try each path until we find the manifest
+  for (const manifestPath of manifestPaths) {
+    try {
+      const content = await fs.readFile(manifestPath, 'utf-8');
+      const manifest = JSON.parse(content);
+      const workflowCount = Object.keys(manifest.workflows || {}).reduce(
+        (acc, filePath) =>
+          acc + Object.keys(manifest.workflows[filePath] || {}).length,
+        0
+      );
+      console.log(
+        `[fetchWorkflowsManifest] Found manifest at: ${manifestPath} with ${workflowCount} workflows`
+      );
+      return createResponse(manifest);
+    } catch (err) {
+      console.log(
+        `[fetchWorkflowsManifest] Failed to read: ${manifestPath}`,
+        (err as Error).message
+      );
+      // Continue to next path
+    }
+  }
+
+  // If no manifest found, return an empty manifest
+  // This allows the UI to work without workflows graph data
+  console.log('[fetchWorkflowsManifest] No manifest found, returning empty');
+  return createResponse({
+    version: '1.0.0',
+    steps: {},
+    workflows: {},
+  });
 }

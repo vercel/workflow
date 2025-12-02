@@ -23,6 +23,7 @@ const configParsers = {
   dataDir: parseAsString.withDefault(
     DEFAULT_CONFIG.dataDir || './.next/workflow-data'
   ),
+  manifestPath: parseAsString,
 };
 
 // Create a serializer for config params
@@ -114,6 +115,7 @@ export const worldConfigToEnvMap = (config: WorldConfig): EnvMap => {
     WORKFLOW_VERCEL_TEAM: config.team,
     PORT: config.port,
     WORKFLOW_EMBEDDED_DATA_DIR: config.dataDir,
+    WORKFLOW_MANIFEST_PATH: config.manifestPath,
     // Postgres env vars
     WORKFLOW_POSTGRES_URL: config.postgresUrl,
   };

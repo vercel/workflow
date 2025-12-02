@@ -15,7 +15,7 @@ import { useEffect, useMemo } from 'react';
 import '@xyflow/react/dist/style.css';
 import { GitBranch, PlayCircle, StopCircle } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import type { WorkflowGraph } from '@/lib/workflow-graph-types';
+import type { GraphNode, WorkflowGraph } from '@/lib/workflow-graph-types';
 
 interface WorkflowGraphViewerProps {
   workflow: WorkflowGraph;
@@ -68,7 +68,7 @@ function getNodeIcon(nodeKind: string) {
 
 // Helper to calculate enhanced layout with control flow
 function calculateEnhancedLayout(workflow: WorkflowGraph): {
-  nodes: typeof workflow.nodes;
+  nodes: GraphNode[];
   additionalEdges: Array<{
     id: string;
     source: string;
@@ -77,7 +77,8 @@ function calculateEnhancedLayout(workflow: WorkflowGraph): {
     label?: string;
   }>;
 } {
-  const nodes = [...workflow.nodes];
+  // Clone nodes (positions are always provided by the manifest adapter)
+  const nodes: GraphNode[] = workflow.nodes.map((node) => ({ ...node }));
   const additionalEdges: Array<{
     id: string;
     source: string;
@@ -87,11 +88,11 @@ function calculateEnhancedLayout(workflow: WorkflowGraph): {
   }> = [];
 
   // Group nodes by their control flow context
-  const parallelGroups = new Map<string, typeof workflow.nodes>();
-  const loopNodes = new Map<string, typeof workflow.nodes>();
+  const parallelGroups = new Map<string, GraphNode[]>();
+  const loopNodes = new Map<string, GraphNode[]>();
   const conditionalGroups = new Map<
     string,
-    { thenBranch: typeof workflow.nodes; elseBranch: typeof workflow.nodes }
+    { thenBranch: GraphNode[]; elseBranch: GraphNode[] }
   >();
 
   for (const node of nodes) {

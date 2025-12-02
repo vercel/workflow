@@ -87,15 +87,11 @@ export function RunDetailView({
   const run = runData ?? ({} as WorkflowRun);
 
   // Find the workflow graph for this run
+  // The manifest is keyed by workflowId which matches run.workflowName
+  // e.g., "workflow//example/workflows/1_simple.ts//simple"
   const workflowGraph = useMemo(() => {
     if (!graphManifest || !run.workflowName) return null;
-
-    // Try to find by exact workflowName match first
-    const workflow = Object.values(graphManifest.workflows).find((w) =>
-      run.workflowName.includes(w.workflowName)
-    );
-
-    return workflow || null;
+    return graphManifest.workflows[run.workflowName] ?? null;
   }, [graphManifest, run.workflowName]);
 
   // Map run data to execution overlay

@@ -1,8 +1,7 @@
 'use server';
 
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { KNOWN_WORLDS, type KnownWorld } from './known-worlds';
 
 const require = createRequire(join(process.cwd(), 'index.js'));
@@ -15,6 +14,8 @@ export interface WorldConfig {
   team?: string;
   port?: string;
   dataDir?: string;
+  // Path to the workflow manifest file (defaults to app/.well-known/workflow/v1/manifest.json)
+  manifestPath?: string;
   // Postgres fields
   postgresUrl?: string;
 }
@@ -66,7 +67,17 @@ export async function checkWorldsAvailability(): Promise<WorldAvailability[]> {
   });
 }
 
-// Validate configuration and return errors if any
+export interface ValidationWarning {
+  field: string;
+  message: string;
+}
+
+export interface ValidationResult {
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+}
+
+// Validate configuration and return errors/warnings
 export async function validateWorldConfig(
   config: WorldConfig
 ): Promise<ValidationError[]> {
@@ -74,17 +85,6 @@ export async function validateWorldConfig(
   const backend = config.backend || 'embedded';
 
   if (backend === 'embedded') {
-    // Check if data directory exists
-    if (config.dataDir) {
-      const resolvedPath = resolve(config.dataDir);
-      if (!existsSync(resolvedPath)) {
-        errors.push({
-          field: 'dataDir',
-          message: `Data directory does not exist: ${resolvedPath}`,
-        });
-      }
-    }
-
     // Validate port if provided
     if (config.port) {
       const portNum = Number.parseInt(config.port, 10);
@@ -95,6 +95,8 @@ export async function validateWorldConfig(
         });
       }
     }
+    // Note: dataDir and manifestPath are optional and don't require validation
+    // The server action will try multiple paths and gracefully handle missing files
   }
 
   if (backend === 'postgres') {
