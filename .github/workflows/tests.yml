@@ -200,6 +200,10 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
 
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel Prod (${{ matrix.app.name }})" >> $GITHUB_STEP_SUMMARY || true
+
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
@@ -277,6 +281,10 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
 
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Dev (${{ matrix.app.name }})" >> $GITHUB_STEP_SUMMARY || true
+
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
@@ -334,6 +342,10 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
+
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Prod (${{ matrix.app.name }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
@@ -413,6 +425,10 @@ jobs:
           APP_NAME: ${{ matrix.app.name }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
 
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Postgres (${{ matrix.app.name }})" >> $GITHUB_STEP_SUMMARY || true
+
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
@@ -470,6 +486,11 @@ jobs:
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
+
+      - name: Generate E2E summary
+        if: always()
+        shell: bash
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Windows (nextjs-turbopack)" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
