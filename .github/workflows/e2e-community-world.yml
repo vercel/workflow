@@ -79,6 +79,10 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
 
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Tests (${{ inputs.world-name }})" >> $GITHUB_STEP_SUMMARY || true
+
       - name: Upload E2E results
         uses: actions/upload-artifact@v4
         if: always()
@@ -142,6 +146,10 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
 
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Tests (${{ inputs.world-name }})" >> $GITHUB_STEP_SUMMARY || true
+
       - name: Upload E2E results
         uses: actions/upload-artifact@v4
         if: always()
@@ -204,6 +212,10 @@ jobs:
           APP_NAME: ${{ inputs.app-name }}
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
+
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Tests (${{ inputs.world-name }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         uses: actions/upload-artifact@v4

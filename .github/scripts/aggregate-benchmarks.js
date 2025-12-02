@@ -240,9 +240,12 @@ function renderBenchmarkTable(
   baselineBenchData,
   apps,
   backends,
-  isStream
+  isStream,
+  { showHeading = true } = {}
 ) {
-  console.log(`## ${benchName}\n`);
+  if (showHeading) {
+    console.log(`## ${benchName}\n`);
+  }
 
   // Collect all data points (including missing ones) for all app/backend combinations
   const dataPoints = [];
@@ -294,17 +297,17 @@ function renderBenchmarkTable(
   // Render table - different columns for stream vs regular benchmarks
   if (isStream) {
     console.log(
-      '| World | Framework | Workflow Time | TTFB | Wall Time | Overhead | vs Fastest |'
+      '| World | Framework | Workflow Time | TTFB | Wall Time | Overhead | Samples | vs Fastest |'
     );
     console.log(
-      '|:------|:----------|--------------:|-----:|----------:|---------:|-----------:|'
+      '|:------|:----------|--------------:|-----:|----------:|---------:|--------:|-----------:|'
     );
   } else {
     console.log(
-      '| World | Framework | Workflow Time | Wall Time | Overhead | vs Fastest |'
+      '| World | Framework | Workflow Time | Wall Time | Overhead | Samples | vs Fastest |'
     );
     console.log(
-      '|:------|:----------|--------------:|----------:|---------:|-----------:|'
+      '|:------|:----------|--------------:|----------:|---------:|--------:|-----------:|'
     );
   }
 
@@ -319,11 +322,11 @@ function renderBenchmarkTable(
     if (!metrics) {
       if (isStream) {
         console.log(
-          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - | - |`
+          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - | - | - |`
         );
       } else {
         console.log(
-          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - |`
+          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - | - |`
         );
       }
       continue;
@@ -356,6 +359,9 @@ function renderBenchmarkTable(
       baseline?.firstByteTime
     );
 
+    // Format samples count
+    const samplesCount = metrics.samples ?? '-';
+
     const currentTime = metrics.workflowTime ?? metrics.wallTime;
     const factor = isFastest
       ? '1.00x'
@@ -363,11 +369,11 @@ function renderBenchmarkTable(
 
     if (isStream) {
       console.log(
-        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${firstByteSec}s${ttfbDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${firstByteSec}s${ttfbDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${samplesCount} | ${factor} |`
       );
     } else {
       console.log(
-        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${samplesCount} | ${factor} |`
       );
     }
   }
@@ -393,6 +399,10 @@ function renderComparison(data, baselineData) {
     );
   }
 
+  // Split backends into local dev and production
+  const localDevBackends = backends.filter((b) => b !== 'vercel');
+  const productionBackends = backends.filter((b) => b === 'vercel');
+
   // Separate benchmarks into regular and stream categories
   const regularBenchmarks = [];
   const streamBenchmarks = [];
@@ -405,8 +415,11 @@ function renderComparison(data, baselineData) {
     }
   }
 
-  // Render regular benchmarks first
-  if (regularBenchmarks.length > 0) {
+  // Helper to render a section (local dev or production)
+  const renderSection = (sectionBackends, isProduction) => {
+    if (sectionBackends.length === 0) return;
+
+    // Render regular benchmarks
     for (const [benchName, benchData] of regularBenchmarks) {
       const baselineBenchData = baselineData?.[benchName] || null;
       renderBenchmarkTable(
@@ -414,31 +427,49 @@ function renderComparison(data, baselineData) {
         benchData,
         baselineBenchData,
         apps,
-        backends,
+        sectionBackends,
         false
       );
     }
+
+    // Render stream benchmarks in a separate section
+    if (streamBenchmarks.length > 0) {
+      console.log('#### Stream Benchmarks\n');
+      console.log(
+        '_Stream benchmarks include Time to First Byte (TTFB) metrics._\n'
+      );
+
+      for (const [benchName, benchData] of streamBenchmarks) {
+        const baselineBenchData = baselineData?.[benchName] || null;
+        renderBenchmarkTable(
+          benchName,
+          benchData,
+          baselineBenchData,
+          apps,
+          sectionBackends,
+          true
+        );
+      }
+    }
+  };
+
+  // Render Local Development section
+  if (localDevBackends.length > 0) {
+    console.log('### 💻 Local Development\n');
+    console.log(
+      '_These benchmarks run against local development servers (localhost). Results reflect local machine performance._\n'
+    );
+    renderSection(localDevBackends, false);
   }
 
-  // Render stream benchmarks in a separate section
-  if (streamBenchmarks.length > 0) {
+  // Render Production section (Vercel)
+  if (productionBackends.length > 0) {
     console.log('---\n');
-    console.log('### Stream Benchmarks\n');
+    console.log('### ▲ Production (Vercel)\n');
     console.log(
-      '_Stream benchmarks include Time to First Byte (TTFB) metrics._\n'
+      '_These benchmarks run against deployed Vercel preview/production environments. Results reflect real-world production performance._\n'
     );
-
-    for (const [benchName, benchData] of streamBenchmarks) {
-      const baselineBenchData = baselineData?.[benchName] || null;
-      renderBenchmarkTable(
-        benchName,
-        benchData,
-        baselineBenchData,
-        apps,
-        backends,
-        true
-      );
-    }
+    renderSection(productionBackends, true);
   }
 
   // Summary: Count wins per framework (within each world) and per world (within each framework)
@@ -603,18 +634,19 @@ function renderComparison(data, baselineData) {
     '- **Wall Time**: Total testbench time (trigger workflow + poll for result)'
   );
   console.log('- **Overhead**: Testbench overhead (Wall Time - Workflow Time)');
+  console.log('- **Samples**: Number of benchmark iterations run');
   console.log(
     '- **vs Fastest**: How much slower compared to the fastest configuration for this benchmark'
   );
   console.log('');
   console.log('**Worlds:**');
-  console.log('- 💻 Local: In-memory filesystem world');
-  console.log('- 🐘 Postgres: PostgreSQL database world');
-  console.log('- ▲ Vercel: Vercel production world');
+  console.log('- 💻 Local: In-memory filesystem world (local development)');
+  console.log('- 🐘 Postgres: PostgreSQL database world (local development)');
+  console.log('- ▲ Vercel: Vercel production/preview deployment');
   // Add community worlds to legend
   for (const [id, config] of Object.entries(worldConfig)) {
     if (config.community) {
-      console.log(`- 🌐 ${config.label}: Community world`);
+      console.log(`- 🌐 ${config.label}: Community world (local development)`);
     }
   }
   console.log('</details>');
