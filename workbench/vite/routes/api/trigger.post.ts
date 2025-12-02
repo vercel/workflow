@@ -50,7 +50,7 @@ export default async ({ req, url }: { req: Request; url: URL }) => {
 
   try {
     const run = await start(workflow as any, args as any);
-    console.log('Run:', run);
+    console.log('Run:', run.runId);
     return Response.json(run);
   } catch (err) {
     console.error(`Failed to start!!`, err);

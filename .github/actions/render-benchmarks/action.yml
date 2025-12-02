@@ -1,0 +1,26 @@
+name: 'Render Benchmark Results'
+description: 'Renders vitest benchmark results as markdown in GitHub step summary'
+inputs:
+  benchmark-file:
+    description: 'Path to the vitest benchmark JSON output file'
+    required: true
+  app-name:
+    description: 'Name of the app being benchmarked'
+    required: true
+  backend:
+    description: 'World type (local, postgres, vercel)'
+    required: true
+  baseline-file:
+    description: 'Path to the baseline benchmark JSON file for comparison (optional)'
+    required: false
+runs:
+  using: 'composite'
+  steps:
+    - name: Render benchmark results
+      shell: bash
+      run: |
+        BASELINE_ARG=""
+        if [ -n "${{ inputs.baseline-file }}" ] && [ -f "${{ inputs.baseline-file }}" ]; then
+          BASELINE_ARG="--baseline ${{ inputs.baseline-file }}"
+        fi
+        node ${{ github.action_path }}/render.js "${{ inputs.benchmark-file }}" "${{ inputs.app-name }}" "${{ inputs.backend }}" $BASELINE_ARG >> $GITHUB_STEP_SUMMARY
