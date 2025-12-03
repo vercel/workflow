@@ -112,7 +112,7 @@ describe('e2e', () => {
 
   test('should work with react rendering in step', async () => {
     if (
-      !process.env.APP_NAME?.includes('nextjs') &&
+      !process.env.APP_NAME?.includes('nextjs') ||
       !deploymentUrl.includes('vercel')
     ) {
       // only works with framework that transpiles react and
