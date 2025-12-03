@@ -25,11 +25,10 @@ function parseName(
   const filename = path.split('/').at(-1) ?? '';
   const fileNameWithoutExtension = filename.split('.').at(0) ?? '';
 
-  // Default exports or malformed names will use the file name as the short name
-  // "__default" was only used for one package version, so this is a minor backwards
-  // compatibility fix.
+  // Default exports will use the file name as the short name. "__default" was only
+  // used for one package version, so this is a minor backwards compatibility fix.
   if (
-    ['default', '__default', ''].includes(shortName) &&
+    ['default', '__default'].includes(shortName) &&
     fileNameWithoutExtension
   ) {
     shortName = fileNameWithoutExtension;
