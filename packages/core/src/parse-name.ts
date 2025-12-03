@@ -26,7 +26,10 @@ function parseName(
   const fileNameWithoutExtension = filename.split('.').at(0) ?? '';
 
   // Default exports will use the file name as the short name
-  if (shortName === '__default' && fileNameWithoutExtension) {
+  if (
+    ['default', '__default'].includes(shortName) &&
+    fileNameWithoutExtension
+  ) {
     shortName = fileNameWithoutExtension;
   }
 
