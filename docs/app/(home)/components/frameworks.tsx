@@ -23,6 +23,21 @@ export const Express = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
+export const Fastify = (props: ComponentProps<'svg'>) => (
+  <svg
+    viewBox="0 0 1000 1000"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <title>Fastify</title>
+    <path
+      d="M899.63,302.72l26.72-69.21-1.15-4.28L660.86,298.88C689,258.1,679.35,225.4,679.35,225.4s-84.41,53.91-148.26,52.49-84.41-18.44-182.31,12.77-125.56,127-153.93,147.55-117.4,87.61-117.4,87.61l.19,1.2,80.26-25.56s-22,20.75-68.77,83.77c0,0-.82-.75-2.18-2l.07.43s37.6,57.46,74.49,46.82A73.31,73.31,0,0,0,174,625.29c14.85,8.27,34.24,16.4,55.65,18.64a343.88,343.88,0,0,1-26.58-36l10-6.51-1.56,1.12,30.57,11.22L238.68,585l.3-.19,30,11-3.74-26.13c3.8-2,7.61-3.87,11.4-5.63L308,445.66l129.46-88.32-10.28,25.89C400.92,447.79,351.62,463,351.62,463l-20.57,7.8c-15.31,18.09-21.74,22.54-27,83.25,12.33-3.11,24.12-3.83,34.8-1,55.33,14.9,74.49,81.58,59.59,100-3.73,4.62-12.61,12.52-23.82,21.77H352.17l-.29,18.19-2.31,1.8H326.73l-.29,17.75c-2,1.54-4,3.05-6,4.52-21.47.45-48.65-18.27-48.65-18.27,0,17,14.19,43.27,14.19,43.27l2.51-1.22-2.15,1.57s57.46,38.31,93.63,24.12C412.17,754,495.44,688.37,567.33,657.3L784.87,600l28.69-74.31L647.78,569.35V502.59l194.47-51.24L870.94,377l-223.16,58.8V369.08ZM504.81,444.19l51.62-13.6.69,2.59L541,474.9,487.52,489Zm17.82,89.3-53.5,14.1,17.29-44.81L538,489.18l.69,2.59Zm69.71-15-53.51,14.1,17.3-44.8,51.62-13.61.69,2.59Z"
+      fill="black"
+    />
+  </svg>
+);
+
 export const AstroDark = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 85 107"
@@ -179,8 +194,8 @@ export const Vite = (props: ComponentProps<'svg'>) => (
         y2="344"
         gradientUnits="userSpaceOnUse"
       >
-        <stop stop-color="#41D1FF" />
-        <stop offset="1" stop-color="#BD34FE" />
+        <stop stopColor="#41D1FF" />
+        <stop offset="1" stopColor="#BD34FE" />
       </linearGradient>
       <linearGradient
         id="paint1_linear_16_2"
@@ -190,9 +205,9 @@ export const Vite = (props: ComponentProps<'svg'>) => (
         y2="292.989"
         gradientUnits="userSpaceOnUse"
       >
-        <stop stop-color="#FFEA83" />
-        <stop offset="0.0833333" stop-color="#FFDD35" />
-        <stop offset="1" stop-color="#FFA800" />
+        <stop stopColor="#FFEA83" />
+        <stop offset="0.0833333" stopColor="#FFDD35" />
+        <stop offset="1" stopColor="#FFA800" />
       </linearGradient>
     </defs>
   </svg>
@@ -731,6 +746,10 @@ export const Frameworks = () => {
             <Express className="size-[64px] dark:invert relative z-10" />
             <Express className="size-[72px] absolute top-0 left-0 opacity-10 blur-md dark:invert" />
           </Link>
+          <Link href="/docs/getting-started/fastify">
+            <Fastify className="size-[64px] dark:invert" />
+            <Fastify className="size-[72px] absolute top-0 left-0 opacity-10 blur-md dark:invert" />
+          </Link>
           <Link
             href="/docs/getting-started/hono"
             className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
@@ -783,9 +802,28 @@ export const Frameworks = () => {
               <TanStack className="size-[56px] absolute inset-0 opacity-0 transition-all duration-200 group-hover:opacity-100 dark:invert ease-out" />
             </div>
           </div>
-          <p className="text-xs text-muted-foreground w-full mt-2.5">
-            Click a framework to request support for it
-          </p>
+        </div>
+        <div
+          className="group relative cursor-pointer size-[48px]"
+          onClick={() => handleRequest('NestJS')}
+        >
+          <NestGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
+          <Nest className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100" />
+        </div>
+        <div
+          className="group relative cursor-pointer size-[48px]"
+          onClick={() => handleRequest('TanStack')}
+        >
+          <TanStackGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
+          <TanStack className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100 dark:invert" />
+        </div>
+        <div
+          className="group relative cursor-pointer size-[48px]"
+          onClick={() => handleRequest('Astro')}
+        >
+          <AstroGray className="size-[48px] opacity-70 transition-all duration-200 group-hover:opacity-0 group-hover:scale-95" />
+          <AstroDark className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100 hidden dark:block" />
+          <AstroLight className="size-[48px] absolute inset-0 opacity-0 scale-95 transition-all duration-200 group-hover:opacity-100 group-hover:scale-100 dark:hidden" />
         </div>
       </div>
     </div>

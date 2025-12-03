@@ -74,6 +74,26 @@ import type { DurableAgentStreamOptions } from "@workflow/ai/agent";
 export default DurableAgentStreamOptions;`}
 />
 
+### PrepareStepInfo
+
+Information passed to the `prepareStep` callback:
+
+<TSDoc
+definition={`
+import type { PrepareStepInfo } from "@workflow/ai/agent";
+export default PrepareStepInfo;`}
+/>
+
+### PrepareStepResult
+
+Return type from the `prepareStep` callback:
+
+<TSDoc
+definition={`
+import type { PrepareStepResult } from "@workflow/ai/agent";
+export default PrepareStepResult;`}
+/>
+
 ## Key Features
 
 - **Durable Execution**: Agents can be interrupted and resumed without losing state
@@ -87,6 +107,7 @@ export default DurableAgentStreamOptions;`}
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
 - The agent processes tool calls iteratively until completion
 - The `stream()` method returns `{ messages }` containing the full conversation history, including initial messages, assistant responses, and tool results
+- The `prepareStep` callback runs before each step and can modify the model or messages dynamically
 
 ## Examples
 
@@ -300,8 +321,104 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
 }
 ```
 
+### Dynamic Context with prepareStep
+
+Use `prepareStep` to modify settings before each step in the agent loop:
+
+```typescript
+import { DurableAgent } from '@workflow/ai/agent';
+import { getWritable } from 'workflow';
+import type { UIMessageChunk } from 'ai';
+
+async function agentWithPrepareStep(userMessage: string) {
+  'use workflow';
+
+  const agent = new DurableAgent({
+    model: 'openai/gpt-4.1-mini', // Default model
+    system: 'You are a helpful assistant.',
+  });
+
+  await agent.stream({
+    messages: [{ role: 'user', content: userMessage }],
+    writable: getWritable<UIMessageChunk>(),
+    prepareStep: async ({ stepNumber, messages }) => {
+      // Switch to a stronger model for complex reasoning after initial steps
+      if (stepNumber > 2 && messages.length > 10) {
+        return {
+          model: 'anthropic/claude-sonnet-4.5',
+        };
+      }
+
+      // Trim context if messages grow too large
+      if (messages.length > 20) {
+        return {
+          messages: [
+            messages[0], // Keep system message
+            ...messages.slice(-10), // Keep last 10 messages
+          ],
+        };
+      }
+
+      return {}; // No changes
+    },
+  });
+}
+```
+
+### Message Injection with prepareStep
+
+Inject messages from external sources (like hooks) before each LLM call:
+
+```typescript
+import { DurableAgent } from '@workflow/ai/agent';
+import { getWritable, defineHook } from 'workflow';
+import type { UIMessageChunk } from 'ai';
+
+const messageHook = defineHook<{ message: string }>();
+
+async function agentWithMessageQueue(initialMessage: string) {
+  'use workflow';
+
+  const messageQueue: Array<{ role: 'user'; content: string }> = [];
+
+  // Listen for incoming messages via hook
+  const hook = messageHook.create();
+  hook.then(({ message }) => {
+    messageQueue.push({ role: 'user', content: message });
+  });
+
+  const agent = new DurableAgent({
+    model: 'anthropic/claude-haiku-4.5',
+    system: 'You are a helpful assistant.',
+  });
+
+  await agent.stream({
+    messages: [{ role: 'user', content: initialMessage }],
+    writable: getWritable<UIMessageChunk>(),
+    prepareStep: ({ messages }) => {
+      // Inject queued messages before the next step
+      if (messageQueue.length > 0) {
+        const newMessages = messageQueue.splice(0);
+        return {
+          messages: [
+            ...messages,
+            ...newMessages.map(m => ({
+              role: m.role,
+              content: [{ type: 'text' as const, text: m.content }],
+            })),
+          ],
+        };
+      }
+      return {};
+    },
+  });
+}
+```
+
 ## See Also
 
+- [Building Durable AI Agents](/docs/ai) - Complete guide to creating durable agents
+- [Queueing User Messages](/docs/ai/message-queueing) - Using prepareStep for message injection
 - [WorkflowChatTransport](/docs/api-reference/workflow-ai/workflow-chat-transport) - Transport layer for AI SDK streams
 - [Workflows and Steps](/docs/foundations/workflows-and-steps) - Understanding workflow fundamentals
-- [AI SDK Documentation](https://ai-sdk.dev/docs) - AI SDK documentation reference
+- [AI SDK Loop Control](https://ai-sdk.dev/docs/agents/loop-control) - AI SDK's agent loop control patterns

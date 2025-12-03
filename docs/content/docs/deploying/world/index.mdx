@@ -31,5 +31,13 @@ Workflow DevKit provides two built-in world implementations:
 
 ## Community Worlds
 
+> These worlds are maintained by the community and tested in CI. See the [worlds-manifest.json](https://github.com/vercel/workflow/blob/main/worlds-manifest.json) for configuration details.
+
+- [Turso](https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/turso) (`@workflow-worlds/turso`) - Turso/libSQL World for embedded or remote SQLite databases
+- [MongoDB](https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/mongodb) (`@workflow-worlds/mongodb`) - MongoDB World using native driver
+- [Redis](https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/redis) (`@workflow-worlds/redis`) - Redis World using BullMQ for queues, Redis Streams for output
+
+### Other Community Worlds
+
 - [Postgres World](/docs/deploying/world/postgres-world) - Reference implementation for a multi-host PostgreSQL backend world.
 - [Jazz World](https://github.com/garden-co/workflow-world-jazz) - A full World implementation built on top of [Jazz](https://jazz.tools)

@@ -17,12 +17,34 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-// World display config
+// World display config - built-in worlds
 const worldConfig = {
   local: { emoji: '💻', label: 'Local' },
   postgres: { emoji: '🐘', label: 'Postgres' },
   vercel: { emoji: '▲', label: 'Vercel' },
 };
+
+// Load community worlds from manifest and add to worldConfig
+const worldsManifestPath = path.join(__dirname, '../../worlds-manifest.json');
+if (fs.existsSync(worldsManifestPath)) {
+  try {
+    const worldsManifest = JSON.parse(
+      fs.readFileSync(worldsManifestPath, 'utf-8')
+    );
+    for (const world of worldsManifest.worlds || []) {
+      // Only add community worlds (official ones are already defined above)
+      if (world.type === 'community') {
+        worldConfig[world.id] = {
+          emoji: '🌐',
+          label: world.name,
+          community: true,
+        };
+      }
+    }
+  } catch (e) {
+    console.error(`Warning: Could not load worlds manifest: ${e.message}`);
+  }
+}
 
 // Framework display config
 const frameworkConfig = {
@@ -201,7 +223,9 @@ function getAppsAndBackends(data) {
 function isStreamBenchmark(benchData, apps, backends) {
   for (const app of apps) {
     for (const backend of backends) {
-      if (benchData[app]?.[backend]?.firstByteTime !== null) {
+      const firstByteTime = benchData[app]?.[backend]?.firstByteTime;
+      // Must be a number (not null or undefined) to be a stream benchmark
+      if (typeof firstByteTime === 'number') {
         return true;
       }
     }
@@ -216,15 +240,24 @@ function renderBenchmarkTable(
   baselineBenchData,
   apps,
   backends,
-  isStream
+  isStream,
+  { showHeading = true } = {}
 ) {
-  console.log(`## ${benchName}\n`);
+  if (showHeading) {
+    console.log(`## ${benchName}\n`);
+  }
 
   // Collect all data points (including missing ones) for all app/backend combinations
   const dataPoints = [];
   const validDataPoints = [];
   for (const app of apps) {
     for (const backend of backends) {
+      // Skip community worlds for non-nextjs-turbopack frameworks (we only test them with nextjs-turbopack)
+      const isCommunityWorld = worldConfig[backend]?.community === true;
+      if (isCommunityWorld && app !== 'nextjs-turbopack') {
+        continue;
+      }
+
       const metrics = benchData[app]?.[backend];
       const baseline = baselineBenchData?.[app]?.[backend] || null;
       const dataPoint = { app, backend, metrics: metrics || null, baseline };
@@ -264,17 +297,17 @@ function renderBenchmarkTable(
   // Render table - different columns for stream vs regular benchmarks
   if (isStream) {
     console.log(
-      '| World | Framework | Workflow Time | TTFB | Wall Time | Overhead | vs Fastest |'
+      '| World | Framework | Workflow Time | TTFB | Wall Time | Overhead | Samples | vs Fastest |'
     );
     console.log(
-      '|:------|:----------|--------------:|-----:|----------:|---------:|-----------:|'
+      '|:------|:----------|--------------:|-----:|----------:|---------:|--------:|-----------:|'
     );
   } else {
     console.log(
-      '| World | Framework | Workflow Time | Wall Time | Overhead | vs Fastest |'
+      '| World | Framework | Workflow Time | Wall Time | Overhead | Samples | vs Fastest |'
     );
     console.log(
-      '|:------|:----------|--------------:|----------:|---------:|-----------:|'
+      '|:------|:----------|--------------:|----------:|---------:|--------:|-----------:|'
     );
   }
 
@@ -289,11 +322,11 @@ function renderBenchmarkTable(
     if (!metrics) {
       if (isStream) {
         console.log(
-          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - | - |`
+          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - | - | - |`
         );
       } else {
         console.log(
-          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - |`
+          `| ${worldInfo.emoji} ${worldInfo.label} | ${frameworkInfo.label} | ⚠️ _missing_ | - | - | - | - |`
         );
       }
       continue;
@@ -326,6 +359,9 @@ function renderBenchmarkTable(
       baseline?.firstByteTime
     );
 
+    // Format samples count
+    const samplesCount = metrics.samples ?? '-';
+
     const currentTime = metrics.workflowTime ?? metrics.wallTime;
     const factor = isFastest
       ? '1.00x'
@@ -333,11 +369,11 @@ function renderBenchmarkTable(
 
     if (isStream) {
       console.log(
-        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${firstByteSec}s${ttfbDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${firstByteSec}s${ttfbDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${samplesCount} | ${factor} |`
       );
     } else {
       console.log(
-        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${samplesCount} | ${factor} |`
       );
     }
   }
@@ -363,6 +399,10 @@ function renderComparison(data, baselineData) {
     );
   }
 
+  // Split backends into local dev and production
+  const localDevBackends = backends.filter((b) => b !== 'vercel');
+  const productionBackends = backends.filter((b) => b === 'vercel');
+
   // Separate benchmarks into regular and stream categories
   const regularBenchmarks = [];
   const streamBenchmarks = [];
@@ -375,39 +415,56 @@ function renderComparison(data, baselineData) {
     }
   }
 
-  // Render regular benchmarks first
-  if (regularBenchmarks.length > 0) {
-    for (const [benchName, benchData] of regularBenchmarks) {
-      const baselineBenchData = baselineData?.[benchName] || null;
+  // Helper to render both local dev and production tables for a benchmark
+  const renderBenchmarkWithEnvironments = (benchName, benchData, isStream) => {
+    const baselineBenchData = baselineData?.[benchName] || null;
+
+    console.log(`## ${benchName}\n`);
+
+    // Render Local Development table
+    if (localDevBackends.length > 0) {
+      console.log('#### 💻 Local Development\n');
       renderBenchmarkTable(
         benchName,
         benchData,
         baselineBenchData,
         apps,
-        backends,
-        false
+        localDevBackends,
+        isStream,
+        { showHeading: false }
       );
     }
+
+    // Render Production table
+    if (productionBackends.length > 0) {
+      console.log('#### ▲ Production (Vercel)\n');
+      renderBenchmarkTable(
+        benchName,
+        benchData,
+        baselineBenchData,
+        apps,
+        productionBackends,
+        isStream,
+        { showHeading: false }
+      );
+    }
+  };
+
+  // Render regular benchmarks
+  for (const [benchName, benchData] of regularBenchmarks) {
+    renderBenchmarkWithEnvironments(benchName, benchData, false);
   }
 
   // Render stream benchmarks in a separate section
   if (streamBenchmarks.length > 0) {
     console.log('---\n');
-    console.log('### Stream Benchmarks\n');
+    console.log('## Stream Benchmarks\n');
     console.log(
       '_Stream benchmarks include Time to First Byte (TTFB) metrics._\n'
     );
 
     for (const [benchName, benchData] of streamBenchmarks) {
-      const baselineBenchData = baselineData?.[benchName] || null;
-      renderBenchmarkTable(
-        benchName,
-        benchData,
-        baselineBenchData,
-        apps,
-        backends,
-        true
-      );
+      renderBenchmarkWithEnvironments(benchName, benchData, true);
     }
   }
 
@@ -424,6 +481,12 @@ function renderComparison(data, baselineData) {
     for (const backend of backends) {
       let fastestApp = null;
       let fastestTime = Infinity;
+
+      // Skip community worlds in framework comparison (they only run against nextjs-turbopack)
+      const isCommunityWorld = worldConfig[backend]?.community === true;
+      if (isCommunityWorld) {
+        continue;
+      }
 
       for (const app of apps) {
         const metrics = benchData[app]?.[backend];
@@ -451,6 +514,12 @@ function renderComparison(data, baselineData) {
       let fastestTime = Infinity;
 
       for (const backend of backends) {
+        // Skip community worlds for non-nextjs-turbopack frameworks
+        const isCommunityWorld = worldConfig[backend]?.community === true;
+        if (isCommunityWorld && app !== 'nextjs-turbopack') {
+          continue;
+        }
+
         const metrics = benchData[app]?.[backend];
         if (metrics) {
           const time = metrics.workflowTime ?? metrics.wallTime;
@@ -479,6 +548,13 @@ function renderComparison(data, baselineData) {
   console.log('|:------|:---------------------|-----:|');
 
   for (const backend of backends) {
+    // Skip community worlds in "Fastest Framework by World" summary
+    // (they only run against nextjs-turbopack, so framework comparison doesn't apply)
+    const isCommunityWorld = worldConfig[backend]?.community === true;
+    if (isCommunityWorld) {
+      continue;
+    }
+
     const worldInfo = worldConfig[backend] || { emoji: '', label: backend };
     const frameworkWins = frameworkWinsByWorld[backend] || {};
 
@@ -554,14 +630,21 @@ function renderComparison(data, baselineData) {
     '- **Wall Time**: Total testbench time (trigger workflow + poll for result)'
   );
   console.log('- **Overhead**: Testbench overhead (Wall Time - Workflow Time)');
+  console.log('- **Samples**: Number of benchmark iterations run');
   console.log(
     '- **vs Fastest**: How much slower compared to the fastest configuration for this benchmark'
   );
   console.log('');
   console.log('**Worlds:**');
-  console.log('- 💻 Local: In-memory filesystem world');
-  console.log('- 🐘 Postgres: PostgreSQL database world');
-  console.log('- ▲ Vercel: Vercel production world');
+  console.log('- 💻 Local: In-memory filesystem world (local development)');
+  console.log('- 🐘 Postgres: PostgreSQL database world (local development)');
+  console.log('- ▲ Vercel: Vercel production/preview deployment');
+  // Add community worlds to legend
+  for (const [id, config] of Object.entries(worldConfig)) {
+    if (config.community) {
+      console.log(`- 🌐 ${config.label}: Community world (local development)`);
+    }
+  }
   console.log('</details>');
 }
 

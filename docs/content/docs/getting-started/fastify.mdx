@@ -1,0 +1,247 @@
+---
+title: Fastify
+---
+
+This guide will walk through setting up your first workflow in a Fastify app. Along the way, you'll learn more about the concepts that are fundamental to using the development kit in your own projects.
+
+---
+
+<Steps>
+
+<Step>
+## Create Your Fastify Project
+
+Start by creating a new Fastify project.
+
+```bash
+mkdir my-workflow-app
+```
+
+Enter the newly made directory:
+
+```bash
+cd my-workflow-app
+```
+
+Initialize the project:
+
+```bash
+npm init --y
+```
+
+### Install `workflow`, `fastify` and `nitro`
+
+```package-install
+npm i workflow fastify nitro rollup
+```
+
+<Callout>
+By default, Fastify doesn't include a build system. Nitro adds one which enables compiling workflows, runs, and deploys for development and production. Learn more about [Nitro](https://v3.nitro.build).
+</Callout>
+
+If using TypeScript, you need to install the `@types/node` and `typescript` packages
+
+```bash
+npm i -D @types/node typescript
+```
+
+### Configure Nitro
+
+Create a new file `nitro.config.ts` for your Nitro configuration with module `workflow/nitro`. This enables usage of the `"use workflow"` and `"use step"` directives
+
+```typescript title="nitro.config.ts" lineNumbers
+import { defineNitroConfig } from "nitro/config";
+
+export default defineNitroConfig({
+	modules: ["workflow/nitro"],
+	vercel: { entryFormat: "node" },
+	routes: {
+		"/**": { handler: "./src/index.ts", format: "node" },
+	},
+});
+```
+
+<Accordion type="single" collapsible>
+  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
+    <AccordionTrigger className="[&_p]:my-0 text-lg [&_p]:text-foreground">
+      Setup IntelliSense for TypeScript (Optional)
+    </AccordionTrigger>
+    <AccordionContent className="[&_p]:my-2">
+To enable helpful hints in your IDE, set up the workflow plugin in `tsconfig.json`:
+
+```json title="tsconfig.json" lineNumbers
+{
+  "compilerOptions": {
+    // ... rest of your TypeScript config
+    "plugins": [
+      {
+        "name": "workflow" // [!code highlight]
+      }
+    ]
+  }
+}
+```
+
+    </AccordionContent>
+  </AccordionItem>
+</Accordion>
+
+### Update `package.json`
+
+To use the Nitro builder, update your `package.json` to include the following scripts:
+
+```json title="package.json" lineNumbers
+{
+  // ...
+  "scripts": {
+    "dev": "nitro dev",
+    "build": "nitro build"
+  },
+  // ...
+}
+```
+
+</Step>
+
+<Step>
+
+## Create Your First Workflow
+
+Create a new file for our first workflow:
+
+```typescript title="workflows/user-signup.ts" lineNumbers
+import { sleep } from "workflow";
+
+export async function handleUserSignup(email: string) {
+  "use workflow"; // [!code highlight]
+
+  const user = await createUser(email);
+  await sendWelcomeEmail(user);
+
+  await sleep("5s"); // Pause for 5s - doesn't consume any resources
+  await sendOnboardingEmail(user);
+
+  return { userId: user.id, status: "onboarded" };
+}
+```
+
+We'll fill in those functions next, but let's take a look at this code:
+
+- We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
+- The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
+## Create Your Workflow Steps
+
+Let's now define those missing functions:
+```typescript title="workflows/user-signup.ts" lineNumbers
+import { FatalError } from "workflow";
+
+// Our workflow function defined earlier
+
+async function createUser(email: string) {
+  "use step"; // [!code highlight]
+  console.log(`Creating user with email: ${email}`);
+  return { id: crypto.randomUUID(), email };
+}
+
+async function sendWelcomeEmail(user: { id: string; email: string }) {
+  "use step"; // [!code highlight]
+  console.log(`Sending welcome email to user: ${user.id}`);
+  if (Math.random() < 0.3) {
+    // Steps retry on unhandled errors
+    throw new Error("Retryable!");
+  }
+}
+
+async function sendOnboardingEmail(user: { id: string; email: string }) {
+  "use step"; // [!code highlight]
+  if (!user.email.includes("@")) {
+    // FatalError skips retries
+    throw new FatalError("Invalid Email");
+  }
+  console.log(`Sending onboarding email to user: ${user.id}`);
+}
+```
+Taking a look at this code:
+
+- Business logic lives inside **steps**. When a step is invoked inside a **workflow**, it gets enqueued to run on a separate request while the workflow is suspended, just like `sleep`.
+- If a step throws an error, like in `sendWelcomeEmail`, the step will automatically be retried until it succeeds (or hits the step's max retry count).
+- Steps can throw a `FatalError` if an error is intentional and should not be retried.
+
+<Callout>
+  We'll dive deeper into workflows, steps, and other ways to suspend or handle
+  events in [Foundations](/docs/foundations).
+</Callout>
+</Step>
+
+<Step>
+
+## Create Your Route Handler
+
+To invoke your new workflow, we'll create both the Fastify app and a new API route handler at `src/index.ts` with the following code:
+
+```typescript title="src/index.ts"
+import Fastify from "fastify";
+import { start } from "workflow/api";
+import { handleUserSignup } from "../workflows/user-signup.js";
+
+const app = Fastify({ logger: true });
+app.post("/api/signup", async (req, reply) => {
+  const { email } = req.body as { email: string };
+  await start(handleUserSignup, [email]);
+  return reply.send({ message: "User signup workflow started" });
+});
+
+// Wait for Fastify to be ready before handling requests
+await app.ready();
+
+
+export default (req: any, res: any) => {
+  app.server.emit("request", req, res);
+};
+```
+This route handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.
+</Step>
+
+<Step>
+
+## Run in development
+
+To start your development server, run the following command in your terminal in the Fastify root directory:
+
+```bash
+npm run dev
+```
+
+Once your development server is running, you can trigger your workflow by running this command in the terminal:
+
+```bash
+curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/signup
+```
+
+Check the Fastify development server logs to see your workflow execute as well as the steps that are being processed.
+
+Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
+
+```bash
+npx workflow inspect runs # add '--web' for an interactive Web based UI
+```
+
+<img src="/o11y-ui.png" alt="Workflow DevKit Web UI" />
+
+</Step>
+
+</Steps>
+
+---
+
+## Deploying to production
+
+Workflow DevKit apps currently work best when deployed to [Vercel](https://vercel.com/home) and needs no special configuration.
+
+Check the [Deploying](/docs/deploying) section to learn how your workflows can be deployed elsewhere.
+
+## Next Steps
+
+- Learn more about the [Foundations](/docs/foundations).
+- Check [Errors](/docs/errors) if you encounter issues.
+- Explore the [API Reference](/docs/api-reference).
