@@ -1,5 +1,11 @@
 # @workflow/astro
 
+## 4.0.0-beta.5
+
+### Patch Changes
+
+- @workflow/builders@4.0.1-beta.22
+
 ## 4.0.0-beta.4
 
 ### Patch Changes

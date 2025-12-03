@@ -1,5 +1,13 @@
 # @workflow/next
 
+## 4.0.1-beta.26
+
+### Patch Changes
+
+- 1112901: Stop reading server externals internal list
+  - @workflow/core@4.0.1-beta.23
+  - @workflow/builders@4.0.1-beta.22
+
 ## 4.0.1-beta.25
 
 ### Patch Changes
