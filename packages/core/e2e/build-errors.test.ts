@@ -170,4 +170,84 @@ export async function blobViolationWorkflow() {
       );
     }
   );
+
+  test(
+    'should show helpful error when using Bun module in workflow',
+    { timeout: 120_000 },
+    async () => {
+      const appName = process.env.APP_NAME ?? 'nextjs-turbopack';
+      const appPath = getWorkbenchAppPath(appName);
+
+      // Bun modules should show a different error message than Node.js modules
+      const badWorkflowContent = `
+import { serve } from 'bun';
+
+export async function bunViolationWorkflow() {
+  'use workflow';
+  const server = serve({ port: 3000, fetch: () => new Response('ok') });
+  return server.port;
+}
+`;
+
+      const { buildError, output } = await setupAndBuild(
+        appPath,
+        'test_bun_violation.ts',
+        badWorkflowContent
+      );
+
+      // The build should have failed
+      expect(buildError).not.toBeNull();
+
+      // Verify the error message mentions Bun specifically
+      expect(output).toContain(
+        'You are attempting to use "bun" which is a Bun module.'
+      );
+
+      // Verify the location information is present
+      expect(output).toContain('test_bun_violation.ts');
+
+      // Verify the suggestion is present
+      expect(output).toContain('Move this function into a step function');
+    }
+  );
+
+  test(
+    'should report all violations when multiple Node.js modules are used',
+    { timeout: 120_000 },
+    async () => {
+      const appName = process.env.APP_NAME ?? 'nextjs-turbopack';
+      const appPath = getWorkbenchAppPath(appName);
+
+      // Using multiple Node.js modules should report errors for all of them
+      const badWorkflowContent = `
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { createHash } from 'crypto';
+
+export async function multipleViolationsWorkflow() {
+  'use workflow';
+  const content = readFileSync(join('/', 'package.json'), 'utf8');
+  const hash = createHash('sha256').update(content).digest('hex');
+  return hash;
+}
+`;
+
+      const { buildError, output } = await setupAndBuild(
+        appPath,
+        'test_multiple_violations.ts',
+        badWorkflowContent
+      );
+
+      // The build should have failed
+      expect(buildError).not.toBeNull();
+
+      // Verify all three violations are reported
+      expect(output).toContain('"fs" which is a Node.js module');
+      expect(output).toContain('"path" which is a Node.js module');
+      expect(output).toContain('"crypto" which is a Node.js module');
+
+      // Verify the location information is present for our file
+      expect(output).toContain('test_multiple_violations.ts');
+    }
+  );
 });
