@@ -10,6 +10,7 @@
     "postinstall": "fumadocs-mdx",
     "postbuild": "node scripts/pack.ts",
     "lint": "biome check",
+    "lint:links": "bun ./scripts/lint.ts",
     "format": "biome format --write"
   },
   "dependencies": {

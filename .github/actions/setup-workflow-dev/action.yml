@@ -1,0 +1,58 @@
+name: 'Setup Workflow Dev Environment'
+description: 'Setup Node.js, pnpm, and optionally Rust for Workflow development. Note: Checkout must be done before calling this action.'
+
+inputs:
+  node-version:
+    description: 'Node.js version to use'
+    required: false
+    default: '22.x'
+  pnpm-version:
+    description: 'pnpm version to use'
+    required: false
+    default: '10.14.0'
+  setup-rust:
+    description: 'Whether to setup Rust toolchain'
+    required: false
+    default: 'false'
+  install-dependencies:
+    description: 'Whether to install dependencies'
+    required: false
+    default: 'true'
+  install-args:
+    description: 'Additional arguments for pnpm install (e.g., --ignore-scripts)'
+    required: false
+    default: ''
+  build-packages:
+    description: 'Whether to build packages (excludes workbenches)'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Rust
+      if: ${{ inputs.setup-rust == 'true' }}
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v3
+      with:
+        version: ${{ inputs.pnpm-version }}
+
+    - name: Setup Node.js ${{ inputs.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: 'pnpm'
+
+    - name: Install Dependencies
+      if: ${{ inputs.install-dependencies == 'true' }}
+      shell: bash
+      run: pnpm install --frozen-lockfile ${{ inputs.install-args }}
+
+    - name: Build all packages
+      if: ${{ inputs.build-packages == 'true' }}
+      shell: bash
+      run: pnpm turbo run build --filter='!./workbench/*'
