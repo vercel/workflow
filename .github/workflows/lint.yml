@@ -38,3 +38,6 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate docs links
+        run: bun ./scripts/lint.ts
+        working-directory: docs
