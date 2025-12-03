@@ -119,9 +119,9 @@ export function Chat({ initialMessages }) {
 
 </Tabs>
 
-In this pattern, the client owns conversation state, with the latest turn managed by the AI SDK's `useChat`, and past turns persisted to the backend. The current turn is either managed through the workflow by a resumable stream (see [Resumable Streams](/guides/ai/resumable-streams)), or a hook into `useChat` persists every new message to the backend, as messages come in.
+In this pattern, the client owns conversation state, with the latest turn managed by the AI SDK's `useChat`, and past turns persisted to the backend. The current turn is either managed through the workflow by a resumable stream (see [Resumable Streams](/docs/ai/resumable-streams)), or a hook into `useChat` persists every new message to the backend, as messages come in.
 
-This is the pattern used in the [Building Durable AI Agents](/guides/ai) guide.
+This is the pattern used in the [Building Durable AI Agents](/docs/ai) guide.
 
 ## Multi-Turn Workflows
 
@@ -394,7 +394,7 @@ export async function POST(
 
 ## Related Documentation
 
-- [Building Durable AI Agents](/guides/ai) - Foundation guide for durable agents
-- [Message Queueing](/guides/ai/message-queueing) - Queueing messages during tool execution
+- [Building Durable AI Agents](/docs/ai) - Foundation guide for durable agents
+- [Message Queueing](/docs/ai/message-queueing) - Queueing messages during tool execution
 - [`defineHook()` API Reference](/docs/api-reference/workflow/define-hook) - Hook configuration options
 - [`DurableAgent` API Reference](/docs/api-reference/workflow-ai/durable-agent) - Full API documentation

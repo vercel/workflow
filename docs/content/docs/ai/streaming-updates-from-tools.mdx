@@ -2,7 +2,7 @@
 title: Streaming Updates from Tools
 ---
 
-After [building a durable AI agent](/guides/ai), we already get UI message chunks for displaying tool invocations and return values. However, for long-running steps, we may want to show progress updates, or stream step output to the user while it's being generated.
+After [building a durable AI agent](/docs/ai), we already get UI message chunks for displaying tool invocations and return values. However, for long-running steps, we may want to show progress updates, or stream step output to the user while it's being generated.
 
 Workflow DevKit enables this by letting step functions write custom chunks to the same stream the agent uses. These chunks appear as data parts in your messages, which you can render however you like.
 
@@ -133,6 +133,6 @@ Now, when you run the agent to search for flights, you'll see the flight results
 
 ## Related Documentation
 
-- [Building Durable AI Agents](/guides/ai) - Complete guide to durable agents
+- [Building Durable AI Agents](/docs/ai) - Complete guide to durable agents
 - [`getWritable()` API Reference](/docs/api-reference/workflow/get-writable) - Stream API details
 - [Streaming](/docs/foundations/streaming) - Understanding workflow streams
