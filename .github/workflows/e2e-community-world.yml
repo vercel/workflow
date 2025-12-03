@@ -1,0 +1,125 @@
+# Reusable workflow for running E2E tests against a community world
+# Supports optional service containers (mongodb, redis) via service-type input
+# Called by tests.yml with specific world configuration
+
+name: E2E Community World
+
+on:
+  workflow_call:
+    inputs:
+      world-id:
+        description: 'World identifier (turso, mongodb, etc.)'
+        required: true
+        type: string
+      world-name:
+        description: 'Display name for the world'
+        required: true
+        type: string
+      world-package:
+        description: 'NPM package name for the world'
+        required: true
+        type: string
+      app-name:
+        description: 'App to test (default: nextjs-turbopack)'
+        required: false
+        type: string
+        default: 'nextjs-turbopack'
+      env-vars:
+        description: 'JSON object of environment variables to set'
+        required: false
+        type: string
+        default: '{}'
+      service-type:
+        description: 'Service container to run (none, mongodb, redis)'
+        required: false
+        type: string
+        default: 'none'
+
+jobs:
+  e2e:
+    name: E2E ${{ inputs.world-name }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Start MongoDB
+        if: ${{ inputs.service-type == 'mongodb' }}
+        run: |
+          docker run -d --name mongodb -p 27017:27017 mongo:7
+          echo "Waiting for MongoDB to be ready..."
+          for i in {1..30}; do
+            if docker exec mongodb mongosh --eval 'db.runCommand({ ping: 1 })' &>/dev/null; then
+              echo "MongoDB is ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Start Redis
+        if: ${{ inputs.service-type == 'redis' }}
+        run: |
+          docker run -d --name redis -p 6379:6379 redis:7-alpine
+          echo "Waiting for Redis to be ready..."
+          for i in {1..30}; do
+            if docker exec redis redis-cli ping | grep -q PONG; then
+              echo "Redis is ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      - name: Install ${{ inputs.world-name }} World
+        run: pnpm --filter ${{ inputs.app-name }} add ${{ inputs.world-package }}
+
+      - name: Resolve symlinks
+        run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
+
+      - name: Set environment variables
+        run: |
+          echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
+
+      - name: Run E2E Tests
+        run: |
+          cd workbench/${{ inputs.app-name }} && pnpm dev &
+          echo "Waiting for dev server to start..." && sleep 15
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
+          sleep 10
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}.json || true
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+          DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
+
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Tests (${{ inputs.world-name }})" >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload E2E results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results-community-${{ inputs.world-id }}
+          path: |
+            e2e-community-${{ inputs.world-id }}-dev.json
+            e2e-community-${{ inputs.world-id }}.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stop services
+        if: always()
+        run: |
+          docker stop mongodb 2>/dev/null || true
+          docker stop redis 2>/dev/null || true

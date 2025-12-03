@@ -2,3 +2,6 @@
 # Use LF for all test files to ensure cross-platform consistency
 packages/swc-plugin-workflow/transform/tests/**/*.js text eol=lf
 packages/swc-plugin-workflow/transform/tests/**/*.stderr text eol=lf
+
+# Use bd merge for beads JSONL files
+.beads/issues.jsonl merge=beads
