@@ -47,7 +47,7 @@ cd workflow-examples/flight-booking-app
 
 ### Set up API keys
 
-In order to connect to an LLM, we'll need to set up an API key. The easiest way to do this is to use a Vercel Gateway (works with all providers at zero markup), or you can configure a custom provider.
+In order to connect to an LLM, we'll need to set up an API key. The easiest way to do this is to use Vercel Gateway (works with all providers at zero markup), or you can configure a custom provider.
 <Tabs items={['Gateway', 'Custom Provider']}>
 
 <Tab value="Gateway">
@@ -80,15 +80,13 @@ Then modify your API endpoint to use the OpenAI provider:
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
 // ...
-import { openai } from '@ai-sdk/openai'; // [!code highlight]
-
-// This uses the OPENAI_API_KEY environment variable by default, but you
-// can also pass { apiKey: string } to the createOpenAI function.
-const openai = createOpenAI();
+import { openai } from '@workflow/ai/openai'; // [!code highlight]
 
 export async function POST(req: Request) {
   // ...
   const agent = new Agent({
+    // This uses the OPENAI_API_KEY environment variable by default, but you
+    // can also pass { apiKey: string } as an option.
     model: openai('gpt-5.1'), // [!code highlight]
     // ...
   });
@@ -245,8 +243,8 @@ Move the agent logic into a separate function, which will serve as our workflow 
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
 import { DurableAgent } from '@workflow/ai/agent'; // [!code highlight]
 import { getWritable } from 'workflow'; // [!code highlight]
-import { stepCountIs } from 'ai';
 import { tools } from '@/ai/tools';
+import { openai } from '@workflow/ai/openai';
 import type { ModelMessage, UIMessageChunk } from 'ai';
 
 export async function chatWorkflow(messages: ModelMessage[]) {
@@ -255,7 +253,13 @@ export async function chatWorkflow(messages: ModelMessage[]) {
   const writable = getWritable<UIMessageChunk>(); // [!code highlight]
 
   const agent = new DurableAgent({ // [!code highlight]
+
+    // If using AI Gateway, just specify the model name as a string:
     model: 'bedrock/claude-4-5-haiku-20251001-v1',
+
+    // ELSE if using a custom provider, pass the provider call as an argument:
+    model: openai('gpt-5.1'),
+
     system: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
