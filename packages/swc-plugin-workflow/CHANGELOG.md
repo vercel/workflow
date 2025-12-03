@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- ac7997b: Update to latest swc/core and preserve JSX
+
 ## 4.0.1-beta.10
 
 ### Patch Changes

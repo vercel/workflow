@@ -36,7 +36,8 @@
     "@workflow/sveltekit": "4.0.0-beta.1",
     "@workflow/nuxt": "4.0.1-beta.6",
     "@workflow/rollup": "4.0.0-beta.1",
-    "@workflow/astro": "4.0.0-beta.1"
+    "@workflow/astro": "4.0.0-beta.1",
+    "@workflow/example-fastify": "0.0.0"
   },
   "changesets": [
     "add-documentation",
@@ -169,6 +170,8 @@
     "real-oranges-lick",
     "red-cities-poke",
     "red-ears-smoke",
+    "red-rooms-buy",
+    "remove-vercel-world-remote-access",
     "rude-wings-brush",
     "serious-starfishes-accept",
     "shaggy-falcons-make",
@@ -205,6 +208,7 @@
     "thick-steaks-beam",
     "thin-mangos-double",
     "thin-squids-roll",
+    "three-hands-open",
     "three-peas-hide",
     "tidy-states-see",
     "tiny-coins-sip",
@@ -228,6 +232,7 @@
     "whole-steaks-drum",
     "whole-toes-add",
     "whole-turkeys-beam",
+    "wide-cities-hunt",
     "wide-wombats-own",
     "wide-wombats-poke",
     "witty-phones-doubt",

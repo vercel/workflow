@@ -1,5 +1,12 @@
 # @workflow/rollup
 
+## 4.0.0-beta.5
+
+### Patch Changes
+
+- Updated dependencies [ac7997b]
+  - @workflow/swc-plugin@4.0.1-beta.11
+
 ## 4.0.0-beta.4
 
 ### Patch Changes

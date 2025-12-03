@@ -1,5 +1,21 @@
 # workflow
 
+## 4.0.1-beta.25
+
+### Patch Changes
+
+- Updated dependencies [ac7997b]
+- Updated dependencies [02c41cc]
+  - @workflow/astro@4.0.0-beta.4
+  - @workflow/next@4.0.1-beta.25
+  - @workflow/core@4.0.1-beta.22
+  - @workflow/cli@4.0.1-beta.25
+  - @workflow/nitro@4.0.1-beta.25
+  - @workflow/rollup@4.0.0-beta.5
+  - @workflow/sveltekit@4.0.0-beta.19
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.14
+
 ## 4.0.1-beta.24
 
 ### Patch Changes

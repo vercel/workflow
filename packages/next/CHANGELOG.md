@@ -1,5 +1,16 @@
 # @workflow/next
 
+## 4.0.1-beta.25
+
+### Patch Changes
+
+- ac7997b: Update to latest swc/core and preserve JSX
+- Updated dependencies [ac7997b]
+- Updated dependencies [02c41cc]
+  - @workflow/swc-plugin@4.0.1-beta.11
+  - @workflow/builders@4.0.1-beta.21
+  - @workflow/core@4.0.1-beta.22
+
 ## 4.0.1-beta.24
 
 ### Patch Changes

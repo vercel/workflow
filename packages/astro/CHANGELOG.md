@@ -1,5 +1,15 @@
 # @workflow/astro
 
+## 4.0.0-beta.4
+
+### Patch Changes
+
+- ac7997b: Update to latest swc/core and preserve JSX
+- Updated dependencies [ac7997b]
+  - @workflow/swc-plugin@4.0.1-beta.11
+  - @workflow/builders@4.0.1-beta.21
+  - @workflow/rollup@4.0.0-beta.5
+
 ## 4.0.0-beta.3
 
 ### Patch Changes

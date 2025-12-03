@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.0.1-beta.22
+
+### Patch Changes
+
+- 02c41cc: Set UI name of default-export-workflows to the filename, instead of "\_\_default"
+
 ## 4.0.1-beta.21
 
 ### Patch Changes
