@@ -71,7 +71,7 @@ export async function GET(
 }
 ```
 
-The `startIndex` parameter ensures the client can choose where to resume the stream from.
+The `startIndex` parameter ensures the client can choose where to resume the stream from. For instance, if the function times out during streaming, the chat transport will use `startIndex` to resume the stream exactly from the last token it received.
 
 </Step>
 
@@ -79,7 +79,9 @@ The `startIndex` parameter ensures the client can choose where to resume the str
 
 ### Use `WorkflowChatTransport` in the Client
 
-Replace the default transport in AI-SDK's `useChat` with `WorkflowChatTransport`, and update the callbacks to store and use the latest run ID. For now, we'll store the run ID in localStorage. For your own app, this would be stored wherever you store session information.
+Replace the default transport in AI-SDK's `useChat` with [`WorkflowChatTransport`](
+  /docs/api-reference/workflow-ai/workflow-chat-transport
+), and update the callbacks to store and use the latest run ID. For now, we'll store the run ID in localStorage. For your own app, this would be stored wherever you store session information.
 
 ```typescript title="app/page.tsx" lineNumbers
 'use client';
@@ -134,6 +136,8 @@ export default function ChatPage() {
 
 </Steps>
 
+Now try the flight booking example again. Open it up in a separate tab, or spam the refresh button, and see how the client connects to the same chat stream every time.
+
 ## How It Works
 
 1. When the user sends a message, `WorkflowChatTransport` makes a POST to `/api/chat`
@@ -144,7 +148,7 @@ export default function ChatPage() {
 6. The reconnection endpoint returns the stream from where the client left off
 7. When the stream completes, `onChatEnd` clears the stored run ID
 
-This approach also handles page refreshes, as the client will automatically reconnect to the stream from the last known position when the UI loads with a stored run ID.
+This approach also handles page refreshes, as the client will automatically reconnect to the stream from the last known position when the UI loads with a stored run ID, following the behavior of [AI SDK's stream resumption](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#chatbot-resume-streams).
 
 ## Related Documentation
 

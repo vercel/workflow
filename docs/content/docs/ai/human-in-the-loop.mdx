@@ -89,14 +89,18 @@ async function executeBookingApproval( // [!code highlight]
   return `Booking approved for ${passengerName} on flight ${flightNumber}${comment ? ` - Note: ${comment}` : ''}`;
 }
 
-export const bookingApproval = {
-  description: 'Request human approval before booking a flight',
-  inputSchema: z.object({
-    flightNumber: z.string().describe('Flight number to book'),
-    passengerName: z.string().describe('Name of the passenger'),
-    price: z.number().describe('Total price of the booking'),
-  }),
-  execute: executeBookingApproval,
+// Adding the tool to the existing tool definitions
+export const flightBookingTools = {
+  // ... existing tool definitions ...
+  bookingApproval: {
+    description: 'Request human approval before booking a flight',
+    inputSchema: z.object({
+      flightNumber: z.string().describe('Flight number to book'),
+      passengerName: z.string().describe('Name of the passenger'),
+      price: z.number().describe('Total price of the booking'),
+    }),
+    execute: executeBookingApproval,
+  },
 };
 ```
 
