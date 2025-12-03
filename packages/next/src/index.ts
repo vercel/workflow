@@ -119,10 +119,7 @@ export function withWorkflow(
         workflowsBundlePath: '', // not used in base
         stepsBundlePath: '', // not used in base
         webhookBundlePath: '', // node used in base
-        externalPackages: [
-          ...require('next/dist/lib/server-external-packages.json'),
-          ...(nextConfig.serverExternalPackages || []),
-        ],
+        externalPackages: [...(nextConfig.serverExternalPackages || [])],
       });
 
       await workflowBuilder.build();
