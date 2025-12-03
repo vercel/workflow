@@ -110,25 +110,27 @@ describe('e2e', () => {
     ]);
   });
 
-  test('should work with react rendering in step', async () => {
-    const isNext = process.env.APP_NAME?.includes('nextjs');
-    const isLocal = deploymentUrl.includes('localhost');
-    if (!(isNext && isLocal)) {
-      // only works with framework that transpiles react and
-      // doesn't work on Vercel due to eval hack so react isn't
-      // bundled in function
-      return;
+  const isNext = process.env.APP_NAME?.includes('nextjs');
+  const isLocal = deploymentUrl.includes('localhost');
+  // only works with framework that transpiles react and
+  // doesn't work on Vercel due to eval hack so react isn't
+  // bundled in function
+  const shouldSkipReactRenderTest = !(isNext && isLocal);
+
+  test.skipIf(shouldSkipReactRenderTest)(
+    'should work with react rendering in step',
+    async () => {
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/8_react_render.tsx',
+          workflowFn: 'reactWorkflow',
+        },
+        []
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue).toBe('<div>hello world <!-- -->2</div>');
     }
-    const run = await triggerWorkflow(
-      {
-        workflowFile: 'workflows/8_react_render.tsx',
-        workflowFn: 'reactWorkflow',
-      },
-      []
-    );
-    const returnValue = await getWorkflowReturnValue(run.runId);
-    expect(returnValue).toBe('<div>hello world <!-- -->2</div>');
-  });
+  );
 
   test('promiseAllWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('promiseAllWorkflow', []);
