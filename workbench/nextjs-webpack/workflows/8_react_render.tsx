@@ -1,9 +1,8 @@
-// biome-ignore lint/security/noGlobalEval: need to avoid next.js rule about using react-dom directly
-const ReactDOM = eval('require("react-dom/server")');
-
 async function render(a: number, b: number): Promise<string> {
   'use step';
 
+  // biome-ignore lint/security/noGlobalEval: need to avoid next.js rule about using react-dom directly
+  const ReactDOM = eval('require("react-dom/server")');
   return ReactDOM.renderToString(<div>hello world {a + b}</div>);
 }
 
