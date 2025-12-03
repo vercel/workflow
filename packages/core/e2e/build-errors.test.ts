@@ -42,9 +42,19 @@ describe('build error messages', () => {
     await fs.writeFile(badWorkflowPath, content);
     restoreFiles.push({ path: badWorkflowPath, content: null });
 
-    // Save the original _workflows.ts to restore later
+    // Generate _workflows.ts if it doesn't exist (CI doesn't build workbenches first)
     const workflowsRegistryPath = path.join(appPath, '_workflows.ts');
-    const originalRegistry = await fs.readFile(workflowsRegistryPath, 'utf8');
+    let originalRegistry: string | null = null;
+    try {
+      originalRegistry = await fs.readFile(workflowsRegistryPath, 'utf8');
+    } catch {
+      // File doesn't exist, generate it first
+      await exec(
+        'node ../scripts/generate-workflows-registry.js ./workflows ./_workflows.ts',
+        { cwd: appPath }
+      );
+      originalRegistry = await fs.readFile(workflowsRegistryPath, 'utf8');
+    }
     restoreFiles.push({
       path: workflowsRegistryPath,
       content: originalRegistry,
