@@ -111,10 +111,9 @@ describe('e2e', () => {
   });
 
   test('should work with react rendering in step', async () => {
-    if (
-      !process.env.APP_NAME?.includes('nextjs') ||
-      !deploymentUrl.includes('vercel')
-    ) {
+    const isNext = process.env.APP_NAME?.includes('nextjs');
+    const isLocal = deploymentUrl.includes('localhost');
+    if (!(isNext && isLocal)) {
       // only works with framework that transpiles react and
       // doesn't work on Vercel due to eval hack so react isn't
       // bundled in function
