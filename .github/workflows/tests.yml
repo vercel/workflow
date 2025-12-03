@@ -164,6 +164,9 @@ jobs:
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
 
+      - name: Generate Workflows Registry
+        run: node workbench/scripts/generate-workflows-registry.js workbench/nextjs-turbopack/workflows workbench/nextjs-turbopack/_workflows.ts
+
       - name: Run Build Error Tests
         run: pnpm vitest run packages/core/e2e/build-errors.test.ts
         env:
