@@ -1254,7 +1254,7 @@ impl StepTransform {
                         // Get the property key first
                         let prop_key = match &kv_prop.key {
                             PropName::Ident(ident) => ident.sym.to_string(),
-                            PropName::Str(s) => s.value.to_string(),
+                            PropName::Str(s) => s.value.to_string_lossy().to_string(),
                             _ => continue, // Skip complex keys
                         };
 
@@ -1375,7 +1375,7 @@ impl StepTransform {
                         // Handle object methods like: execute() { "use step"; ... }
                         let prop_key = match &method_prop.key {
                             PropName::Ident(ident) => ident.sym.to_string(),
-                            PropName::Str(s) => s.value.to_string(),
+                            PropName::Str(s) => s.value.to_string_lossy().to_string(),
                             _ => continue, // Skip complex keys
                         };
 
@@ -1666,15 +1666,15 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *stmt_span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::FunctionBody,
                                 });
                             }
                             return true;
-                        } else if detect_similar_strings(value, "use step") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use step") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *stmt_span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use step",
                             });
                         }
@@ -1709,15 +1709,15 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *stmt_span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::FunctionBody,
                                 });
                             }
                             return true;
-                        } else if detect_similar_strings(value, "use workflow") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use workflow") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *stmt_span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use workflow",
                             });
                         }
@@ -1746,7 +1746,7 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             } else {
@@ -1758,14 +1758,14 @@ impl StepTransform {
                             if found_directive {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             }
-                        } else if detect_similar_strings(value, "use step") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use step") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use step",
                             });
                         }
@@ -1807,7 +1807,7 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             } else {
@@ -1819,14 +1819,14 @@ impl StepTransform {
                             if found_directive {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             }
-                        } else if detect_similar_strings(value, "use workflow") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use workflow") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use workflow",
                             });
                         }
@@ -6066,12 +6066,12 @@ impl VisitMut for StepTransform {
                     let prop_key = match &**boxed_prop {
                         Prop::KeyValue(kv) => match &kv.key {
                             PropName::Ident(ident) => Some(ident.sym.to_string()),
-                            PropName::Str(s) => Some(s.value.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
                             _ => None,
                         },
                         Prop::Method(m) => match &m.key {
                             PropName::Ident(ident) => Some(ident.sym.to_string()),
-                            PropName::Str(s) => Some(s.value.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
                             _ => None,
                         },
                         _ => None,

@@ -365,6 +365,7 @@ export abstract class BaseBuilder {
       treeShaking: true,
       keepNames: true,
       minify: false,
+      jsx: 'preserve',
       resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
       // TODO: investigate proper source map support
       sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
@@ -674,6 +675,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
       bundle: true,
       format: 'esm',
       platform: 'node',
+      jsx: 'preserve',
       target: 'es2022',
       write: true,
       treeShaking: true,
@@ -757,6 +759,7 @@ export const OPTIONS = handler;`;
       outfile,
       absWorkingDir: this.config.workingDir,
       bundle: true,
+      jsx: 'preserve',
       format: 'cjs',
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],

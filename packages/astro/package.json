@@ -25,7 +25,7 @@
     "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {
-    "@swc/core": "1.11.24",
+    "@swc/core": "1.15.3",
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/rollup": "workspace:*",

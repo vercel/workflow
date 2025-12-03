@@ -14,7 +14,7 @@ rust-version = "1.87"
 [workspace.dependencies]
 serde           = "1"
 serde_json      = "1"
-swc_core        = "26"
+swc_core        = "48.0"
 testing         = "14.0.1"
 
 

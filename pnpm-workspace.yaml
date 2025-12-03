@@ -5,7 +5,7 @@ packages:
 
 catalog:
   "@biomejs/biome": ^2.2.7
-  "@swc/core": 1.11.24
+  "@swc/core": 1.15.3
   "@types/json-schema": ^7.0.15
   "@types/node": 22.19.0
   "@vercel/functions": ^3.1.4
