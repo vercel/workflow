@@ -10,7 +10,7 @@ Just like in regular AI SDK tool definitions, tool in DurableAgent are called wi
 
 When you tool needs access to the full message history, you can access it via the `messages` property of the tool call context:
 
-```typescript lineNumbers
+```typescript title="tools.ts" lineNumbers
 async function getWeather(
   { city }: { city: string },
   { messages, toolCallId }: { messages: LanguageModelV2Prompt, toolCallId: string }) { // [!code highlight]
@@ -25,7 +25,7 @@ As discussed in [Streaming Updates from Tools](/docs/ai/streaming-updates-from-t
 
 This can be made generic, by creating a helper step function to write arbitrary data to the stream:
 
-```typescript lineNumbers
+```typescript title="tools.ts" lineNumbers
 import { getWritable } from "workflow";
 
 async function writeToStream(data: any) {
@@ -52,7 +52,7 @@ Tools can be implemented either at the step level or the workflow level, with di
 
 Tools can also combine both by starting out on the workflow level, and calling into steps for I/O operations, like so:
 
-```typescript lineNumbers
+```typescript title="tools.ts" lineNumbers
 // Step: handles I/O with retries
 async function performFetch(url: string) {
   'use step';
