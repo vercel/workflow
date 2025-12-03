@@ -313,7 +313,7 @@ Key changes:
 
 Mark all tool definitions with `"use step"` to make them durable. This enables automatic retries and observability for each tool call:
 
-```typescript title="ai/tools/search-web.ts" lineNumbers
+```typescript title="workflows/chat/steps/tools.ts​" lineNumbers
 // ...
 
 export async function searchFlights(
