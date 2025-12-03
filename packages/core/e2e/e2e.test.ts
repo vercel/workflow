@@ -111,8 +111,13 @@ describe('e2e', () => {
   });
 
   test('should work with react rendering in step', async () => {
-    if (!process.env.APP_NAME?.includes('nextjs')) {
-      // only works with framework that transpiles react
+    if (
+      !process.env.APP_NAME?.includes('nextjs') &&
+      !deploymentUrl.includes('vercel')
+    ) {
+      // only works with framework that transpiles react and
+      // doesn't work on Vercel due to eval hack so react isn't
+      // bundled in function
       return;
     }
     const run = await triggerWorkflow(
