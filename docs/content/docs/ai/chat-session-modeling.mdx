@@ -198,7 +198,10 @@ export async function POST(req: Request) {
 ```typescript title="app/api/chat/[id]/route.ts" lineNumbers
 import { chatMessageHook } from '@/workflows/chat/hooks/chat-message';
 
-export async function POST(req: Request, { params }) {
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }) // [!code highlight]
+{
   const { message } = await req.json();
   const { id: threadId } = await params; // [!code highlight]
 
@@ -225,11 +228,14 @@ export const chatMessageHook = defineHook({
 
 </Tab>
 
-<Tab value="Client">
+<Tab value="useMultiTurnChat helpers">
+
+We can replace our `useChat` react hook with a custom hook that manages the chat session. This hook will handle switching between the API endpoints for creating a new thread and sending follow-up messages.
 
 ```typescript title="hooks/use-multi-turn-chat.ts" lineNumbers
 'use client';
 
+import type { UIMessage } from 'ai';
 import { useChat } from '@ai-sdk/react'; // [!code highlight]
 import { WorkflowChatTransport } from '@workflow/ai'; // [!code highlight]
 import { useState, useCallback, useMemo } from 'react';
@@ -252,7 +258,7 @@ export function useMultiTurnChat() {
   } = useChat({ transport }); // [!code highlight]
 
   const startSession = useCallback(
-    async (message: string) => {
+    async (message: UIMessage) => {
       const newThreadId = crypto.randomUUID();
       setThreadId(newThreadId);
 
@@ -266,7 +272,7 @@ export function useMultiTurnChat() {
 
   // Follow-up messages go through the hook resumption endpoint // [!code highlight]
   const sendMessage = useCallback(
-    async (message: string) => {
+    async (message: UIMessage) => {
       if (!threadId) return;
 
       await fetch(`/api/chat/${threadId}`, { // [!code highlight]
@@ -365,7 +371,10 @@ Multiple human users can participate in the same conversation. Each user's clien
 import { chatMessageHook } from '@/workflows/chat/hooks/chat-message';
 import { getUser } from '@/lib/auth';
 
-export async function POST(req: Request, { params }) {
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> } // [!code highlight]
+) {
   const { id: threadId } = await params;
   const { message } = await req.json();
   const user = await getUser(req); // [!code highlight]

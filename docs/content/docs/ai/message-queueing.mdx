@@ -38,7 +38,7 @@ interface PrepareStepResult {
 
 ## Injecting Queued Messages
 
-Combine a message queue with `prepareStep` to inject messages that arrive during processing:
+Once you have a [multi-turn workflow](/docs/ai/chat-session-modeling#multi-turn-workflows), you can combine a message queue with `prepareStep` to inject messages that arrive during processing:
 
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
 import { DurableAgent } from '@workflow/ai/agent';
