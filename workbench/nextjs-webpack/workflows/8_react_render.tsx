@@ -1,1 +1,17 @@
-../../example/workflows/8_react_render.tsx
+// biome-ignore lint/security/noGlobalEval: need to avoid next.js rule about using react-dom directly
+const ReactDOM = eval('require("react-dom/server")');
+
+async function render(a: number, b: number): Promise<string> {
+  'use step';
+
+  return ReactDOM.renderToString(<div>hello world {a + b}</div>);
+}
+
+export async function reactWorkflow() {
+  'use workflow';
+
+  console.log('calling render step');
+  const result = await render(1, 1);
+
+  return result;
+}
