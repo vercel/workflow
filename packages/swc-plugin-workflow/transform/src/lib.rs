@@ -1704,7 +1704,7 @@ impl StepTransform {
                 {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         #[cfg(debug_assertions)]
-                        eprintln!("directive candidate: {}", value);
+                        eprintln!("directive candidate: {:?}", value);
                         if value == "use workflow" {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {

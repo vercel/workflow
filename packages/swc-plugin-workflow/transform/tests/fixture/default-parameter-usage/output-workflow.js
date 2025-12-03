@@ -1,6 +1,6 @@
+/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//input.js//myWorkflow"}}}}*/;
 // Test case for functions used in default parameter values
 // The createDefaultDownloadFunction should NOT be removed by DCE
-/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//input.js//myWorkflow"}}}}*/;
 const createDefaultDownloadFunction = (download = defaultDownload)=>(requestedDownloads)=>Promise.all(requestedDownloads.map(async (r)=>r.isUrlSupportedByModel ? null : download(r)));
 async function defaultDownload(request) {
     return fetch(request.url);

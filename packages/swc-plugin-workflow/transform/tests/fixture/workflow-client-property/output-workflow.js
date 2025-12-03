@@ -1,5 +1,5 @@
-// Test workflow functions in client mode
 /**__internal_workflows{"workflows":{"input.js":{"arrowWorkflow":{"workflowId":"workflow//input.js//arrowWorkflow"},"default":{"workflowId":"workflow//input.js//defaultWorkflow"},"internalWorkflow":{"workflowId":"workflow//input.js//internalWorkflow"},"myWorkflow":{"workflowId":"workflow//input.js//myWorkflow"}}}}*/;
+// Test workflow functions in client mode
 export async function myWorkflow() {
     const result = await someStep();
     return result;

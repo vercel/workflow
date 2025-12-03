@@ -1,5 +1,5 @@
-// Existing variable named __default
 /**__internal_workflows{"workflows":{"input.js":{"default":{"workflowId":"workflow//input.js//default"}}}}*/;
+// Existing variable named __default
 const __default = "existing variable";
 // Use it to avoid unused variable
 console.log(__default);
