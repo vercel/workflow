@@ -110,6 +110,22 @@ describe('e2e', () => {
     ]);
   });
 
+  test('should work with react rendering in step', async () => {
+    if (!process.env.APP_NAME?.includes('nextjs')) {
+      // only works with framework that transpiles react
+      return;
+    }
+    const run = await triggerWorkflow(
+      {
+        workflowFile: 'workflows/8_react_render.tsx',
+        workflowFn: 'reactWorkflow',
+      },
+      []
+    );
+    const returnValue = await getWorkflowReturnValue(run.runId);
+    expect(returnValue).toBe('<div>hello world <!-- -->2</div>');
+  });
+
   test('promiseAllWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('promiseAllWorkflow', []);
     const returnValue = await getWorkflowReturnValue(run.runId);
