@@ -4,6 +4,8 @@ title: Patterns for Defining Tools
 
 This page covers the details for some common patterns when defining tools for AI agents using Workflow DevKit.
 
+Using DurableAgent, we model most tools as steps. These can be anything from a simple function call to a entire multi-day long workflow.
+
 ## Accessing message context in tools
 
 Just like in regular AI SDK tool definitions, tool in DurableAgent are called with a first argument of the tool's input parameters, and a second argument of the tool call context.

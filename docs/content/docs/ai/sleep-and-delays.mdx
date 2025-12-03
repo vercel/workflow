@@ -12,7 +12,7 @@ See the [`sleep()` API Reference](/docs/api-reference/workflow/sleep) for the fu
 
 ## Adding a Sleep Tool
 
-We can expose the sleep tool directly to the Agent by wrapping it in a tool.
+Sleep is a built-in function in Workflow DevKit, so exposing it as a tool is as simple as wrapping it in a tool definition. Learn more about how to define tools in [Patterns for Defining Tools](/docs/ai/defining-tools).
 
 <Steps>
 
@@ -29,7 +29,6 @@ import { getWritable, sleep } from 'workflow'; // [!code highlight]
 
 async function executeSleep( // [!code highlight]
   { durationMs }: { durationMs: number }, // [!code highlight]
-  { toolCallId }: { toolCallId: string } // [!code highlight]
 ) { // [!code highlight]
   // Note: No "use step" here - sleep is a workflow-level function // [!code highlight]
   await sleep(durationMs); // [!code highlight]
@@ -42,7 +41,9 @@ export const flightBookingTools = {
  // ... existing tool definitions ...
  sleep: { // [!code highlight]
   description: 'Pause execution for a specified duration', // [!code highlight]
-  inputSchema: durationMs: z.number().describe('Duration to sleep in milliseconds'), // [!code highlight]
+  inputSchema: z.object({ // [!code highlight]
+    durationMs: z.number().describe('Duration to sleep in milliseconds'), // [!code highlight]
+  }), // [!code highlight]
   execute: executeSleep, // [!code highlight]
  } // [!code highlight]
 }
@@ -137,6 +138,8 @@ function renderToolOutput(part: any) {
 </Step>
 
 </Steps>
+
+Now, try out the Flight Booking Agent again, and ask it to sleep for 10 seconds before checking any flight. You'll see the agent pause, and the UI reflect the tool call status.
 
 ## Use Cases
 

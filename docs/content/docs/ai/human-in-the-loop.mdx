@@ -46,9 +46,10 @@ Add a tool that allows the agent to deliberately pause execution until a human a
 
 Create a typed hook with a Zod schema for validation:
 
-```typescript title="workflows/chat/hooks/booking-approval.ts" lineNumbers
+```typescript title="workflow/steps/tools.ts" lineNumbers
 import { defineHook } from 'workflow';
 import { z } from 'zod';
+// ... existing imports ...
 
 export const bookingApprovalHook = defineHook({
   schema: z.object({
@@ -56,6 +57,8 @@ export const bookingApprovalHook = defineHook({
     comment: z.string().optional(),
   }),
 });
+
+// ... tool definitions ...
 ```
 
 </Step>
