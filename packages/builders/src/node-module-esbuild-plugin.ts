@@ -236,7 +236,9 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
       const packageViolations: PackageViolation[] = [];
       const seenViolations = new Set<string>();
 
-      // Track import relationships for dependency tracing
+      // Track ALL import relationships to build the dependency graph.
+      // This is necessary to trace transitive dependencies back to user code.
+      // Performance impact is minimal as we only store path mappings.
       build.onResolve({ filter: /.*/ }, async (args) => {
         if (!args.importer) return null;
 
