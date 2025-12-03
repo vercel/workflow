@@ -28,7 +28,7 @@ export interface FoundFlightDataPart {
 }
 ```
 
-The `type` field must be a string starting with `data-` followed by your custom identifier. The `id` field should match the `toolCallId` so the client can associate the data with the correct tool invocation.
+The `type` field must be a string starting with `data-` followed by your custom identifier. The `id` field should match the `toolCallId` so the client can associate the data with the correct tool invocation. Learn more about [data parts](https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data#data-parts-persistent) in the AI SDK documentation.
 
 </Step>
 
@@ -36,15 +36,15 @@ The `type` field must be a string starting with `data-` followed by your custom 
 
 ### Emit Updates from Your Tool
 
-Use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside a step function to get a handle to the stream. Write your custom chunks as the tool progresses:
+Use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside a step function to get a handle to the stream. This is the same stream that the LLM and other tools calls are writing to, so we can inject out own data packets directly.
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
-import { getWritable } from 'workflow';
+import { getWritable } from 'workflow'; // [!code highlight]
 import type { UIMessageChunk } from 'ai';
 
 export async function searchFlights(
   { from, to, date }: { from: string; to: string; date: string },
-  { toolCallId }: { toolCallId: string }
+  { toolCallId }: { toolCallId: string } // [!code highlight]
 ) {
   'use step';
 
@@ -79,7 +79,7 @@ Key points:
 - Call `getWritable<UIMessageChunk>()` to get the stream
 - Use `getWriter()` to acquire a writer
 - Write objects with `type`, `id`, and `data` fields
-- Always call `releaseLock()` when done writing
+- Always call `releaseLock()` when done writing (learn more about [streaming](/docs/foundations/streaming))
 
 </Step>
 
