@@ -13,7 +13,7 @@ const MessageWrapper = z.object({
   queueName: ValidQueueName,
 });
 
-const VERCEL_QUEUE_MAX_VISIBILITY = 82800; // 23 hours in seconds
+const VERCEL_QUEUE_MAX_VISIBILITY = 39600; // 11 hours in seconds
 
 export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
