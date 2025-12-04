@@ -25,7 +25,7 @@ The `prepareStep` callback runs before each step in the agent loop. It receives 
 ```typescript lineNumbers
 interface PrepareStepInfo {
   model: string | (() => Promise<LanguageModelV2>);  // Current model
-  stepNumber: number;                                 // 0-indexed step count
+  stepNumber: number;                                // 0-indexed step count
   steps: StepResult[];                               // Previous step results
   messages: LanguageModelV2Prompt;                   // Messages to be sent
 }

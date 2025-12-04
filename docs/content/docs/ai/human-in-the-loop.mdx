@@ -34,6 +34,8 @@ The workflow receives the approval data and resumes execution.
 
 </Steps>
 
+While this demo will use a client side button for human approval, you could just as easily create a webhook and send the approval link over email or slack to resume the agent.
+
 ## Creating a Booking Approval Tool
 
 Add a tool that allows the agent to deliberately pause execution until a human approves or rejects a flight booking:
@@ -46,9 +48,10 @@ Add a tool that allows the agent to deliberately pause execution until a human a
 
 Create a typed hook with a Zod schema for validation:
 
-```typescript title="workflows/chat/hooks/booking-approval.ts" lineNumbers
+```typescript title="workflow/steps/tools.ts" lineNumbers
 import { defineHook } from 'workflow';
 import { z } from 'zod';
+// ... existing imports ...
 
 export const bookingApprovalHook = defineHook({
   schema: z.object({
@@ -56,6 +59,8 @@ export const bookingApprovalHook = defineHook({
     comment: z.string().optional(),
   }),
 });
+
+// ... tool definitions ...
 ```
 
 </Step>
@@ -68,7 +73,8 @@ Create a tool that creates a hook instance using the tool call ID as the token. 
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
 import { z } from 'zod';
-import { bookingApprovalHook } from '../hooks/booking-approval';
+
+// ...
 
 async function executeBookingApproval( // [!code highlight]
   { flightNumber, passengerName, price }: { flightNumber: string; passengerName: string; price: number }, // [!code highlight]
@@ -114,10 +120,10 @@ Note that the `defineHook().create()` function must be called from within a work
 
 ### Create the API Route
 
-Create an API endpoint that the UI will call to submit the approval decision:
+Create a new API endpoint that the UI will call to submit the approval decision:
 
 ```typescript title="app/api/approve-booking/route.ts" lineNumbers
-import { bookingApprovalHook } from '@/workflows/chat/hooks/booking-approval';
+import { bookingApprovalHook } from '@/workflow/steps/tools';
 
 export async function POST(request: Request) {
   const { toolCallId, approved, comment } = await request.json();
@@ -136,82 +142,10 @@ export async function POST(request: Request) {
 </Step>
 
 <Step>
-### Show the Tool Status in the UI
 
-Render the tool call and approval controls in your chat interface. The tool call part includes all the input data needed to display the booking details:
-
-```typescript title="app/page.tsx" lineNumbers
-export default function ChatPage() {
-
-  // ...
-
-  const { stop, messages, sendMessage, status, setMessages } =
-    useChat<MyUIMessage>({
-      // ... options
-    });
-
-  // ...
-
-  return (
-    <div className="flex flex-col w-full max-w-2xl pt-12 pb-24 mx-auto stretch">
-      // ...
-
-      <Conversation className="mb-10">
-        <ConversationContent>
-          {messages.map((message, index) => {
-            const hasText = message.parts.some((part) => part.type === "text");
-
-            return (
-              <div key={message.id}>
-                // ...
-                <Message from={message.role}>
-                  <MessageContent>
-                    {message.parts.map((part, partIndex) => {
-
-                      // ...
-
-                      if (
-                        part.type === "tool-searchFlights" ||
-                        part.type === "tool-checkFlightStatus" ||
-                        part.type === "tool-getAirportInfo" ||
-                        part.type === "tool-bookFlight" ||
-                        part.type === "tool-checkBaggageAllowance"
-                      ) {
-                        // ... render other tools
-                      }
-                      if (part.type === "tool-bookingApproval") { // [!code highlight]
-                        return ( // [!code highlight]
-                          <BookingApproval // [!code highlight]
-                            key={partIndex} // [!code highlight]
-                            toolCallId={part.toolCallId} // [!code highlight]
-                            input={part.input} // [!code highlight]
-                            output={part.output} // [!code highlight]
-                          /> // [!code highlight]
-                        ); // [!code highlight]
-                      } // [!code highlight]
-                      return null;
-                    })}
-                  </MessageContent>
-                </Message>
-              </div>
-            );
-          })}
-        </ConversationContent>
-        <ConversationScrollButton />
-      </Conversation>
-
-      // ...
-    </div>
-  );
-}
-```
-
-</Step>
-
-<Step>
 ### Create the Approval Component
 
-Build a component that displays the booking details from the tool input and handles the user's decision:
+Build a new component that reacts to the tool call data, and allows the user to approve or reject the booking:
 
 ```typescript title="components/booking-approval.tsx" lineNumbers
 'use client';
@@ -289,6 +223,83 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
           {isSubmitting ? 'Submitting...' : 'Reject'}
         </button>
       </div>
+    </div>
+  );
+}
+```
+
+</Step>
+
+<Step>
+
+### Show the Tool Status in the UI
+
+Use the component we just created to render the tool call and approval controls in your chat interface:
+
+```typescript title="app/page.tsx" lineNumbers
+// ... existing imports ...
+import { BookingApproval } from '@/components/booking-approval';
+
+export default function ChatPage() {
+
+  // ...
+
+  const { stop, messages, sendMessage, status, setMessages } =
+    useChat<MyUIMessage>({
+      // ... options
+    });
+
+  // ...
+
+  return (
+    <div className="flex flex-col w-full max-w-2xl pt-12 pb-24 mx-auto stretch">
+      // ...
+
+      <Conversation className="mb-10">
+        <ConversationContent>
+          {messages.map((message, index) => {
+            const hasText = message.parts.some((part) => part.type === "text");
+
+            return (
+              <div key={message.id}>
+                // ...
+                <Message from={message.role}>
+                  <MessageContent>
+                    {message.parts.map((part, partIndex) => {
+
+                      // ...
+
+                      if (
+                        part.type === "tool-searchFlights" ||
+                        part.type === "tool-checkFlightStatus" ||
+                        part.type === "tool-getAirportInfo" ||
+                        part.type === "tool-bookFlight" ||
+                        part.type === "tool-checkBaggageAllowance"
+                      ) {
+                        // ... render other tools
+                      }
+                      if (part.type === "tool-bookingApproval") { // [!code highlight]
+                        return ( // [!code highlight]
+                          <BookingApproval // [!code highlight]
+                            key={partIndex} // [!code highlight]
+                            toolCallId={part.toolCallId} // [!code highlight]
+                            input={part.input} // [!code highlight]
+                            output={part.output} // [!code highlight]
+                          /> // [!code highlight]
+                        ); // [!code highlight]
+                      } // [!code highlight]
+                      return null;
+                    })}
+                  </MessageContent>
+                </Message>
+              </div>
+            );
+          })}
+        </ConversationContent>
+        <ConversationScrollButton />
+      </Conversation>
+
+      // ...
     </div>
   );
 }

@@ -32,8 +32,8 @@ export const DesktopMenu = ({ items }: DesktopMenuProps) => {
             <NavigationMenuLink
               asChild
               className={cn(
-                'rounded-md px-3 font-medium text-sm text-gray-400',
-                isActive(item.href) && 'text-white'
+                'rounded-md px-3 font-medium text-sm text-muted-foreground',
+                isActive(item.href) && 'text-primary'
               )}
             >
               <Link href={item.href}>{item.label}</Link>

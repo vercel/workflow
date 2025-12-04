@@ -310,13 +310,13 @@ In this pattern, the workflow owns the entire conversation session. All messages
 | Workflow time horizon | Minutes | Hours to indefinitely |
 | Observability scope | Per-turn traces | Full session traces |
 
-**Multi-turn is recommended for most production use-cases.** If you're starting fresh, go with multi-turn. It's more flexible and grows with your requirements. Server-owned state, native message injection, and full session observability become increasingly valuable as your agent matures.
+**Multi-turn is recommended for most production use-cases.** If you're starting fresh, go with multi-turn. It's more flexible and grows with your requirements. You don't need to maintain the chat history yourself and can offload all that to the workflow's built in persistence. It also enables native message injection and full session observability, which becomes increasingly valuable as your agent matures.
 
 **Single-turn works well when adapting existing architectures.** If you already have a system for managing message state, and want to adopt durable agents incrementally, single-turn workflows slot in with minimal changes. Each turn maps cleanly to an independent workflow run.
 
-## Multi-Party Injection
+## Multiplayer Chat Sessions
 
-The multi-turn pattern also easily enables multi-party chat sessions. Parties can be system events, external services, and multiple users. Since a `hook` injects messages into workflow at any point, and the entire history is a single stream that clients can reconnect to, it doesn't matter where the injected messages come from. Here are different use-cases for multi-party chat sessions:
+The multi-turn pattern also easily enables multi-player chat sessions. New messages can come from system events, external services, and other users. Since a `hook` injects messages into workflow at any point, and the entire history is a single stream that clients can reconnect to, it doesn't matter where the injected messages come from. Here are different use-cases for multi-player chat sessions:
 
 <Tabs items={['System Event', 'External Service', 'Multiple Users']}>
 
