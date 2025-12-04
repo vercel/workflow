@@ -129,6 +129,9 @@ matrix.app.push({
   name: 'fastify',
   project: 'workbench-fastify-workflow',
   ...DEV_TEST_CONFIGS.fastify,
+});
+
+matrix.app.push({
   name: 'astro',
   project: 'workbench-astro-workflow',
   ...DEV_TEST_CONFIGS.astro,
