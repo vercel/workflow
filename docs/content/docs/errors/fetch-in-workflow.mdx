@@ -23,15 +23,15 @@ Import the `fetch` step function from the `workflow` package and assign it to `g
 **Before:**
 
 ```typescript lineNumbers title="workflows/ai.ts"
-import { generateText } from 'ai';
-import { openai } from '@ai-sdk/openai';
+import { generateText } from "ai";
+import { openai } from "@ai-sdk/openai";
 
 export async function chatWorkflow(prompt: string) {
   "use workflow";
 
   // Error - generateText() calls fetch() under the hood
   const result = await generateText({ // [!code highlight]
-    model: openai('gpt-4'), // [!code highlight]
+    model: openai("gpt-4"), // [!code highlight]
     prompt, // [!code highlight]
   }); // [!code highlight]
 
@@ -42,9 +42,9 @@ export async function chatWorkflow(prompt: string) {
 **After:**
 
 ```typescript lineNumbers title="workflows/ai.ts"
-import { generateText } from 'ai';
-import { openai } from '@ai-sdk/openai';
-import { fetch } from 'workflow'; // [!code highlight]
+import { generateText } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { fetch } from "workflow"; // [!code highlight]
 
 export async function chatWorkflow(prompt: string) {
   "use workflow";
@@ -53,7 +53,7 @@ export async function chatWorkflow(prompt: string) {
 
   // Now generateText() can make HTTP requests via the fetch step
   const result = await generateText({
-    model: openai('gpt-4'),
+    model: openai("gpt-4"),
     prompt,
   });
 
@@ -68,9 +68,9 @@ export async function chatWorkflow(prompt: string) {
 This is the most common scenario - using AI SDK functions that make HTTP requests:
 
 ```typescript lineNumbers
-import { generateText, streamText } from 'ai';
-import { openai } from '@ai-sdk/openai';
-import { fetch } from 'workflow'; // [!code highlight]
+import { generateText, streamText } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { fetch } from "workflow"; // [!code highlight]
 
 export async function aiWorkflow(userMessage: string) {
   "use workflow";
@@ -79,7 +79,7 @@ export async function aiWorkflow(userMessage: string) {
 
   // generateText makes HTTP requests to OpenAI
   const response = await generateText({
-    model: openai('gpt-4'),
+    model: openai("gpt-4"),
     prompt: userMessage,
   });
 
@@ -92,13 +92,13 @@ export async function aiWorkflow(userMessage: string) {
 You can also use the fetch step function directly for your own HTTP requests:
 
 ```typescript lineNumbers
-import { fetch } from 'workflow';
+import { fetch } from "workflow";
 
 export async function dataWorkflow() {
   "use workflow";
 
   // Use fetch directly for HTTP requests
-  const response = await fetch('https://api.example.com/data'); // [!code highlight]
+  const response = await fetch("https://api.example.com/data"); // [!code highlight]
   const data = await response.json();
 
   return data;

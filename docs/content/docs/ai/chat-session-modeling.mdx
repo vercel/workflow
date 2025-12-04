@@ -15,18 +15,18 @@ Each user message triggers a new workflow run. The client or API route owns the 
 <Tab value="Workflow">
 
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
-import { DurableAgent } from '@workflow/ai/agent';
-import { getWritable } from 'workflow';
-import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from './steps/tools';
-import type { ModelMessage, UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from "./steps/tools";
+import type { ModelMessage, UIMessageChunk } from "ai";
 
 export async function chatWorkflow(messages: ModelMessage[]) {
-  'use workflow';
+  "use workflow";
 
   const writable = getWritable<UIMessageChunk>();
 
   const agent = new DurableAgent({
-    model: 'bedrock/claude-4-5-haiku-20251001-v1',
+    model: "bedrock/claude-4-5-haiku-20251001-v1",
     system: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -45,10 +45,10 @@ export async function chatWorkflow(messages: ModelMessage[]) {
 <Tab value="API Route">
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
-import type { UIMessage } from 'ai';
-import { createUIMessageStreamResponse, convertToModelMessages } from 'ai';
-import { start } from 'workflow/api';
-import { chatWorkflow } from '@/workflows/chat/workflow';
+import type { UIMessage } from "ai";
+import { createUIMessageStreamResponse, convertToModelMessages } from "ai";
+import { start } from "workflow/api";
+import { chatWorkflow } from "@/workflows/chat/workflow";
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
@@ -69,12 +69,12 @@ export async function POST(req: Request) {
 Chat messages need to be stored somewhere—typically a database. In this example, we assume a route like `/chats/:id` passes the session ID, allowing us to fetch existing messages and persist new ones.
 
 ```typescript title="app/chats/[id]/page.tsx" lineNumbers
-'use client';
+"use client";
 
-import { useChat } from '@ai-sdk/react';
-import { WorkflowChatTransport } from '@workflow/ai'; // [!code highlight]
-import { useParams } from 'next/navigation';
-import { useMemo } from 'react';
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { useParams } from "next/navigation";
+import { useMemo } from "react";
 
 // Fetch existing messages from your backend
 async function getMessages(sessionId: string) { // [!code highlight]
@@ -88,12 +88,12 @@ export function Chat({ initialMessages }) {
   const transport = useMemo( // [!code highlight]
     () => // [!code highlight]
       new WorkflowChatTransport({ // [!code highlight]
-        api: '/api/chat', // [!code highlight]
+        api: "/api/chat", // [!code highlight]
         onChatEnd: async () => { // [!code highlight]
           // Persist the updated messages to the chat session // [!code highlight]
           await fetch(`/api/chats/${sessionId}/messages`, { // [!code highlight]
-            method: 'PUT', // [!code highlight]
-            headers: { 'Content-Type': 'application/json' }, // [!code highlight]
+            method: "PUT", // [!code highlight]
+            headers: { "Content-Type": "application/json" }, // [!code highlight]
             body: JSON.stringify({ messages }), // [!code highlight]
           }); // [!code highlight]
         }, // [!code highlight]
@@ -132,20 +132,20 @@ A single workflow handles the entire conversation session across multiple turns,
 <Tab value="Workflow">
 
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
-import { DurableAgent } from '@workflow/ai/agent';
-import { getWritable } from 'workflow';
-import { chatMessageHook } from './hooks/chat-message';
-import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from './steps/tools';
-import type { ModelMessage, UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { chatMessageHook } from "./hooks/chat-message";
+import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from "./steps/tools";
+import type { ModelMessage, UIMessageChunk } from "ai";
 
 export async function chatWorkflow(threadId: string, initialMessage: string) {
-  'use workflow';
+  "use workflow";
 
   const writable = getWritable<UIMessageChunk>();
-  const messages: ModelMessage[] = [{ role: 'user', content: initialMessage }];
+  const messages: ModelMessage[] = [{ role: "user", content: initialMessage }];
 
   const agent = new DurableAgent({
-    model: 'bedrock/claude-4-5-haiku-20251001-v1',
+    model: "bedrock/claude-4-5-haiku-20251001-v1",
     system: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -164,9 +164,9 @@ export async function chatWorkflow(threadId: string, initialMessage: string) {
 
     // Wait for next user message // [!code highlight]
     const { message } = await hook; // [!code highlight]
-    if (message === '/done') break;
+    if (message === "/done") break;
 
-    messages.push({ role: 'user', content: message });
+    messages.push({ role: "user", content: message });
   }
 
   return { messages };
@@ -180,9 +180,9 @@ export async function chatWorkflow(threadId: string, initialMessage: string) {
 Two endpoints: one to start the session, one to send follow-up messages.
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
-import { createUIMessageStreamResponse } from 'ai';
-import { start } from 'workflow/api';
-import { chatWorkflow } from '@/workflows/chat/workflow';
+import { createUIMessageStreamResponse } from "ai";
+import { start } from "workflow/api";
+import { chatWorkflow } from "@/workflows/chat/workflow";
 
 export async function POST(req: Request) {
   const { threadId, message } = await req.json();
@@ -196,7 +196,7 @@ export async function POST(req: Request) {
 ```
 
 ```typescript title="app/api/chat/[id]/route.ts" lineNumbers
-import { chatMessageHook } from '@/workflows/chat/hooks/chat-message';
+import { chatMessageHook } from "@/workflows/chat/hooks/chat-message";
 
 export async function POST(
   req: Request,
@@ -216,8 +216,8 @@ export async function POST(
 <Tab value="Hook Definition">
 
 ```typescript title="workflows/chat/hooks/chat-message.ts" lineNumbers
-import { defineHook } from 'workflow';
-import { z } from 'zod';
+import { defineHook } from "workflow";
+import { z } from "zod";
 
 export const chatMessageHook = defineHook({
   schema: z.object({
@@ -233,12 +233,12 @@ export const chatMessageHook = defineHook({
 We can replace our `useChat` react hook with a custom hook that manages the chat session. This hook will handle switching between the API endpoints for creating a new thread and sending follow-up messages.
 
 ```typescript title="hooks/use-multi-turn-chat.ts" lineNumbers
-'use client';
+"use client";
 
-import type { UIMessage } from 'ai';
-import { useChat } from '@ai-sdk/react'; // [!code highlight]
-import { WorkflowChatTransport } from '@workflow/ai'; // [!code highlight]
-import { useState, useCallback, useMemo } from 'react';
+import type { UIMessage } from "ai";
+import { useChat } from "@ai-sdk/react"; // [!code highlight]
+import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { useState, useCallback, useMemo } from "react";
 
 export function useMultiTurnChat() {
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -246,7 +246,7 @@ export function useMultiTurnChat() {
   const transport = useMemo( // [!code highlight]
     () => // [!code highlight]
       new WorkflowChatTransport({ // [!code highlight]
-        api: '/api/chat', // [!code highlight]
+        api: "/api/chat", // [!code highlight]
       }), // [!code highlight]
     [] // [!code highlight]
   ); // [!code highlight]
@@ -276,8 +276,8 @@ export function useMultiTurnChat() {
       if (!threadId) return;
 
       await fetch(`/api/chat/${threadId}`, { // [!code highlight]
-        method: 'POST', // [!code highlight]
-        headers: { 'Content-Type': 'application/json' }, // [!code highlight]
+        method: "POST", // [!code highlight]
+        headers: { "Content-Type": "application/json" }, // [!code highlight]
         body: JSON.stringify({ message }), // [!code highlight]
       }); // [!code highlight]
     },
@@ -286,7 +286,7 @@ export function useMultiTurnChat() {
 
   const endSession = useCallback(async () => {
     if (!threadId) return;
-    await sendMessage('/done');
+    await sendMessage("/done");
     setThreadId(null);
   }, [threadId, sendMessage]);
 
@@ -325,7 +325,7 @@ The multi-turn pattern also easily enables multi-player chat sessions. New messa
 Internal system events like scheduled tasks, background jobs, or database triggers can inject updates into an active conversation.
 
 ```typescript title="app/api/internal/flight-update/route.ts" lineNumbers
-import { chatMessageHook } from '@/workflows/chat/hooks/chat-message';
+import { chatMessageHook } from "@/workflows/chat/hooks/chat-message";
 
 // Called by your flight status monitoring system
 export async function POST(req: Request) {
@@ -346,12 +346,12 @@ export async function POST(req: Request) {
 External webhooks from third-party services (Stripe, Twilio, etc.) can notify the conversation of events.
 
 ```typescript title="app/api/webhooks/payment/route.ts" lineNumbers
-import { chatMessageHook } from '@/workflows/chat/hooks/chat-message';
+import { chatMessageHook } from "@/workflows/chat/hooks/chat-message";
 
 export async function POST(req: Request) {
   const { threadId, paymentStatus, amount } = await req.json();
 
-  if (paymentStatus === 'succeeded') {
+  if (paymentStatus === "succeeded") {
     await chatMessageHook.resume(`thread:${threadId}`, { // [!code highlight]
       message: `[Payment] Payment of $${amount.toFixed(2)} received. Your booking is confirmed!`, // [!code highlight]
     }); // [!code highlight]
@@ -368,8 +368,8 @@ export async function POST(req: Request) {
 Multiple human users can participate in the same conversation. Each user's client connects to the same workflow stream.
 
 ```typescript title="app/api/chat/[id]/route.ts" lineNumbers
-import { chatMessageHook } from '@/workflows/chat/hooks/chat-message';
-import { getUser } from '@/lib/auth';
+import { chatMessageHook } from "@/workflows/chat/hooks/chat-message";
+import { getUser } from "@/lib/auth";
 
 export async function POST(
   req: Request,

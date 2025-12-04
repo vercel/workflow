@@ -41,20 +41,20 @@ interface PrepareStepResult {
 Once you have a [multi-turn workflow](/docs/ai/chat-session-modeling#multi-turn-workflows), you can combine a message queue with `prepareStep` to inject messages that arrive during processing:
 
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
-import { DurableAgent } from '@workflow/ai/agent';
-import type { UIMessageChunk } from 'ai';
-import { getWritable } from 'workflow';
-import { chatMessageHook } from './hooks/chat-message';
-import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from './steps/tools';
+import { DurableAgent } from "@workflow/ai/agent";
+import type { UIMessageChunk } from "ai";
+import { getWritable } from "workflow";
+import { chatMessageHook } from "./hooks/chat-message";
+import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from "./steps/tools";
 
 export async function chatWorkflow(threadId: string, initialMessage: string) {
-  'use workflow';
+  "use workflow";
 
   const writable = getWritable<UIMessageChunk>();
-  const messageQueue: Array<{ role: 'user'; content: string }> = []; // [!code highlight]
+  const messageQueue: Array<{ role: "user"; content: string }> = []; // [!code highlight]
 
   const agent = new DurableAgent({
-    model: 'bedrock/claude-4-5-haiku-20251001-v1',
+    model: "bedrock/claude-4-5-haiku-20251001-v1",
     system: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -62,11 +62,11 @@ export async function chatWorkflow(threadId: string, initialMessage: string) {
   // Listen for messages in background (non-blocking) // [!code highlight]
   const hook = chatMessageHook.create({ token: `thread:${threadId}` }); // [!code highlight]
   hook.then(({ message }) => { // [!code highlight]
-    messageQueue.push({ role: 'user', content: message }); // [!code highlight]
+    messageQueue.push({ role: "user", content: message }); // [!code highlight]
   }); // [!code highlight]
 
   await agent.stream({
-    messages: [{ role: 'user', content: initialMessage }],
+    messages: [{ role: "user", content: initialMessage }],
     writable,
     prepareStep: ({ messages: currentMessages }) => { // [!code highlight]
       // Inject any queued messages before the next LLM call // [!code highlight]
@@ -77,7 +77,7 @@ export async function chatWorkflow(threadId: string, initialMessage: string) {
             ...currentMessages, // [!code highlight]
             ...newMessages.map(m => ({ // [!code highlight]
               role: m.role, // [!code highlight]
-              content: [{ type: 'text' as const, text: m.content }], // [!code highlight]
+              content: [{ type: "text" as const, text: m.content }], // [!code highlight]
             })), // [!code highlight]
           ], // [!code highlight]
         }; // [!code highlight]

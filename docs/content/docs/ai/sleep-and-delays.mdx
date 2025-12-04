@@ -23,7 +23,7 @@ Sleep is a built-in function in Workflow DevKit, so exposing it as a tool is as 
 Add a new "sleep" tool to the `tools` defined in `workflows/chat/steps/tools.ts`:
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
-import { getWritable, sleep } from 'workflow'; // [!code highlight]
+import { getWritable, sleep } from "workflow"; // [!code highlight]
 
 // ... existing imports ...
 
@@ -40,9 +40,9 @@ async function executeSleep( // [!code highlight]
 export const flightBookingTools = {
  // ... existing tool definitions ...
  sleep: { // [!code highlight]
-  description: 'Pause execution for a specified duration', // [!code highlight]
+  description: "Pause execution for a specified duration", // [!code highlight]
   inputSchema: z.object({ // [!code highlight]
-    durationMs: z.number().describe('Duration to sleep in milliseconds'), // [!code highlight]
+    durationMs: z.number().describe("Duration to sleep in milliseconds"), // [!code highlight]
   }), // [!code highlight]
   execute: executeSleep, // [!code highlight]
  } // [!code highlight]
@@ -151,14 +151,14 @@ When hitting API rate limits, use `RetryableError` with a delay:
 
 ```typescript lineNumbers
 async function callRateLimitedAPI(endpoint: string) {
-  'use step';
+  "use step";
 
   const response = await fetch(endpoint);
 
   if (response.status === 429) {
-    const retryAfter = response.headers.get('Retry-After');
-    throw new RetryableError('Rate limited', {
-      retryAfter: retryAfter ? parseInt(retryAfter) * 1000 : '1m',
+    const retryAfter = response.headers.get("Retry-After");
+    throw new RetryableError("Rate limited", {
+      retryAfter: retryAfter ? parseInt(retryAfter) * 1000 : "1m",
     });
   }
 
@@ -172,7 +172,7 @@ Poll for a result with increasing delays:
 
 ```typescript lineNumbers
 export async function pollForResult(jobId: string) {
-  'use workflow';
+  "use workflow";
 
   let attempt = 0;
   const maxAttempts = 10;
@@ -180,7 +180,7 @@ export async function pollForResult(jobId: string) {
   while (attempt < maxAttempts) {
     const result = await checkJobStatus(jobId);
 
-    if (result.status === 'complete') {
+    if (result.status === "complete") {
       return result.data;
     }
 
@@ -188,11 +188,11 @@ export async function pollForResult(jobId: string) {
     await sleep(Math.min(1000 * 2 ** attempt, 60000)); // Exponential backoff, max 1 minute
   }
 
-  throw new Error('Job did not complete in time');
+  throw new Error("Job did not complete in time");
 }
 
 async function checkJobStatus(jobId: string) {
-  'use step';
+  "use step";
   // Check job status...
 }
 ```

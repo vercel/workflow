@@ -18,7 +18,7 @@ First, define a TypeScript type for your custom data part. This ensures type saf
 
 ```typescript title="schemas/chat.ts" lineNumbers
 export interface FoundFlightDataPart {
-  type: 'data-found-flight'; // [!code highlight]
+  type: "data-found-flight"; // [!code highlight]
   id: string;
   data: {
     flightNumber: string;
@@ -39,14 +39,14 @@ The `type` field must be a string starting with `data-` followed by your custom 
 Use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside a step function to get a handle to the stream. This is the same stream that the LLM and other tools calls are writing to, so we can inject out own data packets directly.
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
-import { getWritable } from 'workflow'; // [!code highlight]
-import type { UIMessageChunk } from 'ai';
+import { getWritable } from "workflow"; // [!code highlight]
+import type { UIMessageChunk } from "ai";
 
 export async function searchFlights(
   { from, to, date }: { from: string; to: string; date: string },
   { toolCallId }: { toolCallId: string } // [!code highlight]
 ) {
-  'use step';
+  "use step";
 
   const writable = getWritable<UIMessageChunk>(); // [!code highlight]
   const writer = writable.getWriter(); // [!code highlight]
@@ -60,7 +60,7 @@ export async function searchFlights(
 
     await writer.write({ // [!code highlight]
       id: `${toolCallId}-${flight.flightNumber}`, // [!code highlight]
-      type: 'data-found-flight', // [!code highlight]
+      type: "data-found-flight", // [!code highlight]
       data: flight, // [!code highlight]
     }); // [!code highlight]
   } // [!code highlight]
@@ -91,7 +91,7 @@ Update your chat component to detect and render the custom data parts. Data part
 ```typescript title="app/page.tsx" lineNumbers
 {message.parts.map((part, partIndex) => {
   // Render text parts
-  if (part.type === 'text') {
+  if (part.type === "text") {
     return (
       <Response key={`${message.id}-text-${partIndex}`}>
         {part.text}
@@ -100,7 +100,7 @@ Update your chat component to detect and render the custom data parts. Data part
   }
 
   // Render streaming flight data parts // [!code highlight]
-  if (part.type === 'data-found-flight') { // [!code highlight]
+  if (part.type === "data-found-flight") { // [!code highlight]
     const flight = part.data as { // [!code highlight]
       flightNumber: string; // [!code highlight]
       airline: string; // [!code highlight]

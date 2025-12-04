@@ -49,8 +49,8 @@ Add a tool that allows the agent to deliberately pause execution until a human a
 Create a typed hook with a Zod schema for validation:
 
 ```typescript title="workflow/steps/tools.ts" lineNumbers
-import { defineHook } from 'workflow';
-import { z } from 'zod';
+import { defineHook } from "workflow";
+import { z } from "zod";
 // ... existing imports ...
 
 export const bookingApprovalHook = defineHook({
@@ -72,7 +72,7 @@ export const bookingApprovalHook = defineHook({
 Create a tool that creates a hook instance using the tool call ID as the token. The UI will use this ID to submit the approval.
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
-import { z } from 'zod';
+import { z } from "zod";
 
 // ...
 
@@ -89,21 +89,21 @@ async function executeBookingApproval( // [!code highlight]
   const { approved, comment } = await hook; // [!code highlight]
 
   if (!approved) {
-    return `Booking rejected: ${comment || 'No reason provided'}`;
+    return `Booking rejected: ${comment || "No reason provided"}`;
   }
 
-  return `Booking approved for ${passengerName} on flight ${flightNumber}${comment ? ` - Note: ${comment}` : ''}`;
+  return `Booking approved for ${passengerName} on flight ${flightNumber}${comment ? ` - Note: ${comment}` : ""}`;
 }
 
 // Adding the tool to the existing tool definitions
 export const flightBookingTools = {
   // ... existing tool definitions ...
   bookingApproval: {
-    description: 'Request human approval before booking a flight',
+    description: "Request human approval before booking a flight",
     inputSchema: z.object({
-      flightNumber: z.string().describe('Flight number to book'),
-      passengerName: z.string().describe('Name of the passenger'),
-      price: z.number().describe('Total price of the booking'),
+      flightNumber: z.string().describe("Flight number to book"),
+      passengerName: z.string().describe("Name of the passenger"),
+      price: z.number().describe("Total price of the booking"),
     }),
     execute: executeBookingApproval,
   },
@@ -123,7 +123,7 @@ Note that the `defineHook().create()` function must be called from within a work
 Create a new API endpoint that the UI will call to submit the approval decision:
 
 ```typescript title="app/api/approve-booking/route.ts" lineNumbers
-import { bookingApprovalHook } from '@/workflow/steps/tools';
+import { bookingApprovalHook } from "@/workflow/steps/tools";
 
 export async function POST(request: Request) {
   const { toolCallId, approved, comment } = await request.json();
@@ -148,9 +148,9 @@ export async function POST(request: Request) {
 Build a new component that reacts to the tool call data, and allows the user to approve or reject the booking:
 
 ```typescript title="components/booking-approval.tsx" lineNumbers
-'use client';
+"use client";
 
-import { useState } from 'react';
+import { useState } from "react";
 
 interface BookingApprovalProps {
   toolCallId: string;
@@ -163,7 +163,7 @@ interface BookingApprovalProps {
 }
 
 export function BookingApproval({ toolCallId, input, output }: BookingApprovalProps) {
-  const [comment, setComment] = useState('');
+  const [comment, setComment] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // If we have output, the approval has been processed
@@ -178,9 +178,9 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
   const handleSubmit = async (approved: boolean) => {
     setIsSubmitting(true);
     try {
-      await fetch('/api/approve-booking', { // [!code highlight]
-        method: 'POST', // [!code highlight]
-        headers: { 'Content-Type': 'application/json' }, // [!code highlight]
+      await fetch("/api/approve-booking", { // [!code highlight]
+        method: "POST", // [!code highlight]
+        headers: { "Content-Type": "application/json" }, // [!code highlight]
         body: JSON.stringify({ toolCallId, approved, comment }), // [!code highlight]
       }); // [!code highlight]
     } finally {
@@ -213,14 +213,14 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
           disabled={isSubmitting}
           className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
         >
-          {isSubmitting ? 'Submitting...' : 'Approve'}
+          {isSubmitting ? "Submitting..." : "Approve"}
         </button>
         <button
           onClick={() => handleSubmit(false)}
           disabled={isSubmitting}
           className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
         >
-          {isSubmitting ? 'Submitting...' : 'Reject'}
+          {isSubmitting ? "Submitting..." : "Reject"}
         </button>
       </div>
     </div>
@@ -238,7 +238,7 @@ Use the component we just created to render the tool call and approval controls 
 
 ```typescript title="app/page.tsx" lineNumbers
 // ... existing imports ...
-import { BookingApproval } from '@/components/booking-approval';
+import { BookingApproval } from "@/components/booking-approval";
 
 export default function ChatPage() {
 
@@ -314,8 +314,8 @@ export default function ChatPage() {
 For simpler cases where you don't need type-safe validation or programmatic resumption, you can use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) directly. This generates a unique URL that can be called to resume the workflow:
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
-import { createWebhook } from 'workflow';
-import { z } from 'zod';
+import { createWebhook } from "workflow";
+import { z } from "zod";
 
 async function executeBookingApproval(
   { flightNumber, passengerName, price }: { flightNumber: string; passengerName: string; price: number },
@@ -324,14 +324,14 @@ async function executeBookingApproval(
   const webhook = createWebhook(); // [!code highlight]
 
   // The webhook URL could be logged, sent via email, or stored for later use
-  console.log('Approval URL:', webhook.url);
+  console.log("Approval URL:", webhook.url);
 
   // Workflow pauses here until the webhook is called // [!code highlight]
   const request = await webhook; // [!code highlight]
   const { approved, comment } = await request.json(); // [!code highlight]
 
   if (!approved) {
-    return `Booking rejected: ${comment || 'No reason provided'}`;
+    return `Booking rejected: ${comment || "No reason provided"}`;
   }
 
   return `Booking approved for ${passengerName} on flight ${flightNumber}`;

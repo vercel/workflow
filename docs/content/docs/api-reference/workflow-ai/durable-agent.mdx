@@ -11,10 +11,10 @@ The `DurableAgent` class enables you to create AI-powered agents that can mainta
 Tool calls can be implemented as workflow steps for automatic retries, or as regular workflow-level logic utilizing core library features such as [`sleep()`](/docs/api-reference/workflow/sleep) and [Hooks](/docs/foundations/hooks).
 
 ```typescript lineNumbers
-import { DurableAgent } from '@workflow/ai/agent';
-import { getWritable } from 'workflow';
-import { z } from 'zod';
-import type { UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
 
 async function getWeather({ city }: { city: string }) {
   "use step";
@@ -26,11 +26,11 @@ async function myAgent() {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: 'anthropic/claude-haiku-4.5',
-    system: 'You are a helpful weather assistant.',
+    model: "anthropic/claude-haiku-4.5",
+    system: "You are a helpful weather assistant.",
     tools: {
       getWeather: {
-        description: 'Get weather for a city',
+        description: "Get weather for a city",
         inputSchema: z.object({ city: z.string() }),
         execute: getWeather,
       },
@@ -42,7 +42,7 @@ async function myAgent() {
   const writable = getWritable<UIMessageChunk>();
 
   await agent.stream({
-    messages: [{ role: 'user', content: 'How is the weather in San Francisco?' }],
+    messages: [{ role: "user", content: "How is the weather in San Francisco?" }],
     writable,
   });
 }
@@ -114,10 +114,10 @@ export default PrepareStepResult;`}
 ### Basic Agent with Tools
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
-import { getWritable } from 'workflow';
-import { z } from 'zod';
-import type { UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
 
 async function getWeather({ location }: { location: string }) {
   "use step";
@@ -127,24 +127,24 @@ async function getWeather({ location }: { location: string }) {
 }
 
 async function weatherAgentWorkflow(userQuery: string) {
-  'use workflow';
+  "use workflow";
 
   const agent = new DurableAgent({
-    model: 'anthropic/claude-haiku-4.5',
+    model: "anthropic/claude-haiku-4.5",
     tools: {
       getWeather: {
-        description: 'Get current weather for a location',
+        description: "Get current weather for a location",
         inputSchema: z.object({ location: z.string() }),
         execute: getWeather,
       },
     },
-    system: 'You are a helpful weather assistant. Always provide accurate weather information.',
+    system: "You are a helpful weather assistant. Always provide accurate weather information.",
   });
 
   await agent.stream({
     messages: [
       {
-        role: 'user',
+        role: "user",
         content: userQuery,
       },
     ],
@@ -156,10 +156,10 @@ async function weatherAgentWorkflow(userQuery: string) {
 ### Multiple Tools
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
-import { getWritable } from 'workflow';
-import { z } from 'zod';
-import type { UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
 
 async function getWeather({ location }: { location: string }) {
   "use step";
@@ -172,18 +172,18 @@ async function searchEvents({ location, category }: { location: string; category
 }
 
 async function multiToolAgentWorkflow(userQuery: string) {
-  'use workflow';
+  "use workflow";
 
   const agent = new DurableAgent({
-    model: 'anthropic/claude-haiku-4.5',
+    model: "anthropic/claude-haiku-4.5",
     tools: {
       getWeather: {
-        description: 'Get weather for a location',
+        description: "Get weather for a location",
         inputSchema: z.object({ location: z.string() }),
         execute: getWeather,
       },
       searchEvents: {
-        description: 'Search for upcoming events in a location',
+        description: "Search for upcoming events in a location",
         inputSchema: z.object({ location: z.string(), category: z.string() }),
         execute: searchEvents,
       },
@@ -193,7 +193,7 @@ async function multiToolAgentWorkflow(userQuery: string) {
   await agent.stream({
     messages: [
       {
-        role: 'user',
+        role: "user",
         content: userQuery,
       },
     ],
@@ -205,8 +205,8 @@ async function multiToolAgentWorkflow(userQuery: string) {
 ### Multi-turn Conversation
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
-import { z } from 'zod';
+import { DurableAgent } from "@workflow/ai/agent";
+import { z } from "zod";
 
 async function searchProducts({ query }: { query: string }) {
   "use step";
@@ -215,13 +215,13 @@ async function searchProducts({ query }: { query: string }) {
 }
 
 async function multiTurnAgentWorkflow() {
-  'use workflow';
+  "use workflow";
 
   const agent = new DurableAgent({
-    model: 'anthropic/claude-haiku-4.5',
+    model: "anthropic/claude-haiku-4.5",
     tools: {
       searchProducts: {
-        description: 'Search for products',
+        description: "Search for products",
         inputSchema: z.object({ query: z.string() }),
         execute: searchProducts,
       },
@@ -235,7 +235,7 @@ async function multiTurnAgentWorkflow() {
   //   - Message history is returned in `messages` for LLM context
   let { messages } = await agent.stream({
     messages: [
-      { role: 'user', content: 'Find me some laptops' }
+      { role: "user", content: "Find me some laptops" }
     ],
     writable,
   });
@@ -244,7 +244,7 @@ async function multiTurnAgentWorkflow() {
   const result = await agent.stream({
     messages: [
       ...messages,
-      { role: 'user', content: 'Which one has the best battery life?' }
+      { role: "user", content: "Which one has the best battery life?" }
     ],
     writable,
   });
@@ -257,10 +257,10 @@ async function multiTurnAgentWorkflow() {
 ### Tools with Workflow Library Features
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
-import { sleep, defineHook, getWritable } from 'workflow';
-import { z } from 'zod';
-import type { UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { sleep, defineHook, getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
 
 // Define a reusable hook type
 const approvalHook = defineHook<{ approved: boolean; reason: string }>();
@@ -294,20 +294,20 @@ async function requestApproval({ message }: { message: string }) {
 }
 
 async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
-  'use workflow';
+  "use workflow";
 
   const agent = new DurableAgent({
-    model: 'anthropic/claude-haiku-4.5',
+    model: "anthropic/claude-haiku-4.5",
     tools: {
       scheduleTask: {
-        description: 'Pause the workflow for the specified number of seconds',
+        description: "Pause the workflow for the specified number of seconds",
         inputSchema: z.object({
           delaySeconds: z.number(),
         }),
         execute: scheduleTask,
       },
       requestApproval: {
-        description: 'Request approval for an action',
+        description: "Request approval for an action",
         inputSchema: z.object({ message: z.string() }),
         execute: requestApproval,
       },
@@ -315,7 +315,7 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
   });
 
   await agent.stream({
-    messages: [{ role: 'user', content: userRequest }],
+    messages: [{ role: "user", content: userRequest }],
     writable: getWritable<UIMessageChunk>(),
   });
 }
@@ -326,26 +326,26 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
 Use `prepareStep` to modify settings before each step in the agent loop:
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
-import { getWritable } from 'workflow';
-import type { UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessageChunk } from "ai";
 
 async function agentWithPrepareStep(userMessage: string) {
-  'use workflow';
+  "use workflow";
 
   const agent = new DurableAgent({
-    model: 'openai/gpt-4.1-mini', // Default model
-    system: 'You are a helpful assistant.',
+    model: "openai/gpt-4.1-mini", // Default model
+    system: "You are a helpful assistant.",
   });
 
   await agent.stream({
-    messages: [{ role: 'user', content: userMessage }],
+    messages: [{ role: "user", content: userMessage }],
     writable: getWritable<UIMessageChunk>(),
     prepareStep: async ({ stepNumber, messages }) => {
       // Switch to a stronger model for complex reasoning after initial steps
       if (stepNumber > 2 && messages.length > 10) {
         return {
-          model: 'anthropic/claude-sonnet-4.5',
+          model: "anthropic/claude-sonnet-4.5",
         };
       }
 
@@ -370,30 +370,30 @@ async function agentWithPrepareStep(userMessage: string) {
 Inject messages from external sources (like hooks) before each LLM call:
 
 ```typescript
-import { DurableAgent } from '@workflow/ai/agent';
-import { getWritable, defineHook } from 'workflow';
-import type { UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable, defineHook } from "workflow";
+import type { UIMessageChunk } from "ai";
 
 const messageHook = defineHook<{ message: string }>();
 
 async function agentWithMessageQueue(initialMessage: string) {
-  'use workflow';
+  "use workflow";
 
-  const messageQueue: Array<{ role: 'user'; content: string }> = [];
+  const messageQueue: Array<{ role: "user"; content: string }> = [];
 
   // Listen for incoming messages via hook
   const hook = messageHook.create();
   hook.then(({ message }) => {
-    messageQueue.push({ role: 'user', content: message });
+    messageQueue.push({ role: "user", content: message });
   });
 
   const agent = new DurableAgent({
-    model: 'anthropic/claude-haiku-4.5',
-    system: 'You are a helpful assistant.',
+    model: "anthropic/claude-haiku-4.5",
+    system: "You are a helpful assistant.",
   });
 
   await agent.stream({
-    messages: [{ role: 'user', content: initialMessage }],
+    messages: [{ role: "user", content: initialMessage }],
     writable: getWritable<UIMessageChunk>(),
     prepareStep: ({ messages }) => {
       // Inject queued messages before the next step
@@ -404,7 +404,7 @@ async function agentWithMessageQueue(initialMessage: string) {
             ...messages,
             ...newMessages.map(m => ({
               role: m.role,
-              content: [{ type: 'text' as const, text: m.content }],
+              content: [{ type: "text" as const, text: m.content }],
             })),
           ],
         };

@@ -156,8 +156,8 @@ Taking a look at this code:
 To invoke your new workflow, we'll create a new API route handler at `server/api/signup.post.ts` with the following code:
 
 ```typescript title="server/api/signup.post.ts"
-import { start } from 'workflow/api';
-import { defineEventHandler, readBody } from 'h3';
+import { start } from "workflow/api";
+import { defineEventHandler, readBody } from "h3";
 import { handleUserSignup } from "../workflows/user-signup";
 
 export default defineEventHandler(async (event) => {

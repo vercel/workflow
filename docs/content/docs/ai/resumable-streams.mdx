@@ -32,7 +32,7 @@ export async function POST(req: Request) {
   return createUIMessageStreamResponse({
     stream: run.readable,
     headers: { // [!code highlight
-      'x-workflow-run-id': run.runId, // [!code highlight]
+      "x-workflow-run-id": run.runId, // [!code highlight]
     }, // [!code highlight]
   });
 }
@@ -47,8 +47,8 @@ export async function POST(req: Request) {
 Currently we only have one API endpoint that always creates a new run, so we need to create a new API route that returns the stream for an existing run:
 
 ```typescript title="app/api/chat/[id]/stream/route.ts" lineNumbers
-import { createUIMessageStreamResponse } from 'ai';
-import { getRun } from 'workflow/api'; // [!code highlight]
+import { createUIMessageStreamResponse } from "ai";
+import { getRun } from "workflow/api"; // [!code highlight]
 
 export async function GET(
   request: Request,
@@ -58,7 +58,7 @@ export async function GET(
   const { searchParams } = new URL(request.url);
 
   // Client provides the last chunk index they received
-  const startIndexParam = searchParams.get('startIndex'); // [!code highlight]
+  const startIndexParam = searchParams.get("startIndex"); // [!code highlight]
   const startIndex = startIndexParam
     ? parseInt(startIndexParam, 10)
     : undefined;
@@ -84,42 +84,42 @@ Replace the default transport in AI-SDK's `useChat` with [`WorkflowChatTransport
 ), and update the callbacks to store and use the latest run ID. For now, we'll store the run ID in localStorage. For your own app, this would be stored wherever you store session information.
 
 ```typescript title="app/page.tsx" lineNumbers
-'use client';
+"use client";
 
-import { useChat } from '@ai-sdk/react';
-import { WorkflowChatTransport } from '@workflow/ai'; // [!code highlight]
-import { useMemo, useState } from 'react';
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { useMemo, useState } from "react";
 
 export default function ChatPage() {
 
   // Check for an active workflow run on mount
   const activeRunId = useMemo(() => { // [!code highlight]
-    if (typeof window === 'undefined') return; // [!code highlight]
-    return localStorage.getItem('active-workflow-run-id') ?? undefined; // [!code highlight]
+    if (typeof window === "undefined") return; // [!code highlight]
+    return localStorage.getItem("active-workflow-run-id") ?? undefined; // [!code highlight]
   }, []); // [!code highlight]
 
   const { messages, sendMessage, status } = useChat({
     resume: Boolean(activeRunId), // [!code highlight]
     transport: new WorkflowChatTransport({ // [!code highlight]
-      api: '/api/chat',
+      api: "/api/chat",
 
       // Store the run ID when a new chat starts
       onChatSendMessage: (response) => { // [!code highlight]
-        const workflowRunId = response.headers.get('x-workflow-run-id'); // [!code highlight]
+        const workflowRunId = response.headers.get("x-workflow-run-id"); // [!code highlight]
         if (workflowRunId) { // [!code highlight]
-          localStorage.setItem('active-workflow-run-id', workflowRunId); // [!code highlight]
+          localStorage.setItem("active-workflow-run-id", workflowRunId); // [!code highlight]
         } // [!code highlight]
       }, // [!code highlight]
 
       // Clear the run ID when the chat completes
       onChatEnd: () => { // [!code highlight]
-        localStorage.removeItem('active-workflow-run-id'); // [!code highlight]
+        localStorage.removeItem("active-workflow-run-id"); // [!code highlight]
       }, // [!code highlight]
 
       // Use the stored run ID for reconnection
       prepareReconnectToStreamRequest: ({ api, ...rest }) => { // [!code highlight]
-        const runId = localStorage.getItem('active-workflow-run-id'); // [!code highlight]
-        if (!runId) throw new Error('No active workflow run ID found'); // [!code highlight]
+        const runId = localStorage.getItem("active-workflow-run-id"); // [!code highlight]
+        if (!runId) throw new Error("No active workflow run ID found"); // [!code highlight]
         return { // [!code highlight]
           ...rest, // [!code highlight]
           api: `/api/chat/${encodeURIComponent(runId)}/stream`, // [!code highlight]

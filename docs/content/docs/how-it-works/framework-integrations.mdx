@@ -216,12 +216,12 @@ This will default to scanning the `./workflows` top-level directory for workflow
 **Option 2: Extend `BaseBuilder`** (recommended)
 
 ```typescript lineNumbers
-import { BaseBuilder } from '@workflow/cli/dist/lib/builders/base-builder';
+import { BaseBuilder } from "@workflow/cli/dist/lib/builders/base-builder";
 
 class MyFrameworkBuilder extends BaseBuilder {
   constructor(options) {
     super({
-      dirs: ['workflows'],
+      dirs: ["workflows"],
       workingDir: options.rootDir,
       watch: options.dev,
     });
@@ -231,19 +231,19 @@ class MyFrameworkBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
 
     await this.createWorkflowsBundle({
-      outfile: '/path/to/.well-known/workflow/v1/flow.js',
-      format: 'esm',
+      outfile: "/path/to/.well-known/workflow/v1/flow.js",
+      format: "esm",
       inputFiles,
     });
 
     await this.createStepsBundle({
-      outfile: '/path/to/.well-known/workflow/v1/step.js',
-      format: 'esm',
+      outfile: "/path/to/.well-known/workflow/v1/step.js",
+      format: "esm",
       inputFiles,
     });
 
     await this.createWebhookBundle({
-      outfile: '/path/to/.well-known/workflow/v1/webhook.js',
+      outfile: "/path/to/.well-known/workflow/v1/webhook.js",
     });
   }
 }
@@ -254,7 +254,7 @@ If your framework supports virtual server routes and dev mode watching, make sur
 Hook into your framework's build:
 
 ```typescript title="pseudocode.ts" lineNumbers
-framework.hooks.hook('build:before', async () => {
+framework.hooks.hook("build:before", async () => {
   await new MyFrameworkBuilder(framework).build();
 });
 ```
@@ -268,7 +268,7 @@ Add a loader/plugin for your bundler:
 ```typescript lineNumbers
 export function workflowPlugin() {
   return {
-    name: 'workflow-client-transform',
+    name: "workflow-client-transform",
     async transform(code, id) {
       if (!code.match(/(use step|use workflow)/)) return null;
 
@@ -295,7 +295,7 @@ module.exports = {
     rules: [
       {
         test: /\.(ts|tsx|js|jsx)$/,
-        use: 'workflow-client-loader', // Similar implementation
+        use: "workflow-client-loader", // Similar implementation
       },
     ],
   },

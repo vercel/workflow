@@ -80,14 +80,14 @@ Then modify your API endpoint to use the OpenAI provider:
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
 // ...
-import { openai } from '@workflow/ai/openai'; // [!code highlight]
+import { openai } from "@workflow/ai/openai"; // [!code highlight]
 
 export async function POST(req: Request) {
   // ...
   const agent = new Agent({
     // This uses the OPENAI_API_KEY environment variable by default, but you
     // can also pass { apiKey: string } as an option.
-    model: openai('gpt-5.1'), // [!code highlight]
+    model: openai("gpt-5.1"), // [!code highlight]
     // ...
   });
 ```
@@ -114,7 +114,7 @@ Our API route makes a simple call to [AI SDK's `Agent` class](https://ai-sdk.dev
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
   const agent = new Agent({ // [!code highlight]
-    model: gateway('bedrock/claude-4-5-haiku-20251001-v1'),
+    model: gateway("bedrock/claude-4-5-haiku-20251001-v1"),
     system: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -133,12 +133,12 @@ export async function POST(req: Request) {
 Our tools are mostly mocked out for the sake of the example. We use AI SDK's `tool` function to define the tool, and pass it to the agent. In your own app, this might be any kind of tool call, like database queries, calls to external services, etc.
 
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
-import { tool } from 'ai';
-import { z } from 'zod';
+import { tool } from "ai";
+import { z } from "zod";
 
 export const tools = {
   searchFlights: tool({
-    description: 'Search for flights',
+    description: "Search for flights",
     inputSchema: z.object({ query: z.string() }),
     execute: searchFlights,
   }),
@@ -156,9 +156,9 @@ async function searchFlights({ from, to, date }: { from: string; to: string; dat
 Our `ChatPage` component has a lot of logic for nicely displaying the chat messages, but at it's core, it's simply managing input/output for the [`useChat` hook](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat#usechat) from AI SDK.
 
 ```typescript title="app/chat.tsx" lineNumbers
-'use client';
+"use client";
 
-import { useChat } from '@ai-sdk/react';
+import { useChat } from "@ai-sdk/react";
 
 export default function ChatPage() {
   const { messages, input, handleInputChange, handleSubmit } = useChat({ // [!code highlight]
@@ -174,10 +174,10 @@ export default function ChatPage() {
         <div key={m.id}>
           <strong>{m.role}:</strong>
           {m.parts.map((part, i) => {
-            if (part.type === 'text') { // [!code highlight]
+            if (part.type === "text") { // [!code highlight]
               return <span key={i}>{part.text}</span>;
             }
-            if (part.type === 'tool-searchFlights') { // [!code highlight]
+            if (part.type === "tool-searchFlights") { // [!code highlight]
               // ... some special rendering for our tool results
             }
             return null;
@@ -222,8 +222,8 @@ npm i workflow @workflow/ai
 and extend the Next.js config to transform your workflow code (see [Getting Started](/docs/getting-started/next) for more details).
 
 ```typescript title="next.config.ts" lineNumbers
-import { withWorkflow } from 'workflow/next';
-import type { NextConfig } from 'next';
+import { withWorkflow } from "workflow/next";
+import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // ... rest of your Next.js config
@@ -241,24 +241,24 @@ export default withWorkflow(nextConfig);
 Move the agent logic into a separate function, which will serve as our workflow definition.
 
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
-import { DurableAgent } from '@workflow/ai/agent'; // [!code highlight]
-import { getWritable } from 'workflow'; // [!code highlight]
-import { tools } from '@/ai/tools';
-import { openai } from '@workflow/ai/openai';
-import type { ModelMessage, UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent"; // [!code highlight]
+import { getWritable } from "workflow"; // [!code highlight]
+import { tools } from "@/ai/tools";
+import { openai } from "@workflow/ai/openai";
+import type { ModelMessage, UIMessageChunk } from "ai";
 
 export async function chatWorkflow(messages: ModelMessage[]) {
-  'use workflow'; // [!code highlight]
+  "use workflow"; // [!code highlight]
 
   const writable = getWritable<UIMessageChunk>(); // [!code highlight]
 
   const agent = new DurableAgent({ // [!code highlight]
 
     // If using AI Gateway, just specify the model name as a string:
-    model: 'bedrock/claude-4-5-haiku-20251001-v1', // [!code highlight]
+    model: "bedrock/claude-4-5-haiku-20251001-v1", // [!code highlight]
 
     // ELSE if using a custom provider, pass the provider call as an argument:
-    model: openai('gpt-5.1'), // [!code highlight]
+    model: openai("gpt-5.1"), // [!code highlight]
 
     system: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
@@ -284,10 +284,10 @@ Key changes:
 Remove the agent call that we just extracted, and replace it with a call to `start()` to run the workflow:
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
-import type { UIMessage } from 'ai';
-import { convertToModelMessages, createUIMessageStreamResponse } from 'ai';
-import { start } from 'workflow/api';
-import { chatWorkflow } from '@/workflows/chat/workflow';
+import type { UIMessage } from "ai";
+import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
+import { start } from "workflow/api";
+import { chatWorkflow } from "@/workflows/chat/workflow";
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
@@ -319,7 +319,7 @@ Mark all tool definitions with `"use step"` to make them durable. This enables a
 export async function searchFlights(
   // ... arguments
 ) {
-  'use step'; // [!code highlight]
+  "use step"; // [!code highlight]
 
   // ... rest of the tool code
 }
@@ -327,7 +327,7 @@ export async function searchFlights(
 export async function checkFlightStatus(
   // ... arguments
 ) {
-  'use step'; // [!code highlight]
+  "use step"; // [!code highlight]
 
   // ... rest of the tool code
 }
@@ -335,7 +335,7 @@ export async function checkFlightStatus(
 export async function getAirportInfo(
   // ... arguments
 ) {
-  'use step'; // [!code highlight]
+  "use step"; // [!code highlight]
 
   // ... rest of the tool code
 }
@@ -343,7 +343,7 @@ export async function getAirportInfo(
 export async function bookFlight({
   // ... arguments
 }) {
-  'use step'; // [!code highlight]
+  "use step"; // [!code highlight]
 
   // ... rest of the tool code
 }
@@ -351,7 +351,7 @@ export async function bookFlight({
 export async function checkBaggageAllowance(
   // ... arguments
 ) {
-    'use step'; // [!code highlight]
+    "use step"; // [!code highlight]
 
     // ... rest of the tool code
   }

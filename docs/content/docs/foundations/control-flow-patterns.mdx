@@ -55,7 +55,7 @@ export async function runExternalTask(userId: string) {
   // whichever comes first
   await Promise.race([ // [!code highlight]
     webhook, // [!code highlight]
-    sleep('1 day'), // [!code highlight]
+    sleep("1 day"), // [!code highlight]
   ]); // [!code highlight]
 
   console.log("Done")

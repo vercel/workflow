@@ -57,7 +57,7 @@ Tools can also combine both by starting out on the workflow level, and calling i
 ```typescript title="tools.ts" lineNumbers
 // Step: handles I/O with retries
 async function performFetch(url: string) {
-  'use step';
+  "use step";
   const response = await fetch(url);
   return response.json();
 }
@@ -65,7 +65,7 @@ async function performFetch(url: string) {
 // Workflow-level: orchestrates steps and can use sleep()
 async function executeFetchWithDelay({ url }: { url: string }) {
   const result = await performFetch(url);
-  await sleep('5s'); // Only available at workflow level
+  await sleep("5s"); // Only available at workflow level
   return result;
 }
 ```
