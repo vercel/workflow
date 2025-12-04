@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- ca27c0f: Update to latest Next.js
+
 ## 4.0.1-beta.12
 
 ### Patch Changes

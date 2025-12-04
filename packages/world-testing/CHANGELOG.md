@@ -1,5 +1,12 @@
 # @workflow/world-testing
 
+## 4.0.1-beta.28
+
+### Patch Changes
+
+- @workflow/cli@4.0.1-beta.27
+- workflow@4.0.1-beta.27
+
 ## 4.0.1-beta.27
 
 ### Patch Changes
