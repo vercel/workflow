@@ -45,7 +45,6 @@ CREATE TABLE IF NOT EXISTS "workflow"."workflow_runs" (
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL,
 	"completed_at" timestamp,
-	"expired_at" timestamp,
 	"started_at" timestamp
 );
 --> statement-breakpoint
