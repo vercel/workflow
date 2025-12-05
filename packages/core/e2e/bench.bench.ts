@@ -293,4 +293,85 @@ describe('Workflow Performance Benchmarks', () => {
     },
     { time: 5000, warmupIterations: 1, teardown }
   );
+
+  // Stress tests for large concurrent step counts
+  // These reproduce reported issues with Promise.race/Promise.all at scale
+
+  bench(
+    'stress test: Promise.all with 100 concurrent steps',
+    async () => {
+      const { runId } = await triggerWorkflow(
+        'promiseAllStressTestWorkflow',
+        [100]
+      );
+      const { run } = await getWorkflowReturnValue(runId);
+      stageTiming('stress test: Promise.all with 100 concurrent steps', run);
+    },
+    { time: 30000, iterations: 3, warmupIterations: 1, teardown }
+  );
+
+  bench(
+    'stress test: Promise.all with 500 concurrent steps',
+    async () => {
+      const { runId } = await triggerWorkflow(
+        'promiseAllStressTestWorkflow',
+        [500]
+      );
+      const { run } = await getWorkflowReturnValue(runId);
+      stageTiming('stress test: Promise.all with 500 concurrent steps', run);
+    },
+    { time: 60000, iterations: 3, warmupIterations: 1, teardown }
+  );
+
+  bench(
+    'stress test: Promise.all with 1000 concurrent steps',
+    async () => {
+      const { runId } = await triggerWorkflow(
+        'promiseAllStressTestWorkflow',
+        [1000]
+      );
+      const { run } = await getWorkflowReturnValue(runId);
+      stageTiming('stress test: Promise.all with 1000 concurrent steps', run);
+    },
+    { time: 120000, iterations: 2, warmupIterations: 1, teardown }
+  );
+
+  bench(
+    'stress test: Promise.race with 100 concurrent steps',
+    async () => {
+      const { runId } = await triggerWorkflow(
+        'promiseRaceStressTestLargeWorkflow',
+        [100]
+      );
+      const { run } = await getWorkflowReturnValue(runId);
+      stageTiming('stress test: Promise.race with 100 concurrent steps', run);
+    },
+    { time: 30000, iterations: 3, warmupIterations: 1, teardown }
+  );
+
+  bench(
+    'stress test: Promise.race with 500 concurrent steps',
+    async () => {
+      const { runId } = await triggerWorkflow(
+        'promiseRaceStressTestLargeWorkflow',
+        [500]
+      );
+      const { run } = await getWorkflowReturnValue(runId);
+      stageTiming('stress test: Promise.race with 500 concurrent steps', run);
+    },
+    { time: 60000, iterations: 3, warmupIterations: 1, teardown }
+  );
+
+  bench(
+    'stress test: Promise.race with 1000 concurrent steps',
+    async () => {
+      const { runId } = await triggerWorkflow(
+        'promiseRaceStressTestLargeWorkflow',
+        [1000]
+      );
+      const { run } = await getWorkflowReturnValue(runId);
+      stageTiming('stress test: Promise.race with 1000 concurrent steps', run);
+    },
+    { time: 120000, iterations: 2, warmupIterations: 1, teardown }
+  );
 });

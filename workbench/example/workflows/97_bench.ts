@@ -86,3 +86,42 @@ export async function streamWorkflow() {
   const doubled = await doubleNumbers(stream);
   return doubled;
 }
+
+//////////////////////////////////////////////////////////
+// Stress test workflows for large concurrent step counts
+//////////////////////////////////////////////////////////
+
+async function stressTestStep(i: number) {
+  'use step';
+  // Minimal work to isolate the overhead of concurrent step tracking
+  return i;
+}
+
+// Stress test: Promise.all with many concurrent steps
+export async function promiseAllStressTestWorkflow(count: number) {
+  'use workflow';
+  const promises: Promise<number>[] = [];
+  for (let i = 0; i < count; i++) {
+    promises.push(stressTestStep(i));
+  }
+  const results = await Promise.all(promises);
+  return results.length;
+}
+
+// Stress test: Promise.race with many concurrent steps (uses Map pattern from report)
+export async function promiseRaceStressTestLargeWorkflow(count: number) {
+  'use workflow';
+  const runningTasks = new Map<number, Promise<number>>();
+  for (let i = 0; i < count; i++) {
+    runningTasks.set(i, stressTestStep(i));
+  }
+
+  const done: number[] = [];
+  while (runningTasks.size > 0) {
+    const result = await Promise.race(runningTasks.values());
+    done.push(result);
+    runningTasks.delete(result);
+  }
+
+  return done.length;
+}
