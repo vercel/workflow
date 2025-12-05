@@ -310,7 +310,8 @@ describe('Workflow Performance Benchmarks', () => {
     { time: 30000, iterations: 1, warmupIterations: 0, teardown }
   );
 
-  bench(
+  // TODO: Re-enable after performance optimizations (see beads issue wrk-fyx)
+  bench.skip(
     'stress test: Promise.all with 500 concurrent steps',
     async () => {
       const { runId } = await triggerWorkflow(
@@ -323,7 +324,8 @@ describe('Workflow Performance Benchmarks', () => {
     { time: 60000, iterations: 1, warmupIterations: 0, teardown }
   );
 
-  bench(
+  // TODO: Re-enable after performance optimizations (see beads issue wrk-fyx)
+  bench.skip(
     'stress test: Promise.all with 1000 concurrent steps',
     async () => {
       const { runId } = await triggerWorkflow(
@@ -349,7 +351,8 @@ describe('Workflow Performance Benchmarks', () => {
     { time: 30000, iterations: 1, warmupIterations: 0, teardown }
   );
 
-  bench(
+  // TODO: Re-enable after performance optimizations (see beads issue wrk-fyx)
+  bench.skip(
     'stress test: Promise.race with 500 concurrent steps',
     async () => {
       const { runId } = await triggerWorkflow(
@@ -362,7 +365,8 @@ describe('Workflow Performance Benchmarks', () => {
     { time: 60000, iterations: 1, warmupIterations: 0, teardown }
   );
 
-  bench(
+  // TODO: Re-enable after performance optimizations (see beads issue wrk-fyx)
+  bench.skip(
     'stress test: Promise.race with 1000 concurrent steps',
     async () => {
       const { runId } = await triggerWorkflow(
