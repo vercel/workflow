@@ -21,11 +21,7 @@ import {
   ROW_PADDING,
   TIMELINE_PADDING,
 } from '../util/constants';
-import {
-  formatDuration,
-  formatDurationForTimeline,
-  formatTimeSelection,
-} from '../util/timing';
+import { formatDurationForTimeline, formatTimeSelection } from '../util/timing';
 import { useImmediateStyle } from '../util/use-immediate-style';
 import { useTrackpadZoom } from '../util/use-trackpad-zoom';
 
