@@ -239,7 +239,7 @@ const ExpiredDataMessage = () => (
       color: 'var(--ds-gray-700)',
     }}
   >
-    <span>This data for this run has expired and is no longer available.</span>
+    <span>The data for this run has expired and is no longer available.</span>
   </div>
 );
 
