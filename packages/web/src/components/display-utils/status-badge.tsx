@@ -62,7 +62,7 @@ export function StatusBadge({
   };
 
   const content = (
-    <span className={cn('flex flex-col', className)}>
+    <span className={cn('flex flex-row gap-2', className)}>
       <span className="flex items-center gap-1.5">
         <span
           className={cn('size-2 rounded-full shrink-0', getCircleColor())}
@@ -73,7 +73,7 @@ export function StatusBadge({
       </span>
       {durationMs !== undefined && (
         <span className="text-muted-foreground/70 text-xs">
-          {formatDuration(durationMs)}
+          ({formatDuration(durationMs)})
         </span>
       )}
     </span>
