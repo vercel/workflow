@@ -170,17 +170,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # For PRs, download baseline results from main branch
-      - name: Download baseline from main branch
+      # For PRs, download baseline results from the PR's base branch
+      - name: Download baseline from PR base branch
         if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: benchmarks.yml
-          branch: main
+          branch: ${{ github.event.pull_request.base.ref }}
           name: baseline-benchmark-results
           path: baseline-results
-          search_artifacts: true
           if_no_artifact_found: warn
 
       - name: Build workbench
@@ -265,17 +264,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # For PRs, download baseline results from main branch
-      - name: Download baseline from main branch
+      # For PRs, download baseline results from the PR's base branch
+      - name: Download baseline from PR base branch
         if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: benchmarks.yml
-          branch: main
+          branch: ${{ github.event.pull_request.base.ref }}
           name: baseline-benchmark-results
           path: baseline-results
-          search_artifacts: true
           if_no_artifact_found: warn
 
       - name: Setup PostgreSQL database
@@ -348,17 +346,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # For PRs, download baseline results from main branch
-      - name: Download baseline from main branch
+      # For PRs, download baseline results from the PR's base branch
+      - name: Download baseline from PR base branch
         if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: benchmarks.yml
-          branch: main
+          branch: ${{ github.event.pull_request.base.ref }}
           name: baseline-benchmark-results
           path: baseline-results
-          search_artifacts: true
           if_no_artifact_found: warn
 
       - name: Wait for Vercel deployment
@@ -453,17 +450,16 @@ jobs:
       - name: List downloaded files
         run: find benchmark-results -type f -name "*.json" | sort
 
-      # For PRs, try to download baseline results from the latest main branch run
-      - name: Download baseline from main branch
+      # For PRs, download baseline results from the PR's base branch
+      - name: Download baseline from PR base branch
         if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: benchmarks.yml
-          branch: main
+          branch: ${{ github.event.pull_request.base.ref }}
           name: baseline-benchmark-results
           path: baseline-results
-          search_artifacts: true
           if_no_artifact_found: warn
 
       - name: Aggregate and compare benchmarks
