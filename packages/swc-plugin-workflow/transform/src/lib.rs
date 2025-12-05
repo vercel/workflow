@@ -3515,7 +3515,7 @@ impl VisitMut for StepTransform {
                             // Get the local name (the original identifier, not the exported alias)
                             let local_name = match &named_spec.orig {
                                 ModuleExportName::Ident(ident) => ident.sym.to_string(),
-                                ModuleExportName::Str(s) => s.value.as_str().unwrap_or("").to_string(),
+                                ModuleExportName::Str(s) => s.value.to_string_lossy().to_string(),
                             };
                             named_export_names.insert(local_name);
                         }
