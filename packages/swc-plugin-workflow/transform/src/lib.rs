@@ -3785,21 +3785,13 @@ impl VisitMut for StepTransform {
                     // Non-exported function declaration
                     let fn_name = fn_decl.ident.sym.to_string();
                     if self.workflow_function_names.contains(&fn_name) {
-                        // In Client/Step modes: always add workflowId
-                        // In Workflow mode: only add if later exported via `export { ... }`
-                        let should_add = match self.mode {
-                            TransformMode::Client | TransformMode::Step => true,
-                            TransformMode::Workflow => named_export_names.contains(&fn_name),
-                        };
-                        if should_add {
-                            items_to_insert.push((
-                                i + 1,
-                                ModuleItem::Stmt(self.create_workflow_id_assignment(
-                                    &fn_name,
-                                    fn_decl.function.span,
-                                )),
-                            ));
-                        }
+                        items_to_insert.push((
+                            i + 1,
+                            ModuleItem::Stmt(self.create_workflow_id_assignment(
+                                &fn_name,
+                                fn_decl.function.span,
+                            )),
+                        ));
                     }
                 }
                 ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
@@ -3808,26 +3800,18 @@ impl VisitMut for StepTransform {
                         if let Pat::Ident(binding) = &declarator.name {
                             let name = binding.id.sym.to_string();
                             if self.workflow_function_names.contains(&name) {
-                                // In Client/Step modes: always add workflowId
-                                // In Workflow mode: only add if later exported via `export { ... }`
-                                let should_add = match self.mode {
-                                    TransformMode::Client | TransformMode::Step => true,
-                                    TransformMode::Workflow => named_export_names.contains(&name),
-                                };
-                                if should_add {
-                                    if let Some(init) = &declarator.init {
-                                        let span = match &**init {
-                                            Expr::Fn(fn_expr) => fn_expr.function.span,
-                                            Expr::Arrow(arrow_expr) => arrow_expr.span,
-                                            _ => declarator.span,
-                                        };
-                                        items_to_insert.push((
-                                            i + 1,
-                                            ModuleItem::Stmt(
-                                                self.create_workflow_id_assignment(&name, span),
-                                            ),
-                                        ));
-                                    }
+                                if let Some(init) = &declarator.init {
+                                    let span = match &**init {
+                                        Expr::Fn(fn_expr) => fn_expr.function.span,
+                                        Expr::Arrow(arrow_expr) => arrow_expr.span,
+                                        _ => declarator.span,
+                                    };
+                                    items_to_insert.push((
+                                        i + 1,
+                                        ModuleItem::Stmt(
+                                            self.create_workflow_id_assignment(&name, span),
+                                        ),
+                                    ));
                                 }
                             }
                         }

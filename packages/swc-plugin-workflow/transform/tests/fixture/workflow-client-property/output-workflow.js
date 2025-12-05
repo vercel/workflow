@@ -18,6 +18,7 @@ defaultWorkflow.workflowId = "workflow//input.js//defaultWorkflow";
 async function internalWorkflow() {
     return 'internal';
 }
+internalWorkflow.workflowId = "workflow//input.js//internalWorkflow";
 // Use the internal workflow to avoid lint warning
 regularFunction(internalWorkflow);
 // Regular function should not be affected
