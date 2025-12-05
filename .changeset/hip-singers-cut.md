@@ -1,10 +1,5 @@
 ---
-"@workflow/world-postgres": patch
-"@workflow/world-local": patch
 "@workflow/web-shared": patch
-"@workflow/utils": patch
-"@workflow/world": patch
-"@workflow/core": patch
 "@workflow/web": patch
 ---
 
