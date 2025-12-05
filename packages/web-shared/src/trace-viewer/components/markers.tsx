@@ -21,7 +21,11 @@ import {
   ROW_PADDING,
   TIMELINE_PADDING,
 } from '../util/constants';
-import { formatDuration, formatTimeSelection } from '../util/timing';
+import {
+  formatDuration,
+  formatDurationForTimeline,
+  formatTimeSelection,
+} from '../util/timing';
 import { useImmediateStyle } from '../util/use-immediate-style';
 import { useTrackpadZoom } from '../util/use-trackpad-zoom';
 
@@ -74,7 +78,7 @@ export function Markers({ scale }: { scale: number }): ReactNode {
             >
               {hasLabel ? (
                 <span className={styles.markerLabel}>
-                  {formatDuration(markerDuration * i)}
+                  {formatDurationForTimeline(markerDuration * i)}
                 </span>
               ) : null}
             </span>
