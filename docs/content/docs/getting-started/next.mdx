@@ -110,7 +110,7 @@ This ensures that internal Workflow paths are not intercepted by your middleware
 
 ## Create Your First Workflow
 
-Create a new file for our first workflow:
+Create a new file for our first workflow.
 
 ```typescript title="workflows/user-signup.ts" lineNumbers
 import { sleep } from "workflow";
@@ -134,6 +134,7 @@ export async function handleUserSignup(email: string) {
 We'll fill in those functions next, but let's take a look at this code:
 
 * We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
+* In general a single file should export one `"use workflow"` function and nothing else. For example, a function with `"use workflow"` should not be defined in the same file as `route.ts`.
 * The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
 ## Create Your Workflow Steps
