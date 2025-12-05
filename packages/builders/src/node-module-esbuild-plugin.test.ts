@@ -457,13 +457,13 @@ describe('workflow-node-module-error helper functions', () => {
   });
 
   describe('getViolationLocation', () => {
-    it('should find violation location for package name that appears in file', () => {
+    it('should find violation location for package name that appears in file', async () => {
       // Use the actual monorepo root as cwd
       const cwd = process.cwd();
       const testFile = 'src/node-module-esbuild-plugin.test.ts';
 
       // Test with 'vitest' which is actually imported in this file
-      const location = getViolationLocation(cwd, testFile, 'vitest');
+      const location = await getViolationLocation(cwd, testFile, 'vitest');
 
       // The function should find 'vitest' in the import statement
       expect(location).toBeDefined();
