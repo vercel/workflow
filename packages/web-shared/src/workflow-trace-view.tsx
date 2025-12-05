@@ -179,7 +179,7 @@ export const WorkflowTraceViewer = ({
         withPanel
         customSpanClassNameFunc={getCustomSpanClassName}
         customSpanEventClassNameFunc={getCustomSpanEventClassName}
-        customPanelComponent={<WorkflowDetailPanel env={env} />}
+        customPanelComponent={<WorkflowDetailPanel env={env} run={run} />}
       >
         <TraceViewerTimeline height="100%" trace={trace} withPanel />
       </TraceViewerContextProvider>

@@ -239,7 +239,7 @@ const ExpiredDataMessage = () => (
       color: 'var(--ds-gray-700)',
     }}
   >
-    <span>This data has expired and is no longer available.</span>
+    <span>The data for this run has expired and is no longer available.</span>
   </div>
 );
 
@@ -309,14 +309,15 @@ export const AttributePanel = ({
   data,
   isLoading,
   error,
+  expiredAt,
 }: {
   data: Record<string, unknown>;
   isLoading?: boolean;
   error?: Error;
+  expiredAt?: string | Date;
 }) => {
   const displayData = data;
-  const hasExpired =
-    'expiredAt' in displayData && displayData.expiredAt != null;
+  const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))
     .sort(sortByAttributeOrder);
