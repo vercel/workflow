@@ -15,7 +15,10 @@ import { useEffect, useMemo } from 'react';
 import '@xyflow/react/dist/style.css';
 import { GitBranch, PlayCircle, StopCircle } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import type { GraphNode, WorkflowGraph } from '@/lib/workflow-graph-types';
+import type {
+  GraphNode,
+  WorkflowGraph,
+} from '@/lib/flow-graph/workflow-graph-types';
 
 interface WorkflowGraphViewerProps {
   workflow: WorkflowGraph;

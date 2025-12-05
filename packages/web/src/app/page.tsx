@@ -15,7 +15,7 @@ import {
   useTabState,
   useWorkflowIdState,
 } from '@/lib/url-state';
-import { useWorkflowGraphManifest } from '@/lib/use-workflow-graph';
+import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
 
 export default function Home() {
   const router = useRouter();

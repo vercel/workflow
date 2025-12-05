@@ -8,11 +8,11 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import { adaptManifest } from '@/lib/manifest-adapter';
+import { adaptManifest } from '@/lib/flow-graph/manifest-adapter';
 import type {
   RawWorkflowsManifest,
   WorkflowGraphManifest,
-} from '@/lib/workflow-graph-types';
+} from '@/lib/flow-graph/workflow-graph-types';
 
 /**
  * Hook to fetch the workflow graph manifest from the workflow data directory

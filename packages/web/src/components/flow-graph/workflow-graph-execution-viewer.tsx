@@ -23,7 +23,7 @@ import type {
   StepExecution,
   WorkflowGraph,
   WorkflowRunExecution,
-} from '@/lib/workflow-graph-types';
+} from '@/lib/flow-graph/workflow-graph-types';
 
 interface WorkflowGraphExecutionViewerProps {
   workflow: WorkflowGraph;
