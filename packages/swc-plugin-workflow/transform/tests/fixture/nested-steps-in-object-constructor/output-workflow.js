@@ -25,3 +25,4 @@ export async function test() {
     });
 }
 test.workflowId = "workflow//input.js//test";
+globalThis.__private_workflows.set("workflow//input.js//test", test);

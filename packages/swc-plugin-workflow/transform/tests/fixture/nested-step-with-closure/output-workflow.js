@@ -86,3 +86,4 @@ export async function wflow() {
     await arrowWrapperReturnNamedFunctionVar(1, 2, 3)();
 }
 wflow.workflowId = "workflow//input.js//wflow";
+globalThis.__private_workflows.set("workflow//input.js//wflow", wflow);

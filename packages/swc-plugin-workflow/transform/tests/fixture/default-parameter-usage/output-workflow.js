@@ -23,3 +23,4 @@ export async function myWorkflow(input) {
     return result;
 }
 myWorkflow.workflowId = "workflow//input.js//myWorkflow";
+globalThis.__private_workflows.set("workflow//input.js//myWorkflow", myWorkflow);

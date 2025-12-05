@@ -7,6 +7,7 @@ export async function workflowFunction(a, b) {
     return result + result2;
 }
 workflowFunction.workflowId = "workflow//input.js//workflowFunction";
+globalThis.__private_workflows.set("workflow//input.js//workflowFunction", workflowFunction);
 export async function normalFunction(a, b) {
     return a * b;
 }

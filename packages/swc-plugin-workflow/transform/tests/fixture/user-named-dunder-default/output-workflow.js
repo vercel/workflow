@@ -6,3 +6,4 @@ export async function __default() {
     return result;
 }
 __default.workflowId = "workflow//input.js//__default";
+globalThis.__private_workflows.set("workflow//input.js//__default", __default);

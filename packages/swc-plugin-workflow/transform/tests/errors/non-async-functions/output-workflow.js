@@ -15,3 +15,4 @@ export const validWorkflow = async ()=>{
     return 'test';
 };
 validWorkflow.workflowId = "workflow//input.js//validWorkflow";
+globalThis.__private_workflows.set("workflow//input.js//validWorkflow", validWorkflow);

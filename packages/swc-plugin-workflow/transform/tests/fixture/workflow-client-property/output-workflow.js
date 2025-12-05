@@ -5,20 +5,24 @@ export async function myWorkflow() {
     return result;
 }
 myWorkflow.workflowId = "workflow//input.js//myWorkflow";
+globalThis.__private_workflows.set("workflow//input.js//myWorkflow", myWorkflow);
 export const arrowWorkflow = async ()=>{
     const data = await fetchData();
     return data;
 };
 arrowWorkflow.workflowId = "workflow//input.js//arrowWorkflow";
+globalThis.__private_workflows.set("workflow//input.js//arrowWorkflow", arrowWorkflow);
 export default async function defaultWorkflow() {
     return await process();
 }
 defaultWorkflow.workflowId = "workflow//input.js//defaultWorkflow";
+globalThis.__private_workflows.set("workflow//input.js//defaultWorkflow", defaultWorkflow);
 // Non-export workflow function
 async function internalWorkflow() {
     return 'internal';
 }
 internalWorkflow.workflowId = "workflow//input.js//internalWorkflow";
+globalThis.__private_workflows.set("workflow//input.js//internalWorkflow", internalWorkflow);
 // Use the internal workflow to avoid lint warning
 regularFunction(internalWorkflow);
 // Regular function should not be affected

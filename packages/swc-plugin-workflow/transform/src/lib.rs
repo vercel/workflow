@@ -2268,6 +2268,69 @@ impl StepTransform {
         })
     }
 
+    // Create a workflow registration call for workflow mode:
+    // globalThis.__private_workflows.set("workflowId", functionName);
+    fn create_workflow_registration(&self, fn_name: &str, span: swc_core::common::Span) -> Stmt {
+        // Generate the workflow ID (same logic as create_workflow_id_assignment)
+        let id_name = if (fn_name == "__default" || fn_name.starts_with("__default$"))
+            && self
+                .workflow_export_to_const_name
+                .get("default")
+                .map_or(false, |const_name| const_name == fn_name)
+        {
+            "default"
+        } else {
+            fn_name
+        };
+        let workflow_id = self.create_id(Some(id_name), span, true);
+
+        // Create: globalThis.__private_workflows.set("workflowId", functionName)
+        Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: Box::new(Expr::Member(MemberExpr {
+                        span: DUMMY_SP,
+                        obj: Box::new(Expr::Ident(Ident::new(
+                            "globalThis".into(),
+                            DUMMY_SP,
+                            SyntaxContext::empty(),
+                        ))),
+                        prop: MemberProp::Ident(IdentName::new(
+                            "__private_workflows".into(),
+                            DUMMY_SP,
+                        )),
+                    })),
+                    prop: MemberProp::Ident(IdentName::new("set".into(), DUMMY_SP)),
+                }))),
+                args: vec![
+                    // First argument: workflow ID
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: workflow_id.into(),
+                            raw: None,
+                        }))),
+                    },
+                    // Second argument: function reference
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Ident(Ident::new(
+                            fn_name.into(),
+                            DUMMY_SP,
+                            SyntaxContext::empty(),
+                        ))),
+                    },
+                ],
+                type_args: None,
+            })),
+        })
+    }
+
     // Create a registration call for step mode
     fn create_registration_call(&mut self, name: &str, span: swc_core::common::Span) {
         // Only register each function once
@@ -3701,6 +3764,7 @@ impl VisitMut for StepTransform {
 
             // After visiting the item, check if we need to add a workflowId assignment
             // Add workflowId directly after the function declaration for all modes
+            // In workflow mode, also add registration to __private_workflows map
             match item {
                 ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
                     // Directly exported function/variable declaration
@@ -3714,6 +3778,16 @@ impl VisitMut for StepTransform {
                                     fn_decl.function.span,
                                 )),
                             ));
+                            // In workflow mode, also register the workflow function
+                            if self.mode == TransformMode::Workflow {
+                                items_to_insert.push((
+                                    i + 1,
+                                    ModuleItem::Stmt(self.create_workflow_registration(
+                                        &fn_name,
+                                        fn_decl.function.span,
+                                    )),
+                                ));
+                            }
                         }
                     } else if let Decl::Var(var_decl) = &export_decl.decl {
                         for declarator in &var_decl.decls {
@@ -3732,6 +3806,15 @@ impl VisitMut for StepTransform {
                                                 self.create_workflow_id_assignment(&name, span),
                                             ),
                                         ));
+                                        // In workflow mode, also register the workflow function
+                                        if self.mode == TransformMode::Workflow {
+                                            items_to_insert.push((
+                                                i + 1,
+                                                ModuleItem::Stmt(
+                                                    self.create_workflow_registration(&name, span),
+                                                ),
+                                            ));
+                                        }
                                     }
                                 }
                             }
@@ -3755,6 +3838,16 @@ impl VisitMut for StepTransform {
                                         fn_expr.function.span,
                                     )),
                                 ));
+                                // In workflow mode, also register the workflow function
+                                if self.mode == TransformMode::Workflow {
+                                    items_to_insert.push((
+                                        i + 1,
+                                        ModuleItem::Stmt(self.create_workflow_registration(
+                                            &fn_name,
+                                            fn_expr.function.span,
+                                        )),
+                                    ));
+                                }
                             }
                             // Anonymous default exports will have workflowId added by default_workflow_exports processing
                         }
@@ -3771,6 +3864,16 @@ impl VisitMut for StepTransform {
                                 fn_decl.function.span,
                             )),
                         ));
+                        // In workflow mode, also register the workflow function
+                        if self.mode == TransformMode::Workflow {
+                            items_to_insert.push((
+                                i + 1,
+                                ModuleItem::Stmt(self.create_workflow_registration(
+                                    &fn_name,
+                                    fn_decl.function.span,
+                                )),
+                            ));
+                        }
                     }
                 }
                 ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
@@ -3791,6 +3894,15 @@ impl VisitMut for StepTransform {
                                             self.create_workflow_id_assignment(&name, span),
                                         ),
                                     ));
+                                    // In workflow mode, also register the workflow function
+                                    if self.mode == TransformMode::Workflow {
+                                        items_to_insert.push((
+                                            i + 1,
+                                            ModuleItem::Stmt(
+                                                self.create_workflow_registration(&name, span),
+                                            ),
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -3865,10 +3977,21 @@ impl VisitMut for StepTransform {
                         ModuleItem::Stmt(self.create_workflow_id_assignment(&const_name, span)),
                     );
 
-                    // Insert export default at the end (after workflowId)
-                    for (_export_name, replacement_expr) in &default_exports {
+                    // In workflow mode, also insert registration after workflowId
+                    let export_pos = if self.mode == TransformMode::Workflow {
                         items.insert(
                             pos + 2,
+                            ModuleItem::Stmt(self.create_workflow_registration(&const_name, span)),
+                        );
+                        pos + 3
+                    } else {
+                        pos + 2
+                    };
+
+                    // Insert export default at the end (after workflowId and optional registration)
+                    for (_export_name, replacement_expr) in &default_exports {
+                        items.insert(
+                            export_pos,
                             ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
                                 ExportDefaultExpr {
                                     span: DUMMY_SP,

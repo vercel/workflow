@@ -454,11 +454,13 @@ export abstract class BaseBuilder {
     // log the workflow files for debugging
     await this.writeDebugFile(outfile, { workflowFiles });
 
-    // Create a virtual entry that imports all files
+    // Create a virtual entry that imports all workflow files
+    // The SWC plugin in workflow mode emits `globalThis.__private_workflows.set(workflowId, fn)`
+    // calls directly, so we just need to initialize the map and import the files
     const imports =
       `globalThis.__private_workflows = new Map();\n` +
       workflowFiles
-        .map((file, workflowFileIdx) => {
+        .map((file) => {
           // Normalize both paths to forward slashes before calling relative()
           // This is critical on Windows where relative() can produce unexpected results with mixed path formats
           const normalizedWorkingDir = this.config.workingDir.replace(
@@ -475,8 +477,7 @@ export abstract class BaseBuilder {
           if (!relativePath.startsWith('.')) {
             relativePath = `./${relativePath}`;
           }
-          return `import * as workflowFile${workflowFileIdx} from '${relativePath}';
-            Object.values(workflowFile${workflowFileIdx}).map(item => item?.workflowId && globalThis.__private_workflows.set(item.workflowId, item))`;
+          return `import '${relativePath}';`;
         })
         .join('\n');
 

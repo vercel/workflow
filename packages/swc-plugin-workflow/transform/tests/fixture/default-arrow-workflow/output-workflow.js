@@ -5,4 +5,5 @@ const __default = async (data)=>{
     return processed;
 };
 __default.workflowId = "workflow//input.js//default";
+globalThis.__private_workflows.set("workflow//input.js//default", __default);
 export default __default;
