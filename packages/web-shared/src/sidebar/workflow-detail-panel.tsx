@@ -15,8 +15,10 @@ import { AttributePanel } from './attribute-panel';
  */
 export function WorkflowDetailPanel({
   env,
+  run,
 }: {
   env: EnvMap;
+  run: WorkflowRun;
 }): React.JSX.Element | null {
   const { state } = useTraceViewer();
   const { selected } = state;
@@ -80,10 +82,11 @@ export function WorkflowDetailPanel({
       {/* Content display */}
       <AttributePanel
         data={displayData}
+        expiredAt={run.expiredAt}
         isLoading={loading}
         error={error ?? undefined}
       />
-      {resource !== 'run' && (
+      {resource !== 'run' && !run.expiredAt && (
         <EventsList
           correlationId={resourceId}
           env={env}
