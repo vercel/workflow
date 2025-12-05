@@ -87,10 +87,10 @@ Create an `instrumentation.ts` file in your project root to initialize and start
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "edge") {
     // Dynamic import to avoid edge runtime bundling issues
-    console.log('Starting Postgres World...');
+    console.log("Starting Postgres World...");
     const { getWorld } = await import("workflow/runtime");
     await getWorld().start?.();
-    console.log('Postgres World started');
+    console.log("Postgres World started");
   }
 }
 ```
@@ -104,15 +104,15 @@ export async function register() {
 Create a file `src/hooks.server.ts`:
 
 ```ts title="src/hooks.server.ts" lineNumbers
-import type { ServerInit } from '@sveltejs/kit';
+import type { ServerInit } from "@sveltejs/kit";
 
 export const init: ServerInit = async () => {
-  if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+  if (process.env.WORKFLOW_TARGET_WORLD === "@workflow/world-postgres") {
     // Dynamic import to avoid edge runtime bundling issues
-    const { getWorld } = await import('workflow/runtime');
-    console.log('Starting Postgres World...');
+    const { getWorld } = await import("workflow/runtime");
+    console.log("Starting Postgres World...");
     await getWorld().start?.();
-    console.log('Postgres World started');
+    console.log("Postgres World started");
   }
 };
 ```
@@ -126,15 +126,15 @@ export const init: ServerInit = async () => {
 Create a plugin to start the PostgreSQL World. This will be invoked when the Nitro server starts.
 
 ```ts title="plugins/start-pg-world.ts" lineNumbers
-import { defineNitroPlugin } from 'nitro/~internal/runtime/plugin';
+import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
 
 export default defineNitroPlugin(async () => {
-  if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+  if (process.env.WORKFLOW_TARGET_WORLD === "@workflow/world-postgres") {
     // Dynamic import to avoid edge runtime bundling issues
-    console.log('Starting Postgres World...');
-    const { getWorld } = await import('workflow/runtime');
+    console.log("Starting Postgres World...");
+    const { getWorld } = await import("workflow/runtime");
     await getWorld().start?.();
-    console.log('Postgres World started');
+    console.log("Postgres World started");
   }
 });
 ```
@@ -142,12 +142,12 @@ export default defineNitroPlugin(async () => {
 Add the plugin to your `nitro.config.ts` file. This enables the plugin:
 
 ```ts title="nitro.config.ts"
-import { defineNitroConfig } from 'nitropack';
+import { defineNitroConfig } from "nitropack";
 
 export default defineNitroConfig({
   // ... your nitro config
-  modules: ['workflow/nitro'],
-  plugins: ['plugins/start-pg-world.ts'],
+  modules: ["workflow/nitro"],
+  plugins: ["plugins/start-pg-world.ts"],
 });
 ```
 

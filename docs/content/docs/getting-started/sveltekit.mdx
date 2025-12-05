@@ -206,8 +206,10 @@ Check the SvelteKit development server logs to see your workflow execute as well
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
 ```bash
+# Open the observability Web UI
+npx workflow web
+# or if you prefer a terminal interface, use the CLI inspect command
 npx workflow inspect runs
-# or add '--web' for an interactive Web based UI
 ```
 
 <img src="/o11y-ui.png" alt="Workflow DevKit Web UI" />

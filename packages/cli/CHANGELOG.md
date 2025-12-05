@@ -1,5 +1,73 @@
 # @workflow/cli
 
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- Updated dependencies [ca27c0f]
+  - @workflow/web@4.0.1-beta.13
+
+## 4.0.1-beta.26
+
+### Patch Changes
+
+- Updated dependencies [c8fa70a]
+  - @workflow/world-vercel@4.0.1-beta.16
+  - @workflow/core@4.0.1-beta.23
+  - @workflow/builders@4.0.1-beta.22
+  - @workflow/web@4.0.1-beta.12
+
+## 4.0.1-beta.25
+
+### Patch Changes
+
+- Updated dependencies [ac7997b]
+- Updated dependencies [02c41cc]
+  - @workflow/swc-plugin@4.0.1-beta.11
+  - @workflow/builders@4.0.1-beta.21
+  - @workflow/core@4.0.1-beta.22
+  - @workflow/web@4.0.1-beta.12
+
+## 4.0.1-beta.24
+
+### Patch Changes
+
+- Updated dependencies [2f0840b]
+- Updated dependencies [555d7a6]
+- Updated dependencies [e9494d5]
+  - @workflow/core@4.0.1-beta.21
+  - @workflow/swc-plugin@4.0.1-beta.10
+  - @workflow/world-vercel@4.0.1-beta.15
+  - @workflow/builders@4.0.1-beta.20
+  - @workflow/web@4.0.1-beta.12
+
+## 4.0.1-beta.23
+
+### Patch Changes
+
+- 8d4562e: Rename leftover references to "embedded world" to be "local world"
+- Updated dependencies [d53bf90]
+- Updated dependencies [0f1645b]
+- Updated dependencies [3c19e90]
+- Updated dependencies [1ac5592]
+- Updated dependencies [6e8e828]
+- Updated dependencies [5b91861]
+- Updated dependencies [10c5b91]
+- Updated dependencies [bdde1bd]
+- Updated dependencies [109fe59]
+- Updated dependencies [0cacb99]
+- Updated dependencies [2faddf3]
+- Updated dependencies [10c5b91]
+- Updated dependencies [8d4562e]
+  - @workflow/builders@4.0.1-beta.19
+  - @workflow/core@4.0.1-beta.20
+  - @workflow/world-local@4.0.1-beta.14
+  - @workflow/swc-plugin@4.0.1-beta.9
+  - @workflow/world@4.0.1-beta.8
+  - @workflow/web@4.0.1-beta.12
+  - @workflow/errors@4.0.1-beta.7
+  - @workflow/world-vercel@4.0.1-beta.14
+
 ## 4.0.1-beta.22
 
 ### Patch Changes
@@ -284,7 +352,7 @@
 ### Patch Changes
 
 - 66332f2: Rename vercel-static builder to standalone
-- dbf2207: Fix --backend flag not finding world when using embedded world package name explicitly
+- dbf2207: Fix --backend flag not finding world when using local world package name explicitly
 - Updated dependencies [dbf2207]
 - Updated dependencies [eadf588]
   - @workflow/web@4.0.1-beta.4

@@ -21,7 +21,7 @@ type NavbarProps = {
 };
 
 export const Navbar = ({ children, items, suggestions }: NavbarProps) => (
-  <header className="sticky top-0 z-40 h-16 w-full gap-6 border-b bg-sidebar">
+  <header className="sticky top-0 z-40 h-16 w-full gap-6 border-b bg-background">
     <div className="mx-auto flex w-full max-w-(--fd-layout-width) items-center gap-4 px-4 py-3.5 md:px-6">
       <div className="flex shrink-0 items-center gap-2.5">
         <a href="https://vercel.com/" rel="noopener" target="_blank">

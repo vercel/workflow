@@ -9,7 +9,7 @@ Workflows can stream data in real-time to clients without waiting for the entire
 Every workflow run has a default writable stream that steps can write to using [`getWritable()`](/docs/api-reference/workflow/get-writable). Data written to this stream becomes immediately available to clients consuming the workflow's output.
 
 ```typescript title="workflows/simple-streaming.ts" lineNumbers
-import { getWritable } from 'workflow';
+import { getWritable } from "workflow";
 
 async function writeProgress(message: string) {
   "use step";
@@ -35,15 +35,15 @@ export async function simpleStreamingWorkflow() {
 Use the `Run` object's `readable` property to consume the stream from your API route:
 
 ```typescript title="app/api/stream/route.ts" lineNumbers
-import { start } from 'workflow/api';
-import { simpleStreamingWorkflow } from './workflows/simple';
+import { start } from "workflow/api";
+import { simpleStreamingWorkflow } from "./workflows/simple";
 
 export async function POST() {
   const run = await start(simpleStreamingWorkflow);
 
   // Return the readable stream to the client
   return new Response(run.readable, {
-    headers: { 'Content-Type': 'text/plain' }
+    headers: { "Content-Type": "text/plain" }
   });
 }
 ```
@@ -55,7 +55,7 @@ When a client makes a request to this endpoint, they'll receive each message as 
 Use `run.getReadable({ startIndex })` to resume a stream from a specific position. This is useful for reconnecting after timeouts or network interruptions:
 
 ```typescript title="app/api/resume-stream/[runId]/route.ts" lineNumbers
-import { getRun } from 'workflow/api';
+import { getRun } from "workflow/api";
 
 export async function GET(
   request: Request,
@@ -65,14 +65,14 @@ export async function GET(
   const { searchParams } = new URL(request.url);
 
   // Client provides the last chunk index they received
-  const startIndexParam = searchParams.get('startIndex'); // [!code highlight]
+  const startIndexParam = searchParams.get("startIndex"); // [!code highlight]
   const startIndex = startIndexParam ? parseInt(startIndexParam, 10) : undefined; // [!code highlight]
 
   const run = getRun(runId);
   const stream = run.getReadable({ startIndex }); // [!code highlight]
 
   return new Response(stream, {
-    headers: { 'Content-Type': 'text/plain' }
+    headers: { "Content-Type": "text/plain" }
   });
 }
 ```
@@ -106,15 +106,15 @@ Since streams are serializable data types, you don't need to use the special [`g
 Here's an example of passing a request body stream through a workflow to a step that processes it:
 
 ```typescript title="app/api/upload/route.ts" lineNumbers
-import { start } from 'workflow/api';
-import { streamProcessingWorkflow } from './workflows/streaming';
+import { start } from "workflow/api";
+import { streamProcessingWorkflow } from "./workflows/streaming";
 
 export async function POST(request: Request) {
   // Streams can be passed as workflow arguments
   const run = await start(streamProcessingWorkflow, [request.body]); // [!code highlight]
   await run.result();
 
-  return Response.json({ status: 'complete' });
+  return Response.json({ status: "complete" });
 }
 ```
 
@@ -139,7 +139,7 @@ async function processInputStream(input: ReadableStream<Uint8Array>) {
     chunks.push(chunk);
   }
 
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks).toString("utf8");
 }
 ```
 
@@ -191,7 +191,7 @@ async function writeToStream(data: string) {
 Use `getWritable({ namespace: 'name' })` to create multiple independent streams for different types of data. This is useful when you want to separate logs, metrics, data outputs, or other distinct channels.
 
 ```typescript title="workflows/multi-stream.ts" lineNumbers
-import { getWritable } from 'workflow';
+import { getWritable } from "workflow";
 
 type LogEntry = { level: string; message: string };
 type MetricEntry = { cpu: number; memory: number };
@@ -199,11 +199,11 @@ type MetricEntry = { cpu: number; memory: number };
 async function writeLogs() {
   "use step";
 
-  const logs = getWritable<LogEntry>({ namespace: 'logs' }); // [!code highlight]
+  const logs = getWritable<LogEntry>({ namespace: "logs" }); // [!code highlight]
   const writer = logs.getWriter();
 
-  await writer.write({ level: 'info', message: 'Task started' });
-  await writer.write({ level: 'info', message: 'Processing...' });
+  await writer.write({ level: "info", message: "Task started" });
+  await writer.write({ level: "info", message: "Processing..." });
 
   writer.releaseLock();
 }
@@ -211,7 +211,7 @@ async function writeLogs() {
 async function writeMetrics() {
   "use step";
 
-  const metrics = getWritable<MetricEntry>({ namespace: 'metrics' }); // [!code highlight]
+  const metrics = getWritable<MetricEntry>({ namespace: "metrics" }); // [!code highlight]
   const writer = metrics.getWriter();
 
   await writer.write({ cpu: 45, memory: 512 });
@@ -223,8 +223,8 @@ async function writeMetrics() {
 async function closeStreams() {
   "use step";
 
-  await getWritable({ namespace: 'logs' }).close();
-  await getWritable({ namespace: 'metrics' }).close();
+  await getWritable({ namespace: "logs" }).close();
+  await getWritable({ namespace: "metrics" }).close();
 }
 
 export async function multiStreamWorkflow() {
@@ -241,8 +241,8 @@ export async function multiStreamWorkflow() {
 Use `run.getReadable({ namespace: 'name' })` to access specific streams:
 
 ```typescript title="app/api/multi-stream/route.ts" lineNumbers
-import { start } from 'workflow/api';
-import { multiStreamWorkflow } from './workflows/multi';
+import { start } from "workflow/api";
+import { multiStreamWorkflow } from "./workflows/multi";
 
 type LogEntry = { level: string; message: string };
 type MetricEntry = { cpu: number; memory: number };
@@ -251,12 +251,12 @@ export async function POST(request: Request) {
   const run = await start(multiStreamWorkflow);
 
   // Access specific named streams // [!code highlight]
-  const logs = run.getReadable<LogEntry>({ namespace: 'logs' }); // [!code highlight]
-  const metrics = run.getReadable<MetricEntry>({ namespace: 'metrics' }); // [!code highlight]
+  const logs = run.getReadable<LogEntry>({ namespace: "logs" }); // [!code highlight]
+  const metrics = run.getReadable<MetricEntry>({ namespace: "metrics" }); // [!code highlight]
 
   // Return the logs stream to the client
   return new Response(logs, {
-    headers: { 'Content-Type': 'application/json' }
+    headers: { "Content-Type": "application/json" }
   });
 }
 ```
@@ -268,7 +268,7 @@ export async function POST(request: Request) {
 Send incremental progress updates to keep users informed during lengthy workflows:
 
 ```typescript title="workflows/batch-processing.ts" lineNumbers
-import { getWritable, sleep } from 'workflow';
+import { getWritable, sleep } from "workflow";
 
 type ProgressUpdate = {
   item: string;
@@ -293,7 +293,7 @@ async function processItem(
   await writer.write({ // [!code highlight]
     item, // [!code highlight]
     progress: Math.round((current / total) * 100), // [!code highlight]
-    status: 'processing' // [!code highlight]
+    status: "processing" // [!code highlight]
   }); // [!code highlight]
 
   writer.releaseLock();
@@ -322,10 +322,10 @@ export async function batchProcessingWorkflow(items: string[]) {
 Stream AI-generated content using [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) from `@workflow/ai`. Tools can also emit progress updates to the same stream using [data chunks](https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data#streaming-custom-data) with the [`UIMessageChunk`](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) type from the AI SDK:
 
 ```typescript title="workflows/ai-assistant.ts" lineNumbers
-import { DurableAgent } from '@workflow/ai/agent';
-import { getWritable } from 'workflow';
-import { z } from 'zod';
-import type { UIMessageChunk } from 'ai';
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
 
 async function searchFlights({ query }: { query: string }) {
   "use step";
@@ -334,7 +334,7 @@ async function searchFlights({ query }: { query: string }) {
   const writable = getWritable<UIMessageChunk>(); // [!code highlight]
   const writer = writable.getWriter(); // [!code highlight]
   await writer.write({ // [!code highlight]
-    type: 'data-progress', // [!code highlight]
+    type: "data-progress", // [!code highlight]
     data: { message: `Searching flights for ${query}...` }, // [!code highlight]
     transient: true, // [!code highlight]
   }); // [!code highlight]
@@ -348,11 +348,11 @@ export async function aiAssistantWorkflow(userMessage: string) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: 'anthropic/claude-haiku-4.5',
-    system: 'You are a helpful flight assistant.',
+    model: "anthropic/claude-haiku-4.5",
+    system: "You are a helpful flight assistant.",
     tools: {
       searchFlights: {
-        description: 'Search for flights',
+        description: "Search for flights",
         inputSchema: z.object({ query: z.string() }),
         execute: searchFlights,
       },
@@ -361,16 +361,16 @@ export async function aiAssistantWorkflow(userMessage: string) {
 
   // LLM response will be streamed to the run's writable
   await agent.stream({
-    messages: [{ role: 'user', content: userMessage }],
+    messages: [{ role: "user", content: userMessage }],
     writable: getWritable<UIMessageChunk>(), // [!code highlight]
   });
 }
 ```
 
 ```typescript title="app/api/ai-assistant/route.ts" lineNumbers
-import { createUIMessageStreamResponse } from 'ai';
-import { start } from 'workflow/api';
-import { aiAssistantWorkflow } from './workflows/ai';
+import { createUIMessageStreamResponse } from "ai";
+import { start } from "workflow/api";
+import { aiAssistantWorkflow } from "./workflows/ai";
 
 export async function POST(request: Request) {
   const { message } = await request.json();
@@ -462,8 +462,8 @@ async function transformData(input: ReadableStream<Uint8Array>): Promise<Readabl
 
 async function uploadResult(stream: ReadableStream<Uint8Array>) {
   "use step";
-  await fetch('https://storage.example.com/upload', {
-    method: 'POST',
+  await fetch("https://storage.example.com/upload", {
+    method: "POST",
     body: stream,
   });
 }
@@ -515,7 +515,7 @@ await writer.write({ /* typed data */ });
 When a step returns a stream, the step is considered successful once it returns, even if the stream later encounters an error. The workflow won't automatically retry the step. The consumer of the stream must handle errors gracefully. For more on retry behavior, see [Errors and Retries](/docs/foundations/errors-and-retries).
 
 ```typescript title="workflows/stream-error-handling.ts" lineNumbers
-import { FatalError } from 'workflow';
+import { FatalError } from "workflow";
 
 async function produceStream(): Promise<ReadableStream<number>> {
   "use step";
@@ -526,7 +526,7 @@ async function produceStream(): Promise<ReadableStream<number>> {
       controller.enqueue(1);
       controller.enqueue(2);
       // Error occurs after step has completed // [!code highlight]
-      controller.error(new Error('Stream failed')); // [!code highlight]
+      controller.error(new Error("Stream failed")); // [!code highlight]
     }
   });
 }
@@ -540,7 +540,7 @@ async function consumeStream(stream: ReadableStream<number>) {
     }
   } catch (error) { // [!code highlight]
     // Retrying won't help since the stream is already errored // [!code highlight]
-    throw new FatalError('Stream failed'); // [!code highlight]
+    throw new FatalError("Stream failed"); // [!code highlight]
   } // [!code highlight]
 }
 

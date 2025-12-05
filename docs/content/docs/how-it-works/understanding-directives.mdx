@@ -2,7 +2,7 @@
 title: Understanding Directives
 ---
 
-import { File, Folder, Files } from 'fumadocs-ui/components/files';
+import { File, Folder, Files } from "fumadocs-ui/components/files";
 
 <Callout>
 This guide explores how JavaScript directives enable the Workflow DevKit's execution model. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
@@ -25,7 +25,7 @@ async function fetchUserData(userId: string) {
   "use step";
 
   // Full Node.js access: database calls, API requests, file I/O
-  const user = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
+  const user = await db.query("SELECT * FROM users WHERE id = ?", [userId]);
   return user;
 }
 ```
@@ -436,7 +436,7 @@ The compiler can enforce restrictions before deployment:
 export async function badWorkflow() {
   "use workflow";
 
-  const crypto = require('crypto'); // Build error: Node.js module in workflow // [!code highlight]
+  const crypto = require("crypto"); // Build error: Node.js module in workflow // [!code highlight]
   return crypto.randomBytes(16);
 }
 ```
@@ -472,7 +472,7 @@ export async function processOrders(orderIds: string[]) {
   // Callbacks run in the workflow context, not skipped on replay
   await Promise.all(orderIds.map(async (orderId) => {
     const order = await fetchOrder(orderId); // Step call
-    if (order.status === 'completed') {
+    if (order.status === "completed") {
       successCount++; // Mutation works correctly // [!code highlight]
     }
   }));

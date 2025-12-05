@@ -13,8 +13,8 @@ A chat transport implementation for the AI SDK that provides reliable message st
 </Callout>
 
 ```typescript lineNumbers
-import { useChat } from '@ai-sdk/react';
-import { WorkflowChatTransport } from '@workflow/ai';
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai";
 
 export default function Chat() {
   const { messages, sendMessage } = useChat({
@@ -70,14 +70,14 @@ export default WorkflowChatTransportOptions;`}
 ### Basic Chat Setup
 
 ```typescript
-'use client';
+"use client";
 
-import { useChat } from '@ai-sdk/react';
-import { WorkflowChatTransport } from '@workflow/ai';
-import { useState } from 'react';
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai";
+import { useState } from "react";
 
 export default function BasicChat() {
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const { messages, sendMessage } = useChat({
     transport: new WorkflowChatTransport(),
   });
@@ -96,7 +96,7 @@ export default function BasicChat() {
         onSubmit={(e) => {
           e.preventDefault();
           sendMessage({ text: input });
-          setInput('');
+          setInput("");
         }}
       >
         <input
@@ -113,17 +113,17 @@ export default function BasicChat() {
 ### With Session Persistence and Resumption
 
 ```typescript
-'use client';
+"use client";
 
-import { useChat } from '@ai-sdk/react';
-import { WorkflowChatTransport } from '@workflow/ai';
-import { useMemo, useState } from 'react';
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai";
+import { useMemo, useState } from "react";
 
 export default function ChatWithResumption() {
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const activeWorkflowRunId = useMemo(() => {
-    if (typeof window === 'undefined') return;
-    return localStorage.getItem('active-workflow-run-id') ?? undefined;
+    if (typeof window === "undefined") return;
+    return localStorage.getItem("active-workflow-run-id") ?? undefined;
   }, []);
 
   const { messages, sendMessage } = useChat({
@@ -132,20 +132,20 @@ export default function ChatWithResumption() {
       onChatSendMessage: (response, options) => {
         // Save chat history to localStorage
         localStorage.setItem(
-          'chat-history',
+          "chat-history",
           JSON.stringify(options.messages)
         );
 
         // Extract and store the workflow run ID for session resumption
-        const workflowRunId = response.headers.get('x-workflow-run-id');
+        const workflowRunId = response.headers.get("x-workflow-run-id");
         if (workflowRunId) {
-          localStorage.setItem('active-workflow-run-id', workflowRunId);
+          localStorage.setItem("active-workflow-run-id", workflowRunId);
         }
       },
       onChatEnd: ({ chatId, chunkIndex }) => {
         console.log(`Chat ${chatId} completed with ${chunkIndex} chunks`);
         // Clear the active run ID when chat completes
-        localStorage.removeItem('active-workflow-run-id');
+        localStorage.removeItem("active-workflow-run-id");
       },
     }),
   });
@@ -164,7 +164,7 @@ export default function ChatWithResumption() {
         onSubmit={(e) => {
           e.preventDefault();
           sendMessage({ text: input });
-          setInput('');
+          setInput("");
         }}
       >
         <input
@@ -181,26 +181,26 @@ export default function ChatWithResumption() {
 ### With Custom Request Configuration
 
 ```typescript
-'use client';
+"use client";
 
-import { useChat } from '@ai-sdk/react';
-import { WorkflowChatTransport } from '@workflow/ai';
-import { useState } from 'react';
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai";
+import { useState } from "react";
 
 export default function ChatWithCustomConfig() {
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const { messages, sendMessage } = useChat({
     transport: new WorkflowChatTransport({
       prepareSendMessagesRequest: async (config) => {
         return {
           ...config,
-          api: '/api/chat',
+          api: "/api/chat",
           headers: {
             ...config.headers,
-            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}`,
-            'X-Custom-Header': 'custom-value',
+            "Authorization": `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}`,
+            "X-Custom-Header": "custom-value",
           },
-          credentials: 'include',
+          credentials: "include",
         };
       },
       prepareReconnectToStreamRequest: async (config) => {
@@ -208,9 +208,9 @@ export default function ChatWithCustomConfig() {
           ...config,
           headers: {
             ...config.headers,
-            'Authorization': `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}`,
+            "Authorization": `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}`,
           },
-          credentials: 'include',
+          credentials: "include",
         };
       },
       maxConsecutiveErrors: 5,
@@ -231,7 +231,7 @@ export default function ChatWithCustomConfig() {
         onSubmit={(e) => {
           e.preventDefault();
           sendMessage({ text: input });
-          setInput('');
+          setInput("");
         }}
       >
         <input

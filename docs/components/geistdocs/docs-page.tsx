@@ -7,7 +7,7 @@ import {
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import type { ComponentProps, CSSProperties } from 'react';
-import { getPageImage, source } from '@/lib/geistdocs/source';
+import { source } from '@/lib/geistdocs/source';
 import { cn } from '@/lib/utils';
 
 const containerStyle = {
@@ -75,9 +75,6 @@ export const generatePageMetadata = (slug: PageProps['slug']) => {
   const metadata: Metadata = {
     title: page.data.title,
     description: page.data.description,
-    openGraph: {
-      images: getPageImage(page).url,
-    },
   };
 
   return metadata;

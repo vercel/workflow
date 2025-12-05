@@ -15,7 +15,6 @@ export function workflowTransformPlugin(): Plugin {
       }
 
       const isTypeScript = id.endsWith('.ts') || id.endsWith('.tsx');
-      const isTsx = id.endsWith('.tsx');
 
       const swcPlugin = resolveModulePath('@workflow/swc-plugin', {
         from: [import.meta.url],
@@ -65,12 +64,24 @@ export function workflowTransformPlugin(): Plugin {
         filename: relativeFilename,
         jsc: {
           parser: {
-            syntax: isTypeScript ? 'typescript' : 'ecmascript',
-            tsx: isTsx,
+            ...(isTypeScript
+              ? {
+                  syntax: 'typescript',
+                  tsx: id.endsWith('.tsx'),
+                }
+              : {
+                  syntax: 'ecmascript',
+                  jsx: id.endsWith('.jsx'),
+                }),
           },
           target: 'es2022',
           experimental: {
             plugins: [[swcPlugin, { mode: 'client' }]],
+          },
+          transform: {
+            react: {
+              runtime: 'preserve',
+            },
           },
         },
         minify: false,

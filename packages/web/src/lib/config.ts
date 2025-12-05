@@ -6,7 +6,7 @@ import type { WorldConfig } from '@/lib/config-world';
 
 // Default configuration
 const DEFAULT_CONFIG: WorldConfig = {
-  backend: 'embedded',
+  backend: 'local',
   dataDir: './.next/workflow-data',
   port: '3000',
   env: 'production',
@@ -114,8 +114,8 @@ export const worldConfigToEnvMap = (config: WorldConfig): EnvMap => {
     WORKFLOW_VERCEL_PROJECT: config.project,
     WORKFLOW_VERCEL_TEAM: config.team,
     PORT: config.port,
-    WORKFLOW_EMBEDDED_DATA_DIR: config.dataDir,
     WORKFLOW_MANIFEST_PATH: config.manifestPath,
+    WORKFLOW_LOCAL_DATA_DIR: config.dataDir,
     // Postgres env vars
     WORKFLOW_POSTGRES_URL: config.postgresUrl,
   };

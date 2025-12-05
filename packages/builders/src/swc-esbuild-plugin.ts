@@ -129,14 +129,13 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
       // Handle TypeScript and JavaScript files
       build.onLoad({ filter: jsTsRegex }, async (args) => {
         // Determine if this is a TypeScript file
-        const isTypeScript =
-          args.path.endsWith('.ts') || args.path.endsWith('.tsx');
-
         try {
           // Determine the loader based on the output
-          let loader: 'js' | 'jsx' = 'js';
-          if (!isTypeScript && args.path.endsWith('.jsx')) {
+          let loader: 'js' | 'jsx' | 'tsx' = 'js';
+          if (args.path.endsWith('.jsx')) {
             loader = 'jsx';
+          } else if (args.path.endsWith('.tsx')) {
+            loader = 'tsx';
           }
           const source = await readFile(args.path, 'utf8');
 

@@ -1,5 +1,46 @@
 # @workflow/world-testing
 
+## 4.0.1-beta.28
+
+### Patch Changes
+
+- @workflow/cli@4.0.1-beta.27
+- workflow@4.0.1-beta.27
+
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- workflow@4.0.1-beta.26
+- @workflow/cli@4.0.1-beta.26
+
+## 4.0.1-beta.26
+
+### Patch Changes
+
+- @workflow/cli@4.0.1-beta.25
+- workflow@4.0.1-beta.25
+
+## 4.0.1-beta.25
+
+### Patch Changes
+
+- @workflow/cli@4.0.1-beta.24
+- workflow@4.0.1-beta.24
+
+## 4.0.1-beta.24
+
+### Patch Changes
+
+- 8d4562e: Rename leftover references to "embedded world" to be "local world"
+- Updated dependencies [1ac5592]
+- Updated dependencies [10c5b91]
+- Updated dependencies [bdde1bd]
+- Updated dependencies [8d4562e]
+  - workflow@4.0.1-beta.23
+  - @workflow/world@4.0.1-beta.8
+  - @workflow/cli@4.0.1-beta.23
+
 ## 4.0.1-beta.23
 
 ### Patch Changes

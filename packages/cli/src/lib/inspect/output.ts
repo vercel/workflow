@@ -245,7 +245,8 @@ const formatTableValue = (
   prop: string,
   value: unknown,
   opts: InspectCLIOptions = {},
-  displaySettings?: ReturnType<typeof getDisplaySettings>
+  displaySettings?: ReturnType<typeof getDisplaySettings>,
+  item?: Record<string, unknown>
 ) => {
   const namesTruncate = displaySettings?.namesTruncateLength ?? 40;
   const shouldTruncateIds = displaySettings?.truncateIdsToLastChars ?? false;
@@ -281,7 +282,11 @@ const formatTableValue = (
     return chalk.blue.blueBright(truncatedName);
   }
 
-  if (prop === 'output' || prop === 'input') {
+  if (prop === 'output' || prop === 'input' || prop === 'error') {
+    // Check if data has expired
+    if (item && 'expiredAt' in item && item.expiredAt != null) {
+      return EXPIRED_DATA_MESSAGE;
+    }
     return inlineFormatIO(value);
   }
 
@@ -370,7 +375,10 @@ const showTable = (
     for (const prop of visibleProps) {
       const header = headerMap[prop] || prop;
       const value = item[prop];
-      table.cell(header, formatTableValue(prop, value, opts, displaySettings));
+      table.cell(
+        header,
+        formatTableValue(prop, value, opts, displaySettings, item)
+      );
     }
     table.newRow();
   }
@@ -455,6 +463,15 @@ const showInspectInfoBox = (resource: string) => {
   logger.info(
     `To view the content of any stream, use \`workflow inspect stream <stream-id>\``
   );
+};
+
+const EXPIRED_DATA_MESSAGE = chalk.gray('<data expired>');
+
+/**
+ * Checks if a run has expired data storage
+ */
+const hasExpiredData = (run: WorkflowRun): boolean => {
+  return 'expiredAt' in run && run.expiredAt != null;
 };
 
 /**
@@ -606,6 +623,11 @@ export const showRun = async (
       showJson(runWithHydratedIO);
       return;
     } else {
+      if (hasExpiredData(run)) {
+        logger.warn(
+          "This run's data (input/output/error) has expired and is no longer available."
+        );
+      }
       logger.log(runWithHydratedIO);
     }
   } catch (error) {

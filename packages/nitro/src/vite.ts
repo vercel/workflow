@@ -6,9 +6,11 @@ import type { Plugin as VitePlugin } from 'vite';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 import { workflowTransformPlugin } from '@workflow/rollup';
+import { createBuildQueue } from '@workflow/builders';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
-  let builder: LocalBuilder | undefined;
+  let builder: LocalBuilder;
+  const enqueue = createBuildQueue();
 
   return [
     workflowTransformPlugin() as VitePlugin,
@@ -28,7 +30,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         },
       },
       // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
-      //       For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.
+      // For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.
       configureServer(server) {
         // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
         return () => {
@@ -44,7 +46,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
               const statusCode = typeof args[0] === 'number' ? args[0] : 200;
 
               // NOTE: Workaround because Nitro passes 404 requests to the vite to handle.
-              //       Causes `webhook route with invalid token` test to fail.
+              // Causes `webhook route with invalid token` test to fail.
               // For 404s on workflow routes, ensure we're sending the right headers
               if (statusCode === 404) {
                 // Set content-length to 0 to prevent Vite from overriding
@@ -61,7 +63,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       },
       // TODO: Move this to @workflow/vite or something since this is vite specific
       async hotUpdate(options: HotUpdateOptions) {
-        const { file, server, read } = options;
+        const { file, read } = options;
 
         // Check if this is a TS/JS file that might contain workflow directives
         const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -75,15 +77,8 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           content = await read();
         } catch {
           // File might have been deleted - trigger rebuild to update generated routes
-          console.log('Workflow file deleted, rebuilding...');
-          if (builder) {
-            await builder.build();
-          }
-          // NOTE: Might be too aggressive
-          server.ws.send({
-            type: 'full-reload',
-            path: '*',
-          });
+          console.log('Workflow file changed, rebuilding...');
+          await enqueue(() => builder.build());
           return;
         }
 
@@ -97,17 +92,8 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           return;
         }
 
-        // Trigger full reload - this will cause Nitro's dev:reload hook to fire,
-        // which will rebuild workflows and update routes
         console.log('Workflow file changed, rebuilding...');
-        if (builder) {
-          await builder.build();
-        }
-        server.ws.send({
-          type: 'full-reload',
-          path: '*',
-        });
-
+        await enqueue(() => builder.build());
         // Let Vite handle the normal HMR for the changed file
         return;
       },

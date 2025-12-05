@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web-shared",
   "description": "Shared components for Workflow Observability UI",
-  "version": "4.0.1-beta.20",
+  "version": "4.0.1-beta.24",
   "private": false,
   "files": [
     "dist",

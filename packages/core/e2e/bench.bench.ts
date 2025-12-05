@@ -107,12 +107,18 @@ async function getWorkflowReturnValue(
 
 function getTimingOutputPath() {
   const appName = process.env.APP_NAME || 'unknown';
-  // Detect backend type: vercel if WORKFLOW_VERCEL_ENV is set, postgres if target world includes postgres, otherwise local
-  const backend = process.env.WORKFLOW_VERCEL_ENV
-    ? 'vercel'
-    : process.env.WORKFLOW_TARGET_WORLD?.includes('postgres')
-      ? 'postgres'
-      : 'local';
+  // Detect backend type:
+  // 1. WORKFLOW_BENCH_BACKEND if explicitly set (for community worlds)
+  // 2. vercel if WORKFLOW_VERCEL_ENV is set
+  // 3. postgres if target world includes postgres
+  // 4. local as fallback
+  const backend =
+    process.env.WORKFLOW_BENCH_BACKEND ||
+    (process.env.WORKFLOW_VERCEL_ENV
+      ? 'vercel'
+      : process.env.WORKFLOW_TARGET_WORLD?.includes('postgres')
+        ? 'postgres'
+        : 'local');
   return path.resolve(
     process.cwd(),
     `bench-timings-${appName}-${backend}.json`

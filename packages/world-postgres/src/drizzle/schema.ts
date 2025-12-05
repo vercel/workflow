@@ -78,6 +78,7 @@ export const runs = schema.table(
       .notNull(),
     completedAt: timestamp('completed_at'),
     startedAt: timestamp('started_at'),
+    expiredAt: timestamp('expired_at'),
   } satisfies DrizzlishOfType<
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },

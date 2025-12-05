@@ -1254,7 +1254,7 @@ impl StepTransform {
                         // Get the property key first
                         let prop_key = match &kv_prop.key {
                             PropName::Ident(ident) => ident.sym.to_string(),
-                            PropName::Str(s) => s.value.to_string(),
+                            PropName::Str(s) => s.value.to_string_lossy().to_string(),
                             _ => continue, // Skip complex keys
                         };
 
@@ -1375,7 +1375,7 @@ impl StepTransform {
                         // Handle object methods like: execute() { "use step"; ... }
                         let prop_key = match &method_prop.key {
                             PropName::Ident(ident) => ident.sym.to_string(),
-                            PropName::Str(s) => s.value.to_string(),
+                            PropName::Str(s) => s.value.to_string_lossy().to_string(),
                             _ => continue, // Skip complex keys
                         };
 
@@ -1666,15 +1666,15 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *stmt_span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::FunctionBody,
                                 });
                             }
                             return true;
-                        } else if detect_similar_strings(value, "use step") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use step") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *stmt_span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use step",
                             });
                         }
@@ -1704,20 +1704,20 @@ impl StepTransform {
                 {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         #[cfg(debug_assertions)]
-                        eprintln!("directive candidate: {}", value);
+                        eprintln!("directive candidate: {:?}", value);
                         if value == "use workflow" {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *stmt_span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::FunctionBody,
                                 });
                             }
                             return true;
-                        } else if detect_similar_strings(value, "use workflow") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use workflow") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *stmt_span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use workflow",
                             });
                         }
@@ -1746,7 +1746,7 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             } else {
@@ -1758,14 +1758,14 @@ impl StepTransform {
                             if found_directive {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             }
-                        } else if detect_similar_strings(value, "use step") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use step") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use step",
                             });
                         }
@@ -1807,7 +1807,7 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             } else {
@@ -1819,14 +1819,14 @@ impl StepTransform {
                             if found_directive {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             }
-                        } else if detect_similar_strings(value, "use workflow") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use workflow") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use workflow",
                             });
                         }
@@ -2229,7 +2229,20 @@ impl StepTransform {
 
     // Create a statement that adds workflowId property to a function (client mode)
     fn create_workflow_id_assignment(&self, fn_name: &str, span: swc_core::common::Span) -> Stmt {
-        let workflow_id = self.create_id(Some(fn_name), span, true);
+        // For workflow ID generation, normalize auto-generated __default variants to "default"
+        // Only do this if the name was auto-generated for an anonymous default export,
+        // not if the user explicitly named their function "__default"
+        let id_name = if (fn_name == "__default" || fn_name.starts_with("__default$"))
+            && self
+                .workflow_export_to_const_name
+                .get("default")
+                .map_or(false, |const_name| const_name == fn_name)
+        {
+            "default"
+        } else {
+            fn_name
+        };
+        let workflow_id = self.create_id(Some(id_name), span, true);
 
         // Create: functionName.workflowId = "workflowId"
         Stmt::Expr(ExprStmt {
@@ -2671,14 +2684,24 @@ impl StepTransform {
             let workflow_entries: Vec<String> = sorted_workflow_names
                 .into_iter()
                 .map(|fn_name| {
-                    // Check if this export name has a different const name (e.g., "default" -> "__default")
                     let fn_name_str: &str = fn_name;
+                    // Look up the actual const/function name for this export
                     let actual_name = self
                         .workflow_export_to_const_name
                         .get(fn_name_str)
                         .map(|s| s.as_str())
                         .unwrap_or(fn_name_str);
-                    let workflow_id = self.create_id(Some(actual_name), DUMMY_SP, true);
+                    // For auto-generated __default names (anonymous default exports),
+                    // normalize to "default" for the workflow ID
+                    let id_name =
+                        if (actual_name == "__default" || actual_name.starts_with("__default$"))
+                            && fn_name_str == "default"
+                        {
+                            "default"
+                        } else {
+                            actual_name
+                        };
+                    let workflow_id = self.create_id(Some(id_name), DUMMY_SP, true);
                     format!("\"{}\":{{\"workflowId\":\"{}\"}}", fn_name_str, workflow_id)
                 })
                 .collect();
@@ -6043,12 +6066,12 @@ impl VisitMut for StepTransform {
                     let prop_key = match &**boxed_prop {
                         Prop::KeyValue(kv) => match &kv.key {
                             PropName::Ident(ident) => Some(ident.sym.to_string()),
-                            PropName::Str(s) => Some(s.value.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
                             _ => None,
                         },
                         Prop::Method(m) => match &m.key {
                             PropName::Ident(ident) => Some(ident.sym.to_string()),
-                            PropName::Str(s) => Some(s.value.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
                             _ => None,
                         },
                         _ => None,

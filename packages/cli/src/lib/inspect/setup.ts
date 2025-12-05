@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
 import {
-  inferEmbeddedWorldEnvVars,
+  inferLocalWorldEnvVars,
   inferVercelEnvVars,
   writeEnvVars,
 } from './env.js';
@@ -52,10 +52,10 @@ export const setupCliWorld = async (
   ) {
     await inferVercelEnvVars();
   } else if (
-    flags.backend === 'embedded' ||
+    flags.backend === 'local' ||
     flags.backend === '@workflow/world-local'
   ) {
-    await inferEmbeddedWorldEnvVars();
+    await inferLocalWorldEnvVars();
   }
 
   logger.debug('Initializing world');

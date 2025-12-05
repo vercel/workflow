@@ -35,6 +35,12 @@ jobs:
           node-version: 22.x
           cache: "pnpm"
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate docs links
+        run: bun ./scripts/lint.ts
+        working-directory: docs

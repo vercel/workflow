@@ -18,7 +18,7 @@ const workflowCode = `export async function welcome(userId: string) {
 }`;
 
 const nonWorkflowCode = `export async function welcome(userId: string) {
-  
+
   const user = await getUser(userId);
   const { subject, body } = await generateEmail({
     name: user.name, plan: user.plan

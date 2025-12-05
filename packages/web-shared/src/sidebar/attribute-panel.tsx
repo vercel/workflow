@@ -28,7 +28,8 @@ type AttributeKey =
   | keyof Hook
   | keyof Event
   | 'eventData'
-  | 'resumeAt';
+  | 'resumeAt'
+  | 'expiredAt';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -51,6 +52,7 @@ const attributeOrder: AttributeKey[] = [
   'startedAt',
   'updatedAt',
   'completedAt',
+  'expiredAt',
   'retryAfter',
   'error',
   'metadata',
@@ -100,6 +102,7 @@ const attributeToDisplayFn: Record<
   startedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   updatedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   completedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
+  expiredAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   retryAfter: (value: unknown) => new Date(String(value)).toLocaleString(),
   resumeAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   // Resolved attributes, won't actually use this function
@@ -227,6 +230,19 @@ const resolvableAttributes = [
   'eventData',
 ];
 
+const ExpiredDataMessage = () => (
+  <div
+    className="text-copy-12 rounded-md border p-4 my-2"
+    style={{
+      borderColor: 'var(--ds-gray-300)',
+      backgroundColor: 'var(--ds-gray-100)',
+      color: 'var(--ds-gray-700)',
+    }}
+  >
+    <span>This data has expired and is no longer available.</span>
+  </div>
+);
+
 export const AttributeBlock = ({
   attribute,
   value,
@@ -275,6 +291,8 @@ export const AttributePanel = ({
   error?: Error;
 }) => {
   const displayData = data;
+  const hasExpired =
+    'expiredAt' in displayData && displayData.expiredAt != null;
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))
     .sort(sortByAttributeOrder);
@@ -299,6 +317,8 @@ export const AttributePanel = ({
             {error.message}
           </AlertDescription>
         </Alert>
+      ) : hasExpired ? (
+        <ExpiredDataMessage />
       ) : (
         resolvedAttributes.map((attribute) => (
           <AttributeBlock
