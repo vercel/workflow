@@ -1,19 +1,23 @@
 [package]
-authors      = { workspace = true }
-description  = "AST Transforms for workflow"
-edition      = { workspace = true }
+authors = { workspace = true }
+description = "AST Transforms for workflow"
+edition = { workspace = true }
 # homepage     = { workspace = true }
-license      = { workspace = true }
-name         = "swc_workflow"
+license = { workspace = true }
+name = "swc_workflow"
 # repository   = { workspace = true }
 rust-version = { workspace = true }
-version      = "0.1.0"
+version = "0.1.0"
 
 
 [dependencies]
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-swc_core    = { workspace = true, features = ["ecma_plugin_transform"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+swc_core = { workspace = true, features = ["ecma_plugin_transform"] }
 
 [dev-dependencies]
-testing     = { workspace = true }
+testing = { workspace = true }
+
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(swc_ast_unknown)'] }
