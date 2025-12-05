@@ -480,9 +480,9 @@ describe('workflow-node-module-error helper functions', () => {
       expect(location?.length).toBe(8);
     });
 
-    it('should return undefined for non-existent files', () => {
+    it('should return undefined for non-existent files', async () => {
       const cwd = process.cwd();
-      const location = getViolationLocation(
+      const location = await getViolationLocation(
         cwd,
         'non-existent-file.ts',
         'some-package'
@@ -491,12 +491,12 @@ describe('workflow-node-module-error helper functions', () => {
       expect(location).toBeUndefined();
     });
 
-    it('should return undefined for files without the package import', () => {
+    it('should return undefined for files without the package import', async () => {
       const cwd = process.cwd();
       const testFile = 'src/node-module-esbuild-plugin.test.ts';
 
       // This package is not imported in the test file
-      const location = getViolationLocation(
+      const location = await getViolationLocation(
         cwd,
         testFile,
         'non-existent-package'
@@ -505,12 +505,12 @@ describe('workflow-node-module-error helper functions', () => {
       expect(location).toBeUndefined();
     });
 
-    it('should return undefined when import is unused even if it can be parsed', () => {
+    it('should return undefined when import is unused even if it can be parsed', async () => {
       const cwd = process.cwd();
       const testFile = 'src/node-module-esbuild-plugin.test.ts';
 
       // Test with 'node:http' which is imported in this file but never used
-      const location = getViolationLocation(cwd, testFile, 'node:http');
+      const location = await getViolationLocation(cwd, testFile, 'node:http');
 
       // Since the identifier is never referenced (only imported), we should
       // not produce a location preview.
