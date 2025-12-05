@@ -26,12 +26,13 @@ export default function Home() {
 
   const selectedHookId = sidebar === 'hook' && hookId ? hookId : undefined;
 
+  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged
   // Fetch workflow graph manifest
-  const {
-    manifest: graphManifest,
-    loading: graphLoading,
-    error: graphError,
-  } = useWorkflowGraphManifest(config);
+  // const {
+  //   manifest: graphManifest,
+  //   loading: graphLoading,
+  //   error: graphError,
+  // } = useWorkflowGraphManifest(config);
 
   const handleRunClick = (runId: string, streamId?: string) => {
     if (!streamId) {
@@ -56,7 +57,8 @@ export default function Home() {
     }
   };
 
-  const workflows = graphManifest ? Object.values(graphManifest.workflows) : [];
+  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged
+  // const workflows = graphManifest ? Object.values(graphManifest.workflows) : [];
 
   return (
     <div className="max-w-7xl mx-auto px-4">
@@ -64,7 +66,8 @@ export default function Home() {
         <TabsList className="mb-4">
           <TabsTrigger value="runs">Runs</TabsTrigger>
           <TabsTrigger value="hooks">Hooks</TabsTrigger>
-          <TabsTrigger value="workflows">Workflows</TabsTrigger>
+          {/* TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged */}
+          {/* <TabsTrigger value="workflows">Workflows</TabsTrigger> */}
         </TabsList>
         <TabsContent value="runs">
           <ErrorBoundary
@@ -86,7 +89,8 @@ export default function Home() {
             />
           </ErrorBoundary>
         </TabsContent>
-        <TabsContent value="workflows">
+        {/* TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged */}
+        {/* <TabsContent value="workflows">
           <ErrorBoundary
             title="Workflows Error"
             description="Failed to load workflow graph data. Please try refreshing the page."
@@ -106,7 +110,7 @@ export default function Home() {
               />
             </div>
           </ErrorBoundary>
-        </TabsContent>
+        </TabsContent> */}
       </Tabs>
     </div>
   );

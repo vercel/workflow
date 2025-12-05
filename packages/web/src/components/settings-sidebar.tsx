@@ -224,7 +224,8 @@ export function SettingsSidebar({
                       </p>
                     </div>
 
-                    <div className="space-y-2">
+                    {/* TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged */}
+                    {/* <div className="space-y-2">
                       <Label htmlFor="manifestPath">Manifest Path</Label>
                       <Input
                         id="manifestPath"
@@ -248,7 +249,7 @@ export function SettingsSidebar({
                         Path to the workflow manifest file. Leave empty to use
                         default locations.
                       </p>
-                    </div>
+                    </div> */}
                   </>
                 )}
 
