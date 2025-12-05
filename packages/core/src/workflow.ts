@@ -76,7 +76,7 @@ export async function runWorkflow(
       eventsConsumer: new EventsConsumer(events),
       generateUlid: () => ulid(+startedAt),
       generateNanoid,
-      invocationsQueue: [],
+      invocationsQueue: new Map(),
     };
 
     // Subscribe to the events log to update the timestamp in the vm context

@@ -14,12 +14,13 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
     // Calculate the resume time
     const resumeAt = parseDurationToDate(param);
 
-    // Add wait to invocations queue
-    ctx.invocationsQueue.push({
+    // Add wait to invocations queue (using Map for O(1) operations)
+    const waitItem: WaitInvocationQueueItem = {
       type: 'wait',
       correlationId,
       resumeAt,
-    });
+    };
+    ctx.invocationsQueue.set(correlationId, waitItem);
 
     ctx.eventsConsumer.subscribe((event) => {
       // If there are no events and we're waiting for wait_completed,
@@ -39,12 +40,11 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         event.correlationId === correlationId
       ) {
         // Mark this wait as having the created event, but keep it in the queue
-        const waitItem = ctx.invocationsQueue.find(
-          (item) => item.type === 'wait' && item.correlationId === correlationId
-        ) as WaitInvocationQueueItem | undefined;
-        if (waitItem) {
-          waitItem.hasCreatedEvent = true;
-          waitItem.resumeAt = event.eventData.resumeAt;
+        // O(1) lookup using Map
+        const queueItem = ctx.invocationsQueue.get(correlationId);
+        if (queueItem && queueItem.type === 'wait') {
+          queueItem.hasCreatedEvent = true;
+          queueItem.resumeAt = event.eventData.resumeAt;
         }
         return EventConsumerResult.Consumed;
       }
@@ -54,13 +54,8 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         event?.eventType === 'wait_completed' &&
         event.correlationId === correlationId
       ) {
-        // Remove this wait from the invocations queue
-        const index = ctx.invocationsQueue.findIndex(
-          (item) => item.type === 'wait' && item.correlationId === correlationId
-        );
-        if (index !== -1) {
-          ctx.invocationsQueue.splice(index, 1);
-        }
+        // Remove this wait from the invocations queue (O(1) delete using Map)
+        ctx.invocationsQueue.delete(correlationId);
 
         // Wait has elapsed, resolve the sleep
         setTimeout(() => {

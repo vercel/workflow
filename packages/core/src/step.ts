@@ -30,7 +30,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         queueItem.closureVars = closureVars;
       }
 
-      ctx.invocationsQueue.push(queueItem);
+      ctx.invocationsQueue.set(correlationId, queueItem);
 
       // Track whether we've already seen a "step_started" event for this step.
       // This is important because after a retryable failure, the step moves back to
@@ -73,13 +73,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         if (event.eventType === 'step_started') {
           // Step has started - so remove from the invocations queue (only on the first "step_started" event)
           if (!hasSeenStepStarted) {
-            const invocationsQueueIndex = ctx.invocationsQueue.findIndex(
-              (invocation) =>
-                invocation.type === 'step' &&
-                invocation.correlationId === correlationId
-            );
-            if (invocationsQueueIndex !== -1) {
-              ctx.invocationsQueue.splice(invocationsQueueIndex, 1);
+            // O(1) lookup and delete using Map
+            if (ctx.invocationsQueue.has(correlationId)) {
+              ctx.invocationsQueue.delete(correlationId);
             } else {
               setTimeout(() => {
                 reject(
