@@ -95,9 +95,9 @@ jobs:
         run: |
           cd workbench/${{ inputs.app-name }} && pnpm dev &
           echo "Waiting for dev server to start..." && sleep 15
-          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
           sleep 10
-          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}.json || true
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}.json || true
         env:
           APP_NAME: ${{ inputs.app-name }}
           DEPLOYMENT_URL: "http://localhost:3000"

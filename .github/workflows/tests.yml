@@ -228,7 +228,7 @@ jobs:
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
       - name: Run E2E Tests
-        run: pnpm run test:e2e --reporter=json --outputFile=e2e-vercel-prod-${{ matrix.app.name }}.json
+        run: pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-vercel-prod-${{ matrix.app.name }}.json
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
           APP_NAME: ${{ matrix.app.name }}
@@ -312,7 +312,7 @@ jobs:
           cd workbench/${{ matrix.app.name }} && pnpm dev &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm vitest run packages/core/e2e/dev.test.ts && sleep 10
-          pnpm run test:e2e --reporter=json --outputFile=../../e2e-local-dev-${{ matrix.app.name }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --outputFile=../../e2e-local-dev-${{ matrix.app.name }}.json
         env:
           APP_NAME: ${{ matrix.app.name }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
@@ -378,7 +378,7 @@ jobs:
         run: |
           cd workbench/${{ matrix.app.name }} && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=json --outputFile=../../e2e-local-prod-${{ matrix.app.name }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --outputFile=../../e2e-local-prod-${{ matrix.app.name }}.json
         env:
           APP_NAME: ${{ matrix.app.name }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
@@ -463,7 +463,7 @@ jobs:
         run: |
           cd workbench/${{ matrix.app.name }} && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=json --outputFile=../../e2e-local-postgres-${{ matrix.app.name }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --outputFile=../../e2e-local-postgres-${{ matrix.app.name }}.json
         env:
           APP_NAME: ${{ matrix.app.name }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
@@ -522,7 +522,7 @@ jobs:
           Start-Sleep -Seconds 15
           cd ../..
           pnpm vitest run packages/core/e2e/dev.test.ts
-          pnpm run test:e2e --reporter=json --outputFile=e2e-windows-nextjs-turbopack.json
+          pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-windows-nextjs-turbopack.json
           Stop-Job $job
         shell: powershell
         env:
