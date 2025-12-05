@@ -1,4 +1,1 @@
-export {
-  workflowHotUpdatePlugin,
-  type WorkflowHotUpdatePluginOptions,
-} from './hot-update.js';
+export { workflowHotUpdatePlugin } from './hot-update.js';

@@ -1,7 +1,7 @@
 import type { Plugin, HotUpdateOptions } from 'vite';
 import type { BaseBuilder } from '@workflow/builders';
 
-export interface WorkflowHotUpdatePluginOptions {
+interface WorkflowHotUpdatePluginOptions {
   /**
    * Builder instance or a getter function.
    * Use a getter when the builder is created lazily (e.g., Nitro where it depends on the nitro object).
