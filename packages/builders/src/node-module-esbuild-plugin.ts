@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { normalize, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { ERROR_SLUGS } from '@workflow/errors';
@@ -155,14 +155,14 @@ function findIdentifierUsage(
  * @param packageName - The name of the package.
  * @returns The location of the violation.
  */
-export function getViolationLocation(
+export async function getViolationLocation(
   cwd: string,
   relativePath: string,
   packageName: string
 ) {
   try {
     const absolutePath = resolve(cwd, relativePath);
-    const contents = readFileSync(absolutePath, 'utf8');
+    const contents = await readFile(absolutePath, 'utf8');
     const lines = contents.split(/\r?\n/);
 
     const importRegex = new RegExp(
@@ -314,7 +314,7 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
 
         if (!seenViolations.has(violationKey)) {
           seenViolations.add(violationKey);
-          const location = getViolationLocation(
+          const location = await getViolationLocation(
             cwd,
             relativeWorkflowFile,
             packageName
