@@ -119,7 +119,8 @@ export function getConfigParams(config: WorldConfig): URLSearchParams {
 }
 
 /**
- * Helper to build a URL with config params while preserving other params
+ * Helper to build a URL with config params
+ * while preserving other params
  */
 export function buildUrlWithConfig(
   path: string,
