@@ -1,5 +1,22 @@
 # @workflow/rollup
 
+## 4.0.0-beta.6
+
+### Patch Changes
+
+- 21cff15: Add support for `.mjs`, `.mts`, `.cjs`, and `.cts` file extensions in the SWC transform
+
+  - Updated turbopack rules to include `*.mjs`, `*.mts`, `*.cjs`, `*.cts` in addition to existing extensions
+  - Fixed TypeScript detection for `.mts` and `.cts` files across all transform plugins
+  - Updated esbuild `resolveExtensions` to include `.mts` and `.cts`
+  - Updated the file watcher's `watchableExtensions` to include `.cts`
+
+- Updated dependencies [fa37d26]
+- Updated dependencies [f46c51e]
+- Updated dependencies [af5b005]
+- Updated dependencies [43f2dec]
+  - @workflow/swc-plugin@4.0.1-beta.12
+
 ## 4.0.0-beta.5
 
 ### Patch Changes

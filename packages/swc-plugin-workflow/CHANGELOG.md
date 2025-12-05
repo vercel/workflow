@@ -1,5 +1,19 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- fa37d26: Set `workflowId` property directly after function declarations
+- f46c51e: Apply workflow transformation with `export { fnName }` syntax
+- af5b005: Set `workflowId` property in workflow mode for non-exported workflow functions
+- 43f2dec: Improved workflow registration in workflow mode
+
+  - SWC plugin now emits `globalThis.__private_workflows.set(workflowId, fn)` directly after setting `workflowId`
+  - Non-exported workflow functions are now properly registered and can be invoked
+  - Removed runtime iteration over exports in the workflow bundle - registration happens at transform time
+  - Simplified virtual entry generation in base-builder
+
 ## 4.0.1-beta.11
 
 ### Patch Changes

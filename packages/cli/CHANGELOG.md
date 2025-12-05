@@ -1,5 +1,31 @@
 # @workflow/cli
 
+## 4.0.1-beta.28
+
+### Patch Changes
+
+- 57a2c32: Add expiredAt attribute to Run
+- Updated dependencies [48b3a12]
+- Updated dependencies [57a2c32]
+- Updated dependencies [14daedd]
+- Updated dependencies [fc774e5]
+- Updated dependencies [4aecb99]
+- Updated dependencies [24e6271]
+- Updated dependencies [21cff15]
+- Updated dependencies [fa37d26]
+- Updated dependencies [f46c51e]
+- Updated dependencies [8172455]
+- Updated dependencies [af5b005]
+- Updated dependencies [43f2dec]
+  - @workflow/world-local@4.0.1-beta.15
+  - @workflow/world@4.0.1-beta.9
+  - @workflow/web@4.0.1-beta.14
+  - @workflow/builders@4.0.1-beta.23
+  - @workflow/swc-plugin@4.0.1-beta.12
+  - @workflow/core@4.0.1-beta.24
+  - @workflow/errors@4.0.1-beta.7
+  - @workflow/world-vercel@4.0.1-beta.17
+
 ## 4.0.1-beta.27
 
 ### Patch Changes

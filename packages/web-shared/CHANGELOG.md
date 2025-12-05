@@ -1,5 +1,19 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.25
+
+### Patch Changes
+
+- 57a2c32: Add expiredAt attribute to Run
+- 14daedd: Refine span viewer panel UI: reduced font sizes and spacing, added connecting lines in detail cards, improved attribute layout with bordered containers. Improve status badge with colored indicators and optional duration, add overlay mode to copyable text, simplify stream detail back navigation
+- 4aecb99: Add workflow graph visualization to observability UI and o11y migration to nuqs for url state management
+- 24e6271: UI polish: inline durations, font fixes, trace viewer scrolling fix
+- 7969df9: Pretty-print large durations in trace viewer as days/hours/minutes/seconds instead of raw seconds
+- 8172455: Show expiredAt date in trace viewer, add tooltip
+- Updated dependencies [57a2c32]
+  - @workflow/world@4.0.1-beta.9
+  - @workflow/core@4.0.1-beta.24
+
 ## 4.0.1-beta.24
 
 ### Patch Changes

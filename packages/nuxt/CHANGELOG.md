@@ -1,5 +1,11 @@
 # @workflow/nuxt
 
+## 4.0.1-beta.16
+
+### Patch Changes
+
+- @workflow/nitro@4.0.1-beta.27
+
 ## 4.0.1-beta.15
 
 ### Patch Changes

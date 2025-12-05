@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.0.1-beta.9
+
+### Patch Changes
+
+- 57a2c32: Add expiredAt attribute to Run
+
 ## 4.0.1-beta.8
 
 ### Patch Changes

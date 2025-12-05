@@ -1,5 +1,19 @@
 # @workflow/world-local
 
+## 4.0.1-beta.15
+
+### Patch Changes
+
+- 48b3a12: perf: optimize for high-concurrency workflows
+
+  - Add in-memory cache for file existence checks to avoid expensive fs.access() calls
+  - Increase default concurrency limit from 20 to 100
+  - Improve HTTP connection pooling with undici Agent (100 connections, 30s keepalive)
+
+- Updated dependencies [57a2c32]
+  - @workflow/world@4.0.1-beta.9
+  - @workflow/errors@4.0.1-beta.7
+
 ## 4.0.1-beta.14
 
 ### Patch Changes

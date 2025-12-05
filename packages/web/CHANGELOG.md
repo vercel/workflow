@@ -1,5 +1,14 @@
 # @workflow/web
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- 14daedd: Refine span viewer panel UI: reduced font sizes and spacing, added connecting lines in detail cards, improved attribute layout with bordered containers. Improve status badge with colored indicators and optional duration, add overlay mode to copyable text, simplify stream detail back navigation
+- 4aecb99: Add workflow graph visualization to observability UI and o11y migration to nuqs for url state management
+- 24e6271: UI polish: inline durations, font fixes, trace viewer scrolling fix
+- 8172455: Show expiredAt date in trace viewer, add tooltip
+
 ## 4.0.1-beta.13
 
 ### Patch Changes

@@ -1,5 +1,32 @@
 # @workflow/builders
 
+## 4.0.1-beta.23
+
+### Patch Changes
+
+- fc774e5: Fix esbuild node module plugin to show top level violation and preview file
+- 21cff15: Add support for `.mjs`, `.mts`, `.cjs`, and `.cts` file extensions in the SWC transform
+
+  - Updated turbopack rules to include `*.mjs`, `*.mts`, `*.cjs`, `*.cts` in addition to existing extensions
+  - Fixed TypeScript detection for `.mts` and `.cts` files across all transform plugins
+  - Updated esbuild `resolveExtensions` to include `.mts` and `.cts`
+  - Updated the file watcher's `watchableExtensions` to include `.cts`
+
+- 43f2dec: Improved workflow registration in workflow mode
+
+  - SWC plugin now emits `globalThis.__private_workflows.set(workflowId, fn)` directly after setting `workflowId`
+  - Non-exported workflow functions are now properly registered and can be invoked
+  - Removed runtime iteration over exports in the workflow bundle - registration happens at transform time
+  - Simplified virtual entry generation in base-builder
+
+- Updated dependencies [fa37d26]
+- Updated dependencies [f46c51e]
+- Updated dependencies [af5b005]
+- Updated dependencies [43f2dec]
+  - @workflow/swc-plugin@4.0.1-beta.12
+  - @workflow/core@4.0.1-beta.24
+  - @workflow/errors@4.0.1-beta.7
+
 ## 4.0.1-beta.22
 
 ### Patch Changes
