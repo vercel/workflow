@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import chalk from 'chalk';
 import { parse } from 'comment-json';
@@ -176,31 +177,47 @@ export abstract class BaseBuilder {
 
   /**
    * Writes debug information to a JSON file for troubleshooting build issues.
-   * Executes whenever called, regardless of environment variables.
+   * Uses atomic write (temp file + rename) to prevent race conditions when
+   * multiple builds run concurrently.
    */
   private async writeDebugFile(
     outfile: string,
     debugData: object,
     merge?: boolean
   ): Promise<void> {
+    const prefix = this.config.debugFilePrefix || '';
+    const targetPath = `${dirname(outfile)}/${prefix}${basename(outfile)}.debug.json`;
+    let existing = {};
+
     try {
-      let existing = {};
       if (merge) {
-        existing = JSON.parse(
-          await readFile(`${outfile}.debug.json`, 'utf8').catch(() => '{}')
-        );
+        try {
+          const content = await readFile(targetPath, 'utf8');
+          existing = JSON.parse(content);
+        } catch (e) {
+          // File doesn't exist yet or is corrupted - start fresh.
+          // Don't log error for ENOENT (file not found) as that's expected on first run.
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+            console.warn('Error reading debug file, starting fresh:', e);
+          }
+        }
       }
-      await writeFile(
-        `${outfile}.debug.json`,
-        JSON.stringify(
-          {
-            ...existing,
-            ...debugData,
-          },
-          null,
-          2
-        )
+
+      const mergedData = JSON.stringify(
+        {
+          ...existing,
+          ...debugData,
+        },
+        null,
+        2
       );
+
+      // Write atomically: write to temp file, then rename.
+      // rename() is atomic on POSIX systems and provides best-effort atomicity on Windows.
+      // Prevents race conditions where concurrent builds read partially-written files.
+      const tempPath = `${targetPath}.${randomUUID()}.tmp`;
+      await writeFile(tempPath, mergedData);
+      await rename(tempPath, targetPath);
     } catch (error: unknown) {
       console.warn('Failed to write debug file:', error);
     }
@@ -348,6 +365,7 @@ export abstract class BaseBuilder {
       treeShaking: true,
       keepNames: true,
       minify: false,
+      jsx: 'preserve',
       resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
       // TODO: investigate proper source map support
       sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
@@ -561,7 +579,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
         const outputDir = dirname(outfile);
         await mkdir(outputDir, { recursive: true });
 
-        await writeFile(outfile, workflowFunctionCode);
+        // Atomic write: write to temp file then rename to prevent
+        // file watchers from reading partial file during write
+        const tempPath = `${outfile}.${randomUUID()}.tmp`;
+        await writeFile(tempPath, workflowFunctionCode);
+        await rename(tempPath, outfile);
         return;
       }
 
@@ -653,6 +675,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
       bundle: true,
       format: 'esm',
       platform: 'node',
+      jsx: 'preserve',
       target: 'es2022',
       write: true,
       treeShaking: true,
@@ -736,6 +759,7 @@ export const OPTIONS = handler;`;
       outfile,
       absWorkingDir: this.config.workingDir,
       bundle: true,
+      jsx: 'preserve',
       format: 'cjs',
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],

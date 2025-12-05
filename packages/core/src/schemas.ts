@@ -1,24 +1,3 @@
-import { z } from 'zod';
-
-// OpenTelemetry trace context for distributed tracing
-const TraceCarrierSchema = z.record(z.string(), z.string());
-
-export const WorkflowInvokePayloadSchema = z.object({
-  runId: z.string(),
-  traceCarrier: TraceCarrierSchema.optional(),
-});
-
-export const StepInvokePayloadSchema = z.object({
-  workflowName: z.string(),
-  workflowRunId: z.string(),
-  workflowStartedAt: z.number(),
-  stepId: z.string(),
-  traceCarrier: TraceCarrierSchema.optional(),
-});
-
-export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
-export type StepInvokePayload = z.infer<typeof StepInvokePayloadSchema>;
-
 /**
  * A serializable value:
  * Any valid JSON object is serializable

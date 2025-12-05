@@ -22,7 +22,7 @@ export async function nameWorkflow() {
 
   const hook = nameHook.create();  // [!code highlight]
   const result = await hook; // Fully typed as { name: string }
-  console.log('Name:', result.name);
+  console.log("Name:", result.name);
 }
 ```
 
@@ -79,8 +79,8 @@ export async function workflowWithApproval() {
   const hook = approvalHook.create();
   const result = await hook; // Fully typed as { approved: boolean; comment: string }
 
-  console.log('Approved:', result.approved);
-  console.log('Comment:', result.comment);
+  console.log("Approved:", result.approved);
+  console.log("Comment:", result.comment);
 }
 ```
 
@@ -100,7 +100,7 @@ export async function POST(request: Request) {
   }); // [!code highlight]
 
   if (!result) {
-    return Response.json({ error: 'Hook not found' }, { status: 404 });
+    return Response.json({ error: "Hook not found" }, { status: 404 });
   }
 
   return Response.json({ success: true, runId: result.runId });
@@ -139,8 +139,8 @@ export async function approvalWorkflow(approvalId: string) {
 
   // Payload is automatically typed based on the schema
   const { approved, comment } = await hook;
-  console.log('Approved:', approved);
-  console.log('Comment (trimmed):', comment);
+  console.log("Approved:", approved);
+  console.log("Comment (trimmed):", comment);
 }
 ```
 

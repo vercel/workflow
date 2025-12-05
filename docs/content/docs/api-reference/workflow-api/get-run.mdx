@@ -7,9 +7,9 @@ Retrieves the workflow run metadata and status information for a given run ID. T
 Use this function when you need to check workflow status, get timing information, or access workflow metadata without blocking on workflow completion.
 
 ```typescript lineNumbers
-import { getRun } from 'workflow/api';
+import { getRun } from "workflow/api";
 
-const run = getRun('my-run-id');
+const run = getRun("my-run-id");
 ```
 
 ## API Signature
@@ -18,9 +18,9 @@ const run = getRun('my-run-id');
 
 <TSDoc
 definition={`
-import { getRun } from 'workflow/api';
+import { getRun } from "workflow/api";
 export default getRun;`}
-showSections={['parameters']}
+showSections={["parameters"]}
 />
 
 ### Returns
@@ -29,16 +29,16 @@ Returns a `Run` object:
 
 <TSDoc
 definition={`
-import { Run } from 'workflow/api';
+import { Run } from "workflow/api";
 export default Run;`}
-showSections={['returns']}
+showSections={["returns"]}
 />
 
 #### WorkflowReadableStreamOptions
 
 <TSDoc
 definition={`
-import type { WorkflowReadableStreamOptions } from 'workflow/api';
+import type { WorkflowReadableStreamOptions } from "workflow/api";
 export default WorkflowReadableStreamOptions;`}
 />
 
@@ -49,14 +49,14 @@ export default WorkflowReadableStreamOptions;`}
 Check the current status of a workflow run:
 
 ```typescript lineNumbers
-import { getRun } from 'workflow/api';
+import { getRun } from "workflow/api";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const runId = url.searchParams.get('runId');
+  const runId = url.searchParams.get("runId");
 
   if (!runId) {
-    return Response.json({ error: 'No runId provided' }, { status: 400 });
+    return Response.json({ error: "No runId provided" }, { status: 400 });
   }
 
   try {
@@ -66,7 +66,7 @@ export async function GET(req: Request) {
     return Response.json({ status });
   } catch (error) {
     return Response.json(
-      { error: 'Workflow run not found' },
+      { error: "Workflow run not found" },
       { status: 404 }
     );
   }

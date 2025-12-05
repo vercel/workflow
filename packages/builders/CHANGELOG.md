@@ -1,5 +1,46 @@
 # @workflow/builders
 
+## 4.0.1-beta.22
+
+### Patch Changes
+
+- @workflow/core@4.0.1-beta.23
+
+## 4.0.1-beta.21
+
+### Patch Changes
+
+- ac7997b: Update to latest swc/core and preserve JSX
+- Updated dependencies [ac7997b]
+- Updated dependencies [02c41cc]
+  - @workflow/swc-plugin@4.0.1-beta.11
+  - @workflow/core@4.0.1-beta.22
+
+## 4.0.1-beta.20
+
+### Patch Changes
+
+- Updated dependencies [2f0840b]
+- Updated dependencies [555d7a6]
+  - @workflow/core@4.0.1-beta.21
+  - @workflow/swc-plugin@4.0.1-beta.10
+
+## 4.0.1-beta.19
+
+### Patch Changes
+
+- d53bf90: Fix StandaloneBuilder to scan all directories for workflows
+- 3c19e90: Fix Nitro and SvelteKit build race conditions and make writing debug file atomic
+- 1ac5592: Add @workflow/astro package
+- Updated dependencies [0f1645b]
+- Updated dependencies [5b91861]
+- Updated dependencies [bdde1bd]
+- Updated dependencies [0cacb99]
+- Updated dependencies [8d4562e]
+  - @workflow/core@4.0.1-beta.20
+  - @workflow/swc-plugin@4.0.1-beta.9
+  - @workflow/errors@4.0.1-beta.7
+
 ## 4.0.1-beta.18
 
 ### Patch Changes

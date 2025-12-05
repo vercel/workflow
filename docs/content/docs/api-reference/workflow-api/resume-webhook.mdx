@@ -15,17 +15,17 @@ import { resumeWebhook } from "workflow/api";
 
 export async function POST(request: Request) {
   const url = new URL(request.url);
-  const token = url.searchParams.get('token');
+  const token = url.searchParams.get("token");
 
   if (!token) {
-    return new Response('Missing token', { status: 400 });
+    return new Response("Missing token", { status: 400 });
   }
 
   try {
     const response = await resumeWebhook(token, request); // [!code highlight]
     return response;
   } catch (error) {
-    return new Response('Webhook not found', { status: 404 });
+    return new Response("Webhook not found", { status: 404 });
   }
 }
 ```
@@ -60,17 +60,17 @@ import { resumeWebhook } from "workflow/api";
 
 export async function POST(request: Request) {
   const url = new URL(request.url);
-  const token = url.searchParams.get('token');
+  const token = url.searchParams.get("token");
 
   if (!token) {
-    return new Response('Token required', { status: 400 });
+    return new Response("Token required", { status: 400 });
   }
 
   try {
     const response = await resumeWebhook(token, request); // [!code highlight]
     return response; // Returns the workflow's custom response
   } catch (error) {
-    return new Response('Webhook not found', { status: 404 });
+    return new Response("Webhook not found", { status: 404 });
   }
 }
 ```
@@ -86,14 +86,14 @@ import { verifyGitHubSignature } from "@/lib/github";
 export async function POST(request: Request) {
   // Extract repository name from URL
   const url = new URL(request.url);
-  const repo = url.pathname.split('/').pop();
+  const repo = url.pathname.split("/").pop();
 
   // Verify GitHub signature
-  const signature = request.headers.get('x-hub-signature-256');
+  const signature = request.headers.get("x-hub-signature-256");
   const isValid = await verifyGitHubSignature(request, signature);
 
   if (!isValid) {
-    return new Response('Invalid signature', { status: 401 });
+    return new Response("Invalid signature", { status: 401 });
   }
 
   // Construct deterministic token
@@ -103,7 +103,7 @@ export async function POST(request: Request) {
     const response = await resumeWebhook(token, request); // [!code highlight]
     return response;
   } catch (error) {
-    return new Response('Workflow not found', { status: 404 });
+    return new Response("Workflow not found", { status: 404 });
   }
 }
 ```
@@ -117,13 +117,13 @@ import { resumeWebhook } from "workflow/api";
 
 export async function POST(request: Request) {
   const formData = await request.formData();
-  const channelId = formData.get('channel_id') as string;
-  const command = formData.get('command') as string;
+  const channelId = formData.get("channel_id") as string;
+  const command = formData.get("command") as string;
 
   // Verify Slack request signature
-  const slackSignature = request.headers.get('x-slack-signature');
+  const slackSignature = request.headers.get("x-slack-signature");
   if (!slackSignature) {
-    return new Response('Unauthorized', { status: 401 });
+    return new Response("Unauthorized", { status: 401 });
   }
 
   // Construct token from channel ID
@@ -136,11 +136,11 @@ export async function POST(request: Request) {
     // If no workflow is listening, return a default response
     return new Response(
       JSON.stringify({
-        response_type: 'ephemeral',
-        text: 'No active workflow for this channel'
+        response_type: "ephemeral",
+        text: "No active workflow for this channel"
       }),
       {
-        headers: { 'Content-Type': 'application/json' }
+        headers: { "Content-Type": "application/json" }
       }
     );
   }
@@ -159,18 +159,18 @@ export async function POST(request: Request) {
 
   // Extract tenant and webhook ID from path
   // e.g., /api/webhooks/tenant-123/webhook-abc
-  const [, , , tenantId, webhookId] = url.pathname.split('/');
+  const [, , , tenantId, webhookId] = url.pathname.split("/");
 
   if (!tenantId || !webhookId) {
-    return new Response('Invalid webhook URL', { status: 400 });
+    return new Response("Invalid webhook URL", { status: 400 });
   }
 
   // Verify API key for tenant
-  const apiKey = request.headers.get('authorization');
+  const apiKey = request.headers.get("authorization");
   const isAuthorized = await verifyTenantApiKey(tenantId, apiKey);
 
   if (!isAuthorized) {
-    return new Response('Unauthorized', { status: 401 });
+    return new Response("Unauthorized", { status: 401 });
   }
 
   // Construct namespaced token
@@ -180,7 +180,7 @@ export async function POST(request: Request) {
     const response = await resumeWebhook(token, request); // [!code highlight]
     return response;
   } catch (error) {
-    return new Response('Webhook not found or expired', { status: 404 });
+    return new Response("Webhook not found or expired", { status: 404 });
   }
 }
 
@@ -195,7 +195,7 @@ async function verifyTenantApiKey(tenantId: string, apiKey: string | null) {
 Use `resumeWebhook` in a Next.js server action:
 
 ```typescript lineNumbers
-'use server';
+"use server";
 
 import { resumeWebhook } from "workflow/api";
 
@@ -204,10 +204,10 @@ export async function triggerWebhook(
   payload: Record<string, any>
 ) {
   // Create a Request object from the payload
-  const request = new Request('http://localhost/webhook', {
-    method: 'POST',
+  const request = new Request("http://localhost/webhook", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
   });
@@ -216,14 +216,14 @@ export async function triggerWebhook(
     const response = await resumeWebhook(token, request);
 
     // Parse and return the response
-    const contentType = response.headers.get('content-type');
-    if (contentType?.includes('application/json')) {
+    const contentType = response.headers.get("content-type");
+    if (contentType?.includes("application/json")) {
       return await response.json();
     }
 
     return await response.text();
   } catch (error) {
-    throw new Error('Webhook not found');
+    throw new Error("Webhook not found");
   }
 }
 ```

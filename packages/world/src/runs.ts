@@ -30,6 +30,7 @@ export const WorkflowRunBaseSchema = z.object({
   input: z.array(z.any()),
   output: z.any().optional(),
   error: StructuredErrorSchema.optional(),
+  expiredAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
   createdAt: z.coerce.date(),

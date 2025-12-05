@@ -1,5 +1,19 @@
 # @workflow/web
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- ca27c0f: Update to latest Next.js
+
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- 109fe59: Add PostgreSQL backend support in web UI settings
+- 10c5b91: Update Next.js version to 16
+- 8d4562e: Rename leftover references to "embedded world" to be "local world"
+
 ## 4.0.1-beta.11
 
 ### Patch Changes

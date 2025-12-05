@@ -30,6 +30,18 @@ const streamToStreamId = (value: any): string => {
   return `${STREAM_ID_PREFIX}null`;
 };
 
+const serializedStepFunctionToString = (value: unknown): string => {
+  if (!value) return 'null';
+  if (typeof value !== 'object') return 'null';
+  if ('stepId' in value) {
+    const stepId = value.stepId;
+    // TODO: Add closure vars to the string representation.
+    // value.closureVars
+    return `<step:${stepId}>`;
+  }
+  return '<function>';
+};
+
 /**
  * This is an extra reviver for devalue that takes any streams that would be converted,
  * into actual streams, and instead formats them as string links for printing in CLI output.
@@ -41,7 +53,7 @@ const streamPrintRevivers: Record<string, (value: any) => any> = {
   ReadableStream: streamToStreamId,
   WritableStream: streamToStreamId,
   TransformStream: streamToStreamId,
-  StepFunction: (value) => `<fn:${value}>`,
+  StepFunction: serializedStepFunctionToString,
 };
 
 const hydrateStepIO = <

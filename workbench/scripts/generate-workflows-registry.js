@@ -31,7 +31,7 @@ function generateSafeIdentifier(filename) {
   // Convert filename to safe JS identifier
   // e.g., "1_simple.ts" -> "workflow_1_simple"
   return (
-    'workflow_' + filename.replace(/\.ts$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
+    'workflow_' + filename.replace(/\.tsx?$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
   );
 }
 
@@ -47,7 +47,7 @@ function generateRegistry() {
     .readdirSync(workflowsDir)
     .filter((file) => {
       // Only .ts files
-      if (!file.endsWith('.ts')) return false;
+      if (!file.endsWith('.ts') && !file.endsWith('.tsx')) return false;
       // Skip helpers and files starting with _
       if (SKIP_FILES.includes(file)) return false;
       if (file.startsWith(SKIP_PREFIX)) return false;
@@ -67,9 +67,9 @@ function generateRegistry() {
       // Don't add .js extension - let the bundler resolve it
       let importPath;
       if (relativeWorkflowsPath && relativeWorkflowsPath !== 'workflows') {
-        importPath = `${relativeWorkflowsPath}/${file.replace(/\.ts$/, '')}`;
+        importPath = `${relativeWorkflowsPath}/${file.replace(/\.tsx?$/, '')}`;
       } else {
-        importPath = `./workflows/${file.replace(/\.ts$/, '')}`;
+        importPath = `./workflows/${file.replace(/\.tsx?$/, '')}`;
       }
       return `import * as ${identifier} from '${importPath}';`;
     })

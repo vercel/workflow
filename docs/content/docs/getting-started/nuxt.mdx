@@ -156,8 +156,8 @@ Taking a look at this code:
 To invoke your new workflow, we'll create a new API route handler at `server/api/signup.post.ts` with the following code:
 
 ```typescript title="server/api/signup.post.ts"
-import { start } from 'workflow/api';
-import { defineEventHandler, readBody } from 'h3';
+import { start } from "workflow/api";
+import { defineEventHandler, readBody } from "h3";
 import { handleUserSignup } from "../workflows/user-signup";
 
 export default defineEventHandler(async (event) => {
@@ -202,7 +202,10 @@ Check the Nuxt development server logs to see your workflow execute as well as t
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
 ```bash
-npx workflow inspect runs # add '--web' for an interactive Web based UI
+# Open the observability Web UI
+npx workflow web
+# or if you prefer a terminal interface, use the CLI inspect command
+npx workflow inspect runs
 ```
 
 <img src="/o11y-ui.png" alt="Workflow DevKit Web UI" />
@@ -222,4 +225,3 @@ Check the [Deploying](/docs/deploying) section to learn how your workflows can b
 - Learn more about the [Foundations](/docs/foundations).
 - Check [Errors](/docs/errors) if you encounter issues.
 - Explore the [API Reference](/docs/api-reference).
-

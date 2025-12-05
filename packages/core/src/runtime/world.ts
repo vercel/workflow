@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { World } from '@workflow/world';
-import { createEmbeddedWorld } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
 
 const require = createRequire(join(process.cwd(), 'index.js'));
@@ -14,12 +14,12 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCache]?: World;
 } = globalThis;
 
-function defaultWorld(): 'vercel' | 'embedded' {
+function defaultWorld(): 'vercel' | 'local' {
   if (process.env.VERCEL_DEPLOYMENT_ID) {
     return 'vercel';
   }
 
-  return 'embedded';
+  return 'local';
 }
 
 /**
@@ -42,9 +42,9 @@ export const createWorld = (): World => {
     });
   }
 
-  if (targetWorld === 'embedded') {
-    return createEmbeddedWorld({
-      dataDir: process.env.WORKFLOW_EMBEDDED_DATA_DIR,
+  if (targetWorld === 'local') {
+    return createLocalWorld({
+      dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
     });
   }
 

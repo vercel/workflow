@@ -1,6 +1,6 @@
 {
   "name": "@workflow/next",
-  "version": "4.0.1-beta.22",
+  "version": "4.0.1-beta.26",
   "description": "Next.js integration for Workflow DevKit",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -39,7 +39,7 @@
     "@types/node": "catalog:",
     "@types/semver": "7.7.1",
     "@types/watchpack": "2.4.4",
-    "next": "16.0.1"
+    "next": "16.0.7"
   },
   "peerDependencies": {
     "next": ">13"

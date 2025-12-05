@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "4.0.1-beta.11",
+  "version": "4.0.1-beta.13",
   "private": false,
   "files": [
     ".next",
@@ -26,7 +26,7 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "next": "16.0.6"
+    "next": "16.0.7"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

@@ -7,6 +7,7 @@ import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import { ENOTSUP } from './global.js';
+import { parseWorkflowName } from './parse-name.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -28,7 +29,6 @@ import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
-import { parseWorkflowName } from './parse-name.js';
 
 export async function runWorkflow(
   workflowCode: string,
@@ -104,7 +104,7 @@ export async function runWorkflow(
       getWorkflowRunStreamId(workflowRun.runId, namespace);
 
     // TODO: there should be a getUrl method on the world interface itself. This
-    // solution only works for vercel + embedded worlds.
+    // solution only works for vercel + local worlds.
     const url = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
       : `http://localhost:${port ?? 3000}`;

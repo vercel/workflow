@@ -1,0 +1,39 @@
+---
+title: Worlds Ecosystem
+description: Overview of official and community Workflow World implementations with compatibility status and performance benchmarks.
+---
+
+import { WorldsDashboardServer } from "@/components/worlds";
+
+# Workflow Worlds Ecosystem
+
+The Workflow `World` is an interface that abstracts how workflows and steps communicate with the outside world. This page shows the compatibility status and performance of all available World implementations.
+
+<WorldsDashboardServer />
+
+## What is a World?
+
+A World implementation handles:
+- **Workflow Storage**: Persisting workflow state and event logs
+- **Step Execution**: Managing step function invocations
+- **Message Passing**: Communication between workflow orchestrator and step functions
+
+## Choosing a World
+
+| Use Case | Recommended World |
+|----------|------------------|
+| Local development | Local World |
+| Vercel deployment | Vercel World |
+| Self-hosted with PostgreSQL | Postgres World |
+| Edge/embedded databases | Turso World |
+| High-throughput queues | Redis World |
+
+## Contributing a World
+
+Want to build your own World implementation? Check out the [World interface documentation](/docs/deploying/world) and the [reference implementations](https://github.com/vercel/workflow/tree/main/packages) for guidance.
+
+Community worlds are tested in CI against our E2E test suite. To add your world to this dashboard:
+
+1. Implement the World interface
+2. Publish to npm
+3. Open a PR to add your world to `worlds-manifest.json`

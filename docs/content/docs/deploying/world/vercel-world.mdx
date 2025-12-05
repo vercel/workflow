@@ -84,46 +84,21 @@ Each environment has isolated workflow data, ensuring that development and testi
 
 ## Remote Access Configuration
 
-To inspect production workflows from your local machine using [observability tools](/docs/observability), you need to configure remote access.
+To inspect production workflows from your local machine using [observability tools](/docs/observability), you can use CLI flags to configure remote access.
 
-### Getting Authentication Tokens
-
-1. Go to [Vercel Dashboard → Settings → Tokens](https://vercel.com/account/tokens)
-2. Create a new token with appropriate scopes
-3. Save the token securely
-
-### Environment Variables
-
-Configure remote access via environment variables:
-
-```bash
-# Set the target world
-export WORKFLOW_TARGET_WORLD=vercel
-
-# Authentication token
-export WORKFLOW_VERCEL_AUTH_TOKEN=<your-token>
-
-# Environment (production, preview, development)
-export WORKFLOW_VERCEL_ENV=production
-
-# Project ID
-export WORKFLOW_VERCEL_PROJECT=<project-id>
-
-# Team ID (if using Vercel teams)
-export WORKFLOW_VERCEL_TEAM=<team-id>
-```
+In most cases, these flags are not necessary. The CLI automatically retrieves authentication tokens from the Vercel CLI's token storage and infers team and project IDs based on the current working directory and Vercel project linking status.
 
 ### CLI Flags
 
-You can also pass configuration via CLI flags when using observability tools:
+If you need to override the automatic configuration, you can pass configuration via CLI flags:
 
 ```bash
 npx workflow inspect runs \
-  --backend=vercel \
-  --env=production \
-  --project=my-project \
-  --team=my-team \
-  --authToken=<your-token>
+  --backend vercel \
+  --env production \
+  --project my-project \
+  --team my-team \
+  --authToken <your-token>
 ```
 
 Learn more about remote inspection in the [Observability](/docs/observability) section.
@@ -182,14 +157,14 @@ function createVercelWorld(
 **Example:**
 
 ```typescript
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createVercelWorld } from "@workflow/world-vercel";
 
 const world = createVercelWorld({
   token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
   headers: {
-    'x-vercel-environment': 'production',
-    'x-vercel-project-id': 'my-project',
-    'x-vercel-team-id': 'my-team',
+    "x-vercel-environment": "production",
+    "x-vercel-project-id": "my-project",
+    "x-vercel-team-id": "my-team",
   },
 });
 ```

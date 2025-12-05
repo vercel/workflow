@@ -39,6 +39,7 @@ const suggestions = [
   'How does retrying work?',
   'What control flow patterns are there?',
   'How do directives work?',
+  'How do I build an AI agent?',
 ];
 
 const Layout = ({ children }: LayoutProps<'/'>) => (

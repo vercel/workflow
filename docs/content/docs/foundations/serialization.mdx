@@ -70,7 +70,7 @@ instance into the workflow context. You may consume the body of that request dir
 in the workflow, which will be cached as a step result for future resumptions of the workflow:
 
 ```typescript title="workflows/webhook.ts" lineNumbers
-import { createWebhook } from 'workflow';
+import { createWebhook } from "workflow";
 
 export async function handleWebhookWorkflow() {
   "use workflow";
@@ -90,13 +90,13 @@ export async function handleWebhookWorkflow() {
 Because `Request` and `Response` are serializable, Workflow DevKit provides a `fetch` function that can be used directly in workflow functions:
 
 ```typescript title="workflows/api-call.ts" lineNumbers
-import { fetch } from 'workflow'; // [!code highlight]
+import { fetch } from "workflow"; // [!code highlight]
 
 export async function apiWorkflow() {
   "use workflow";
 
   // fetch can be called directly in workflows // [!code highlight]
-  const response = await fetch('https://api.example.com/data'); // [!code highlight]
+  const response = await fetch("https://api.example.com/data"); // [!code highlight]
   const data = await response.json();
 
   return data;
@@ -107,7 +107,7 @@ The implementation is straightforward - `fetch` from workflow is a step function
 
 ```typescript title="Implementation" lineNumbers
 export async function fetch(...args: Parameters<typeof globalThis.fetch>) {
-  'use step';
+  "use step";
   return globalThis.fetch(...args);
 }
 ```

@@ -38,14 +38,14 @@ While Vite provides the build tooling and development server, Nitro adds the ser
 Add `workflow()` to your Vite config. This enables usage of the `"use workflow"` and `"use step"` directives.
 
 ```typescript title="vite.config.ts" lineNumbers
-import { nitro } from 'nitro/vite';
-import { defineConfig } from 'vite';
-import { workflow } from 'workflow/vite';
+import { nitro } from "nitro/vite";
+import { defineConfig } from "vite";
+import { workflow } from "workflow/vite";
 
 export default defineConfig({
   plugins: [nitro(), workflow()], // [!code highlight]
   nitro: { // [!code highlight]
-    serverDir: './', // [!code highlight]
+    serverDir: "./", // [!code highlight]
   }, // [!code highlight]
 });
 ```
@@ -166,8 +166,8 @@ We'll dive deeper into workflows, steps, and other ways to suspend or handle eve
 To invoke your new workflow, we'll have to add your workflow to a `POST` API route handler, `api/signup.post.ts` with the following code:
 
 ```typescript title="api/signup.post.ts"
-import { start } from 'workflow/api';
-import { defineEventHandler } from 'nitro/h3';
+import { start } from "workflow/api";
+import { defineEventHandler } from "nitro/h3";
 import { handleUserSignup } from "../workflows/user-signup";
 
 export default defineEventHandler(async ({ req }) => {
@@ -209,8 +209,10 @@ Check the Vite development server logs to see your workflow execute as well as t
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
 ```bash
+# Open the observability Web UI
+npx workflow web
+# or if you prefer a terminal interface, use the CLI inspect command
 npx workflow inspect runs
-# or add '--web' for an interactive Web based UI
 ```
 
 <img src="/o11y-ui.png" alt="Workflow DevKit Web UI" />

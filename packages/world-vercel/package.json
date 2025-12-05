@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-vercel",
-  "version": "4.0.1-beta.13",
+  "version": "4.0.1-beta.16",
   "description": "Vercel platform World implementation for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",

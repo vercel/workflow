@@ -22,7 +22,7 @@ export async function POST(request: Request) {
       runId: result.runId
     });
   } catch (error) {
-    return new Response('Hook not found', { status: 404 });
+    return new Response("Hook not found", { status: 404 });
   }
 }
 ```
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
 definition={`
 import { resumeHook } from "workflow/api";
 export default resumeHook;`}
-showSections={['parameters']}
+showSections={["parameters"]}
 />
 
 ### Returns
@@ -44,9 +44,9 @@ Returns a `Promise<Hook>` that resolves to:
 
 <TSDoc
 definition={`
-import type { Hook } from '@workflow/world';
+import type { Hook } from "@workflow/world";
 export default Hook;`}
-showSections={['returns']}
+showSections={["returns"]}
 />
 
 ## Examples
@@ -69,7 +69,7 @@ export async function POST(request: Request) {
       runId: result.runId
     });
   } catch (error) {
-    return new Response('Hook not found', { status: 404 });
+    return new Response("Hook not found", { status: 404 });
   }
 }
 ```
@@ -97,7 +97,7 @@ export async function POST(request: Request) {
 
     return Response.json({ runId: result.runId });
   } catch (error) {
-    return Response.json({ error: 'Invalid token' }, { status: 404 });
+    return Response.json({ error: "Invalid token" }, { status: 404 });
   }
 }
 ```
@@ -107,7 +107,7 @@ export async function POST(request: Request) {
 Using `resumeHook` in Next.js server actions to resume a hook:
 
 ```typescript lineNumbers
-'use server';
+"use server";
 
 import { resumeHook } from "workflow/api";
 
@@ -116,7 +116,7 @@ export async function approveRequest(token: string, approved: boolean) {
     const result = await resumeHook(token, { approved });
     return result.runId;
   } catch (error) {
-    throw new Error('Invalid approval token');
+    throw new Error("Invalid approval token");
   }
 }
 ```
@@ -131,10 +131,10 @@ import { resumeHook } from "workflow/api";
 // Generic webhook handler that forwards data to a hook
 export async function POST(request: Request) {
   const url = new URL(request.url);
-  const token = url.searchParams.get('token');
+  const token = url.searchParams.get("token");
 
   if (!token) {
-    return Response.json({ error: 'Missing token' }, { status: 400 });
+    return Response.json({ error: "Missing token" }, { status: 400 });
   }
 
   try {
@@ -143,7 +143,7 @@ export async function POST(request: Request) {
 
     return Response.json({ success: true, runId: result.runId });
   } catch (error) {
-    return Response.json({ error: 'Hook not found' }, { status: 404 });
+    return Response.json({ error: "Hook not found" }, { status: 404 });
   }
 }
 ```

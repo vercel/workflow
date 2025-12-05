@@ -110,6 +110,28 @@ describe('e2e', () => {
     ]);
   });
 
+  const isNext = process.env.APP_NAME?.includes('nextjs');
+  const isLocal = deploymentUrl.includes('localhost');
+  // only works with framework that transpiles react and
+  // doesn't work on Vercel due to eval hack so react isn't
+  // bundled in function
+  const shouldSkipReactRenderTest = !(isNext && isLocal);
+
+  test.skipIf(shouldSkipReactRenderTest)(
+    'should work with react rendering in step',
+    async () => {
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/8_react_render.tsx',
+          workflowFn: 'reactWorkflow',
+        },
+        []
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue).toBe('<div>hello world <!-- -->2</div>');
+    }
+  );
+
   test('promiseAllWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('promiseAllWorkflow', []);
     const returnValue = await getWorkflowReturnValue(run.runId);
@@ -600,7 +622,8 @@ describe('e2e', () => {
       // TODO: Investigate esbuild source map generation for bundled modules
       const isViteBasedFrameworkDevMode =
         (process.env.APP_NAME === 'sveltekit' ||
-          process.env.APP_NAME === 'vite') &&
+          process.env.APP_NAME === 'vite' ||
+          process.env.APP_NAME === 'astro') &&
         isLocalDeployment();
 
       if (!isViteBasedFrameworkDevMode) {
@@ -774,6 +797,51 @@ describe('e2e', () => {
 
       // Expected: baseValue (7) * multiplier (3) = 21, prefixed with "Result: "
       expect(returnValue).toBe('Result: 21');
+    }
+  );
+
+  test(
+    'spawnWorkflowFromStepWorkflow - spawning a child workflow using start() inside a step',
+    { timeout: 120_000 },
+    async () => {
+      // This workflow spawns another workflow using start() inside a step function
+      // This is the recommended pattern for spawning workflows from within workflows
+      const inputValue = 42;
+      const run = await triggerWorkflow('spawnWorkflowFromStepWorkflow', [
+        inputValue,
+      ]);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // Verify the parent workflow completed
+      expect(returnValue).toHaveProperty('parentInput');
+      expect(returnValue.parentInput).toBe(inputValue);
+
+      // Verify the child workflow was spawned
+      expect(returnValue).toHaveProperty('childRunId');
+      expect(typeof returnValue.childRunId).toBe('string');
+      expect(returnValue.childRunId.startsWith('wrun_')).toBe(true);
+
+      // Verify the child workflow completed and returned the expected result
+      expect(returnValue).toHaveProperty('childResult');
+      expect(returnValue.childResult).toEqual({
+        childResult: inputValue * 2, // doubleValue(42) = 84
+        originalValue: inputValue,
+      });
+
+      // Verify both runs completed successfully via CLI
+      const { json: parentRunData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(parentRunData.status).toBe('completed');
+
+      const { json: childRunData } = await cliInspectJson(
+        `runs ${returnValue.childRunId} --withData`
+      );
+      expect(childRunData.status).toBe('completed');
+      expect(childRunData.output).toEqual({
+        childResult: inputValue * 2,
+        originalValue: inputValue,
+      });
     }
   );
 });

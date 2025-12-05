@@ -1,6 +1,6 @@
-// Error: sync function with use step
 import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"workflows":{"input.js":{"validWorkflow":{"workflowId":"workflow//input.js//validWorkflow"}}},"steps":{"input.js":{"validStep":{"stepId":"step//input.js//validStep"}}}}*/;
+// Error: sync function with use step
 export function syncStep() {
     'use step';
     return 42;
