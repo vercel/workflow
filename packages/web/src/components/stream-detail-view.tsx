@@ -1,6 +1,7 @@
 'use client';
 
-import { type EnvMap, readStream } from '@workflow/web-shared';
+import { readStream } from '@workflow/web-shared';
+import type { EnvMap } from '@workflow/web-shared/server';
 import { ChevronLeft } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
