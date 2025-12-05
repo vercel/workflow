@@ -86,11 +86,12 @@ export function WorkflowDetailPanel({
         isLoading={loading}
         error={error ?? undefined}
       />
-      {resource !== 'run' && !run.expiredAt && (
+      {resource !== 'run' && (
         <EventsList
           correlationId={resourceId}
           env={env}
           events={selected.span.events}
+          expiredAt={run.expiredAt}
         />
       )}
     </div>

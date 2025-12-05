@@ -17,23 +17,26 @@ export function EventsList({
   correlationId,
   env,
   events,
+  expiredAt,
 }: {
   correlationId: string;
   env: EnvMap;
   events: SpanEvent[];
+  expiredAt?: string | Date;
 }) {
+  const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
   const fetchEvents = useCallback(() => {
     return fetchEventsByCorrelationId(env, correlationId, {
       sortOrder: 'asc',
       limit: 100,
-      withData: true,
+      withData: !hasExpired,
     }).then((evts) => {
       if (!evts.success) {
         throw new Error(evts.error?.message || 'Failed to fetch events');
       }
       return convertEventsToSpanEvents(evts.data.data || [], false);
     });
-  }, [env, correlationId]);
+  }, [env, correlationId, hasExpired]);
 
   const {
     data,
