@@ -409,7 +409,7 @@ export function RunDetailView({
                       </p>
                     </TooltipContent>
                   </Tooltip>
-                  <div className="text-sm">
+                  <div className="text-xs">
                     <RelativeTime date={run.expiredAt} />
                   </div>
                 </div>
