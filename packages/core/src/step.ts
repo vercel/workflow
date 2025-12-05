@@ -74,8 +74,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Step has started - so remove from the invocations queue (only on the first "step_started" event)
           if (!hasSeenStepStarted) {
             // O(1) lookup and delete using Map
-            if (ctx.invocationsQueue.has(correlationId)) {
-              ctx.invocationsQueue.delete(correlationId);
+            ctx.invocationsQueue.delete(correlationId);
             } else {
               setTimeout(() => {
                 reject(
