@@ -336,8 +336,6 @@ export const AttributePanel = ({
     return displayValue !== null;
   });
 
-  console.log('hasExpired', hasExpired);
-
   return (
     <div>
       {/* Basic attributes in a vertical layout with border */}
