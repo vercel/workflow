@@ -6,7 +6,7 @@ export async function workflowFunction(a, b) {
     const result2 = await stepFunctionWithoutExport(a, b);
     return result + result2;
 }
+workflowFunction.workflowId = "workflow//input.js//workflowFunction";
 export async function normalFunction(a, b) {
     return a * b;
 }
-workflowFunction.workflowId = "workflow//input.js//workflowFunction";

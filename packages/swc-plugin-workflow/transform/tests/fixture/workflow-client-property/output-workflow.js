@@ -4,13 +4,16 @@ export async function myWorkflow() {
     const result = await someStep();
     return result;
 }
+myWorkflow.workflowId = "workflow//input.js//myWorkflow";
 export const arrowWorkflow = async ()=>{
     const data = await fetchData();
     return data;
 };
+arrowWorkflow.workflowId = "workflow//input.js//arrowWorkflow";
 export default async function defaultWorkflow() {
     return await process();
 }
+defaultWorkflow.workflowId = "workflow//input.js//defaultWorkflow";
 // Non-export workflow function
 async function internalWorkflow() {
     return 'internal';
@@ -21,6 +24,3 @@ regularFunction(internalWorkflow);
 export function regularFunction() {
     return 'regular';
 }
-myWorkflow.workflowId = "workflow//input.js//myWorkflow";
-arrowWorkflow.workflowId = "workflow//input.js//arrowWorkflow";
-defaultWorkflow.workflowId = "workflow//input.js//defaultWorkflow";

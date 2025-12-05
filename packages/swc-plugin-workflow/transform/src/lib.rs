@@ -3721,43 +3721,38 @@ impl VisitMut for StepTransform {
             item.visit_mut_with(self);
 
             // After visiting the item, check if we need to add a workflowId assignment
-            // In Client/Step modes: add for all workflow functions
-            // In Workflow mode: add for non-exported workflow functions that are later exported via `export { ... }`
-            //   (directly exported ones are handled by workflow_exports_to_expand at end of file)
+            // Add workflowId directly after the function declaration for all modes
             match item {
                 ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
-                    // Directly exported - only handle in Client/Step modes
-                    // (Workflow mode handles these via workflow_exports_to_expand)
-                    if matches!(self.mode, TransformMode::Client | TransformMode::Step) {
-                        if let Decl::Fn(fn_decl) = &export_decl.decl {
-                            let fn_name = fn_decl.ident.sym.to_string();
-                            if self.workflow_function_names.contains(&fn_name) {
-                                items_to_insert.push((
-                                    i + 1,
-                                    ModuleItem::Stmt(self.create_workflow_id_assignment(
-                                        &fn_name,
-                                        fn_decl.function.span,
-                                    )),
-                                ));
-                            }
-                        } else if let Decl::Var(var_decl) = &export_decl.decl {
-                            for declarator in &var_decl.decls {
-                                if let Pat::Ident(binding) = &declarator.name {
-                                    let name = binding.id.sym.to_string();
-                                    if self.workflow_function_names.contains(&name) {
-                                        if let Some(init) = &declarator.init {
-                                            let span = match &**init {
-                                                Expr::Fn(fn_expr) => fn_expr.function.span,
-                                                Expr::Arrow(arrow_expr) => arrow_expr.span,
-                                                _ => declarator.span,
-                                            };
-                                            items_to_insert.push((
-                                                i + 1,
-                                                ModuleItem::Stmt(
-                                                    self.create_workflow_id_assignment(&name, span),
-                                                ),
-                                            ));
-                                        }
+                    // Directly exported function/variable declaration
+                    if let Decl::Fn(fn_decl) = &export_decl.decl {
+                        let fn_name = fn_decl.ident.sym.to_string();
+                        if self.workflow_function_names.contains(&fn_name) {
+                            items_to_insert.push((
+                                i + 1,
+                                ModuleItem::Stmt(self.create_workflow_id_assignment(
+                                    &fn_name,
+                                    fn_decl.function.span,
+                                )),
+                            ));
+                        }
+                    } else if let Decl::Var(var_decl) = &export_decl.decl {
+                        for declarator in &var_decl.decls {
+                            if let Pat::Ident(binding) = &declarator.name {
+                                let name = binding.id.sym.to_string();
+                                if self.workflow_function_names.contains(&name) {
+                                    if let Some(init) = &declarator.init {
+                                        let span = match &**init {
+                                            Expr::Fn(fn_expr) => fn_expr.function.span,
+                                            Expr::Arrow(arrow_expr) => arrow_expr.span,
+                                            _ => declarator.span,
+                                        };
+                                        items_to_insert.push((
+                                            i + 1,
+                                            ModuleItem::Stmt(
+                                                self.create_workflow_id_assignment(&name, span),
+                                            ),
+                                        ));
                                     }
                                 }
                             }
@@ -3765,26 +3760,24 @@ impl VisitMut for StepTransform {
                     }
                 }
                 ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default_decl)) => {
-                    // Default exports - only handle in Client/Step modes
-                    if matches!(self.mode, TransformMode::Client | TransformMode::Step) {
-                        if let DefaultDecl::Fn(fn_expr) = &default_decl.decl {
-                            // Check if this is a workflow function by checking for "default" key
-                            if self.workflow_function_names.contains("default") {
-                                // Only add workflowId for named default exports
-                                // Anonymous ones are handled by default_workflow_exports
-                                if let Some(ident) = &fn_expr.ident {
-                                    // Named default export: use the function name
-                                    let fn_name = ident.sym.to_string();
-                                    items_to_insert.push((
-                                        i + 1,
-                                        ModuleItem::Stmt(self.create_workflow_id_assignment(
-                                            &fn_name,
-                                            fn_expr.function.span,
-                                        )),
-                                    ));
-                                }
-                                // Anonymous default exports will have workflowId added by default_workflow_exports processing
+                    // Default exports
+                    if let DefaultDecl::Fn(fn_expr) = &default_decl.decl {
+                        // Check if this is a workflow function by checking for "default" key
+                        if self.workflow_function_names.contains("default") {
+                            // Only add workflowId for named default exports
+                            // Anonymous ones are handled by default_workflow_exports
+                            if let Some(ident) = &fn_expr.ident {
+                                // Named default export: use the function name
+                                let fn_name = ident.sym.to_string();
+                                items_to_insert.push((
+                                    i + 1,
+                                    ModuleItem::Stmt(self.create_workflow_id_assignment(
+                                        &fn_name,
+                                        fn_expr.function.span,
+                                    )),
+                                ));
                             }
+                            // Anonymous default exports will have workflowId added by default_workflow_exports processing
                         }
                     }
                 }
@@ -3849,19 +3842,8 @@ impl VisitMut for StepTransform {
             items.insert(index, item);
         }
 
-        // In workflow mode, add workflowId property to workflow functions (at end of file)
-        // Note: This handles directly exported workflow functions
-        if self.mode == TransformMode::Workflow && !self.workflow_exports_to_expand.is_empty() {
-            // Process workflow functions to add workflowId property
-            let workflow_functions: Vec<_> = self.workflow_exports_to_expand.drain(..).collect();
-
-            for (fn_name, _, span) in workflow_functions {
-                // Add workflowId assignment after the function declaration
-                items.push(ModuleItem::Stmt(
-                    self.create_workflow_id_assignment(&fn_name, span),
-                ));
-            }
-        }
+        // Clear workflow_exports_to_expand since workflowId is now added inline
+        self.workflow_exports_to_expand.clear();
 
         // Handle default workflow exports (all modes)
         // We need to: 1) find the export default position, 2) replace it with const declaration,

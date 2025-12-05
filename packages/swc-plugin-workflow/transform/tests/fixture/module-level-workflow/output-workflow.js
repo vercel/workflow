@@ -2,8 +2,8 @@
 export async function workflow(input) {
     return input.foo;
 }
+workflow.workflowId = "workflow//input.js//workflow";
 export const arrowWorkflow = async (input)=>{
     return input.bar;
 };
-workflow.workflowId = "workflow//input.js//workflow";
 arrowWorkflow.workflowId = "workflow//input.js//arrowWorkflow";
