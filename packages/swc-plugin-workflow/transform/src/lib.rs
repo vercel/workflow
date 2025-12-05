@@ -4283,22 +4283,8 @@ impl VisitMut for StepTransform {
                                 // Store fn_name for later use after visiting children
                             }
                             TransformMode::Workflow => {
-                                // Remove directive before cloning (for the metadata)
-                                // Clone without the directive
-                                // Note: We keep the directive in place for now so nested steps can detect it,
-                                // but we'll remove it from the clone. The original will have it removed later.
+                                // Just remove the directive - workflowId is added inline in visit_mut_module_items
                                 self.remove_use_workflow_directive(&mut fn_decl.function.body);
-                                let cloned_ident = fn_decl.ident.clone();
-                                let cloned_function = fn_decl.function.clone();
-                                let span = fn_decl.function.span;
-                                self.workflow_exports_to_expand.push((
-                                    fn_name,
-                                    Expr::Fn(FnExpr {
-                                        ident: Some(cloned_ident),
-                                        function: cloned_function,
-                                    }),
-                                    span,
-                                ));
                             }
                             TransformMode::Client => {
                                 // Only replace with throw if function has inline directive
@@ -4516,17 +4502,10 @@ impl VisitMut for StepTransform {
                                                     ));
                                                 }
                                                 TransformMode::Workflow => {
-                                                    // In workflow mode, just remove the directive
+                                                    // Just remove the directive - workflowId is added inline in visit_mut_module_items
                                                     self.remove_use_workflow_directive(
                                                         &mut fn_expr.function.body,
                                                     );
-
-                                                    // Mark this function for expansion
-                                                    self.workflow_exports_to_expand.push((
-                                                        name.clone(),
-                                                        Expr::Fn(fn_expr.clone()),
-                                                        fn_expr.function.span,
-                                                    ));
                                                 }
                                                 TransformMode::Client => {
                                                     // Only replace with throw if function has inline directive
@@ -4693,17 +4672,10 @@ impl VisitMut for StepTransform {
                                                         .push((name.clone(), arrow_expr.span));
                                                 }
                                                 TransformMode::Workflow => {
-                                                    // In workflow mode, just remove the directive
+                                                    // Just remove the directive - workflowId is added inline in visit_mut_module_items
                                                     self.remove_use_workflow_directive_arrow(
                                                         &mut arrow_expr.body,
                                                     );
-
-                                                    // Mark this function for expansion
-                                                    self.workflow_exports_to_expand.push((
-                                                        name.clone(),
-                                                        Expr::Arrow(arrow_expr.clone()),
-                                                        arrow_expr.span,
-                                                    ));
                                                 }
                                                 TransformMode::Client => {
                                                     // Only replace with throw if function has inline directive
@@ -5771,7 +5743,7 @@ impl VisitMut for StepTransform {
                                 }
                             }
                             TransformMode::Workflow => {
-                                // In workflow mode, just remove the directive
+                                // Remove the directive - workflowId for named default exports is handled inline
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
 
                                 if fn_name == "default" {
@@ -5792,16 +5764,8 @@ impl VisitMut for StepTransform {
                                             SyntaxContext::empty(),
                                         )),
                                     ));
-                                } else {
-                                    // Named default export: can reference by name
-                                    // export default async function name() { ... }
-                                    // name.workflowId = "...";
-                                    self.workflow_exports_to_expand.push((
-                                        const_name,
-                                        Expr::Fn(fn_expr.clone()),
-                                        fn_expr.function.span,
-                                    ));
                                 }
+                                // Named default exports: workflowId is added inline in visit_mut_module_items
                             }
                         }
                     }
