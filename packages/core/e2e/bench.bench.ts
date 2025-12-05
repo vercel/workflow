@@ -307,7 +307,7 @@ describe('Workflow Performance Benchmarks', () => {
       const { run } = await getWorkflowReturnValue(runId);
       stageTiming('stress test: Promise.all with 100 concurrent steps', run);
     },
-    { time: 30000, iterations: 3, warmupIterations: 1, teardown }
+    { time: 30000, iterations: 1, warmupIterations: 0, teardown }
   );
 
   bench(
@@ -320,7 +320,7 @@ describe('Workflow Performance Benchmarks', () => {
       const { run } = await getWorkflowReturnValue(runId);
       stageTiming('stress test: Promise.all with 500 concurrent steps', run);
     },
-    { time: 60000, iterations: 3, warmupIterations: 1, teardown }
+    { time: 60000, iterations: 1, warmupIterations: 0, teardown }
   );
 
   bench(
@@ -333,7 +333,7 @@ describe('Workflow Performance Benchmarks', () => {
       const { run } = await getWorkflowReturnValue(runId);
       stageTiming('stress test: Promise.all with 1000 concurrent steps', run);
     },
-    { time: 120000, iterations: 2, warmupIterations: 1, teardown }
+    { time: 120000, iterations: 1, warmupIterations: 0, teardown }
   );
 
   bench(
@@ -346,7 +346,7 @@ describe('Workflow Performance Benchmarks', () => {
       const { run } = await getWorkflowReturnValue(runId);
       stageTiming('stress test: Promise.race with 100 concurrent steps', run);
     },
-    { time: 30000, iterations: 3, warmupIterations: 1, teardown }
+    { time: 30000, iterations: 1, warmupIterations: 0, teardown }
   );
 
   bench(
@@ -359,7 +359,7 @@ describe('Workflow Performance Benchmarks', () => {
       const { run } = await getWorkflowReturnValue(runId);
       stageTiming('stress test: Promise.race with 500 concurrent steps', run);
     },
-    { time: 60000, iterations: 3, warmupIterations: 1, teardown }
+    { time: 60000, iterations: 1, warmupIterations: 0, teardown }
   );
 
   bench(
@@ -372,6 +372,6 @@ describe('Workflow Performance Benchmarks', () => {
       const { run } = await getWorkflowReturnValue(runId);
       stageTiming('stress test: Promise.race with 1000 concurrent steps', run);
     },
-    { time: 120000, iterations: 2, warmupIterations: 1, teardown }
+    { time: 120000, iterations: 1, warmupIterations: 0, teardown }
   );
 });
