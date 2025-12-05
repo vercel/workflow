@@ -10,7 +10,7 @@ import { DetailCard } from './detail-card';
 const JsonBlock = (value: unknown) => {
   return (
     <pre
-      className="text-copy-12 overflow-x-auto rounded-md border p-4"
+      className="text-[11px] overflow-x-auto rounded-md border p-3"
       style={{
         borderColor: 'var(--ds-gray-300)',
         backgroundColor: 'var(--ds-gray-100)',
@@ -170,13 +170,13 @@ const attributeToDisplayFn: Record<
             {error.code && (
               <div>
                 <span
-                  className="text-copy-12 font-medium"
+                  className="text-[11px] font-medium"
                   style={{ color: 'var(--ds-gray-700)' }}
                 >
                   Error Code:{' '}
                 </span>
                 <code
-                  className="text-copy-12"
+                  className="text-[11px]"
                   style={{ color: 'var(--ds-gray-1000)' }}
                 >
                   {error.code}
@@ -185,7 +185,7 @@ const attributeToDisplayFn: Record<
             )}
             {/* Show stack if available, otherwise just the message */}
             <pre
-              className="text-copy-12 overflow-x-auto rounded-md border p-4"
+              className="text-[11px] overflow-x-auto rounded-md border p-3"
               style={{
                 borderColor: 'var(--ds-gray-300)',
                 backgroundColor: 'var(--ds-gray-100)',
@@ -204,7 +204,7 @@ const attributeToDisplayFn: Record<
     return (
       <DetailCard summary="Error">
         <pre
-          className="text-copy-12 overflow-x-auto rounded-md border p-4"
+          className="text-[11px] overflow-x-auto rounded-md border p-3"
           style={{
             borderColor: 'var(--ds-gray-300)',
             backgroundColor: 'var(--ds-gray-100)',
@@ -247,10 +247,12 @@ export const AttributeBlock = ({
   attribute,
   value,
   isLoading,
+  inline = false,
 }: {
   attribute: string;
   value: unknown;
   isLoading?: boolean;
+  inline?: boolean;
 }) => {
   const displayFn =
     attributeToDisplayFn[attribute as keyof typeof attributeToDisplayFn];
@@ -261,6 +263,23 @@ export const AttributeBlock = ({
   if (!displayValue) {
     return null;
   }
+
+  if (inline) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <span
+          className="text-[11px] font-medium"
+          style={{ color: 'var(--ds-gray-500)' }}
+        >
+          {attribute}
+        </span>
+        <span className="text-[11px]" style={{ color: 'var(--ds-gray-1000)' }}>
+          {displayValue}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
@@ -272,10 +291,15 @@ export const AttributeBlock = ({
         </div>
       )}
       <div key={attribute} className="flex flex-col gap-0 my-2">
-        <span className="font-medium" style={{ color: 'var(--ds-gray-500)' }}>
+        <span
+          className="text-xs font-medium"
+          style={{ color: 'var(--ds-gray-500)' }}
+        >
           {attribute}
         </span>
-        <span style={{ color: 'var(--ds-gray-1000)' }}>{displayValue}</span>
+        <span className="text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
+          {displayValue}
+        </span>
       </div>
     </div>
   );
@@ -300,15 +324,54 @@ export const AttributePanel = ({
     .filter((key) => resolvableAttributes.includes(key))
     .sort(sortByAttributeOrder);
 
+  // Filter out attributes that return null
+  const visibleBasicAttributes = basicAttributes.filter((attribute) => {
+    const displayFn =
+      attributeToDisplayFn[attribute as keyof typeof attributeToDisplayFn];
+    if (!displayFn) return false;
+    const displayValue = displayFn(
+      displayData[attribute as keyof typeof displayData]
+    );
+    return displayValue !== null;
+  });
+
   return (
     <div>
-      {basicAttributes.map((attribute) => (
-        <AttributeBlock
-          key={attribute}
-          attribute={attribute}
-          value={displayData[attribute as keyof typeof displayData]}
-        />
-      ))}
+      {/* Basic attributes in a vertical layout with border */}
+      {visibleBasicAttributes.length > 0 && (
+        <div
+          className="flex flex-col divide-y rounded-lg border mb-3 overflow-hidden"
+          style={{
+            borderColor: 'var(--ds-gray-300)',
+            backgroundColor: 'var(--ds-gray-100)',
+          }}
+        >
+          {visibleBasicAttributes.map((attribute) => (
+            <div
+              key={attribute}
+              className="flex items-center justify-between px-3 py-1.5"
+              style={{
+                borderColor: 'var(--ds-gray-300)',
+              }}
+            >
+              <span
+                className="text-[11px] font-medium"
+                style={{ color: 'var(--ds-gray-500)' }}
+              >
+                {attribute}
+              </span>
+              <span
+                className="text-[11px] font-mono"
+                style={{ color: 'var(--ds-gray-1000)' }}
+              >
+                {attributeToDisplayFn[
+                  attribute as keyof typeof attributeToDisplayFn
+                ]?.(displayData[attribute as keyof typeof displayData])}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       {error ? (
         <Alert variant="destructive" className="my-4">
           <AlertCircle className="h-4 w-4" />
