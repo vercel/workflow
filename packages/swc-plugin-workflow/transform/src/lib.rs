@@ -3503,27 +3503,6 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // First pass: Collect names that are exported via `export { ... }` syntax
-        // This is needed to determine which non-exported workflow functions need workflowId in Workflow mode
-        let mut named_export_names: HashSet<String> = HashSet::new();
-        for item in items.iter() {
-            if let ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) = item {
-                // Only process local exports (not re-exports from other modules)
-                if named.src.is_none() {
-                    for specifier in &named.specifiers {
-                        if let ExportSpecifier::Named(named_spec) = specifier {
-                            // Get the local name (the original identifier, not the exported alias)
-                            let local_name = match &named_spec.orig {
-                                ModuleExportName::Ident(ident) => ident.sym.to_string(),
-                                ModuleExportName::Str(s) => s.value.to_string_lossy().to_string(),
-                            };
-                            named_export_names.insert(local_name);
-                        }
-                    }
-                }
-            }
-        }
-
         // Process items and collect functions that need workflowId assignments
         let mut items_to_insert = Vec::new();
 
