@@ -34,7 +34,11 @@ export async function applySwcTransform(
   workflowManifest: WorkflowManifest;
 }> {
   // Determine if this is a TypeScript file
-  const isTypeScript = filename.endsWith('.ts') || filename.endsWith('.tsx');
+  const isTypeScript =
+    filename.endsWith('.ts') ||
+    filename.endsWith('.tsx') ||
+    filename.endsWith('.mts') ||
+    filename.endsWith('.cts');
 
   // Transform with SWC to support syntax esbuild doesn't
   const result = await transform(source, {

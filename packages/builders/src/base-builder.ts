@@ -366,7 +366,16 @@ export abstract class BaseBuilder {
       keepNames: true,
       minify: false,
       jsx: 'preserve',
-      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      resolveExtensions: [
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.js',
+        '.jsx',
+        '.mjs',
+        '.cjs',
+      ],
       // TODO: investigate proper source map support
       sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
       plugins: [
@@ -498,7 +507,16 @@ export abstract class BaseBuilder {
       // This intermediate bundle is executed via runInContext() in a VM, so we need
       // inline source maps to get meaningful stack traces instead of "evalmachine.<anonymous>".
       sourcemap: 'inline',
-      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      resolveExtensions: [
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.js',
+        '.jsx',
+        '.mjs',
+        '.cjs',
+      ],
       plugins: [
         createSwcPlugin({
           mode: 'workflow',
@@ -680,7 +698,16 @@ export const POST = workflowEntrypoint(workflowCode);`;
       write: true,
       treeShaking: true,
       external: ['@workflow/core'],
-      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      resolveExtensions: [
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.js',
+        '.jsx',
+        '.mjs',
+        '.cjs',
+      ],
       plugins: [createSwcPlugin({ mode: 'client' })],
     });
 
@@ -768,7 +795,16 @@ export const OPTIONS = handler;`;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      resolveExtensions: [
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.js',
+        '.jsx',
+        '.mjs',
+        '.cjs',
+      ],
       sourcemap: false,
       mainFields: ['module', 'main'],
       // Don't externalize anything - bundle everything including workflow packages

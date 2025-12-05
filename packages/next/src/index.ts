@@ -62,7 +62,16 @@ export function withWorkflow(
     const nextVersion = require('next/package.json').version;
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
-    for (const key of ['*.tsx', '*.ts', '*.jsx', '*.js']) {
+    for (const key of [
+      '*.tsx',
+      '*.ts',
+      '*.jsx',
+      '*.js',
+      '*.mjs',
+      '*.mts',
+      '*.cjs',
+      '*.cts',
+    ]) {
       nextConfig.turbopack.rules[key] = {
         ...(supportsTurboCondition
           ? {

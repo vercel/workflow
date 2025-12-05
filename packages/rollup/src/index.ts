@@ -14,7 +14,11 @@ export function workflowTransformPlugin(): Plugin {
         return null;
       }
 
-      const isTypeScript = id.endsWith('.ts') || id.endsWith('.tsx');
+      const isTypeScript =
+        id.endsWith('.ts') ||
+        id.endsWith('.tsx') ||
+        id.endsWith('.mts') ||
+        id.endsWith('.cts');
 
       const swcPlugin = resolveModulePath('@workflow/swc-plugin', {
         from: [import.meta.url],

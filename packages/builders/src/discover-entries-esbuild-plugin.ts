@@ -6,7 +6,7 @@ import { applySwcTransform } from './apply-swc-transform.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
-export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
 // Matches: 'use workflow'; "use workflow"; 'use step'; "use step"; at line start with optional whitespace
 export const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
@@ -66,7 +66,10 @@ export function createDiscoverEntriesPlugin(state: {
           // Determine the loader based on the output
           let loader: 'js' | 'jsx' = 'js';
           const isTypeScript =
-            args.path.endsWith('.ts') || args.path.endsWith('.tsx');
+            args.path.endsWith('.ts') ||
+            args.path.endsWith('.tsx') ||
+            args.path.endsWith('.mts') ||
+            args.path.endsWith('.cts');
           if (!isTypeScript && args.path.endsWith('.jsx')) {
             loader = 'jsx';
           }

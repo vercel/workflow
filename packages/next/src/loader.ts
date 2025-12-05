@@ -18,7 +18,11 @@ export default async function workflowLoader(
     return normalizedSource;
   }
 
-  const isTypeScript = filename.endsWith('.ts') || filename.endsWith('.tsx');
+  const isTypeScript =
+    filename.endsWith('.ts') ||
+    filename.endsWith('.tsx') ||
+    filename.endsWith('.mts') ||
+    filename.endsWith('.cts');
 
   // Calculate relative filename for SWC plugin
   // The SWC plugin uses filename to generate workflowId, so it must be relative
