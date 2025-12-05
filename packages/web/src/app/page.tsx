@@ -57,7 +57,7 @@ export default function Home() {
     }
   };
 
-  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged
+  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged.
   // const workflows = graphManifest ? Object.values(graphManifest.workflows) : [];
 
   return (
