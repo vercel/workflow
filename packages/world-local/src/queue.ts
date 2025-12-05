@@ -16,14 +16,20 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
-const DEFAULT_CONCURRENCY_LIMIT = 20;
+const DEFAULT_CONCURRENCY_LIMIT = 100;
 const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
-// Create a custom agent with unlimited headers timeout for long-running steps
+// Create a custom agent optimized for high-concurrency local workflows:
+// - headersTimeout: 0 allows long-running steps
+// - connections: 100 allows many parallel connections to the same host
+// - pipelining: 1 (default) for HTTP/1.1 compatibility
+// - keepAliveTimeout: 30s keeps connections warm for rapid step execution
 const httpAgent = new Agent({
   headersTimeout: 0,
+  connections: 100,
+  keepAliveTimeout: 30_000,
 });
 
 export function createQueue(config: Partial<Config>): Queue {
