@@ -8,7 +8,7 @@ import {
   type WorkflowRun,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle, HelpCircle, Loader2 } from 'lucide-react';
 // import { List, Network } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -35,6 +35,11 @@ import {
 } from '@/components/ui/breadcrumb';
 // import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 // import { WorkflowGraphExecutionViewer } from '@/components/workflow-graph-execution-viewer';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { buildUrlWithConfig, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
 // import { mapRunToExecution } from '@/lib/graph-execution-mapper';
@@ -388,6 +393,27 @@ export function RunDetailView({
                   )}
                 </div>
               </div>
+              {run.expiredAt != null && (
+                <div className="flex flex-col gap-1">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="text-xs text-muted-foreground cursor-help flex items-center gap-1">
+                        Expired
+                        <HelpCircle className="w-3 h-3" />
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>
+                        The storage data for this run has expired and is no
+                        longer available.
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <div className="text-sm">
+                    <RelativeTime date={run.expiredAt} />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
