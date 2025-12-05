@@ -404,7 +404,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                           {run.runId}
                         </CopyableText>
                       </TableCell>
-                      <TableCell className="py-2 align-top">
+                      <TableCell className="py-2">
                         <StatusBadge
                           status={run.status}
                           context={run}
