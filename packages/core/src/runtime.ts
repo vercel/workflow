@@ -48,6 +48,8 @@ import {
 } from './util.js';
 import { runWorkflow } from './workflow.js';
 
+const DEFAULT_STEP_MAX_RETRIES = 3;
+
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
 export {
@@ -638,7 +640,9 @@ export const stepEntrypoint =
               ...Attribute.WorkflowName(workflowName),
               ...Attribute.WorkflowRunId(workflowRunId),
               ...Attribute.StepId(stepId),
-              ...Attribute.StepMaxRetries(stepFn.maxRetries ?? 3),
+              ...Attribute.StepMaxRetries(
+                stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES
+              ),
               ...Attribute.StepTracePropagated(!!traceContext),
             });
 
@@ -704,7 +708,7 @@ export const stepEntrypoint =
               // Check max retries IMMEDIATELY after persisting the attempt counter.
               // This handles the case where the step keeps timing out before reaching
               // the catch handler - without this check, the step would retry forever.
-              const maxRetries = stepFn.maxRetries ?? 3;
+              const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
               if (attempt > maxRetries) {
                 const errorMessage = `Step "${stepName}" failed after max retries (function timed out ${attempt} times)`;
                 console.error(
@@ -868,7 +872,8 @@ export const stepEntrypoint =
                   ...Attribute.StepFatalError(true),
                 });
               } else {
-                const maxRetries = stepFn.maxRetries ?? 3;
+                const maxRetries =
+                  stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
 
                 span?.setAttributes({
                   ...Attribute.StepAttempt(attempt),
