@@ -99,19 +99,44 @@ async function getWorkflowArtifacts(runId: number): Promise<GitHubArtifact[]> {
 
 /**
  * Extract world ID from artifact name
+ * Artifact naming conventions:
+ * - E2E: e2e-results-{category}-{app} where category maps to world
+ *   - vercel-prod → vercel
+ *   - local-dev, local-prod → local
+ *   - local-postgres → postgres
+ *   - community-{world} → {world}
+ *   - windows → local (windows tests use local world)
+ * - Benchmarks: bench-results-{app}-{world}
  */
 function extractWorldId(artifactName: string): string | null {
   // E2E results for community worlds: e2e-results-community-{world}
   if (artifactName.startsWith('e2e-results-community-')) {
     return artifactName.replace('e2e-results-community-', '');
   }
-  // E2E results: e2e-results-{world} or e2e-dev-results-{world}
+
+  // E2E results: e2e-results-{category}-{app}
+  // Map category to world ID
   if (artifactName.startsWith('e2e-results-')) {
-    return artifactName.replace('e2e-results-', '');
+    const rest = artifactName.replace('e2e-results-', '');
+    // vercel-prod-{app} → vercel
+    if (rest.startsWith('vercel-prod-')) {
+      return 'vercel';
+    }
+    // local-dev-{app} or local-prod-{app} → local
+    if (rest.startsWith('local-dev-') || rest.startsWith('local-prod-')) {
+      return 'local';
+    }
+    // local-postgres-{app} → postgres
+    if (rest.startsWith('local-postgres-')) {
+      return 'postgres';
+    }
+    // windows-{app} → local (windows tests use local world)
+    if (rest.startsWith('windows-')) {
+      return 'local';
+    }
+    return null;
   }
-  if (artifactName.startsWith('e2e-dev-results-')) {
-    return artifactName.replace('e2e-dev-results-', '');
-  }
+
   // Benchmark results: bench-results-{app}-{world}
   if (artifactName.startsWith('bench-results-')) {
     const parts = artifactName.replace('bench-results-', '').split('-');
@@ -176,6 +201,15 @@ export const getWorldsData = unstable_cache(
           : Promise.resolve([]),
       ]);
 
+      // Determine E2E status based on workflow conclusion
+      // If workflow succeeded, tests passed. If failed, show partial (we can't tell which world failed)
+      const e2eStatus: 'passing' | 'partial' | 'pending' =
+        testsRun?.conclusion === 'success'
+          ? 'passing'
+          : testsRun?.conclusion === 'failure'
+            ? 'partial'
+            : 'pending';
+
       // Process E2E test artifacts
       // We can't download the artifact contents without auth, but we can tell
       // which worlds have artifacts (meaning their tests ran)
@@ -183,22 +217,24 @@ export const getWorldsData = unstable_cache(
         const worldId = extractWorldId(artifact.name);
         if (worldId && worlds[worldId]) {
           // Mark as having E2E data available
-          // The actual test results would require downloading + parsing the artifact
-          // For now, we'll indicate that tests exist
+          // Use workflow conclusion to infer status since we can't parse artifacts
           if (!worlds[worldId].e2e) {
             worlds[worldId].e2e = {
-              status: 'pending' as const,
+              status: e2eStatus,
               total: 0,
               passed: 0,
               failed: 0,
               skipped: 0,
-              progress: 0,
+              progress: e2eStatus === 'passing' ? 100 : 0,
               lastRun: artifact.created_at,
-              note: 'Test results available in CI artifacts',
             };
           }
         }
       }
+
+      // Determine benchmark status based on workflow conclusion
+      const benchStatus: 'measured' | 'pending' =
+        benchmarksRun?.conclusion === 'success' ? 'measured' : 'pending';
 
       // Process benchmark artifacts similarly
       for (const artifact of benchmarksArtifacts) {
@@ -206,7 +242,7 @@ export const getWorldsData = unstable_cache(
         if (worldId && worlds[worldId]) {
           if (!worlds[worldId].benchmark) {
             worlds[worldId].benchmark = {
-              status: 'pending' as const,
+              status: benchStatus,
               metrics: null,
               lastRun: artifact.created_at,
             };

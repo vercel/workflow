@@ -575,6 +575,7 @@ jobs:
       world-package: ${{ matrix.world.package }}
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
+      setup-command: ${{ matrix.world.setup-command }}
     secrets: inherit
 
   # Final job: Aggregate all E2E results and update PR comment
@@ -601,7 +602,7 @@ jobs:
       - name: Aggregate E2E results
         id: aggregate
         run: |
-          node .github/scripts/aggregate-e2e-results.js e2e-results --mode aggregate | tee e2e-summary.md >> $GITHUB_STEP_SUMMARY
+          node .github/scripts/aggregate-e2e-results.js e2e-results --mode aggregate --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" | tee e2e-summary.md >> $GITHUB_STEP_SUMMARY
 
       - name: Check E2E job statuses
         id: check-status

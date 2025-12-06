@@ -7,10 +7,14 @@ const path = require('path');
 const args = process.argv.slice(2);
 let resultsDir = '.';
 let baselineDir = null;
+let runUrl = '';
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--baseline' && args[i + 1]) {
     baselineDir = args[i + 1];
+    i++;
+  } else if (args[i] === '--run-url' && args[i + 1]) {
+    runUrl = args[i + 1];
     i++;
   } else if (!args[i].startsWith('--')) {
     resultsDir = args[i];
@@ -646,6 +650,12 @@ function renderComparison(data, baselineData) {
     }
   }
   console.log('</details>');
+
+  // Add link to workflow run
+  if (runUrl) {
+    console.log('\n---');
+    console.log(`📋 [View full workflow run](${runUrl})`);
+  }
 }
 
 // Main

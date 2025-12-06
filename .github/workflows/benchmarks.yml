@@ -427,6 +427,7 @@ jobs:
       world-package: ${{ matrix.world.package }}
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
+      setup-command: ${{ matrix.world.setup-command }}
     secrets: inherit
 
   # Phase 3: Aggregate all benchmark results and create comparison
@@ -474,7 +475,7 @@ jobs:
             echo "No baseline results found, showing results without comparison"
           fi
           # Capture output to both file and step summary
-          node .github/scripts/aggregate-benchmarks.js benchmark-results $BASELINE_ARG | tee benchmark-summary.md >> $GITHUB_STEP_SUMMARY
+          node .github/scripts/aggregate-benchmarks.js benchmark-results $BASELINE_ARG --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" | tee benchmark-summary.md >> $GITHUB_STEP_SUMMARY
 
       - name: Check benchmark job statuses
         id: check-status

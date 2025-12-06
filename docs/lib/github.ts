@@ -293,18 +293,36 @@ export function parseBenchmarkResults(results: BenchmarkResult | null): {
 
 /**
  * Map artifact name to world ID
+ * Artifact naming conventions:
+ * - E2E: e2e-results-{category}-{app} where category maps to world
+ *   - vercel-prod → vercel
+ *   - local-dev, local-prod → local
+ *   - local-postgres → postgres
+ *   - community-{world} → {world}
+ *   - windows → local (windows tests use local world)
+ * - Benchmarks: bench-results-{app}-{world}
  */
 export function artifactToWorldId(artifactName: string): string | null {
-  // E2E results
+  // E2E results for community worlds: e2e-results-community-{world}
+  if (artifactName.startsWith('e2e-results-community-')) {
+    return artifactName.replace('e2e-results-community-', '');
+  }
+
+  // E2E results: e2e-results-{category}-{app}
   if (artifactName.startsWith('e2e-results-')) {
-    return artifactName.replace('e2e-results-', '');
+    const rest = artifactName.replace('e2e-results-', '');
+    if (rest.startsWith('vercel-prod-')) return 'vercel';
+    if (rest.startsWith('local-dev-') || rest.startsWith('local-prod-'))
+      return 'local';
+    if (rest.startsWith('local-postgres-')) return 'postgres';
+    if (rest.startsWith('windows-')) return 'local';
+    return null;
   }
-  if (artifactName.startsWith('e2e-dev-results-')) {
-    return artifactName.replace('e2e-dev-results-', '');
-  }
-  // Benchmark results
-  if (artifactName.startsWith('bench-results-nextjs-turbopack-')) {
-    return artifactName.replace('bench-results-nextjs-turbopack-', '');
+
+  // Benchmark results: bench-results-{app}-{world}
+  if (artifactName.startsWith('bench-results-')) {
+    const parts = artifactName.replace('bench-results-', '').split('-');
+    return parts[parts.length - 1];
   }
   return null;
 }

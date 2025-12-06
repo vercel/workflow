@@ -79,7 +79,8 @@
         "WORKFLOW_TARGET_WORLD": "@workflow-worlds/turso",
         "WORKFLOW_TURSO_DATABASE_URL": "file:workflow.db"
       },
-      "services": []
+      "services": [],
+      "setup": "pnpm exec workflow-turso-setup"
     },
     {
       "id": "mongodb",

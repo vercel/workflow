@@ -8,6 +8,7 @@ const args = process.argv.slice(2);
 let resultsDir = '.';
 let jobName = 'E2E Tests';
 let mode = 'single'; // 'single' for step summary, 'aggregate' for PR comment
+let runUrl = '';
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--job-name' && args[i + 1]) {
@@ -15,6 +16,9 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (args[i] === '--mode' && args[i + 1]) {
     mode = args[i + 1];
+    i++;
+  } else if (args[i] === '--run-url' && args[i + 1]) {
+    runUrl = args[i + 1];
     i++;
   } else if (!args[i].startsWith('--')) {
     resultsDir = args[i];
@@ -409,6 +413,12 @@ function renderAggregatedSummary(categories, overallSummary) {
       );
     }
     console.log('</details>\n');
+  }
+
+  // Add link to workflow run
+  if (runUrl) {
+    console.log('---');
+    console.log(`📋 [View full workflow run](${runUrl})`);
   }
 }
 

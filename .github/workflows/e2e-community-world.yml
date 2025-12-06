@@ -34,6 +34,11 @@ on:
         required: false
         type: string
         default: 'none'
+      setup-command:
+        description: 'Setup command to run after installing the world package'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   e2e:
@@ -83,6 +88,11 @@ jobs:
 
       - name: Install ${{ inputs.world-name }} World
         run: pnpm --filter ${{ inputs.app-name }} add ${{ inputs.world-package }}
+
+      - name: Run setup command
+        if: ${{ inputs.setup-command != '' }}
+        run: ${{ inputs.setup-command }}
+        working-directory: workbench/${{ inputs.app-name }}
 
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
