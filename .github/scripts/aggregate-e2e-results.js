@@ -106,6 +106,7 @@ function parseJobInfo(filename) {
           'sveltekit',
           'hono',
           'express',
+          'fastify',
           'astro',
           'example',
           'turso',

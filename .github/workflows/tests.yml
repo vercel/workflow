@@ -311,7 +311,7 @@ jobs:
         run: |
           cd workbench/${{ matrix.app.name }} && pnpm dev &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm vitest run packages/core/e2e/dev.test.ts && sleep 10
+          pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=../../e2e-local-dev-${{ matrix.app.name }}.json
         env:
           APP_NAME: ${{ matrix.app.name }}
