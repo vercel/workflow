@@ -340,21 +340,52 @@ function renderAggregatedSummary(categories, overallSummary) {
   );
   console.log('');
 
-  // Failed tests section
+  // Failed tests section - grouped by category and app
   if (overallSummary.allFailedTests.length > 0) {
     console.log('### ❌ Failed Tests\n');
+
+    // Group failed tests by category, then by app
+    const failedByCategory = new Map();
     for (const test of overallSummary.allFailedTests) {
-      const catDisplay = categoryNames[test.category] || test.category;
+      if (!failedByCategory.has(test.category)) {
+        failedByCategory.set(test.category, new Map());
+      }
+      const catMap = failedByCategory.get(test.category);
+      if (!catMap.has(test.app)) {
+        catMap.set(test.app, []);
+      }
+      catMap.get(test.app).push(test);
+    }
+
+    // Sort categories by defined order
+    const sortedFailedCategories = Array.from(failedByCategory.entries()).sort(
+      ([a], [b]) =>
+        (categoryOrder.indexOf(a) === -1 ? 999 : categoryOrder.indexOf(a)) -
+        (categoryOrder.indexOf(b) === -1 ? 999 : categoryOrder.indexOf(b))
+    );
+
+    for (const [catName, appsMap] of sortedFailedCategories) {
+      const catDisplay = categoryNames[catName] || catName;
+      const catFailedCount = Array.from(appsMap.values()).reduce(
+        (sum, tests) => sum + tests.length,
+        0
+      );
+
       console.log(`<details>`);
       console.log(
-        `<summary>${test.app} (${catDisplay}): ${test.name}</summary>\n`
+        `<summary>${catDisplay} (${catFailedCount} failed)</summary>\n`
       );
-      console.log(`**File:** \`${test.file}\`\n`);
-      if (test.message) {
-        console.log('```');
-        console.log(test.message);
-        console.log('```');
+
+      for (const [appName, tests] of appsMap.entries()) {
+        console.log(`**${appName}** (${tests.length} failed):\n`);
+        for (const test of tests) {
+          // Extract just the test name without "e2e " prefix if present
+          const testName = test.name.replace(/^e2e\s+/, '');
+          console.log(`- \`${testName}\``);
+        }
+        console.log('');
       }
+
       console.log('</details>\n');
     }
   }
