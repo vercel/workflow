@@ -323,10 +323,13 @@ jobs:
         app:
           - name: "nextjs-turbopack"
             project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+            project-slug: "workbench-nextjs-turbopack-workflow"
           - name: "nitro-v3"
             project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
+            project-slug: "workbench-nitro-v3-workflow"
           - name: "express"
             project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
+            project-slug: "workbench-express-workflow"
 
     steps:
       - uses: actions/checkout@v4
@@ -377,6 +380,7 @@ jobs:
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
         run: |
           pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app.name }}-vercel.json
 

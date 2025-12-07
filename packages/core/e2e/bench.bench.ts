@@ -13,6 +13,7 @@ if (!deploymentUrl) {
 const workflowTimings: Record<
   string,
   {
+    runId: string;
     createdAt: string;
     startedAt?: string;
     completedAt?: string;
@@ -128,6 +129,15 @@ function getTimingOutputPath() {
 function writeTimingFile() {
   const outputPath = getTimingOutputPath();
 
+  // Capture Vercel environment metadata if available
+  const vercelMetadata = process.env.WORKFLOW_VERCEL_ENV
+    ? {
+        projectSlug: process.env.WORKFLOW_VERCEL_PROJECT_SLUG,
+        environment: process.env.WORKFLOW_VERCEL_ENV,
+        teamSlug: 'vercel-labs',
+      }
+    : null;
+
   // Calculate average, min, and max execution times
   const summary: Record<
     string,
@@ -172,7 +182,11 @@ function writeTimingFile() {
 
   fs.writeFileSync(
     outputPath,
-    JSON.stringify({ timings: workflowTimings, summary }, null, 2)
+    JSON.stringify(
+      { timings: workflowTimings, summary, vercel: vercelMetadata },
+      null,
+      2
+    )
   );
 }
 
@@ -200,6 +214,7 @@ const teardown = (task: { name: string }, mode: 'warmup' | 'run') => {
       }
 
       const timing: any = {
+        runId: run.runId,
         createdAt: run.createdAt,
         startedAt: run.startedAt,
         completedAt: run.completedAt,

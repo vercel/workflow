@@ -131,6 +131,16 @@ function loadTimingData(benchmarkFile) {
   return null;
 }
 
+// Generate Vercel observability URL for a workflow run
+function getObservabilityUrl(vercelMetadata, runId) {
+  if (!vercelMetadata || !runId) return null;
+  const { teamSlug, projectSlug, environment } = vercelMetadata;
+  if (!teamSlug || !projectSlug) return null;
+  // Always use 'preview' for PR benchmarks
+  const env = environment === 'production' ? 'production' : 'preview';
+  return `https://vercel.com/${teamSlug}/${projectSlug}/observability/workflows/runs/${runId}?environment=${env}`;
+}
+
 // Collect all benchmark data
 function collectBenchmarkData(resultFiles) {
   // Structure: { [benchmarkName]: { [app]: { [backend]: { wallTime, workflowTime, overhead, min, max, samples, firstByteTime } } } }
@@ -166,11 +176,27 @@ function collectBenchmarkData(resultFiles) {
             // Get workflow timing if available
             let workflowTimeMs = null;
             let firstByteTimeMs = null;
+            let lastRunId = null;
+            let observabilityUrl = null;
             if (timings?.summary?.[benchName]) {
               workflowTimeMs = timings.summary[benchName].avgExecutionTimeMs;
               // Get TTFB for stream benchmarks
               if (timings.summary[benchName].avgFirstByteTimeMs !== undefined) {
                 firstByteTimeMs = timings.summary[benchName].avgFirstByteTimeMs;
+              }
+            }
+            // Get the last runId for observability link (Vercel only)
+            if (timings?.timings?.[benchName]?.length > 0) {
+              const lastTiming =
+                timings.timings[benchName][
+                  timings.timings[benchName].length - 1
+                ];
+              lastRunId = lastTiming?.runId;
+              if (timings?.vercel && lastRunId) {
+                observabilityUrl = getObservabilityUrl(
+                  timings.vercel,
+                  lastRunId
+                );
               }
             }
 
@@ -183,6 +209,8 @@ function collectBenchmarkData(resultFiles) {
               max: bench.max,
               samples: bench.sampleCount,
               firstByteTime: firstByteTimeMs,
+              runId: lastRunId,
+              observabilityUrl: observabilityUrl,
             };
           }
         }
@@ -382,6 +410,18 @@ function renderBenchmarkTable(
     }
   }
   console.log('');
+
+  // Collect and render observability links for Vercel world
+  const observabilityLinks = dataPoints
+    .filter((dp) => dp.metrics?.observabilityUrl && dp.backend === 'vercel')
+    .map((dp) => {
+      const frameworkInfo = frameworkConfig[dp.app] || { label: dp.app };
+      return `[${frameworkInfo.label}](${dp.metrics.observabilityUrl})`;
+    });
+
+  if (observabilityLinks.length > 0) {
+    console.log(`_🔍 Observability: ${observabilityLinks.join(' | ')}_\n`);
+  }
 }
 
 // Render the comparison tables
