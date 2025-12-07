@@ -323,10 +323,10 @@ jobs:
         app:
           - name: "nextjs-turbopack"
             project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
-            project-slug: "workbench-nextjs-turbopack-workflow"
+            project-slug: "example-nextjs-workflow-turbopack"
           - name: "nitro-v3"
             project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
-            project-slug: "workbench-nitro-v3-workflow"
+            project-slug: "workbench-nitro-workflow"
           - name: "express"
             project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
             project-slug: "workbench-express-workflow"
