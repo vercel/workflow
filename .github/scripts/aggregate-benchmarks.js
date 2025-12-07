@@ -423,7 +423,8 @@ function renderComparison(data, baselineData) {
   const renderBenchmarkWithEnvironments = (benchName, benchData, isStream) => {
     const baselineBenchData = baselineData?.[benchName] || null;
 
-    console.log(`## ${benchName}\n`);
+    console.log(`<details>`);
+    console.log(`<summary><strong>${benchName}</strong></summary>\n`);
 
     // Render Local Development table
     if (localDevBackends.length > 0) {
@@ -452,6 +453,8 @@ function renderComparison(data, baselineData) {
         { showHeading: false }
       );
     }
+
+    console.log('</details>\n');
   };
 
   // Render regular benchmarks
@@ -461,15 +464,16 @@ function renderComparison(data, baselineData) {
 
   // Render stream benchmarks in a separate section
   if (streamBenchmarks.length > 0) {
-    console.log('---\n');
-    console.log('## Stream Benchmarks\n');
+    console.log('<details>');
     console.log(
-      '_Stream benchmarks include Time to First Byte (TTFB) metrics._\n'
+      '<summary><strong>Stream Benchmarks</strong> <em>(includes TTFB metrics)</em></summary>\n'
     );
 
     for (const [benchName, benchData] of streamBenchmarks) {
       renderBenchmarkWithEnvironments(benchName, benchData, true);
     }
+
+    console.log('</details>\n');
   }
 
   // Summary: Count wins per framework (within each world) and per world (within each framework)
@@ -545,8 +549,11 @@ function renderComparison(data, baselineData) {
   }
 
   // Summary: Best framework per world (by wins)
-  console.log('---\n');
-  console.log('## Summary: Fastest Framework by World\n');
+  console.log('### Summary\n');
+  console.log('<details>');
+  console.log(
+    '<summary><strong>Fastest Framework by World</strong></summary>\n'
+  );
   console.log(`_Winner determined by most benchmark wins_\n`);
   console.log('| World | 🥇 Fastest Framework | Wins |');
   console.log('|:------|:---------------------|-----:|');
@@ -583,10 +590,13 @@ function renderComparison(data, baselineData) {
       );
     }
   }
-  console.log('');
+  console.log('\n</details>\n');
 
   // Summary: Best world per framework (by wins)
-  console.log('## Summary: Fastest World by Framework\n');
+  console.log('<details>');
+  console.log(
+    '<summary><strong>Fastest World by Framework</strong></summary>\n'
+  );
   console.log(`_Winner determined by most benchmark wins_\n`);
   console.log('| Framework | 🥇 Fastest World | Wins |');
   console.log('|:----------|:-----------------|-----:|');
@@ -619,11 +629,11 @@ function renderComparison(data, baselineData) {
       );
     }
   }
-  console.log('');
+  console.log('\n</details>\n');
 
   // Legend
   console.log('<details>');
-  console.log('<summary>Column Definitions</summary>\n');
+  console.log('<summary><strong>Column Definitions</strong></summary>\n');
   console.log(
     '- **Workflow Time**: Runtime reported by workflow (completedAt - createdAt) - *primary metric*'
   );
