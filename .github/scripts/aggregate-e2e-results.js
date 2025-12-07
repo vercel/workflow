@@ -216,14 +216,9 @@ function aggregateByCategory(files) {
 function renderSingleJobSummary(summary) {
   const total =
     summary.totalPassed + summary.totalFailed + summary.totalSkipped;
-  const statusEmoji =
-    summary.totalFailed > 0 ? '❌' : summary.totalSkipped > 0 ? '⚠️' : '✅';
+  const statusEmoji = summary.totalFailed > 0 ? '❌' : '✅';
   const statusText =
-    summary.totalFailed > 0
-      ? 'Some tests failed'
-      : summary.totalSkipped > 0
-        ? 'All tests passed (some skipped)'
-        : 'All tests passed';
+    summary.totalFailed > 0 ? 'Some tests failed' : 'All tests passed';
 
   console.log(`## ${statusEmoji} ${jobName}\n`);
   console.log(`**Status:** ${statusText}\n`);
@@ -264,8 +259,7 @@ function renderSingleJobSummary(summary) {
     console.log('| File | Passed | Failed | Skipped |');
     console.log('|:-----|-------:|-------:|--------:|');
     for (const result of summary.fileResults) {
-      const fileStatus =
-        result.failed > 0 ? '❌' : result.skipped > 0 ? '⚠️' : '✅';
+      const fileStatus = result.failed > 0 ? '❌' : '✅';
       console.log(
         `| ${fileStatus} ${result.file} | ${result.passed} | ${result.failed} | ${result.skipped} |`
       );
@@ -302,18 +296,9 @@ function renderAggregatedSummary(categories, overallSummary) {
     overallSummary.totalPassed +
     overallSummary.totalFailed +
     overallSummary.totalSkipped;
-  const statusEmoji =
-    overallSummary.totalFailed > 0
-      ? '❌'
-      : overallSummary.totalSkipped > 0
-        ? '⚠️'
-        : '✅';
+  const statusEmoji = overallSummary.totalFailed > 0 ? '❌' : '✅';
   const statusText =
-    overallSummary.totalFailed > 0
-      ? 'Some tests failed'
-      : overallSummary.totalSkipped > 0
-        ? 'All tests passed (some skipped)'
-        : 'All tests passed';
+    overallSummary.totalFailed > 0 ? 'Some tests failed' : 'All tests passed';
 
   console.log('<!-- e2e-test-results -->');
   console.log(`## 🧪 E2E Test Results\n`);
@@ -333,7 +318,7 @@ function renderAggregatedSummary(categories, overallSummary) {
 
   for (const [catName, cat] of sortedCategories) {
     const catTotal = cat.passed + cat.failed + cat.skipped;
-    const catStatus = cat.failed > 0 ? '❌' : cat.skipped > 0 ? '⚠️' : '✅';
+    const catStatus = cat.failed > 0 ? '❌' : '✅';
     const displayName = categoryNames[catName] || catName;
     console.log(
       `| ${catStatus} ${displayName} | ${cat.passed} | ${cat.failed} | ${cat.skipped} | ${catTotal} |`
@@ -399,7 +384,7 @@ function renderAggregatedSummary(categories, overallSummary) {
   console.log('### Details by Category\n');
 
   for (const [catName, cat] of sortedCategories) {
-    const catStatus = cat.failed > 0 ? '❌' : cat.skipped > 0 ? '⚠️' : '✅';
+    const catStatus = cat.failed > 0 ? '❌' : '✅';
     const displayName = categoryNames[catName] || catName;
 
     console.log(`<details>`);
@@ -407,7 +392,7 @@ function renderAggregatedSummary(categories, overallSummary) {
     console.log('| App | Passed | Failed | Skipped |');
     console.log('|:----|-------:|-------:|--------:|');
     for (const app of cat.apps) {
-      const appStatus = app.failed > 0 ? '❌' : app.skipped > 0 ? '⚠️' : '✅';
+      const appStatus = app.failed > 0 ? '❌' : '✅';
       console.log(
         `| ${appStatus} ${app.name} | ${app.passed} | ${app.failed} | ${app.skipped} |`
       );
