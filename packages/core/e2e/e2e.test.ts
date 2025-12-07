@@ -1,11 +1,44 @@
 import { withResolvers } from '@workflow/utils';
-import { assert, describe, expect, test } from 'vitest';
+import { assert, afterAll, describe, expect, test } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
 import { cliInspectJson, isLocalDeployment } from './utils';
+import fs from 'fs';
+import path from 'path';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
+}
+
+// Collect runIds for observability links (Vercel world only)
+const collectedRunIds: {
+  testName: string;
+  runId: string;
+  timestamp: string;
+}[] = [];
+
+function getE2EMetadataPath() {
+  const appName = process.env.APP_NAME || 'unknown';
+  // Detect if this is a Vercel deployment
+  const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
+  const backend = isVercel ? 'vercel' : 'local';
+  return path.resolve(process.cwd(), `e2e-metadata-${appName}-${backend}.json`);
+}
+
+function writeE2EMetadata() {
+  // Only write metadata for Vercel tests
+  if (!process.env.WORKFLOW_VERCEL_ENV) return;
+
+  const metadata = {
+    runIds: collectedRunIds,
+    vercel: {
+      projectSlug: process.env.WORKFLOW_VERCEL_PROJECT_SLUG,
+      environment: process.env.WORKFLOW_VERCEL_ENV,
+      teamSlug: 'vercel-labs',
+    },
+  };
+
+  fs.writeFileSync(getE2EMetadataPath(), JSON.stringify(metadata, null, 2));
 }
 
 async function triggerWorkflow(
@@ -41,6 +74,16 @@ async function triggerWorkflow(
   }
   const run = await res.json();
   resolveRunId(run.runId);
+
+  // Collect runId for observability links (Vercel world only)
+  if (process.env.WORKFLOW_VERCEL_ENV) {
+    const testName = expect.getState().currentTestName || workflowFn;
+    collectedRunIds.push({
+      testName,
+      runId: run.runId,
+      timestamp: new Date().toISOString(),
+    });
+  }
 
   // Resolve and wait for any stream operations
   await Promise.all(ops);
@@ -79,6 +122,11 @@ async function getWorkflowReturnValue(runId: string) {
 // NOTE: Temporarily disabling concurrent tests to avoid flakiness.
 // TODO: Re-enable concurrent tests after conf when we have more time to investigate.
 describe('e2e', () => {
+  // Write E2E metadata file with runIds for observability links
+  afterAll(() => {
+    writeE2EMetadata();
+  });
+
   test.each([
     {
       workflowFile: 'workflows/99_e2e.ts',

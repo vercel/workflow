@@ -36,6 +36,7 @@ function findResultFiles(dir) {
         files.push(...findResultFiles(fullPath));
       } else if (
         entry.name.startsWith('e2e-') &&
+        !entry.name.startsWith('e2e-metadata-') &&
         entry.name.endsWith('.json')
       ) {
         files.push(fullPath);
@@ -45,6 +46,67 @@ function findResultFiles(dir) {
     // Directory doesn't exist or can't be read
   }
   return files;
+}
+
+// Find all e2e metadata JSON files
+function findMetadataFiles(dir) {
+  const files = [];
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...findMetadataFiles(fullPath));
+      } else if (
+        entry.name.startsWith('e2e-metadata-') &&
+        entry.name.endsWith('.json')
+      ) {
+        files.push(fullPath);
+      }
+    }
+  } catch (e) {
+    // Directory doesn't exist or can't be read
+  }
+  return files;
+}
+
+// Load metadata indexed by app name
+function loadMetadata(dir) {
+  const metadata = new Map(); // app -> { runIds, vercel }
+  const metadataFiles = findMetadataFiles(dir);
+
+  for (const file of metadataFiles) {
+    try {
+      const content = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      // Extract app name from filename: e2e-metadata-{app}-vercel.json
+      const basename = path.basename(file, '.json');
+      const match = basename.match(/^e2e-metadata-(.+)-vercel$/);
+      if (match && content.vercel) {
+        const appName = match[1];
+        metadata.set(appName, content);
+      }
+    } catch (e) {
+      // Skip invalid metadata files
+    }
+  }
+
+  return metadata;
+}
+
+// Generate observability URL for a test
+function getObservabilityUrl(metadata, appName, testName) {
+  const appMetadata = metadata.get(appName);
+  if (!appMetadata || !appMetadata.vercel) return null;
+
+  const { vercel, runIds } = appMetadata;
+  if (!vercel.teamSlug || !vercel.projectSlug) return null;
+
+  // Find the runId for this test
+  const runInfo = runIds?.find((r) => r.testName === testName);
+  if (!runInfo) return null;
+
+  const env = vercel.environment === 'production' ? 'production' : 'preview';
+  return `https://vercel.com/${vercel.teamSlug}/${vercel.projectSlug}/observability/workflows/runs/${runInfo.runId}?environment=${env}`;
 }
 
 // Parse vitest JSON output
@@ -291,7 +353,7 @@ const categoryOrder = [
 ];
 
 // Render aggregated PR comment summary
-function renderAggregatedSummary(categories, overallSummary) {
+function renderAggregatedSummary(categories, overallSummary, metadata) {
   const total =
     overallSummary.totalPassed +
     overallSummary.totalFailed +
@@ -371,7 +433,17 @@ function renderAggregatedSummary(categories, overallSummary) {
         for (const test of tests) {
           // Extract just the test name without "e2e " prefix if present
           const testName = test.name.replace(/^e2e\s+/, '');
-          console.log(`- \`${testName}\``);
+          // Add observability link for vercel-prod tests
+          if (catName === 'vercel-prod' && metadata) {
+            const obsUrl = getObservabilityUrl(metadata, appName, test.name);
+            if (obsUrl) {
+              console.log(`- \`${testName}\` ([🔍 observability](${obsUrl}))`);
+            } else {
+              console.log(`- \`${testName}\``);
+            }
+          } else {
+            console.log(`- \`${testName}\``);
+          }
         }
         console.log('');
       }
@@ -425,7 +497,8 @@ if (resultFiles.length === 0) {
 
 if (mode === 'aggregate') {
   const { categories, overallSummary } = aggregateByCategory(resultFiles);
-  renderAggregatedSummary(categories, overallSummary);
+  const metadata = loadMetadata(resultsDir);
+  renderAggregatedSummary(categories, overallSummary, metadata);
 
   // Exit with non-zero if any tests failed
   if (overallSummary.totalFailed > 0) {
