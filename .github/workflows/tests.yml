@@ -652,3 +652,42 @@ jobs:
             - Community Worlds: ${{ needs.e2e-community.result }}
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+  # Publish E2E results to GitHub Pages (main branch only)
+  publish-results:
+    name: Publish E2E Results
+    runs-on: ubuntu-latest
+    needs: [summary]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 5
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all E2E artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-results-*
+          path: e2e-results
+          merge-multiple: true
+
+      - name: Generate docs data
+        run: |
+          mkdir -p docs-data
+          node .github/scripts/generate-docs-data.js \
+            --type e2e \
+            --results-dir e2e-results \
+            --output docs-data/e2e-results.json \
+            --commit "${{ github.sha }}" \
+            --branch "${{ github.ref_name }}"
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs-data
+          destination_dir: ci
+          keep_files: true
