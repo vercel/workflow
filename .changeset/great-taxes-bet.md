@@ -2,4 +2,4 @@
 "@workflow/world-local": patch
 ---
 
-Bump undici dependency to latest patch version
+Bump undici dependency to latest minor version
