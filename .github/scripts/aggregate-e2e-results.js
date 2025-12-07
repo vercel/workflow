@@ -434,7 +434,7 @@ function renderAggregatedSummary(categories, overallSummary, metadata) {
           // Extract just the test name without "e2e " prefix if present
           const testName = test.name.replace(/^e2e\s+/, '');
           // Add observability link for vercel-prod tests
-          if (catName === 'vercel-prod' && metadata) {
+          if (catName === 'vercel-prod') {
             const obsUrl = getObservabilityUrl(metadata, appName, test.name);
             if (obsUrl) {
               console.log(`- \`${testName}\` ([🔍 observability](${obsUrl}))`);

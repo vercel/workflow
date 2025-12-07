@@ -52,7 +52,7 @@ async function genBenchStream(): Promise<ReadableStream<Uint8Array>> {
     async start(controller) {
       for (let i = 0; i < numChunks; i++) {
         // Generate a chunk with padding to reach ~100 bytes
-        const content = `chunk-${i.toString().padStart(3, '0')}-${'x'.repeat(chunkSize - 15)}\n`;
+        const content = `chunk-${i.toString().padStart(3, '0')}-${'x'.repeat(chunkSize - 11)}\n`;
         controller.enqueue(encoder.encode(content));
         // Small delay to avoid synchronous close issues on local world
         await new Promise((resolve) => setTimeout(resolve, 10));
