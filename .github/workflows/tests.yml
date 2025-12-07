@@ -635,10 +635,17 @@ jobs:
           echo "windows=$WINDOWS_STATUS" >> $GITHUB_OUTPUT
           echo "community=$COMMUNITY_STATUS" >> $GITHUB_OUTPUT
 
-          if [[ "$VERCEL_STATUS" == "failure" || "$LOCAL_DEV_STATUS" == "failure" || "$LOCAL_PROD_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$WINDOWS_STATUS" == "failure" || "$COMMUNITY_STATUS" == "failure" ]]; then
+          # Community world failures are warnings, not errors
+          if [[ "$VERCEL_STATUS" == "failure" || "$LOCAL_DEV_STATUS" == "failure" || "$LOCAL_PROD_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$WINDOWS_STATUS" == "failure" ]]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
           else
             echo "has_failures=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [[ "$COMMUNITY_STATUS" == "failure" ]]; then
+            echo "has_warnings=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_warnings=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Update PR comment with results
@@ -657,12 +664,25 @@ jobs:
           message: |
 
             ---
-            ⚠️ **Some E2E test jobs failed:**
+            ❌ **Some E2E test jobs failed:**
             - Vercel Prod: ${{ needs.e2e-vercel-prod.result }}
             - Local Dev: ${{ needs.e2e-local-dev.result }}
             - Local Prod: ${{ needs.e2e-local-prod.result }}
             - Local Postgres: ${{ needs.e2e-local-postgres.result }}
             - Windows: ${{ needs.e2e-windows.result }}
+
+            Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+      - name: Append community warning to PR comment
+        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_warnings == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: e2e-test-results
+          append: true
+          message: |
+
+            ---
+            ⚠️ **Community world tests failed** (non-blocking):
             - Community Worlds: ${{ needs.e2e-community.result }}
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.

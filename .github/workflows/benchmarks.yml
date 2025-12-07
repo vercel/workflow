@@ -495,10 +495,17 @@ jobs:
           echo "vercel=$VERCEL_STATUS" >> $GITHUB_OUTPUT
           echo "community=$COMMUNITY_STATUS" >> $GITHUB_OUTPUT
 
-          if [[ "$LOCAL_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$VERCEL_STATUS" == "failure" || "$COMMUNITY_STATUS" == "failure" ]]; then
+          # Community world failures are warnings, not errors
+          if [[ "$LOCAL_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$VERCEL_STATUS" == "failure" ]]; then
             echo "has_failures=true" >> $GITHUB_OUTPUT
           else
             echo "has_failures=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [[ "$COMMUNITY_STATUS" == "failure" ]]; then
+            echo "has_warnings=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_warnings=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Update PR comment with results
@@ -517,10 +524,23 @@ jobs:
           message: |
 
             ---
-            ⚠️ **Some benchmark jobs failed:**
+            ❌ **Some benchmark jobs failed:**
             - Local: ${{ needs.benchmark-local.result }}
             - Postgres: ${{ needs.benchmark-postgres.result }}
             - Vercel: ${{ needs.benchmark-vercel.result }}
+
+            Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+      - name: Append community warning to PR comment
+        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_warnings == 'true'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          append: true
+          message: |
+
+            ---
+            ⚠️ **Community world benchmarks failed** (non-blocking):
             - Community Worlds: ${{ needs.benchmark-community.result }}
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
