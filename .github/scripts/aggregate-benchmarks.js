@@ -176,6 +176,7 @@ function collectBenchmarkData(resultFiles) {
             // Get workflow timing if available
             let workflowTimeMs = null;
             let firstByteTimeMs = null;
+            let slurpTimeMs = null;
             let lastRunId = null;
             let observabilityUrl = null;
             if (timings?.summary?.[benchName]) {
@@ -183,6 +184,10 @@ function collectBenchmarkData(resultFiles) {
               // Get TTFB for stream benchmarks
               if (timings.summary[benchName].avgFirstByteTimeMs !== undefined) {
                 firstByteTimeMs = timings.summary[benchName].avgFirstByteTimeMs;
+              }
+              // Get slurp time for stream benchmarks (time from first byte to completion)
+              if (timings.summary[benchName].avgSlurpTimeMs !== undefined) {
+                slurpTimeMs = timings.summary[benchName].avgSlurpTimeMs;
               }
             }
             // Get the last runId for observability link (Vercel only)
@@ -209,6 +214,7 @@ function collectBenchmarkData(resultFiles) {
               max: bench.max,
               samples: bench.sampleCount,
               firstByteTime: firstByteTimeMs,
+              slurpTime: slurpTimeMs,
               runId: lastRunId,
               observabilityUrl: observabilityUrl,
             };
@@ -329,10 +335,10 @@ function renderBenchmarkTable(
   // Render table - different columns for stream vs regular benchmarks
   if (isStream) {
     console.log(
-      '| World | Framework | Workflow Time | TTFB | Wall Time | Overhead | Samples | vs Fastest |'
+      '| World | Framework | Workflow Time | TTFB | Slurp | Wall Time | Overhead | Samples | vs Fastest |'
     );
     console.log(
-      '|:------|:----------|--------------:|-----:|----------:|---------:|--------:|-----------:|'
+      '|:------|:----------|--------------:|-----:|------:|----------:|---------:|--------:|-----------:|'
     );
   } else {
     console.log(
@@ -391,6 +397,11 @@ function renderBenchmarkTable(
       baseline?.firstByteTime
     );
 
+    // Format slurp time with delta for stream benchmarks (time from first byte to completion)
+    const slurpSec =
+      metrics.slurpTime !== null ? formatSec(metrics.slurpTime) : '-';
+    const slurpDelta = formatDelta(metrics.slurpTime, baseline?.slurpTime);
+
     // Format samples count
     const samplesCount = metrics.samples ?? '-';
 
@@ -401,7 +412,7 @@ function renderBenchmarkTable(
 
     if (isStream) {
       console.log(
-        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${firstByteSec}s${ttfbDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${samplesCount} | ${factor} |`
+        `| ${worldInfo.emoji} ${worldInfo.label} | ${medal}${frameworkInfo.label} | ${workflowTimeSec}s${workflowDelta} | ${firstByteSec}s${ttfbDelta} | ${slurpSec}s${slurpDelta} | ${wallTimeSec}s${wallDelta} | ${overheadSec}s | ${samplesCount} | ${factor} |`
       );
     } else {
       console.log(
@@ -679,6 +690,9 @@ function renderComparison(data, baselineData) {
   );
   console.log(
     '- **TTFB**: Time to First Byte - time from workflow start until first stream byte received (stream benchmarks only)'
+  );
+  console.log(
+    '- **Slurp**: Time from first byte to complete stream consumption (stream benchmarks only)'
   );
   console.log(
     '- **Wall Time**: Total testbench time (trigger workflow + poll for result)'

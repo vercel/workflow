@@ -19,13 +19,14 @@ const workflowTimings: Record<
     completedAt?: string;
     executionTimeMs?: number;
     firstByteTimeMs?: number;
+    slurpTimeMs?: number;
   }[]
 > = {};
 
 // Buffered timing data keyed by task name, flushed in teardown
 const bufferedTimings: Map<
   string,
-  { run: any; extra?: { firstByteTimeMs?: number } }[]
+  { run: any; extra?: { firstByteTimeMs?: number; slurpTimeMs?: number } }[]
 > = new Map();
 
 async function triggerWorkflow(
@@ -149,6 +150,9 @@ function writeTimingFile() {
       avgFirstByteTimeMs?: number;
       minFirstByteTimeMs?: number;
       maxFirstByteTimeMs?: number;
+      avgSlurpTimeMs?: number;
+      minSlurpTimeMs?: number;
+      maxSlurpTimeMs?: number;
     }
   > = {};
   for (const [benchName, timings] of Object.entries(workflowTimings)) {
@@ -177,6 +181,16 @@ function writeTimingFile() {
         summary[benchName].minFirstByteTimeMs = Math.min(...firstByteTimes);
         summary[benchName].maxFirstByteTimeMs = Math.max(...firstByteTimes);
       }
+
+      // Add slurp time stats if available (time from first byte to stream completion)
+      const slurpTimings = timings.filter((t) => t.slurpTimeMs !== undefined);
+      if (slurpTimings.length > 0) {
+        const slurpTimes = slurpTimings.map((t) => t.slurpTimeMs!);
+        summary[benchName].avgSlurpTimeMs =
+          slurpTimes.reduce((sum, t) => sum + t, 0) / slurpTimes.length;
+        summary[benchName].minSlurpTimeMs = Math.min(...slurpTimes);
+        summary[benchName].maxSlurpTimeMs = Math.max(...slurpTimes);
+      }
     }
   }
 
@@ -194,7 +208,7 @@ function writeTimingFile() {
 function stageTiming(
   benchName: string,
   run: any,
-  extra?: { firstByteTimeMs?: number }
+  extra?: { firstByteTimeMs?: number; slurpTimeMs?: number }
 ) {
   if (!bufferedTimings.has(benchName)) {
     bufferedTimings.set(benchName, []);
@@ -230,6 +244,9 @@ const teardown = (task: { name: string }, mode: 'warmup' | 'run') => {
       // Add extra metrics if provided
       if (extra?.firstByteTimeMs !== undefined) {
         timing.firstByteTimeMs = extra.firstByteTimeMs;
+      }
+      if (extra?.slurpTimeMs !== undefined) {
+        timing.slurpTimeMs = extra.slurpTimeMs;
       }
 
       workflowTimings[task.name].push(timing);
@@ -289,22 +306,35 @@ describe('Workflow Performance Benchmarks', () => {
     async () => {
       const { runId } = await triggerWorkflow('streamWorkflow', []);
       const { run, value } = await getWorkflowReturnValue(runId);
-      // Consume the entire stream and track time-to-first-byte from workflow startedAt
+      // Consume the entire stream and track:
+      // - firstByteTimeMs: time from workflow start to first byte
+      // - slurpTimeMs: time from first byte to stream completion
       let firstByteTimeMs: number | undefined;
+      let slurpTimeMs: number | undefined;
       if (value instanceof ReadableStream) {
         const reader = value.getReader();
         let isFirstChunk = true;
+        let firstByteTimestamp: number | undefined;
         while (true) {
           const { done } = await reader.read();
           if (isFirstChunk && !done && run.startedAt) {
             const startedAt = new Date(run.startedAt).getTime();
-            firstByteTimeMs = Date.now() - startedAt;
+            firstByteTimestamp = Date.now();
+            firstByteTimeMs = firstByteTimestamp - startedAt;
             isFirstChunk = false;
           }
-          if (done) break;
+          if (done) {
+            if (firstByteTimestamp !== undefined) {
+              slurpTimeMs = Date.now() - firstByteTimestamp;
+            }
+            break;
+          }
         }
       }
-      stageTiming('workflow with stream', run, { firstByteTimeMs });
+      stageTiming('workflow with stream', run, {
+        firstByteTimeMs,
+        slurpTimeMs,
+      });
     },
     { time: 5000, warmupIterations: 1, teardown }
   );
