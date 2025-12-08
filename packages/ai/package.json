@@ -46,6 +46,10 @@
       "types": "./dist/providers/openai.d.ts",
       "default": "./dist/providers/openai.js"
     },
+    "./openrouter": {
+      "types": "./dist/providers/openrouter.d.ts",
+      "default": "./dist/providers/openrouter.js"
+    },
     "./xai": {
       "types": "./dist/providers/xai.d.ts",
       "default": "./dist/providers/xai.js"
@@ -72,6 +76,7 @@
     "@ai-sdk/openai": "2.0.72",
     "@ai-sdk/provider": "2.0.0",
     "@ai-sdk/xai": "2.0.37",
+    "@openrouter/ai-sdk-provider": "1.4.1",
     "zod": "catalog:"
   }
 }

@@ -321,6 +321,9 @@ importers:
       '@ai-sdk/xai':
         specifier: 2.0.37
         version: 2.0.37(zod@4.1.11)
+      '@openrouter/ai-sdk-provider':
+        specifier: 1.4.1
+        version: 1.4.1(ai@5.0.104(zod@4.1.11))(zod@4.1.11)
       zod:
         specifier: 'catalog:'
         version: 4.1.11
@@ -3544,6 +3547,16 @@ packages:
   '@octokit/webhooks@14.1.3':
     resolution: {integrity: sha512-gcK4FNaROM9NjA0mvyfXl0KPusk7a1BeA8ITlYEZVQCXF5gcETTd4yhAU0Kjzd8mXwYHppzJBWgdBVpIR9wUcQ==}
     engines: {node: '>= 20'}
+
+  '@openrouter/ai-sdk-provider@1.4.1':
+    resolution: {integrity: sha512-dj88dldpAreSNPVkO3ap19XGgx98nb/WeTrPdiUmErKSyFGYQvrjpXTn7WFyhGPDRrEdhua6oaBshsA8yiuGlg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      ai: ^5.0.0
+      zod: ^3.24.1 || ^v4
+
+  '@openrouter/sdk@0.1.27':
+    resolution: {integrity: sha512-RH//L10bSmc81q25zAZudiI4kNkLgxF2E+WU42vghp3N6TEvZ6F0jK7uT3tOxkEn91gzmMw9YVmDENy7SJsajQ==}
 
   '@opentelemetry/api-logs@0.57.2':
     resolution: {integrity: sha512-uIX52NnTM0iBh84MShlpouI7UKqkZ7MrUszTmaypHBu4r7NofznSnQRfJ+uUeDtQDj6w8eFGg5KBLDAwAPz1+A==}
@@ -15794,6 +15807,16 @@ snapshots:
       '@octokit/openapi-webhooks-types': 12.0.3
       '@octokit/request-error': 7.1.0
       '@octokit/webhooks-methods': 6.0.0
+
+  '@openrouter/ai-sdk-provider@1.4.1(ai@5.0.104(zod@4.1.11))(zod@4.1.11)':
+    dependencies:
+      '@openrouter/sdk': 0.1.27
+      ai: 5.0.104(zod@4.1.11)
+      zod: 4.1.11
+
+  '@openrouter/sdk@0.1.27':
+    dependencies:
+      zod: 4.1.12
 
   '@opentelemetry/api-logs@0.57.2':
     dependencies:
