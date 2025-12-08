@@ -1,11 +1,11 @@
 import { registerStepFunction } from "workflow/internal/private";
-import { someHelper } from './helpers'; // should be removed
-import { anotherHelper, usefulHelper// do not remove
+import { someHelper } from './helpers'; // removed in step/workflow mode, kept in client mode
+import { anotherHelper, usefulHelper// always kept
  } from './utils';
-import defaultExport from './default'; // should be removed
-import * as something from './something'; // should be removed
-import * as useful from './useful'; // do not remove
-import 'dotenv/config'; // should be removed
+import defaultExport from './default'; // removed in step/workflow mode, kept in client mode
+import * as something from './something'; // removed in step/workflow mode, kept in client mode
+import * as useful from './useful'; // always kept
+import 'dotenv/config'; // removed in step/workflow mode, kept in client mode
 /**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//input.js//processData"}}}}*/;
 export async function processData(data) {
     const result = someHelper(data);

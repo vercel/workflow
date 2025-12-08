@@ -1,3 +1,4 @@
+import { helper } from './helper';
 import { unusedHelper } from './unused-helper';
 /**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//input.js//processData"}}}}*/;
 // This variable is exported but not used anywhere in this file

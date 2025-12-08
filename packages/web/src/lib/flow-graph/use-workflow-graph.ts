@@ -3,7 +3,7 @@
 import {
   fetchWorkflowsManifest,
   unwrapServerActionResult,
-  WorkflowAPIError,
+  WorkflowWebAPIError,
 } from '@workflow/web-shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { worldConfigToEnvMap } from '@/lib/config';
@@ -35,11 +35,13 @@ export function useWorkflowGraphManifest(config: WorldConfig) {
     try {
       const env = worldConfigToEnvMap(config);
       console.log('[useWorkflowGraphManifest] Fetching with env:', env);
-      const serverResult = await fetchWorkflowsManifest(env);
-      console.log('[useWorkflowGraphManifest] Server result:', serverResult);
-      const rawManifest = unwrapServerActionResult(
-        serverResult
-      ) as RawWorkflowsManifest;
+      const { result: rawManifest, error } = await unwrapServerActionResult(
+        fetchWorkflowsManifest(env)
+      );
+      if (error) {
+        setError(error);
+        return;
+      }
       console.log(
         '[useWorkflowGraphManifest] Raw manifest after unwrap:',
         rawManifest
@@ -58,11 +60,14 @@ export function useWorkflowGraphManifest(config: WorldConfig) {
       setManifest(adaptedManifest);
     } catch (err) {
       const error =
-        err instanceof WorkflowAPIError
+        err instanceof WorkflowWebAPIError
           ? err
           : err instanceof Error
-            ? new WorkflowAPIError(err.message, { cause: err, layer: 'client' })
-            : new WorkflowAPIError(String(err), { layer: 'client' });
+            ? new WorkflowWebAPIError(err.message, {
+                cause: err,
+                layer: 'client',
+              })
+            : new WorkflowWebAPIError(String(err), { layer: 'client' });
       setError(error);
       setManifest(null);
     } finally {

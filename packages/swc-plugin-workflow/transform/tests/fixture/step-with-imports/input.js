@@ -1,12 +1,12 @@
-import { someHelper } from './helpers'; // should be removed
+import { someHelper } from './helpers'; // removed in step/workflow mode, kept in client mode
 import {
-  anotherHelper, // should be removed
-  usefulHelper // do not remove
+  anotherHelper, // removed in step/workflow mode, kept in client mode
+  usefulHelper // always kept
 } from './utils'; 
-import defaultExport from './default'; // should be removed
-import * as something from './something'; // should be removed
-import * as useful from './useful'; // do not remove
-import 'dotenv/config' // should be removed
+import defaultExport from './default'; // removed in step/workflow mode, kept in client mode
+import * as something from './something'; // removed in step/workflow mode, kept in client mode
+import * as useful from './useful'; // always kept
+import 'dotenv/config' // removed in step/workflow mode, kept in client mode
 
 export async function processData(data) {
   'use step';
