@@ -113,7 +113,7 @@ export function createStreamer(basedir: string): Streamer {
       streamEmitter.emit(`close:${name}` as const, { streamName: name });
     },
 
-    async listByRunId(runId: string) {
+    async listStreamsByRunId(runId: string) {
       const chunksDir = path.join(basedir, 'streams', 'chunks');
       const files = await listJSONFiles(chunksDir);
 

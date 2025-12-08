@@ -56,7 +56,7 @@ export function createStreamer(config?: APIConfig): Streamer {
       return res.body as ReadableStream<Uint8Array>;
     },
 
-    async listByRunId(runId: string) {
+    async listStreamsByRunId(runId: string) {
       const httpConfig = await getHttpConfig(config);
       const url = new URL(`${httpConfig.baseUrl}/v1/runs/${runId}/streams`);
       const res = await fetch(url, { headers: httpConfig.headers });

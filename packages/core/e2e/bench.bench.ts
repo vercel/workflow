@@ -1,6 +1,7 @@
 import { withResolvers } from '@workflow/utils';
 import { bench, describe } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
+import { getProtectionBypassHeaders } from './utils';
 import fs from 'fs';
 import path from 'path';
 
@@ -51,6 +52,7 @@ async function triggerWorkflow(
 
   const res = await fetch(url, {
     method: 'POST',
+    headers: getProtectionBypassHeaders(),
     body: JSON.stringify(dehydratedArgs),
   });
   if (!res.ok) {
@@ -77,7 +79,7 @@ async function getWorkflowReturnValue(
     const url = new URL('/api/trigger', deploymentUrl);
     url.searchParams.set('runId', runId);
 
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: getProtectionBypassHeaders() });
 
     if (res.status === 202) {
       // Workflow run is still running, so we need to wait and poll again
