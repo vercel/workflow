@@ -749,7 +749,7 @@ export const showStream = async (
 ) => {
   if (opts.runId || opts.stepId) {
     logger.warn(
-      'Filtering by run-id or step-id is not supported in get calls, ignoring filter.'
+      'Filtering by run-id or step-id is not supported when showing a stream, ignoring filter.'
     );
   }
   const run = getRun(streamId);

@@ -4,6 +4,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { hydrateResourceIO } from '@workflow/core/observability';
 import { createWorld, start } from '@workflow/core/runtime';
+import {
+  getDeserializeStream,
+  getExternalRevivers,
+} from '@workflow/core/serialization';
 import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
 import type {
   Event,
@@ -510,7 +514,14 @@ export async function readStreamServerAction(
 ): Promise<ReadableStream<Uint8Array> | ServerActionError> {
   try {
     const world = getWorldFromEnv(env);
+    // We should probably use getRun().getReadable() instead, to make the UI
+    // more consistent with runtime behavior, and also expose a "replay" and "startIndex",
+    // feature, to allow for testing World behavior.
     const stream = await world.readFromStream(streamId, startIndex);
+
+    const revivers = getExternalRevivers(globalThis, [], '');
+    const transform = getDeserializeStream(revivers);
+
     return stream;
   } catch (error) {
     const actionError = createServerActionError(error, 'world.readFromStream', {
