@@ -1,6 +1,6 @@
-import { usefulHelper// always kept
+import { usefulHelper// do not remove
  } from './utils';
-import * as useful from './useful'; // always kept
+import * as useful from './useful'; // do not remove
 /**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//input.js//processData"}}}}*/;
 export var processData = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//processData");
 export function normalFunction() {
