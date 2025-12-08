@@ -13,7 +13,7 @@ import {
 /**
  * Format a serialization error with context about what failed.
  * Extracts path, value, and reason from devalue's DevalueError when available.
- * Logs the problematic value to console using util.inspect() for better debugging.
+ * Logs the problematic value to the console for better debugging.
  */
 function formatSerializationError(context: string, error: unknown): string {
   // Use "returning" for return values, "passing" for arguments/inputs
@@ -26,10 +26,10 @@ function formatSerializationError(context: string, error: unknown): string {
   }
   message += `. Ensure you're ${verb} serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`;
 
-  // Log the problematic value to console for debugging (uses util.inspect under the hood)
+  // Log the problematic value to console for debugging
   if (error instanceof DevalueError && error.value !== undefined) {
     console.error(
-      `[Workflow] Serialization failed for ${context}. Problematic value:`
+      `[Workflows] Serialization failed for ${context}. Problematic value:`
     );
     console.error(error.value);
   }

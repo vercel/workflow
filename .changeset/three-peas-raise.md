@@ -2,4 +2,4 @@
 "@workflow/core": patch
 ---
 
-Enhance serialization falure error reporting
+Enhance serialization failure error reporting
