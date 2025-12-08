@@ -12,7 +12,7 @@ export function createVercel(config?: APIConfig): Streamer & Storage {
     writeToStream: streamer.writeToStream,
     closeStream: streamer.closeStream,
     readFromStream: streamer.readFromStream,
-    listByRunId: streamer.listByRunId,
+    listStreamsByRunId: streamer.listStreamsByRunId,
 
     // Storage interface with namespaced methods
     runs: storage.runs,
