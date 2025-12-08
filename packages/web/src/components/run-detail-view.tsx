@@ -8,7 +8,8 @@ import {
   type WorkflowRun,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
-import { AlertCircle, HelpCircle, List, Loader2 } from 'lucide-react';
+import { AlertCircle, HelpCircle, Loader2 } from 'lucide-react';
+// import { List, Network } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
@@ -32,7 +33,8 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+// import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+// import { WorkflowGraphExecutionViewer } from '@/components/workflow-graph-execution-viewer';
 import {
   Tooltip,
   TooltipContent,
@@ -40,6 +42,8 @@ import {
 } from '@/components/ui/tooltip';
 import { buildUrlWithConfig, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
+// import { mapRunToExecution } from '@/lib/graph-execution-mapper';
+// import { useWorkflowGraphManifest } from '@/lib/use-workflow-graph';
 import { CancelButton } from './display-utils/cancel-button';
 import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
@@ -65,10 +69,11 @@ export function RunDetailView({
   const [rerunning, setRerunning] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [showRerunDialog, setShowRerunDialog] = useState(false);
-  const [activeTab, setActiveTab] = useState<'trace' | 'graph'>('trace');
+  // const [activeTab, setActiveTab] = useState<'trace' | 'graph'>('trace');
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
 
   // Fetch workflow graph manifest
+  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged
   // const {
   //   manifest: graphManifest,
   //   loading: graphLoading,
@@ -414,7 +419,8 @@ export function RunDetailView({
         </div>
 
         <div className="mt-4 flex-1 flex flex-col min-h-0">
-          <Tabs
+          {/* TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged */}
+          {/* <Tabs
             value={activeTab}
             onValueChange={(v) => setActiveTab(v as 'trace' | 'graph')}
             className="flex-1 flex flex-col min-h-0"
@@ -424,14 +430,10 @@ export function RunDetailView({
                 <List className="h-4 w-4" />
                 Trace
               </TabsTrigger>
-              <TabsTrigger value="streams" className="gap-2">
-                <List className="h-4 w-4" />
-                Streams
-              </TabsTrigger>
-              {/* <TabsTrigger value="graph" className="gap-2">
+              <TabsTrigger value="graph" className="gap-2">
                 <Network className="h-4 w-4" />
                 Graph
-              </TabsTrigger> */}
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
@@ -448,11 +450,7 @@ export function RunDetailView({
               </div>
             </TabsContent>
 
-            <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
-              <div className="h-full"></div>
-            </TabsContent>
-
-            {/* <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
+            <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
               <div className="h-full min-h-[500px]">
                 {graphLoading ? (
                   <div className="flex items-center justify-center w-full h-full">
@@ -489,8 +487,21 @@ export function RunDetailView({
                   />
                 )}
               </div>
-            </TabsContent> */}
-          </Tabs>
+            </TabsContent>
+          </Tabs> */}
+
+          {/* Default trace view */}
+          <div className="h-full flex-1 min-h-0">
+            <WorkflowTraceViewer
+              error={error}
+              steps={allSteps}
+              events={allEvents}
+              hooks={allHooks}
+              env={env}
+              run={run}
+              isLoading={loading}
+            />
+          </div>
 
           {auxiliaryDataLoading && (
             <div className="fixed flex items-center gap-2 left-8 bottom-8 bg-background border rounded-md px-4 py-2 shadow-lg">
