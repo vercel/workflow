@@ -42,7 +42,7 @@ export interface Streamer {
     name: string,
     startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;
-  listStreams(runId: string): Promise<string[]>;
+  listByRunId(runId: string): Promise<string[]>;
 }
 
 export interface Storage {

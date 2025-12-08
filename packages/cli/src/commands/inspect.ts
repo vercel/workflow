@@ -4,12 +4,12 @@ import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import type { InspectCLIOptions } from '../lib/config/types.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import {
+  listByRunId,
   listEvents,
   listHooks,
   listRuns,
   listSleeps,
   listSteps,
-  listStreams,
   showHook,
   showRun,
   showStep,
@@ -175,7 +175,7 @@ export default class Inspect extends BaseCommand {
         if (id) {
           await showStream(world, id, options);
         } else {
-          await listStreams(world, options);
+          await listByRunId(world, options);
         }
         process.exit(0);
       }
