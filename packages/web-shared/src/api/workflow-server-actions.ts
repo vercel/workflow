@@ -534,6 +534,25 @@ export async function readStreamServerAction(
 }
 
 /**
+ * List all stream IDs for a run
+ */
+export async function fetchStreams(
+  env: EnvMap,
+  runId: string
+): Promise<ServerActionResult<string[]>> {
+  try {
+    const world = getWorldFromEnv(env);
+    const streams = await world.listByRunId(runId);
+    return createResponse(streams);
+  } catch (error) {
+    console.error('Failed to list streams:', error);
+    return createServerActionError<string[]>(error, 'world.listByRunId', {
+      runId,
+    });
+  }
+}
+
+/**
  * Fetch the workflows manifest from the workflow route directory
  * The manifest is generated at build time and contains static structure info about workflows
  *

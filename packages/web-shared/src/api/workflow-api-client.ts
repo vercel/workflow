@@ -20,6 +20,7 @@ import {
   fetchRuns,
   fetchStep,
   fetchSteps,
+  fetchStreams,
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
 } from './workflow-server-actions';
@@ -1104,4 +1105,53 @@ export async function readStream(
     throw error;
   }
   return result;
+}
+
+/**
+ * List all stream IDs for a run
+ */
+export async function listStreams(
+  env: EnvMap,
+  runId: string
+): Promise<string[]> {
+  const { error, result } = await unwrapServerActionResult(
+    fetchStreams(env, runId)
+  );
+  if (error) {
+    throw error;
+  }
+  return result;
+}
+
+/**
+ * Hook to fetch and manage stream list for a run
+ */
+export function useWorkflowStreams(env: EnvMap, runId: string) {
+  const [streams, setStreams] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await listStreams(env, runId);
+      setStreams(result);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setLoading(false);
+    }
+  }, [env, runId]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  return {
+    streams,
+    loading,
+    error,
+    refresh: fetchData,
+  };
 }

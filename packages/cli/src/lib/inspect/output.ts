@@ -798,7 +798,7 @@ export const listByRunId = async (
   }
 
   try {
-    const streamIds = await world.listStreams(runId);
+    const streamIds = await world.listByRunId(runId);
     const matchingStreams = streamIds.map((streamId) => ({
       runId,
       streamId,

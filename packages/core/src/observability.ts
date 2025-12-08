@@ -12,22 +12,62 @@ import {
 
 const STREAM_ID_PREFIX = 'strm_';
 
-/*
- * Check if a value is a stream ID
+/**
+ * Marker for stream reference objects that can be rendered as links
+ */
+export const STREAM_REF_TYPE = '__workflow_stream_ref__';
+
+/**
+ * A stream reference object that contains the stream ID and can be
+ * detected in the UI to render as a clickable link
+ */
+export interface StreamRef {
+  __type: typeof STREAM_REF_TYPE;
+  streamId: string;
+}
+
+/**
+ * Check if a value is a stream ID string
  */
 export const isStreamId = (value: unknown): boolean => {
   return typeof value === 'string' && value.startsWith(STREAM_ID_PREFIX);
 };
 
-const streamToStreamId = (value: any): string => {
+/**
+ * Check if a value is a StreamRef object
+ */
+export const isStreamRef = (value: unknown): value is StreamRef => {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    '__type' in value &&
+    value.__type === STREAM_REF_TYPE &&
+    'streamId' in value &&
+    typeof value.streamId === 'string'
+  );
+};
+
+/**
+ * Create a StreamRef object from a stream value.
+ * This is used during hydration to convert serialized streams into
+ * objects that can be rendered as links in the UI.
+ */
+const streamToStreamRef = (value: any): StreamRef => {
+  let streamId: string;
   if ('name' in value) {
     const name = String(value.name);
     if (!name.startsWith(STREAM_ID_PREFIX)) {
-      return `${STREAM_ID_PREFIX}${name}`;
+      streamId = `${STREAM_ID_PREFIX}${name}`;
+    } else {
+      streamId = name;
     }
-    return name;
+  } else {
+    streamId = `${STREAM_ID_PREFIX}null`;
   }
-  return `${STREAM_ID_PREFIX}null`;
+  return {
+    __type: STREAM_REF_TYPE,
+    streamId,
+  };
 };
 
 const serializedStepFunctionToString = (value: unknown): string => {
@@ -44,15 +84,15 @@ const serializedStepFunctionToString = (value: unknown): string => {
 
 /**
  * This is an extra reviver for devalue that takes any streams that would be converted,
- * into actual streams, and instead formats them as string links for printing in CLI output.
+ * into actual streams, and instead formats them as StreamRef objects for display in the UI.
  *
  * This is mainly because we don't want to open any streams that we aren't going to read from,
  * and so we can get the string ID/name, which the serializer stream doesn't provide.
  */
 const streamPrintRevivers: Record<string, (value: any) => any> = {
-  ReadableStream: streamToStreamId,
-  WritableStream: streamToStreamId,
-  TransformStream: streamToStreamId,
+  ReadableStream: streamToStreamRef,
+  WritableStream: streamToStreamRef,
+  TransformStream: streamToStreamRef,
   StepFunction: serializedStepFunctionToString,
 };
 
