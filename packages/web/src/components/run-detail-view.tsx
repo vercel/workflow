@@ -12,8 +12,8 @@ import {
 } from '@workflow/web-shared';
 import { AlertCircle, HelpCircle, List, Loader2 } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
@@ -63,13 +63,59 @@ export function RunDetailView({
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [cancelling, setCancelling] = useState(false);
   const [rerunning, setRerunning] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [showRerunDialog, setShowRerunDialog] = useState(false);
-  const [activeTab, setActiveTab] = useState<'trace' | 'streams'>('trace');
-  const [selectedStreamId, setSelectedStreamId] = useState<string | null>(null);
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
+
+  // Read tab and streamId from URL search params
+  const activeTab = (searchParams.get('tab') as 'trace' | 'streams') || 'trace';
+  const selectedStreamId = searchParams.get('streamId');
+
+  // Helper to update URL search params
+  const updateSearchParams = useCallback(
+    (updates: Record<string, string | null>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === null) {
+          params.delete(key);
+        } else {
+          params.set(key, value);
+        }
+      }
+      router.push(`?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams]
+  );
+
+  const setActiveTab = useCallback(
+    (tab: 'trace' | 'streams') => {
+      // When switching to trace tab, clear streamId
+      if (tab === 'trace') {
+        updateSearchParams({ tab, streamId: null });
+      } else {
+        updateSearchParams({ tab });
+      }
+    },
+    [updateSearchParams]
+  );
+
+  const setSelectedStreamId = useCallback(
+    (streamId: string | null) => {
+      updateSearchParams({ streamId });
+    },
+    [updateSearchParams]
+  );
+
+  // Handler for clicking on stream refs in the trace viewer
+  const handleStreamClick = useCallback(
+    (streamId: string) => {
+      updateSearchParams({ tab: 'streams', streamId });
+    },
+    [updateSearchParams]
+  );
 
   // Fetch workflow graph manifest
   // const {
@@ -454,6 +500,7 @@ export function RunDetailView({
                   env={env}
                   run={run}
                   isLoading={loading}
+                  onStreamClick={handleStreamClick}
                 />
               </div>
             </TabsContent>

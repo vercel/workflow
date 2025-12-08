@@ -297,7 +297,6 @@ export async function fetchSteps(
       hasMore: result.hasMore,
     });
   } catch (error) {
-    console.error('Failed to fetch steps:', error);
     return createServerActionError<PaginatedResult<Step>>(
       error,
       'world.steps.list',
@@ -324,7 +323,6 @@ export async function fetchStep(
     const hydratedStep = hydrate(step as Step);
     return createResponse(hydratedStep);
   } catch (error) {
-    console.error('Failed to fetch step:', error);
     return createServerActionError<Step>(error, 'world.steps.get', {
       runId,
       stepId,
@@ -359,7 +357,6 @@ export async function fetchEvents(
       hasMore: result.hasMore,
     });
   } catch (error) {
-    console.error('Failed to fetch events:', error);
     return createServerActionError<PaginatedResult<Event>>(
       error,
       'world.events.list',
@@ -398,7 +395,6 @@ export async function fetchEventsByCorrelationId(
       hasMore: result.hasMore,
     });
   } catch (error) {
-    console.error('Failed to fetch events by correlation ID:', error);
     return createServerActionError<PaginatedResult<Event>>(
       error,
       'world.events.listByCorrelationId',
@@ -436,7 +432,6 @@ export async function fetchHooks(
       hasMore: result.hasMore,
     });
   } catch (error) {
-    console.error('Failed to fetch hooks:', error);
     return createServerActionError<PaginatedResult<Hook>>(
       error,
       'world.hooks.list',
@@ -458,7 +453,6 @@ export async function fetchHook(
     const hook = await world.hooks.get(hookId, { resolveData });
     return createResponse(hydrate(hook as Hook));
   } catch (error) {
-    console.error('Failed to fetch hook:', error);
     return createServerActionError<Hook>(error, 'world.hooks.get', {
       hookId,
       resolveData,
@@ -478,7 +472,6 @@ export async function cancelRun(
     await world.runs.cancel(runId);
     return createResponse(undefined);
   } catch (error) {
-    console.error('Failed to cancel run:', error);
     return createServerActionError<void>(error, 'world.runs.cancel', { runId });
   }
 }
@@ -506,7 +499,6 @@ export async function recreateRun(
     );
     return createResponse(newRun.runId);
   } catch (error) {
-    console.error('Failed to start run:', error);
     return createServerActionError<string>(error, 'recreateRun', { runId });
   }
 }
@@ -515,21 +507,21 @@ export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
   startIndex?: number
-): Promise<ServerActionResult<ReadableStream<Uint8Array>>> {
+): Promise<ReadableStream<Uint8Array> | ServerActionError> {
   try {
     const world = getWorldFromEnv(env);
     const stream = await world.readFromStream(streamId, startIndex);
-    return createResponse(stream);
+    return stream;
   } catch (error) {
-    console.error('Failed to read stream:', error);
-    return createServerActionError<ReadableStream<Uint8Array>>(
-      error,
-      'world.readFromStream',
-      {
-        streamId,
-        startIndex,
-      }
-    );
+    const actionError = createServerActionError(error, 'world.readFromStream', {
+      streamId,
+      startIndex,
+    });
+    if (!actionError.success) {
+      return actionError.error;
+    }
+    // Shouldn't happen, this is just a type guard
+    throw new Error();
   }
 }
 
@@ -545,7 +537,6 @@ export async function fetchStreams(
     const streams = await world.listByRunId(runId);
     return createResponse(streams);
   } catch (error) {
-    console.error('Failed to list streams:', error);
     return createServerActionError<string[]>(error, 'world.listByRunId', {
       runId,
     });

@@ -16,9 +16,12 @@ import { AttributePanel } from './attribute-panel';
 export function WorkflowDetailPanel({
   env,
   run,
+  onStreamClick,
 }: {
   env: EnvMap;
   run: WorkflowRun;
+  /** Callback when a stream reference is clicked */
+  onStreamClick?: (streamId: string) => void;
 }): React.JSX.Element | null {
   const { state } = useTraceViewer();
   const { selected } = state;
@@ -85,6 +88,7 @@ export function WorkflowDetailPanel({
         expiredAt={run.expiredAt}
         isLoading={loading}
         error={error ?? undefined}
+        onStreamClick={onStreamClick}
       />
       {resource !== 'run' && (
         <EventsList

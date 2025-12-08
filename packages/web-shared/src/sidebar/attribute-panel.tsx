@@ -3,9 +3,16 @@
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import { AlertCircle } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { createContext, type ReactNode, useContext } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { DetailCard } from './detail-card';
+
+/**
+ * Context for stream click handler
+ */
+const StreamClickContext = createContext<
+  ((streamId: string) => void) | undefined
+>(undefined);
 
 /**
  * Marker for stream reference objects that can be rendered as links
@@ -25,8 +32,11 @@ interface StreamRef {
 
 /**
  * Check if a value is a StreamRef object
+ *
  */
 const isStreamRef = (value: unknown): value is StreamRef => {
+  // TODO: This is duplicated from @workflow/core/observability, but can't be pulled
+  // in client-side code because it's a Node.js dependency.
   return (
     value !== null &&
     typeof value === 'object' &&
@@ -41,15 +51,25 @@ const isStreamRef = (value: unknown): value is StreamRef => {
  * Renders a StreamRef as a styled link/badge
  */
 const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
+  const onStreamClick = useContext(StreamClickContext);
+
+  const handleClick = () => {
+    if (onStreamClick) {
+      onStreamClick(streamRef.streamId);
+    }
+  };
+
   return (
-    <span
+    <button
+      type="button"
+      onClick={handleClick}
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer hover:opacity-80 transition-opacity"
       style={{
         backgroundColor: 'var(--ds-blue-200)',
         color: 'var(--ds-blue-900)',
         border: '1px solid var(--ds-blue-400)',
       }}
-      title={`Stream: ${streamRef.streamId}`}
+      title={`Click to view stream: ${streamRef.streamId}`}
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -62,13 +82,14 @@ const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
         strokeLinecap="round"
         strokeLinejoin="round"
       >
+        <title>Stream icon</title>
         <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
         <circle cx="12" cy="12" r="3" />
       </svg>
       {streamRef.streamId.length > 40
         ? `${streamRef.streamId.slice(0, 20)}...${streamRef.streamId.slice(-15)}`
         : streamRef.streamId}
-    </span>
+    </button>
   );
 };
 
@@ -452,11 +473,14 @@ export const AttributePanel = ({
   isLoading,
   error,
   expiredAt,
+  onStreamClick,
 }: {
   data: Record<string, unknown>;
   isLoading?: boolean;
   error?: Error;
   expiredAt?: string | Date;
+  /** Callback when a stream reference is clicked */
+  onStreamClick?: (streamId: string) => void;
 }) => {
   const displayData = data;
   const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
@@ -479,62 +503,64 @@ export const AttributePanel = ({
   });
 
   return (
-    <div>
-      {/* Basic attributes in a vertical layout with border */}
-      {visibleBasicAttributes.length > 0 && (
-        <div
-          className="flex flex-col divide-y rounded-lg border mb-3 overflow-hidden"
-          style={{
-            borderColor: 'var(--ds-gray-300)',
-            backgroundColor: 'var(--ds-gray-100)',
-          }}
-        >
-          {visibleBasicAttributes.map((attribute) => (
-            <div
+    <StreamClickContext.Provider value={onStreamClick}>
+      <div>
+        {/* Basic attributes in a vertical layout with border */}
+        {visibleBasicAttributes.length > 0 && (
+          <div
+            className="flex flex-col divide-y rounded-lg border mb-3 overflow-hidden"
+            style={{
+              borderColor: 'var(--ds-gray-300)',
+              backgroundColor: 'var(--ds-gray-100)',
+            }}
+          >
+            {visibleBasicAttributes.map((attribute) => (
+              <div
+                key={attribute}
+                className="flex items-center justify-between px-3 py-1.5"
+                style={{
+                  borderColor: 'var(--ds-gray-300)',
+                }}
+              >
+                <span
+                  className="text-[11px] font-medium"
+                  style={{ color: 'var(--ds-gray-500)' }}
+                >
+                  {attribute}
+                </span>
+                <span
+                  className="text-[11px] font-mono"
+                  style={{ color: 'var(--ds-gray-1000)' }}
+                >
+                  {attributeToDisplayFn[
+                    attribute as keyof typeof attributeToDisplayFn
+                  ]?.(displayData[attribute as keyof typeof displayData])}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {error ? (
+          <Alert variant="destructive" className="my-4">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Failed to load resource details</AlertTitle>
+            <AlertDescription className="text-sm">
+              {error.message}
+            </AlertDescription>
+          </Alert>
+        ) : hasExpired ? (
+          <ExpiredDataMessage />
+        ) : (
+          resolvedAttributes.map((attribute) => (
+            <AttributeBlock
+              isLoading={isLoading}
               key={attribute}
-              className="flex items-center justify-between px-3 py-1.5"
-              style={{
-                borderColor: 'var(--ds-gray-300)',
-              }}
-            >
-              <span
-                className="text-[11px] font-medium"
-                style={{ color: 'var(--ds-gray-500)' }}
-              >
-                {attribute}
-              </span>
-              <span
-                className="text-[11px] font-mono"
-                style={{ color: 'var(--ds-gray-1000)' }}
-              >
-                {attributeToDisplayFn[
-                  attribute as keyof typeof attributeToDisplayFn
-                ]?.(displayData[attribute as keyof typeof displayData])}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      {error ? (
-        <Alert variant="destructive" className="my-4">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Failed to load resource details</AlertTitle>
-          <AlertDescription className="text-sm">
-            {error.message}
-          </AlertDescription>
-        </Alert>
-      ) : hasExpired ? (
-        <ExpiredDataMessage />
-      ) : (
-        resolvedAttributes.map((attribute) => (
-          <AttributeBlock
-            isLoading={isLoading}
-            key={attribute}
-            attribute={attribute}
-            value={displayData[attribute as keyof typeof displayData]}
-          />
-        ))
-      )}
-    </div>
+              attribute={attribute}
+              value={displayData[attribute as keyof typeof displayData]}
+            />
+          ))
+        )}
+      </div>
+    </StreamClickContext.Provider>
   );
 };

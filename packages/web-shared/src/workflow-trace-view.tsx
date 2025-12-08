@@ -31,6 +31,7 @@ export const WorkflowTraceViewer = ({
   env,
   isLoading,
   error,
+  onStreamClick,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -39,6 +40,8 @@ export const WorkflowTraceViewer = ({
   env: EnvMap;
   isLoading?: boolean;
   error?: Error | null;
+  /** Callback when a stream reference is clicked in the detail panel */
+  onStreamClick?: (streamId: string) => void;
 }) => {
   const [now, setNow] = useState(() => new Date());
 
@@ -179,7 +182,13 @@ export const WorkflowTraceViewer = ({
         withPanel
         customSpanClassNameFunc={getCustomSpanClassName}
         customSpanEventClassNameFunc={getCustomSpanEventClassName}
-        customPanelComponent={<WorkflowDetailPanel env={env} run={run} />}
+        customPanelComponent={
+          <WorkflowDetailPanel
+            env={env}
+            run={run}
+            onStreamClick={onStreamClick}
+          />
+        }
       >
         <TraceViewerTimeline height="100%" trace={trace} withPanel />
       </TraceViewerContextProvider>
