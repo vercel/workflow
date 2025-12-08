@@ -3,7 +3,7 @@
 import {
   fetchWorkflowsManifest,
   unwrapServerActionResult,
-  WorkflowAPIError,
+  WorkflowWebAPIError,
 } from '@workflow/web-shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { worldConfigToEnvMap } from '@/lib/config';
@@ -58,11 +58,14 @@ export function useWorkflowGraphManifest(config: WorldConfig) {
       setManifest(adaptedManifest);
     } catch (err) {
       const error =
-        err instanceof WorkflowAPIError
+        err instanceof WorkflowWebAPIError
           ? err
           : err instanceof Error
-            ? new WorkflowAPIError(err.message, { cause: err, layer: 'client' })
-            : new WorkflowAPIError(String(err), { layer: 'client' });
+            ? new WorkflowWebAPIError(err.message, {
+                cause: err,
+                layer: 'client',
+              })
+            : new WorkflowWebAPIError(String(err), { layer: 'client' });
       setError(error);
       setManifest(null);
     } finally {

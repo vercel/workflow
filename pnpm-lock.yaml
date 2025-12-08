@@ -936,6 +936,9 @@ importers:
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
+      '@workflow/errors':
+        specifier: workspace:*
+        version: link:../errors
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
