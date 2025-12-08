@@ -195,7 +195,7 @@ export function createStreamer(basedir: string): Streamer {
             streamEmitter.off(`close:${name}` as const, closeListener);
             try {
               controller.close();
-            } catch (e) {
+            } catch {
               // Ignore if controller is already closed (e.g., from cancel() or EOF)
             }
           };
@@ -252,7 +252,7 @@ export function createStreamer(basedir: string): Streamer {
             removeListeners();
             try {
               controller.close();
-            } catch (e) {
+            } catch {
               // Ignore if controller is already closed (e.g., from closeListener event)
             }
             return;
