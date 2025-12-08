@@ -538,6 +538,78 @@ export async function wakeUpRun(
   }
 }
 
+export interface StopSleepResult {
+  /** Number of pending sleeps that were stopped */
+  stoppedCount: number;
+}
+
+/**
+ * Stop any pending sleep() calls for a workflow run.
+ *
+ * This finds all wait_created events without matching wait_completed events,
+ * creates wait_completed events for them, and then re-enqueues the run.
+ */
+export async function stopSleepRun(
+  worldEnv: EnvMap,
+  runId: string
+): Promise<ServerActionResult<StopSleepResult>> {
+  try {
+    const world = getWorldFromEnv({ ...worldEnv });
+    const run = await world.runs.get(runId);
+    const deploymentId = run.deploymentId;
+
+    // Fetch all events for the run
+    const eventsResult = await world.events.list({
+      runId,
+      pagination: { limit: 1000 },
+      resolveData: 'none',
+    });
+
+    // Find wait_created events without matching wait_completed events
+    const waitCreatedEvents = eventsResult.data.filter(
+      (e) => e.eventType === 'wait_created'
+    );
+    const waitCompletedCorrelationIds = new Set(
+      eventsResult.data
+        .filter((e) => e.eventType === 'wait_completed')
+        .map((e) => e.correlationId)
+    );
+
+    const pendingWaits = waitCreatedEvents.filter(
+      (e) => !waitCompletedCorrelationIds.has(e.correlationId)
+    );
+
+    // Create wait_completed events for each pending wait
+    for (const waitEvent of pendingWaits) {
+      if (waitEvent.correlationId) {
+        await world.events.create(runId, {
+          eventType: 'wait_completed',
+          correlationId: waitEvent.correlationId,
+        });
+      }
+    }
+
+    // Re-enqueue the run to wake it up
+    if (pendingWaits.length > 0) {
+      await world.queue(
+        `__wkf_workflow_${run.workflowName}`,
+        {
+          runId,
+        },
+        {
+          deploymentId,
+        }
+      );
+    }
+
+    return createResponse({ stoppedCount: pendingWaits.length });
+  } catch (error) {
+    return createServerActionError<StopSleepResult>(error, 'stopSleepRun', {
+      runId,
+    });
+  }
+}
+
 export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,

@@ -5,6 +5,7 @@ import {
   cancelRun,
   recreateRun,
   StreamViewer,
+  stopSleepRun,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   type WorkflowRun,
@@ -49,6 +50,7 @@ import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { RerunButton } from './display-utils/rerun-button';
 import { StatusBadge } from './display-utils/status-badge';
+import { StopSleepButton } from './display-utils/stop-sleep-button';
 import { WakeUpButton } from './display-utils/wakeup-button';
 import { Skeleton } from './ui/skeleton';
 
@@ -69,6 +71,7 @@ export function RunDetailView({
   const [cancelling, setCancelling] = useState(false);
   const [rerunning, setRerunning] = useState(false);
   const [wakingUp, setWakingUp] = useState(false);
+  const [stoppingSleep, setStoppingSleep] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [showRerunDialog, setShowRerunDialog] = useState(false);
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
@@ -147,6 +150,28 @@ export function RunDetailView({
     error: streamsError,
   } = useWorkflowStreams(env, runId);
 
+  // Check for pending sleeps (wait_created without matching wait_completed)
+  const hasPendingSleeps = useMemo(() => {
+    if (!allEvents || allEvents.length === 0) return false;
+    const waitCreatedCorrelationIds = new Set(
+      allEvents
+        .filter((e) => e.eventType === 'wait_created')
+        .map((e) => e.correlationId)
+    );
+    const waitCompletedCorrelationIds = new Set(
+      allEvents
+        .filter((e) => e.eventType === 'wait_completed')
+        .map((e) => e.correlationId)
+    );
+    // Check if there's any wait_created without a matching wait_completed
+    for (const correlationId of waitCreatedCorrelationIds) {
+      if (!waitCompletedCorrelationIds.has(correlationId)) {
+        return true;
+      }
+    }
+    return false;
+  }, [allEvents]);
+
   // Find the workflow graph for this run
   // The manifest is keyed by workflowId which matches run.workflowName
   // e.g., "workflow//example/workflows/1_simple.ts//simple"
@@ -217,6 +242,34 @@ export function RunDetailView({
       });
     } finally {
       setWakingUp(false);
+    }
+  };
+
+  const handleStopSleepClick = async () => {
+    if (stoppingSleep) return;
+
+    try {
+      setStoppingSleep(true);
+      const result = await stopSleepRun(env, runId);
+      if (result.stoppedCount > 0) {
+        toast.success('Sleep interrupted', {
+          description: `Stopped ${result.stoppedCount} pending sleep${result.stoppedCount > 1 ? 's' : ''} and woke up the run.`,
+        });
+      } else {
+        toast.info('No pending sleeps', {
+          description: 'There were no pending sleep() calls to interrupt.',
+        });
+      }
+      // Trigger a refresh of the data
+      await update();
+    } catch (err) {
+      console.error('Failed to stop sleep:', err);
+      toast.error('Failed to stop sleep', {
+        description:
+          err instanceof Error ? err.message : 'An unknown error occurred',
+      });
+    } finally {
+      setStoppingSleep(false);
     }
   };
 
@@ -292,6 +345,16 @@ export function RunDetailView({
     return '';
   };
   const wakeUpDisabledReason = getWakeUpDisabledReason();
+
+  // Determine if stop sleep is allowed and why
+  const canStopSleep = !loading && !stoppingSleep && hasPendingSleeps;
+  const getStopSleepDisabledReason = () => {
+    if (stoppingSleep) return 'Stopping sleep...';
+    if (loading) return 'Loading run data...';
+    if (!hasPendingSleeps) return 'No pending sleep() calls to interrupt';
+    return '';
+  };
+  const stopSleepDisabledReason = getStopSleepDisabledReason();
 
   return (
     <>
@@ -383,6 +446,12 @@ export function RunDetailView({
                   wakingUp={wakingUp}
                   wakeUpDisabledReason={wakeUpDisabledReason}
                   onWakeUp={handleWakeUpClick}
+                />
+                <StopSleepButton
+                  canStopSleep={canStopSleep}
+                  stoppingSleep={stoppingSleep}
+                  stopSleepDisabledReason={stopSleepDisabledReason}
+                  onStopSleep={handleStopSleepClick}
                 />
                 <CancelButton
                   canCancel={canCancel}

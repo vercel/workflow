@@ -11,7 +11,7 @@ export {
   fetchStreams,
   fetchWorkflowsManifest,
 } from './api/workflow-server-actions';
-export { wakeUpRun } from './api/workflow-api-client';
+export { stopSleepRun, wakeUpRun } from './api/workflow-api-client';
 export { formatDuration } from './lib/utils';
 export { RunTraceView } from './run-trace-view';
 export { StreamViewer } from './stream-viewer';

@@ -23,6 +23,8 @@ import {
   fetchStreams,
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
+  stopSleepRun as stopSleepRunServerAction,
+  type StopSleepResult,
   wakeUpRun as wakeUpRunServerAction,
 } from './workflow-server-actions';
 
@@ -1112,6 +1114,22 @@ export async function wakeUpRun(env: EnvMap, runId: string): Promise<void> {
   if (error) {
     throw error;
   }
+}
+
+/**
+ * Stop any pending sleep() calls for a workflow run
+ */
+export async function stopSleepRun(
+  env: EnvMap,
+  runId: string
+): Promise<StopSleepResult> {
+  const { error, result: resultData } = await unwrapServerActionResult(
+    stopSleepRunServerAction(env, runId)
+  );
+  if (error) {
+    throw error;
+  }
+  return resultData;
 }
 
 function isServerActionError(value: unknown): value is ServerActionError {
