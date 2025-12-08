@@ -35,11 +35,13 @@ export function useWorkflowGraphManifest(config: WorldConfig) {
     try {
       const env = worldConfigToEnvMap(config);
       console.log('[useWorkflowGraphManifest] Fetching with env:', env);
-      const serverResult = await fetchWorkflowsManifest(env);
-      console.log('[useWorkflowGraphManifest] Server result:', serverResult);
-      const rawManifest = unwrapServerActionResult(
-        serverResult
-      ) as RawWorkflowsManifest;
+      const { result: rawManifest, error } = await unwrapServerActionResult(
+        fetchWorkflowsManifest(env)
+      );
+      if (error) {
+        setError(error);
+        return;
+      }
       console.log(
         '[useWorkflowGraphManifest] Raw manifest after unwrap:',
         rawManifest
