@@ -6,6 +6,7 @@ import {
   getErrorMessage,
   recreateRun,
   useWorkflowRuns,
+  wakeUpRun,
 } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import {
@@ -18,6 +19,7 @@ import {
   RefreshCw,
   RotateCw,
   XCircle,
+  Zap,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -470,6 +472,39 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                               <RotateCw className="h-4 w-4 mr-2" />
                               Replay Run
                             </DropdownMenuItem>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <DropdownMenuItem
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    try {
+                                      await wakeUpRun(env, run.runId);
+                                      toast.success('Run woken up', {
+                                        description:
+                                          'The workflow orchestration layer has been re-enqueued.',
+                                      });
+                                      reload();
+                                    } catch (err) {
+                                      toast.error('Failed to wake up', {
+                                        description:
+                                          err instanceof Error
+                                            ? err.message
+                                            : 'Unknown error',
+                                      });
+                                    }
+                                  }}
+                                >
+                                  <Zap className="h-4 w-4 mr-2" />
+                                  Wake up
+                                </DropdownMenuItem>
+                              </TooltipTrigger>
+                              <TooltipContent side="left" className="max-w-xs">
+                                Re-enqueue the workflow orchestration layer.
+                                This is a no-op, unless the workflow got stuck
+                                due to an implementation issue in the World.
+                                This is useful for debugging custom Worlds.
+                              </TooltipContent>
+                            </Tooltip>
                             <DropdownMenuItem
                               onClick={async (e) => {
                                 e.stopPropagation();

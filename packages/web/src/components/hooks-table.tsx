@@ -212,7 +212,7 @@ export function HooksTable({
           <TooltipTrigger asChild>
             <span className="font-semibold cursor-help">{displayText}</span>
           </TooltipTrigger>
-          <TooltipContent>
+          <TooltipContent className="max-w-xs">
             <div className="text-xs">
               Showing first 100 invocations. There may be more.
             </div>

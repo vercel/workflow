@@ -9,6 +9,7 @@ import {
   useWorkflowTraceViewerData,
   type WorkflowRun,
   WorkflowTraceViewer,
+  wakeUpRun,
 } from '@workflow/web-shared';
 import { AlertCircle, HelpCircle, List, Loader2 } from 'lucide-react';
 import Link from 'next/link';
@@ -48,6 +49,7 @@ import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { RerunButton } from './display-utils/rerun-button';
 import { StatusBadge } from './display-utils/status-badge';
+import { WakeUpButton } from './display-utils/wakeup-button';
 import { Skeleton } from './ui/skeleton';
 
 interface RunDetailViewProps {
@@ -66,6 +68,7 @@ export function RunDetailView({
   const searchParams = useSearchParams();
   const [cancelling, setCancelling] = useState(false);
   const [rerunning, setRerunning] = useState(false);
+  const [wakingUp, setWakingUp] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [showRerunDialog, setShowRerunDialog] = useState(false);
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
@@ -195,6 +198,28 @@ export function RunDetailView({
     setShowRerunDialog(true);
   };
 
+  const handleWakeUpClick = async () => {
+    if (wakingUp) return;
+
+    try {
+      setWakingUp(true);
+      await wakeUpRun(env, runId);
+      toast.success('Run woken up', {
+        description: 'The workflow orchestration layer has been re-enqueued.',
+      });
+      // Trigger a refresh of the data
+      await update();
+    } catch (err) {
+      console.error('Failed to wake up run:', err);
+      toast.error('Failed to wake up run', {
+        description:
+          err instanceof Error ? err.message : 'An unknown error occurred',
+      });
+    } finally {
+      setWakingUp(false);
+    }
+  };
+
   const handleConfirmRerun = async () => {
     if (rerunning) return;
 
@@ -258,6 +283,15 @@ export function RunDetailView({
     return '';
   };
   const rerunDisabledReason = getRerunDisabledReason();
+
+  // Determine if wake up is allowed and why
+  const canWakeUp = !loading && !wakingUp;
+  const getWakeUpDisabledReason = () => {
+    if (wakingUp) return 'Waking up workflow...';
+    if (loading) return 'Loading run data...';
+    return '';
+  };
+  const wakeUpDisabledReason = getWakeUpDisabledReason();
 
   return (
     <>
@@ -343,6 +377,12 @@ export function RunDetailView({
                   rerunning={rerunning}
                   rerunDisabledReason={rerunDisabledReason}
                   onRerun={handleRerunClick}
+                />
+                <WakeUpButton
+                  canWakeUp={canWakeUp}
+                  wakingUp={wakingUp}
+                  wakeUpDisabledReason={wakeUpDisabledReason}
+                  onWakeUp={handleWakeUpClick}
                 />
                 <CancelButton
                   canCancel={canCancel}

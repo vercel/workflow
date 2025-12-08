@@ -23,6 +23,7 @@ import {
   fetchStreams,
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
+  wakeUpRun as wakeUpRunServerAction,
 } from './workflow-server-actions';
 
 const MAX_ITEMS = 1000;
@@ -1099,6 +1100,18 @@ export async function recreateRun(env: EnvMap, runId: string): Promise<string> {
     throw error;
   }
   return resultData;
+}
+
+/**
+ * Wake up a workflow run by re-enqueuing it
+ */
+export async function wakeUpRun(env: EnvMap, runId: string): Promise<void> {
+  const { error } = await unwrapServerActionResult(
+    wakeUpRunServerAction(env, runId)
+  );
+  if (error) {
+    throw error;
+  }
 }
 
 function isServerActionError(value: unknown): value is ServerActionError {

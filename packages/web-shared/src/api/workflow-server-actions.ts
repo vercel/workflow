@@ -507,6 +507,37 @@ export async function recreateRun(
   }
 }
 
+/**
+ * Wake up a workflow run by re-enqueuing it.
+ *
+ * This re-enqueues the workflow orchestration layer. It's a no-op unless the workflow
+ * got stuck due to an implementation issue in the World. Useful for debugging custom Worlds.
+ */
+export async function wakeUpRun(
+  worldEnv: EnvMap,
+  runId: string
+): Promise<ServerActionResult<void>> {
+  try {
+    const world = getWorldFromEnv({ ...worldEnv });
+    const run = await world.runs.get(runId);
+    const deploymentId = run.deploymentId;
+
+    await world.queue(
+      `__wkf_workflow_${run.workflowName}`,
+      {
+        runId,
+      },
+      {
+        deploymentId,
+      }
+    );
+
+    return createResponse(undefined);
+  } catch (error) {
+    return createServerActionError<void>(error, 'wakeUpRun', { runId });
+  }
+}
+
 export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
