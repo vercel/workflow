@@ -7,6 +7,13 @@ import {
   NORMALIZE_REQUEST_CODE,
 } from '@workflow/builders';
 
+const SVELTEKIT_VIRTUAL_MODULES = [
+  '$env/*', // All $env subpaths
+  '$lib', // Exact $lib import
+  '$lib/*', // All $lib subpaths
+  '$app/*', // All $app subpaths
+];
+
 export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<SvelteKitConfig>) {
     const workingDir = config?.workingDir || process.cwd();
@@ -19,6 +26,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       workflowsBundlePath: '', // unused in base
       webhookBundlePath: '', // unused in base
       workingDir,
+      externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
     });
   }
 
