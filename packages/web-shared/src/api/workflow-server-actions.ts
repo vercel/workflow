@@ -460,7 +460,6 @@ export async function fetchHook(
   } catch (error) {
     console.error('Failed to fetch hook:', error);
     return createServerActionError<Hook>(error, 'world.hooks.get', {
-      success: false,
       hookId,
       resolveData,
     });

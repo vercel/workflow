@@ -582,6 +582,7 @@ async function fetchAllSteps(
         limit: 100,
       })
     );
+    // TODO: We're not handling errors well for infinite fetches
     if (error) {
       break;
     }
@@ -1013,17 +1014,26 @@ export function useWorkflowResourceData(
       return;
     }
     // Fetch resource with full data
-    const { data: resourceData } = await fetchResourceWithCorrelationId(
-      env,
-      resource,
-      resourceId,
-      {
-        runId,
+    try {
+      const { data: resourceData } = await fetchResourceWithCorrelationId(
+        env,
+        resource,
+        resourceId,
+        {
+          runId,
+        }
+      );
+      setData(resourceData);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        setError(error);
+      } else {
+        setError(new Error(String(error)));
       }
-    );
-
-    setData(resourceData);
-    setLoading(false);
+      return;
+    } finally {
+      setLoading(false);
+    }
 
     // // Fetch events by correlation ID
     // const eventsData = await fetchAllEventsByCorrelationId(
