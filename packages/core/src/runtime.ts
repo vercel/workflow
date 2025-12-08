@@ -681,10 +681,11 @@ export const stepEntrypoint =
             const attempt = step.attempt + 1;
 
             // Check max retries FIRST before any state changes.
-            // This handles the case where the step keeps timing out before reaching
-            // the catch handler - without this check, the step would retry forever.
-            if (attempt > maxRetries) {
-              const errorMessage = `Step "${stepName}" failed after max retries (function timed out ${attempt} times)`;
+            // This handles edge cases where the step handler is invoked after max retries have been exceeded
+            // (e.g., when the step repeatedly times out or fails before reaching the catch handler at line 822).
+            // Without this check, the step would retry forever.
+            if (attempt >= maxRetries) {
+              const errorMessage = `Step "${stepName}" exceeded max retries (${attempt} attempts)`;
               console.error(`[Workflows] "${workflowRunId}" - ${errorMessage}`);
               await world.events.create(workflowRunId, {
                 eventType: 'step_failed',
@@ -698,6 +699,7 @@ export const stepEntrypoint =
                 status: 'failed',
                 error: {
                   message: errorMessage,
+                  stack: undefined,
                 },
               });
 
