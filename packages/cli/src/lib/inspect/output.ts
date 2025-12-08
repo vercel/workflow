@@ -1,6 +1,10 @@
 import { hydrateResourceIO } from '@workflow/core/observability';
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import { getRun } from '@workflow/core/runtime';
+import {
+  getDeserializeStream,
+  getExternalRevivers,
+} from '@workflow/core/serialization';
 import type {
   Event,
   Hook,
@@ -752,7 +756,13 @@ export const showStream = async (
       'Filtering by run-id or step-id is not supported when showing a stream, ignoring filter.'
     );
   }
-  const stream = await world.readFromStream(streamId);
+  const rawStream = await world.readFromStream(streamId);
+
+  // Deserialize the stream to get JavaScript objects
+  const revivers = getExternalRevivers(globalThis, [], '');
+  const transform = getDeserializeStream(revivers);
+  const stream = rawStream.pipeThrough(transform);
+
   logger.info('Streaming to stdout, press CTRL+C to abort.');
   logger.info(
     'Use --json to output the stream as newline-delimited JSON without info logs.\n'

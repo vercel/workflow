@@ -1116,7 +1116,7 @@ export async function readStream(
   env: EnvMap,
   streamId: string,
   startIndex?: number
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<ReadableStream<unknown>> {
   try {
     const stream = await readStreamServerAction(env, streamId, startIndex);
     if (!stream) {

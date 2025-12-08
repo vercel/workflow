@@ -52,16 +52,17 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
       }
     };
 
-    const addChunk = (text: string) => {
-      if (mounted && text) {
+    const addChunk = (value: unknown) => {
+      if (mounted && value !== undefined && value !== null) {
         const chunkId = chunkIdRef.current++;
+        const text =
+          typeof value === 'string' ? value : JSON.stringify(value, null, 2);
         setChunks((prev) => [...prev, { id: chunkId, text }]);
       }
     };
 
     const processStreamChunks = async (
-      reader: ReadableStreamDefaultReader<Uint8Array>,
-      decoder: TextDecoder
+      reader: ReadableStreamDefaultReader<unknown>
     ) => {
       for (;;) {
         if (abortControllerRef.current?.signal.aborted) {
@@ -75,11 +76,7 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
           break;
         }
 
-        // Skip empty chunks
-        if (value && value.byteLength > 0) {
-          const text = decoder.decode(value, { stream: true });
-          addChunk(text);
-        }
+        addChunk(value);
       }
     };
 
@@ -87,8 +84,7 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
       try {
         const stream = await readStream(env, streamId);
         const reader = stream.getReader();
-        const decoder = new TextDecoder();
-        await processStreamChunks(reader, decoder);
+        await processStreamChunks(reader);
       } catch (err) {
         handleStreamError(err);
       }
@@ -134,26 +130,52 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
 
       <div
         ref={scrollRef}
-        className="flex-1 font-mono text-sm p-4 rounded-md overflow-auto whitespace-pre-wrap break-words min-h-[200px]"
-        style={{
-          backgroundColor: 'var(--ds-gray-100)',
-          borderColor: 'var(--ds-gray-300)',
-          border: '1px solid var(--ds-gray-300)',
-          color: 'var(--ds-gray-1000)',
-        }}
+        className="flex-1 overflow-auto min-h-[200px] flex flex-col gap-2"
       >
         {error ? (
-          <div style={{ color: 'var(--ds-red-700)' }}>
+          <div
+            className="text-[11px] rounded-md border p-3"
+            style={{
+              borderColor: 'var(--ds-red-300)',
+              backgroundColor: 'var(--ds-red-100)',
+              color: 'var(--ds-red-700)',
+            }}
+          >
             <div>Error reading stream:</div>
             <div>{error}</div>
           </div>
         ) : chunks.length === 0 ? (
-          <div style={{ color: 'var(--ds-gray-600)' }}>
+          <div
+            className="text-[11px] rounded-md border p-3"
+            style={{
+              borderColor: 'var(--ds-gray-300)',
+              backgroundColor: 'var(--ds-gray-100)',
+              color: 'var(--ds-gray-600)',
+            }}
+          >
             {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
           </div>
         ) : (
-          chunks.map((chunk) => (
-            <span key={`${streamId}-chunk-${chunk.id}`}>{chunk.text}</span>
+          chunks.map((chunk, index) => (
+            <pre
+              key={`${streamId}-chunk-${chunk.id}`}
+              className="text-[11px] rounded-md border p-3 m-0 whitespace-pre-wrap break-words"
+              style={{
+                borderColor: 'var(--ds-gray-300)',
+                backgroundColor: 'var(--ds-gray-100)',
+                color: 'var(--ds-gray-1000)',
+              }}
+            >
+              <code>
+                <span
+                  className="select-none mr-2"
+                  style={{ color: 'var(--ds-gray-500)' }}
+                >
+                  [{index}]
+                </span>
+                {chunk.text}
+              </code>
+            </pre>
           ))
         )}
       </div>

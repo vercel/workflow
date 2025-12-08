@@ -511,14 +511,18 @@ export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
   startIndex?: number
-): Promise<ReadableStream<Uint8Array> | ServerActionError> {
+): Promise<ReadableStream<unknown> | ServerActionError> {
   try {
     const world = getWorldFromEnv(env);
     // We should probably use getRun().getReadable() instead, to make the UI
     // more consistent with runtime behavior, and also expose a "replay" and "startIndex",
     // feature, to allow for testing World behavior.
     const stream = await world.readFromStream(streamId, startIndex);
-    return stream;
+
+    const revivers = getExternalRevivers(globalThis, [], '');
+    const transform = getDeserializeStream(revivers);
+
+    return stream.pipeThrough(transform);
   } catch (error) {
     const actionError = createServerActionError(error, 'world.readFromStream', {
       streamId,
