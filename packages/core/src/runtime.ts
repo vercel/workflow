@@ -636,13 +636,13 @@ export const stepEntrypoint =
               );
             }
 
+            const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+
             span?.setAttributes({
               ...Attribute.WorkflowName(workflowName),
               ...Attribute.WorkflowRunId(workflowRunId),
               ...Attribute.StepId(stepId),
-              ...Attribute.StepMaxRetries(
-                stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES
-              ),
+              ...Attribute.StepMaxRetries(maxRetries),
               ...Attribute.StepTracePropagated(!!traceContext),
             });
 
@@ -679,7 +679,6 @@ export const stepEntrypoint =
 
             let result: unknown;
             const attempt = step.attempt + 1;
-            const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
 
             // Check max retries FIRST before any state changes.
             // This handles the case where the step keeps timing out before reaching
