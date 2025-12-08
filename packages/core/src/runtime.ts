@@ -684,7 +684,7 @@ export const stepEntrypoint =
             // This handles edge cases where the step handler is invoked after max retries have been exceeded
             // (e.g., when the step repeatedly times out or fails before reaching the catch handler at line 822).
             // Without this check, the step would retry forever.
-            if (attempt >= maxRetries) {
+            if (attempt > maxRetries) {
               const errorMessage = `Step "${stepName}" exceeded max retries (${attempt} attempts)`;
               console.error(`[Workflows] "${workflowRunId}" - ${errorMessage}`);
               // Update step status first (idempotent), then create event
@@ -876,7 +876,7 @@ export const stepEntrypoint =
                   ...Attribute.StepMaxRetries(maxRetries),
                 });
 
-                if (attempt >= maxRetries) {
+                if (attempt > maxRetries) {
                   // Max retries reached
                   const errorStack = getErrorStack(err);
                   const stackLines = errorStack.split('\n').slice(0, 4);
