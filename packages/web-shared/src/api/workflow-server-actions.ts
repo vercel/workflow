@@ -518,10 +518,6 @@ export async function readStreamServerAction(
     // more consistent with runtime behavior, and also expose a "replay" and "startIndex",
     // feature, to allow for testing World behavior.
     const stream = await world.readFromStream(streamId, startIndex);
-
-    const revivers = getExternalRevivers(globalThis, [], '');
-    const transform = getDeserializeStream(revivers);
-
     return stream;
   } catch (error) {
     const actionError = createServerActionError(error, 'world.readFromStream', {

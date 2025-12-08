@@ -743,7 +743,7 @@ export const showStep = async (
 };
 
 export const showStream = async (
-  _: World,
+  world: World,
   streamId: string,
   opts: InspectCLIOptions = {}
 ) => {
@@ -752,8 +752,7 @@ export const showStream = async (
       'Filtering by run-id or step-id is not supported when showing a stream, ignoring filter.'
     );
   }
-  const run = getRun(streamId);
-  const stream = run.readable;
+  const stream = await world.readFromStream(streamId);
   logger.info('Streaming to stdout, press CTRL+C to abort.');
   logger.info(
     'Use --json to output the stream as newline-delimited JSON without info logs.\n'

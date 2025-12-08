@@ -1,5 +1,6 @@
 ---
 "@workflow/cli": patch
+"@workflow/core": patch
 "@workflow/web": patch
 "@workflow/web-shared": patch
 ---
