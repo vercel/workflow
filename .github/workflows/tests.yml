@@ -248,6 +248,7 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
 
       - name: Generate E2E summary
         if: always()
@@ -464,7 +465,7 @@ jobs:
 
       - name: Setup PostgreSQL Database
         run: ./packages/world-postgres/bin/setup.js
-      
+
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
 
