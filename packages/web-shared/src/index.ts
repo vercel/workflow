@@ -10,6 +10,7 @@ export {
   fetchEventsByCorrelationId,
   fetchWorkflowsManifest,
 } from './api/workflow-server-actions';
+export { formatDuration } from './lib/utils';
 export { RunTraceView } from './run-trace-view';
 export type { Span, SpanEvent } from './trace-viewer/types';
 export { WorkflowTraceViewer } from './workflow-trace-view';

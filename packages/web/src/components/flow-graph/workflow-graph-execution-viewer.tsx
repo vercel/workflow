@@ -15,7 +15,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import { GitBranch, Loader2, PlayCircle, StopCircle, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import { type EnvMap, useWorkflowResourceData } from '@workflow/web-shared';
+import {
+  type EnvMap,
+  formatDuration,
+  useWorkflowResourceData,
+} from '@workflow/web-shared';
 import { StatusBadge } from '@/components/display-utils/status-badge';
 import { Badge } from '@/components/ui/badge';
 import type {
@@ -161,12 +165,6 @@ function getNodeIcon(nodeKind: string) {
   return <GitBranch className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />;
 }
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
-}
-
 // Enhanced node label with execution info
 function renderNodeLabel(
   nodeData: { label: string; nodeKind: string },
@@ -283,7 +281,7 @@ function renderNodeLabel(
         {/* Duration */}
         {latestExecution.duration && latestExecution.duration > 0 && (
           <Badge variant="outline" className="text-xs px-1.5 py-0">
-            ⏱ {formatDuration(latestExecution.duration)}
+            ⏱ {formatDuration(latestExecution.duration, true)}
           </Badge>
         )}
       </div>
@@ -534,7 +532,7 @@ function convertToReactFlowEdges(
             </Badge>
             {avgTiming && avgTiming > 0 && (
               <span className="text-[10px] text-muted-foreground">
-                ~{formatDuration(avgTiming)}
+                ~{formatDuration(avgTiming, true)}
               </span>
             )}
           </div>
@@ -563,15 +561,6 @@ function convertToReactFlowEdges(
       },
     };
   });
-}
-
-// Format duration in a human-readable way
-function formatDurationMs(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(2)}s`;
-  const minutes = Math.floor(ms / 60000);
-  const seconds = ((ms % 60000) / 1000).toFixed(1);
-  return `${minutes}m ${seconds}s`;
 }
 
 // Node Detail Panel Component
@@ -614,7 +603,7 @@ function GraphNodeDetailPanel({
         <div className="flex items-center gap-2 flex-none">
           {latestExecution?.duration !== undefined && (
             <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-              {formatDurationMs(latestExecution.duration)}
+              {formatDuration(latestExecution.duration)}
             </span>
           )}
           <div className="w-px h-4 bg-border" />
@@ -655,7 +644,7 @@ function GraphNodeDetailPanel({
                     duration
                   </span>
                   <span className="text-[11px] font-mono">
-                    {formatDurationMs(latestExecution.duration)}
+                    {formatDuration(latestExecution.duration)}
                   </span>
                 </div>
               )}
@@ -785,7 +774,7 @@ function GraphNodeDetailPanel({
                       />
                       {exec.duration !== undefined && (
                         <span className="font-mono text-muted-foreground">
-                          {formatDurationMs(exec.duration)}
+                          {formatDuration(exec.duration)}
                         </span>
                       )}
                     </div>
