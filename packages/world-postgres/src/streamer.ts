@@ -208,7 +208,7 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
       });
     },
 
-    async listStreams(runId: string): Promise<string[]> {
+    async listByRunId(runId: string): Promise<string[]> {
       // Convert runId (wrun_{ULID}) to stream prefix (strm_{ULID}_user)
       const streamPrefix = runId.replace('wrun_', 'strm_') + '_user';
 

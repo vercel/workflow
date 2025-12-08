@@ -765,7 +765,7 @@ export const showStream = async (
  * Listing streams only lists available stream IDs based on run/step passed,
  * and doesn't read any data from the streams.
  */
-export const listStreams = async (
+export const listByRunId = async (
   world: World,
   opts: InspectCLIOptions = {}
 ) => {
