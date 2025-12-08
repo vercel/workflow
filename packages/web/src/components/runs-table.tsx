@@ -5,13 +5,11 @@ import {
   cancelRun,
   getErrorMessage,
   recreateRun,
-  stopSleepRun,
   useWorkflowRuns,
   wakeUpRun,
 } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import {
-  AlarmClockOff,
   AlertCircle,
   ArrowDownAZ,
   ArrowUpAZ,
@@ -505,46 +503,6 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                                 This is a no-op, unless the workflow got stuck
                                 due to an implementation issue in the World.
                                 This is useful for debugging custom Worlds.
-                              </TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <DropdownMenuItem
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    try {
-                                      const result = await stopSleepRun(
-                                        env,
-                                        run.runId
-                                      );
-                                      if (result.stoppedCount > 0) {
-                                        toast.success('Sleep interrupted', {
-                                          description: `Stopped ${result.stoppedCount} pending sleep${result.stoppedCount > 1 ? 's' : ''} and woke up the run.`,
-                                        });
-                                      } else {
-                                        toast.info('No pending sleeps', {
-                                          description:
-                                            'There were no pending sleep() calls to interrupt.',
-                                        });
-                                      }
-                                      reload();
-                                    } catch (err) {
-                                      toast.error('Failed to stop sleep', {
-                                        description:
-                                          err instanceof Error
-                                            ? err.message
-                                            : 'Unknown error',
-                                      });
-                                    }
-                                  }}
-                                >
-                                  <AlarmClockOff className="h-4 w-4 mr-2" />
-                                  Stop sleep
-                                </DropdownMenuItem>
-                              </TooltipTrigger>
-                              <TooltipContent side="left" className="max-w-xs">
-                                Interrupt any current calls to{' '}
-                                <code>sleep()</code> and wake up the run.
                               </TooltipContent>
                             </Tooltip>
                             <DropdownMenuItem

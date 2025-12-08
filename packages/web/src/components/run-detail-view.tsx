@@ -441,18 +441,21 @@ export function RunDetailView({
                   rerunDisabledReason={rerunDisabledReason}
                   onRerun={handleRerunClick}
                 />
-                <WakeUpButton
-                  canWakeUp={canWakeUp}
-                  wakingUp={wakingUp}
-                  wakeUpDisabledReason={wakeUpDisabledReason}
-                  onWakeUp={handleWakeUpClick}
-                />
-                <StopSleepButton
-                  canStopSleep={canStopSleep}
-                  stoppingSleep={stoppingSleep}
-                  stopSleepDisabledReason={stopSleepDisabledReason}
-                  onStopSleep={handleStopSleepClick}
-                />
+                {hasPendingSleeps ? (
+                  <StopSleepButton
+                    canStopSleep={canStopSleep}
+                    stoppingSleep={stoppingSleep}
+                    stopSleepDisabledReason={stopSleepDisabledReason}
+                    onStopSleep={handleStopSleepClick}
+                  />
+                ) : (
+                  <WakeUpButton
+                    canWakeUp={canWakeUp}
+                    wakingUp={wakingUp}
+                    wakeUpDisabledReason={wakeUpDisabledReason}
+                    onWakeUp={handleWakeUpClick}
+                  />
+                )}
                 <CancelButton
                   canCancel={canCancel}
                   cancelling={cancelling}
