@@ -687,19 +687,20 @@ export const stepEntrypoint =
             if (attempt >= maxRetries) {
               const errorMessage = `Step "${stepName}" exceeded max retries (${attempt} attempts)`;
               console.error(`[Workflows] "${workflowRunId}" - ${errorMessage}`);
+              // Update step status first (idempotent), then create event
+              await world.steps.update(workflowRunId, stepId, {
+                status: 'failed',
+                error: {
+                  message: errorMessage,
+                  stack: undefined,
+                },
+              });
               await world.events.create(workflowRunId, {
                 eventType: 'step_failed',
                 correlationId: stepId,
                 eventData: {
                   error: errorMessage,
                   fatal: true,
-                },
-              });
-              await world.steps.update(workflowRunId, stepId, {
-                status: 'failed',
-                error: {
-                  message: errorMessage,
-                  stack: undefined,
                 },
               });
 
