@@ -365,7 +365,7 @@ export function HooksTable({
                               }}
                             >
                               <RotateCw className="h-4 w-4 mr-2" />
-                              Re-run
+                              Replay Run
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               onClick={async (e) => {

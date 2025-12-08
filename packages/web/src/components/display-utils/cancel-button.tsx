@@ -34,11 +34,17 @@ export function CancelButton({
           </Button>
         </span>
       </TooltipTrigger>
-      {cancelDisabledReason && (
-        <TooltipContent>
+      <TooltipContent className="max-w-xs">
+        {cancelDisabledReason ? (
           <p>{cancelDisabledReason}</p>
-        </TooltipContent>
-      )}
+        ) : (
+          <p>
+            This will set the run state to "cancelled", prevent further steps
+            from being scheduled, and disable active hooks. Active steps will
+            continue to run until they complete.
+          </p>
+        )}
+      </TooltipContent>
     </Tooltip>
   );
 }

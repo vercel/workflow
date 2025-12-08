@@ -284,20 +284,20 @@ export function RunDetailView({
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Re-run Confirmation Dialog */}
+      {/* Replay Run Confirmation Dialog */}
       <AlertDialog open={showRerunDialog} onOpenChange={setShowRerunDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Re-run Workflow?</AlertDialogTitle>
+            <AlertDialogTitle>Replay Run?</AlertDialogTitle>
             <AlertDialogDescription>
               This can potentially re-run code that is meant to only execute
-              once. Are you sure you want to re-run the workflow?
+              once. Are you sure you want to replay the workflow run?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleConfirmRerun}>
-              Re-run Workflow
+              Replay Run
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
