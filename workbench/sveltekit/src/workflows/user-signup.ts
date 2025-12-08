@@ -1,6 +1,4 @@
 import { createWebhook, sleep } from 'workflow';
-// Test SvelteKit virtual module import
-import { env } from '$env/dynamic/private';
 
 export async function handleUserSignup(email: string) {
   'use workflow';
@@ -22,8 +20,6 @@ export async function handleUserSignup(email: string) {
 async function createUser(email: string) {
   'use step';
 
-  // Log env to verify SvelteKit virtual module works
-  console.log(`Creating user with env DEBUG=${env.DEBUG}`);
   console.log(`Creating a new user with email: ${email}`);
 
   return { id: crypto.randomUUID(), email };
