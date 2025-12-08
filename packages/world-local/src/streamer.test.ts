@@ -510,11 +510,11 @@ describe('streamer', () => {
       });
     });
 
-    describe('listByRunId', () => {
+    describe('listStreamsByRunId', () => {
       it('should return empty array when no streams exist', async () => {
         const { streamer } = await setupStreamer();
 
-        const streams = await streamer.listByRunId(TEST_RUN_ID);
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
         expect(streams).toEqual([]);
       });
 
@@ -532,7 +532,7 @@ describe('streamer', () => {
         await streamer.closeStream(streamName1, TEST_RUN_ID);
         await streamer.closeStream(streamName2, TEST_RUN_ID);
 
-        const streams = await streamer.listByRunId(TEST_RUN_ID);
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
 
         expect(streams).toHaveLength(2);
         expect(streams).toContain(streamName1);
@@ -556,7 +556,7 @@ describe('streamer', () => {
         );
         await streamer.writeToStream(otherStream, otherRunId, 'other output');
 
-        const streams = await streamer.listByRunId(TEST_RUN_ID);
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
 
         expect(streams).toHaveLength(1);
         expect(streams).toContain(targetStream);
@@ -577,7 +577,7 @@ describe('streamer', () => {
         await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk3');
         await streamer.closeStream(streamName, TEST_RUN_ID);
 
-        const streams = await streamer.listByRunId(TEST_RUN_ID);
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
 
         // Should only return the stream name once, not once per chunk
         expect(streams).toHaveLength(1);
@@ -593,7 +593,7 @@ describe('streamer', () => {
         await streamer.writeToStream(streamName, TEST_RUN_ID, 'data');
         await streamer.closeStream(streamName, TEST_RUN_ID);
 
-        const streams = await streamer.listByRunId(TEST_RUN_ID);
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
 
         expect(streams).toHaveLength(1);
         expect(streams).toContain(streamName);

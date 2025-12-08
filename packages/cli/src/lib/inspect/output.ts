@@ -774,7 +774,7 @@ export const showStream = async (
  * Listing streams only lists available stream IDs based on run/step passed,
  * and doesn't read any data from the streams.
  */
-export const listByRunId = async (
+export const listStreamsByRunId = async (
   world: World,
   opts: InspectCLIOptions = {}
 ) => {
@@ -807,7 +807,7 @@ export const listByRunId = async (
   }
 
   try {
-    const streamIds = await world.listByRunId(runId);
+    const streamIds = await world.listStreamsByRunId(runId);
     const matchingStreams = streamIds.map((streamId) => ({
       runId,
       streamId,

@@ -648,12 +648,16 @@ export async function fetchStreams(
 ): Promise<ServerActionResult<string[]>> {
   try {
     const world = getWorldFromEnv(env);
-    const streams = await world.listByRunId(runId);
+    const streams = await world.listStreamsByRunId(runId);
     return createResponse(streams);
   } catch (error) {
-    return createServerActionError<string[]>(error, 'world.listByRunId', {
-      runId,
-    });
+    return createServerActionError<string[]>(
+      error,
+      'world.listStreamsByRunId',
+      {
+        runId,
+      }
+    );
   }
 }
 

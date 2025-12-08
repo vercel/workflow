@@ -1,7 +1,11 @@
 import { withResolvers } from '@workflow/utils';
 import { assert, afterAll, describe, expect, test } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
-import { cliInspectJson, isLocalDeployment } from './utils';
+import {
+  cliInspectJson,
+  getProtectionBypassHeaders,
+  isLocalDeployment,
+} from './utils';
 import fs from 'fs';
 import path from 'path';
 
@@ -63,6 +67,7 @@ async function triggerWorkflow(
 
   const res = await fetch(url, {
     method: 'POST',
+    headers: getProtectionBypassHeaders(),
     body: JSON.stringify(dehydratedArgs),
   });
   if (!res.ok) {
@@ -98,7 +103,7 @@ async function getWorkflowReturnValue(runId: string) {
     const url = new URL('/api/trigger', deploymentUrl);
     url.searchParams.set('runId', runId);
 
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: getProtectionBypassHeaders() });
 
     if (res.status === 202) {
       // Workflow run is still running, so we need to wait and poll again
@@ -226,6 +231,7 @@ describe('e2e', () => {
 
     let res = await fetch(hookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({ token, data: { message: 'one' } }),
     });
     expect(res.status).toBe(200);
@@ -235,6 +241,7 @@ describe('e2e', () => {
     // Invalid token test
     res = await fetch(hookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({ token: 'invalid' }),
     });
     // NOTE: For Nitro apps (Vite, Hono, etc.) in dev mode, status 404 does some
@@ -246,6 +253,7 @@ describe('e2e', () => {
 
     res = await fetch(hookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({ token, data: { message: 'two' } }),
     });
     expect(res.status).toBe(200);
@@ -254,6 +262,7 @@ describe('e2e', () => {
 
     res = await fetch(hookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({ token, data: { message: 'three', done: true } }),
     });
     expect(res.status).toBe(200);
@@ -297,6 +306,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({ message: 'one' }),
       }
     );
@@ -312,6 +322,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({ message: 'two' }),
       }
     );
@@ -327,6 +338,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({ message: 'three' }),
       }
     );
@@ -371,6 +383,7 @@ describe('e2e', () => {
     );
     const res = await fetch(invalidWebhookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(404);
@@ -447,10 +460,12 @@ describe('e2e', () => {
   test('outputStreamWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('outputStreamWorkflow', []);
     const stream = await fetch(
-      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`
+      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`,
+      { headers: getProtectionBypassHeaders() }
     );
     const namedStream = await fetch(
-      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=test`
+      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=test`,
+      { headers: getProtectionBypassHeaders() }
     );
     const textDecoderStream = new TextDecoderStream();
     stream.body?.pipeThrough(textDecoderStream);
@@ -498,10 +513,12 @@ describe('e2e', () => {
     async () => {
       const run = await triggerWorkflow('outputStreamInsideStepWorkflow', []);
       const stream = await fetch(
-        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`
+        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`,
+        { headers: getProtectionBypassHeaders() }
       );
       const namedStream = await fetch(
-        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=step-ns`
+        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=step-ns`,
+        { headers: getProtectionBypassHeaders() }
       );
       const textDecoderStream = new TextDecoderStream();
       stream.body?.pipeThrough(textDecoderStream);
@@ -619,7 +636,10 @@ describe('e2e', () => {
       const url = new URL('/api/test-direct-step-call', deploymentUrl);
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
         body: JSON.stringify({ x: 3, y: 5 }),
       });
 
@@ -720,6 +740,7 @@ describe('e2e', () => {
       const hookUrl = new URL('/api/hook', deploymentUrl);
       let res = await fetch(hookUrl, {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({
           token,
           data: { message: 'test-message-1', customData },
@@ -750,6 +771,7 @@ describe('e2e', () => {
       // Send payload to second workflow using same token
       res = await fetch(hookUrl, {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({
           token,
           data: { message: 'test-message-2', customData },
