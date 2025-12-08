@@ -679,6 +679,43 @@ export const stepEntrypoint =
 
             let result: unknown;
             const attempt = step.attempt + 1;
+            const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+
+            // Check max retries FIRST before any state changes.
+            // This handles the case where the step keeps timing out before reaching
+            // the catch handler - without this check, the step would retry forever.
+            if (attempt > maxRetries) {
+              const errorMessage = `Step "${stepName}" failed after max retries (function timed out ${attempt} times)`;
+              console.error(`[Workflows] "${workflowRunId}" - ${errorMessage}`);
+              await world.events.create(workflowRunId, {
+                eventType: 'step_failed',
+                correlationId: stepId,
+                eventData: {
+                  error: errorMessage,
+                  fatal: true,
+                },
+              });
+              await world.steps.update(workflowRunId, stepId, {
+                status: 'failed',
+                error: {
+                  message: errorMessage,
+                },
+              });
+
+              span?.setAttributes({
+                ...Attribute.StepStatus('failed'),
+                ...Attribute.StepRetryExhausted(true),
+              });
+
+              // Re-invoke the workflow to handle the failed step
+              await queueMessage(world, `__wkf_workflow_${workflowName}`, {
+                runId: workflowRunId,
+                traceCarrier: await serializeTraceCarrier(),
+                requestedAt: new Date(),
+              });
+              return;
+            }
+
             try {
               if (!['pending', 'running'].includes(step.status)) {
                 // We should only be running the step if it's either
@@ -695,57 +732,14 @@ export const stepEntrypoint =
                 return;
               }
 
-              // IMPORTANT: Update the step to "running" status with incremented attempt
-              // FIRST, before any other async work. This ensures the attempt counter is
-              // persisted even if the serverless function times out. Without this, a
-              // timeout before this update would leave the step in its old state, causing
-              // the step to be retried forever with the same attempt value.
-              step = await world.steps.update(workflowRunId, stepId, {
-                attempt,
-                status: 'running',
-              });
-
-              // Check max retries IMMEDIATELY after persisting the attempt counter.
-              // This handles the case where the step keeps timing out before reaching
-              // the catch handler - without this check, the step would retry forever.
-              const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
-              if (attempt > maxRetries) {
-                const errorMessage = `Step "${stepName}" failed after max retries (function timed out ${attempt} times)`;
-                console.error(
-                  `[Workflows] "${workflowRunId}" - ${errorMessage}`
-                );
-                await world.events.create(workflowRunId, {
-                  eventType: 'step_failed',
-                  correlationId: stepId,
-                  eventData: {
-                    error: errorMessage,
-                    fatal: true,
-                  },
-                });
-                await world.steps.update(workflowRunId, stepId, {
-                  status: 'failed',
-                  error: {
-                    message: errorMessage,
-                  },
-                });
-
-                span?.setAttributes({
-                  ...Attribute.StepStatus('failed'),
-                  ...Attribute.StepRetryExhausted(true),
-                });
-
-                // Re-invoke the workflow to handle the failed step
-                await queueMessage(world, `__wkf_workflow_${workflowName}`, {
-                  runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
-                  requestedAt: new Date(),
-                });
-                return;
-              }
-
               await world.events.create(workflowRunId, {
                 eventType: 'step_started', // TODO: Replace with 'step_retrying'
                 correlationId: stepId,
+              });
+
+              step = await world.steps.update(workflowRunId, stepId, {
+                attempt,
+                status: 'running',
               });
 
               if (!step.startedAt) {
