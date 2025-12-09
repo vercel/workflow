@@ -2,9 +2,13 @@
 
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
-import { useEffect, useMemo } from 'react';
+import { AlarmClockOff } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { useWorkflowResourceData } from '../api/workflow-api-client';
+import {
+  stopSleepRun,
+  useWorkflowResourceData,
+} from '../api/workflow-api-client';
 import type { EnvMap } from '../api/workflow-server-actions';
 import { EventsList } from '../sidebar/events-list';
 import { useTraceViewer } from '../trace-viewer';
@@ -25,6 +29,7 @@ export function WorkflowDetailPanel({
 }): React.JSX.Element | null {
   const { state } = useTraceViewer();
   const { selected } = state;
+  const [stoppingSleep, setStoppingSleep] = useState(false);
 
   const data = selected?.span.attributes?.data as
     | Step
@@ -54,6 +59,15 @@ export function WorkflowDetailPanel({
     return { resource: undefined, resourceId: undefined, runId: undefined };
   }, [selected, data]);
 
+  // Check if this sleep is still pending (no wait_completed event)
+  const isSleepPending = useMemo(() => {
+    if (resource !== 'sleep' || !selected?.span.events) return false;
+    const hasWaitCompleted = selected.span.events.some(
+      (e) => e.name === 'wait_completed'
+    );
+    return !hasWaitCompleted;
+  }, [resource, selected?.span.events]);
+
   // Fetch full resource data with events
   const {
     data: fetchedData,
@@ -74,6 +88,33 @@ export function WorkflowDetailPanel({
     }
   }, [error, resource, selected]);
 
+  const handleStopSleep = async () => {
+    if (stoppingSleep || !resourceId) return;
+
+    try {
+      setStoppingSleep(true);
+      const result = await stopSleepRun(env, run.runId, {
+        correlationIds: [resourceId],
+      });
+      if (result.stoppedCount > 0) {
+        toast.success('Sleep interrupted', {
+          description:
+            'The sleep call has been interrupted and the run woken up.',
+        });
+      } else {
+        toast.info('Sleep already completed', {
+          description: 'This sleep call has already finished.',
+        });
+      }
+    } catch (err) {
+      console.error('Failed to stop sleep:', err);
+      toast.error('Failed to stop sleep', {
+        description:
+          err instanceof Error ? err.message : 'An unknown error occurred',
+      });
+    }
+  };
+
   if (!selected || !resource || !resourceId) {
     return null;
   }
@@ -82,6 +123,31 @@ export function WorkflowDetailPanel({
 
   return (
     <div className={clsx('flex flex-col px-2')}>
+      {/* Stop sleep button for pending sleep calls */}
+      {resource === 'sleep' && isSleepPending && (
+        <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
+          <button
+            type="button"
+            onClick={handleStopSleep}
+            disabled={stoppingSleep}
+            className={clsx(
+              'flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md w-full',
+              'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200',
+              'hover:bg-amber-200 dark:hover:bg-amber-900/50',
+              'disabled:opacity-50 disabled:cursor-not-allowed',
+              'transition-colors',
+              stoppingSleep ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+            )}
+          >
+            <AlarmClockOff className="h-4 w-4" />
+            {stoppingSleep ? 'Stopping sleep...' : 'Stop this sleep'}
+          </button>
+          <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            Interrupt this specific sleep call and wake up the run.
+          </p>
+        </div>
+      )}
+
       {/* Content display */}
       <AttributePanel
         data={displayData}

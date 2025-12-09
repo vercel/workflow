@@ -39,7 +39,7 @@ export function StopSleepButton({
           <p>{stopSleepDisabledReason}</p>
         ) : (
           <p>
-            Interrupt any current calls to <code>sleep()</code> and wake up the
+            Interrupt any current calls to <code>sleep</code> and wake up the
             run.
           </p>
         )}

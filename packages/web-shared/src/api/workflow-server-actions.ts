@@ -543,15 +543,29 @@ export interface StopSleepResult {
   stoppedCount: number;
 }
 
+export interface StopSleepOptions {
+  /**
+   * Optional list of specific correlation IDs to target.
+   * If provided, only these sleep calls will be interrupted.
+   * If not provided, all pending sleep calls will be interrupted.
+   */
+  correlationIds?: string[];
+}
+
 /**
- * Stop any pending sleep() calls for a workflow run.
+ * Stop pending sleep() calls for a workflow run.
  *
- * This finds all wait_created events without matching wait_completed events,
+ * This finds wait_created events without matching wait_completed events,
  * creates wait_completed events for them, and then re-enqueues the run.
+ *
+ * @param worldEnv - Environment configuration for the World
+ * @param runId - The run ID to stop sleep calls for
+ * @param options - Optional settings to narrow down targeting
  */
 export async function stopSleepRun(
   worldEnv: EnvMap,
-  runId: string
+  runId: string,
+  options?: StopSleepOptions
 ): Promise<ServerActionResult<StopSleepResult>> {
   try {
     const world = getWorldFromEnv({ ...worldEnv });
@@ -575,9 +589,17 @@ export async function stopSleepRun(
         .map((e) => e.correlationId)
     );
 
-    const pendingWaits = waitCreatedEvents.filter(
+    let pendingWaits = waitCreatedEvents.filter(
       (e) => !waitCompletedCorrelationIds.has(e.correlationId)
     );
+
+    // If specific correlation IDs are provided, filter to only those
+    if (options?.correlationIds && options.correlationIds.length > 0) {
+      const targetCorrelationIds = new Set(options.correlationIds);
+      pendingWaits = pendingWaits.filter(
+        (e) => e.correlationId && targetCorrelationIds.has(e.correlationId)
+      );
+    }
 
     // Create wait_completed events for each pending wait
     for (const waitEvent of pendingWaits) {
@@ -606,6 +628,7 @@ export async function stopSleepRun(
   } catch (error) {
     return createServerActionError<StopSleepResult>(error, 'stopSleepRun', {
       runId,
+      correlationIds: options?.correlationIds,
     });
   }
 }

@@ -207,7 +207,7 @@ export function RunActionsDropdownItems({
             </DropdownMenuItem>
           </TooltipTrigger>
           <TooltipContent side="left" className="max-w-xs">
-            Interrupt any current calls to <code>sleep()</code> and wake up the
+            Interrupt any current calls to <code>sleep</code> and wake up the
             run.
           </TooltipContent>
         </Tooltip>
@@ -305,7 +305,7 @@ export function RunActionsButtons({
         });
       } else {
         toast.info('No pending sleeps', {
-          description: 'There were no pending sleep() calls to interrupt.',
+          description: 'There were no pending sleep calls to interrupt.',
         });
       }
       callbacks?.onSuccess?.();
@@ -343,7 +343,7 @@ export function RunActionsButtons({
     : loading
       ? 'Loading run data...'
       : !hasPendingSleeps
-        ? 'No pending sleep() calls to interrupt'
+        ? 'No pending sleep calls to interrupt'
         : '';
 
   // Cancel button logic
@@ -411,7 +411,7 @@ export function RunActionsButtons({
               <p>{stopSleepDisabledReason}</p>
             ) : (
               <p>
-                Interrupt any current calls to <code>sleep()</code> and wake up
+                Interrupt any current calls to <code>sleep</code> and wake up
                 the run.
               </p>
             )}
