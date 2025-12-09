@@ -1,5 +1,16 @@
 # @vercel/workflow-nitro
 
+## 4.0.1-beta.28
+
+### Patch Changes
+
+- [#501](https://github.com/vercel/workflow/pull/501) [`205b395`](https://github.com/vercel/workflow/commit/205b3953f047c665becb5be0ad3b5b92aefd54ce) Thanks [@adriandlam](https://github.com/adriandlam)! - Move Vite HMR to @workflow/vite package
+
+- Updated dependencies [[`19c271c`](https://github.com/vercel/workflow/commit/19c271c0725f263ebbcbd87e68240547c1acbe2f), [`161c54c`](https://github.com/vercel/workflow/commit/161c54ca13e0c36220640e656b7abe4ff282dbb0), [`0bbd26f`](https://github.com/vercel/workflow/commit/0bbd26f8c85a04dea3dc87a11c52e9ac63a18e84), [`c35b445`](https://github.com/vercel/workflow/commit/c35b4458753cc116b90d61f470f7ab1d964e8a1e), [`d3fd81d`](https://github.com/vercel/workflow/commit/d3fd81dffd87abbd1a3d8a8e91e9781959eefd40), [`205b395`](https://github.com/vercel/workflow/commit/205b3953f047c665becb5be0ad3b5b92aefd54ce)]:
+  - @workflow/builders@4.0.1-beta.24
+  - @workflow/core@4.0.1-beta.25
+  - @workflow/vite@4.0.0-beta.2
+
 ## 4.0.1-beta.27
 
 ### Patch Changes

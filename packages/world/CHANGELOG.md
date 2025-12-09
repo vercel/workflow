@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- [#574](https://github.com/vercel/workflow/pull/574) [`c82b467`](https://github.com/vercel/workflow/commit/c82b46720cf6284f3c7e3ded107e1d8321f6e705) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add listByRunId endpoint to Streamer interface
+
 ## 4.0.1-beta.9
 
 ### Patch Changes

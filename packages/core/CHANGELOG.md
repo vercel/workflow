@@ -1,5 +1,25 @@
 # @workflow/core
 
+## 4.0.1-beta.25
+
+### Patch Changes
+
+- [#575](https://github.com/vercel/workflow/pull/575) [`161c54c`](https://github.com/vercel/workflow/commit/161c54ca13e0c36220640e656b7abe4ff282dbb0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add Web and CLI UI for listing and viewing streams
+
+- [#541](https://github.com/vercel/workflow/pull/541) [`0bbd26f`](https://github.com/vercel/workflow/commit/0bbd26f8c85a04dea3dc87a11c52e9ac63a18e84) Thanks [@pranaygp](https://github.com/pranaygp)! - perf: use Map for invocationsQueue (O(1) lookup/delete)
+
+  Replace array-based invocationsQueue with Map for O(1) lookup and delete operations, eliminating O(n²) complexity in high-concurrency workflows.
+
+- [#567](https://github.com/vercel/workflow/pull/567) [`c35b445`](https://github.com/vercel/workflow/commit/c35b4458753cc116b90d61f470f7ab1d964e8a1e) Thanks [@Schniz](https://github.com/Schniz)! - otel: do not treat WorkflowSuspension errors as errors in the trace, as they symbolize effects and not actual exceptions.
+
+- [#571](https://github.com/vercel/workflow/pull/571) [`d3fd81d`](https://github.com/vercel/workflow/commit/d3fd81dffd87abbd1a3d8a8e91e9781959eefd40) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Enhance serialization failure error reporting
+
+- Updated dependencies [[`d42a968`](https://github.com/vercel/workflow/commit/d42a9681a1c7139ac5ed2973b1738d8a9000a1b6), [`c82b467`](https://github.com/vercel/workflow/commit/c82b46720cf6284f3c7e3ded107e1d8321f6e705)]:
+  - @workflow/world-local@4.0.1-beta.16
+  - @workflow/world-vercel@4.0.1-beta.18
+  - @workflow/world@4.0.1-beta.10
+  - @workflow/errors@4.0.1-beta.7
+
 ## 4.0.1-beta.24
 
 ### Patch Changes
