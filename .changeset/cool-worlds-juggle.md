@@ -3,5 +3,5 @@
 "@workflow/web-shared": patch
 ---
 
-Conversational view for doStreamStep
+Show a conversation view in the trace viewer UI for `doStreamStep` steps from DurableAgent
 
