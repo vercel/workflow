@@ -60,13 +60,18 @@ export function WorkflowDetailPanel({
   }, [selected, data]);
 
   // Check if this sleep is still pending (no wait_completed event)
+  // We include events length to ensure recomputation when new events are added
+  // (the array reference might not change when events are pushed to it)
+  const spanEvents = selected?.span.events;
+  const spanEventsLength = spanEvents?.length ?? 0;
   const isSleepPending = useMemo(() => {
-    if (resource !== 'sleep' || !selected?.span.events) return false;
-    const hasWaitCompleted = selected.span.events.some(
+    void spanEventsLength; // Force dependency on length for reactivity
+    if (resource !== 'sleep' || !spanEvents) return false;
+    const hasWaitCompleted = spanEvents.some(
       (e) => e.name === 'wait_completed'
     );
     return !hasWaitCompleted;
-  }, [resource, selected?.span.events]);
+  }, [resource, spanEvents, spanEventsLength]);
 
   // Fetch full resource data with events
   const {
