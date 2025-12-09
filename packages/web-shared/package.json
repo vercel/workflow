@@ -38,7 +38,6 @@
   },
   "dependencies": {
     "@tailwindcss/postcss": "4",
-    "@workflow/ai": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
@@ -60,6 +59,7 @@
     "@types/react": "19",
     "@types/react-dom": "19",
     "typescript": "catalog:",
+    "@workflow/ai": "workspace:*",
     "@workflow/tsconfig": "workspace:*"
   }
 }
