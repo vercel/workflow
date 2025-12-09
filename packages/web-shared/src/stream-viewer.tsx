@@ -6,7 +6,6 @@ import type { EnvMap } from './api/workflow-server-actions';
 
 interface StreamViewerProps {
   env: EnvMap;
-  runId: string;
   streamId: string;
 }
 
