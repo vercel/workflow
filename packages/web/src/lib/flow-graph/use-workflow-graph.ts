@@ -1,18 +1,15 @@
 'use client';
 
 import {
-  fetchWorkflowsManifest,
   unwrapServerActionResult,
   WorkflowWebAPIError,
 } from '@workflow/web-shared';
+import { fetchWorkflowsManifest } from '@workflow/web-shared/server';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
 import { adaptManifest } from '@/lib/flow-graph/manifest-adapter';
-import type {
-  RawWorkflowsManifest,
-  WorkflowGraphManifest,
-} from '@/lib/flow-graph/workflow-graph-types';
+import type { WorkflowGraphManifest } from '@/lib/flow-graph/workflow-graph-types';
 
 /**
  * Hook to fetch the workflow graph manifest from the workflow data directory
