@@ -41,7 +41,6 @@
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
-    "ai": "catalog:",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "date-fns": "4.1.0",
@@ -59,7 +58,8 @@
     "@types/node": "catalog:",
     "@types/react": "19",
     "@types/react-dom": "19",
-    "typescript": "catalog:",
-    "@workflow/tsconfig": "workspace:*"
+    "@workflow/tsconfig": "workspace:*",
+    "ai": "catalog:",
+    "typescript": "catalog:"
   }
 }

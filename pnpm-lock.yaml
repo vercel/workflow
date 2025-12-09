@@ -943,9 +943,6 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
-      ai:
-        specifier: 'catalog:'
-        version: 5.0.104(zod@4.1.12)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -995,6 +992,9 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      ai:
+        specifier: 'catalog:'
+        version: 5.0.104(zod@4.1.12)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
