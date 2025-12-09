@@ -100,7 +100,7 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
   }, [env, streamId]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full p-4">
       <div className="flex items-center justify-between mb-3 px-1">
         <code
           className="text-xs font-mono truncate max-w-[80%]"
