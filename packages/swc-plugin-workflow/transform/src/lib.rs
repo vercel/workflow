@@ -1254,7 +1254,7 @@ impl StepTransform {
                         // Get the property key first
                         let prop_key = match &kv_prop.key {
                             PropName::Ident(ident) => ident.sym.to_string(),
-                            PropName::Str(s) => s.value.to_string(),
+                            PropName::Str(s) => s.value.to_string_lossy().to_string(),
                             _ => continue, // Skip complex keys
                         };
 
@@ -1375,7 +1375,7 @@ impl StepTransform {
                         // Handle object methods like: execute() { "use step"; ... }
                         let prop_key = match &method_prop.key {
                             PropName::Ident(ident) => ident.sym.to_string(),
-                            PropName::Str(s) => s.value.to_string(),
+                            PropName::Str(s) => s.value.to_string_lossy().to_string(),
                             _ => continue, // Skip complex keys
                         };
 
@@ -1666,15 +1666,15 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *stmt_span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::FunctionBody,
                                 });
                             }
                             return true;
-                        } else if detect_similar_strings(value, "use step") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use step") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *stmt_span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use step",
                             });
                         }
@@ -1704,20 +1704,20 @@ impl StepTransform {
                 {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         #[cfg(debug_assertions)]
-                        eprintln!("directive candidate: {}", value);
+                        eprintln!("directive candidate: {:?}", value);
                         if value == "use workflow" {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *stmt_span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::FunctionBody,
                                 });
                             }
                             return true;
-                        } else if detect_similar_strings(value, "use workflow") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use workflow") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *stmt_span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use workflow",
                             });
                         }
@@ -1746,7 +1746,7 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             } else {
@@ -1758,14 +1758,14 @@ impl StepTransform {
                             if found_directive {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             }
-                        } else if detect_similar_strings(value, "use step") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use step") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use step",
                             });
                         }
@@ -1807,7 +1807,7 @@ impl StepTransform {
                             if !is_first_meaningful {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             } else {
@@ -1819,14 +1819,14 @@ impl StepTransform {
                             if found_directive {
                                 emit_error(WorkflowErrorKind::MisplacedDirective {
                                     span: *span,
-                                    directive: value.to_string(),
+                                    directive: value.to_string_lossy().to_string(),
                                     location: DirectiveLocation::Module,
                                 });
                             }
-                        } else if detect_similar_strings(value, "use workflow") {
+                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use workflow") {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *span,
-                                directive: value.to_string(),
+                                directive: value.to_string_lossy().to_string(),
                                 expected: "use workflow",
                             });
                         }
@@ -2264,6 +2264,69 @@ impl StepTransform {
                     value: workflow_id.into(),
                     raw: None,
                 }))),
+            })),
+        })
+    }
+
+    // Create a workflow registration call for workflow mode:
+    // globalThis.__private_workflows.set("workflowId", functionName);
+    fn create_workflow_registration(&self, fn_name: &str, span: swc_core::common::Span) -> Stmt {
+        // Generate the workflow ID (same logic as create_workflow_id_assignment)
+        let id_name = if (fn_name == "__default" || fn_name.starts_with("__default$"))
+            && self
+                .workflow_export_to_const_name
+                .get("default")
+                .map_or(false, |const_name| const_name == fn_name)
+        {
+            "default"
+        } else {
+            fn_name
+        };
+        let workflow_id = self.create_id(Some(id_name), span, true);
+
+        // Create: globalThis.__private_workflows.set("workflowId", functionName)
+        Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: Box::new(Expr::Member(MemberExpr {
+                        span: DUMMY_SP,
+                        obj: Box::new(Expr::Ident(Ident::new(
+                            "globalThis".into(),
+                            DUMMY_SP,
+                            SyntaxContext::empty(),
+                        ))),
+                        prop: MemberProp::Ident(IdentName::new(
+                            "__private_workflows".into(),
+                            DUMMY_SP,
+                        )),
+                    })),
+                    prop: MemberProp::Ident(IdentName::new("set".into(), DUMMY_SP)),
+                }))),
+                args: vec![
+                    // First argument: workflow ID
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: workflow_id.into(),
+                            raw: None,
+                        }))),
+                    },
+                    // Second argument: function reference
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Ident(Ident::new(
+                            fn_name.into(),
+                            DUMMY_SP,
+                            SyntaxContext::empty(),
+                        ))),
+                    },
+                ],
+                type_args: None,
             })),
         })
     }
@@ -3700,65 +3763,12 @@ impl VisitMut for StepTransform {
             item.visit_mut_with(self);
 
             // After visiting the item, check if we need to add a workflowId assignment
-            if matches!(self.mode, TransformMode::Client | TransformMode::Step) {
-                match item {
-                    ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
-                        if let Decl::Fn(fn_decl) = &export_decl.decl {
-                            let fn_name = fn_decl.ident.sym.to_string();
-                            if self.workflow_function_names.contains(&fn_name) {
-                                items_to_insert.push((
-                                    i + 1,
-                                    ModuleItem::Stmt(self.create_workflow_id_assignment(
-                                        &fn_name,
-                                        fn_decl.function.span,
-                                    )),
-                                ));
-                            }
-                        } else if let Decl::Var(var_decl) = &export_decl.decl {
-                            for declarator in &var_decl.decls {
-                                if let Pat::Ident(binding) = &declarator.name {
-                                    let name = binding.id.sym.to_string();
-                                    if self.workflow_function_names.contains(&name) {
-                                        if let Some(init) = &declarator.init {
-                                            let span = match &**init {
-                                                Expr::Fn(fn_expr) => fn_expr.function.span,
-                                                Expr::Arrow(arrow_expr) => arrow_expr.span,
-                                                _ => declarator.span,
-                                            };
-                                            items_to_insert.push((
-                                                i + 1,
-                                                ModuleItem::Stmt(
-                                                    self.create_workflow_id_assignment(&name, span),
-                                                ),
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default_decl)) => {
-                        if let DefaultDecl::Fn(fn_expr) = &default_decl.decl {
-                            // Check if this is a workflow function by checking for "default" key
-                            if self.workflow_function_names.contains("default") {
-                                // Only add workflowId for named default exports
-                                // Anonymous ones are handled by default_workflow_exports
-                                if let Some(ident) = &fn_expr.ident {
-                                    // Named default export: use the function name
-                                    let fn_name = ident.sym.to_string();
-                                    items_to_insert.push((
-                                        i + 1,
-                                        ModuleItem::Stmt(self.create_workflow_id_assignment(
-                                            &fn_name,
-                                            fn_expr.function.span,
-                                        )),
-                                    ));
-                                }
-                                // Anonymous default exports will have workflowId added by default_workflow_exports processing
-                            }
-                        }
-                    }
-                    ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fn_decl))) => {
+            // Add workflowId directly after the function declaration for all modes
+            // In workflow mode, also add registration to __private_workflows map
+            match item {
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
+                    // Directly exported function/variable declaration
+                    if let Decl::Fn(fn_decl) = &export_decl.decl {
                         let fn_name = fn_decl.ident.sym.to_string();
                         if self.workflow_function_names.contains(&fn_name) {
                             items_to_insert.push((
@@ -3768,9 +3778,18 @@ impl VisitMut for StepTransform {
                                     fn_decl.function.span,
                                 )),
                             ));
+                            // In workflow mode, also register the workflow function
+                            if self.mode == TransformMode::Workflow {
+                                items_to_insert.push((
+                                    i + 1,
+                                    ModuleItem::Stmt(self.create_workflow_registration(
+                                        &fn_name,
+                                        fn_decl.function.span,
+                                    )),
+                                ));
+                            }
                         }
-                    }
-                    ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
+                    } else if let Decl::Var(var_decl) = &export_decl.decl {
                         for declarator in &var_decl.decls {
                             if let Pat::Ident(binding) = &declarator.name {
                                 let name = binding.id.sym.to_string();
@@ -3787,13 +3806,109 @@ impl VisitMut for StepTransform {
                                                 self.create_workflow_id_assignment(&name, span),
                                             ),
                                         ));
+                                        // In workflow mode, also register the workflow function
+                                        if self.mode == TransformMode::Workflow {
+                                            items_to_insert.push((
+                                                i + 1,
+                                                ModuleItem::Stmt(
+                                                    self.create_workflow_registration(&name, span),
+                                                ),
+                                            ));
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    _ => {}
                 }
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default_decl)) => {
+                    // Default exports
+                    if let DefaultDecl::Fn(fn_expr) = &default_decl.decl {
+                        // Check if this is a workflow function by checking for "default" key
+                        if self.workflow_function_names.contains("default") {
+                            // Only add workflowId for named default exports
+                            // Anonymous ones are handled by default_workflow_exports
+                            if let Some(ident) = &fn_expr.ident {
+                                // Named default export: use the function name
+                                let fn_name = ident.sym.to_string();
+                                items_to_insert.push((
+                                    i + 1,
+                                    ModuleItem::Stmt(self.create_workflow_id_assignment(
+                                        &fn_name,
+                                        fn_expr.function.span,
+                                    )),
+                                ));
+                                // In workflow mode, also register the workflow function
+                                if self.mode == TransformMode::Workflow {
+                                    items_to_insert.push((
+                                        i + 1,
+                                        ModuleItem::Stmt(self.create_workflow_registration(
+                                            &fn_name,
+                                            fn_expr.function.span,
+                                        )),
+                                    ));
+                                }
+                            }
+                            // Anonymous default exports will have workflowId added by default_workflow_exports processing
+                        }
+                    }
+                }
+                ModuleItem::Stmt(Stmt::Decl(Decl::Fn(fn_decl))) => {
+                    // Non-exported function declaration
+                    let fn_name = fn_decl.ident.sym.to_string();
+                    if self.workflow_function_names.contains(&fn_name) {
+                        items_to_insert.push((
+                            i + 1,
+                            ModuleItem::Stmt(self.create_workflow_id_assignment(
+                                &fn_name,
+                                fn_decl.function.span,
+                            )),
+                        ));
+                        // In workflow mode, also register the workflow function
+                        if self.mode == TransformMode::Workflow {
+                            items_to_insert.push((
+                                i + 1,
+                                ModuleItem::Stmt(self.create_workflow_registration(
+                                    &fn_name,
+                                    fn_decl.function.span,
+                                )),
+                            ));
+                        }
+                    }
+                }
+                ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
+                    // Non-exported variable declaration
+                    for declarator in &var_decl.decls {
+                        if let Pat::Ident(binding) = &declarator.name {
+                            let name = binding.id.sym.to_string();
+                            if self.workflow_function_names.contains(&name) {
+                                if let Some(init) = &declarator.init {
+                                    let span = match &**init {
+                                        Expr::Fn(fn_expr) => fn_expr.function.span,
+                                        Expr::Arrow(arrow_expr) => arrow_expr.span,
+                                        _ => declarator.span,
+                                    };
+                                    items_to_insert.push((
+                                        i + 1,
+                                        ModuleItem::Stmt(
+                                            self.create_workflow_id_assignment(&name, span),
+                                        ),
+                                    ));
+                                    // In workflow mode, also register the workflow function
+                                    if self.mode == TransformMode::Workflow {
+                                        items_to_insert.push((
+                                            i + 1,
+                                            ModuleItem::Stmt(
+                                                self.create_workflow_registration(&name, span),
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -3802,18 +3917,8 @@ impl VisitMut for StepTransform {
             items.insert(index, item);
         }
 
-        // In workflow mode, add workflowId property to workflow functions
-        if self.mode == TransformMode::Workflow && !self.workflow_exports_to_expand.is_empty() {
-            // Process workflow functions to add workflowId property
-            let workflow_functions: Vec<_> = self.workflow_exports_to_expand.drain(..).collect();
-
-            for (fn_name, _, span) in workflow_functions {
-                // Add workflowId assignment after the function declaration
-                items.push(ModuleItem::Stmt(
-                    self.create_workflow_id_assignment(&fn_name, span),
-                ));
-            }
-        }
+        // Clear workflow_exports_to_expand since workflowId is now added inline
+        self.workflow_exports_to_expand.clear();
 
         // Handle default workflow exports (all modes)
         // We need to: 1) find the export default position, 2) replace it with const declaration,
@@ -3872,10 +3977,21 @@ impl VisitMut for StepTransform {
                         ModuleItem::Stmt(self.create_workflow_id_assignment(&const_name, span)),
                     );
 
-                    // Insert export default at the end (after workflowId)
-                    for (_export_name, replacement_expr) in &default_exports {
+                    // In workflow mode, also insert registration after workflowId
+                    let export_pos = if self.mode == TransformMode::Workflow {
                         items.insert(
                             pos + 2,
+                            ModuleItem::Stmt(self.create_workflow_registration(&const_name, span)),
+                        );
+                        pos + 3
+                    } else {
+                        pos + 2
+                    };
+
+                    // Insert export default at the end (after workflowId and optional registration)
+                    for (_export_name, replacement_expr) in &default_exports {
+                        items.insert(
+                            export_pos,
                             ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(
                                 ExportDefaultExpr {
                                     span: DUMMY_SP,
@@ -4253,22 +4369,8 @@ impl VisitMut for StepTransform {
                                 // Store fn_name for later use after visiting children
                             }
                             TransformMode::Workflow => {
-                                // Remove directive before cloning (for the metadata)
-                                // Clone without the directive
-                                // Note: We keep the directive in place for now so nested steps can detect it,
-                                // but we'll remove it from the clone. The original will have it removed later.
+                                // Just remove the directive - workflowId is added inline in visit_mut_module_items
                                 self.remove_use_workflow_directive(&mut fn_decl.function.body);
-                                let cloned_ident = fn_decl.ident.clone();
-                                let cloned_function = fn_decl.function.clone();
-                                let span = fn_decl.function.span;
-                                self.workflow_exports_to_expand.push((
-                                    fn_name,
-                                    Expr::Fn(FnExpr {
-                                        ident: Some(cloned_ident),
-                                        function: cloned_function,
-                                    }),
-                                    span,
-                                ));
                             }
                             TransformMode::Client => {
                                 // Only replace with throw if function has inline directive
@@ -4486,17 +4588,10 @@ impl VisitMut for StepTransform {
                                                     ));
                                                 }
                                                 TransformMode::Workflow => {
-                                                    // In workflow mode, just remove the directive
+                                                    // Just remove the directive - workflowId is added inline in visit_mut_module_items
                                                     self.remove_use_workflow_directive(
                                                         &mut fn_expr.function.body,
                                                     );
-
-                                                    // Mark this function for expansion
-                                                    self.workflow_exports_to_expand.push((
-                                                        name.clone(),
-                                                        Expr::Fn(fn_expr.clone()),
-                                                        fn_expr.function.span,
-                                                    ));
                                                 }
                                                 TransformMode::Client => {
                                                     // Only replace with throw if function has inline directive
@@ -4663,17 +4758,10 @@ impl VisitMut for StepTransform {
                                                         .push((name.clone(), arrow_expr.span));
                                                 }
                                                 TransformMode::Workflow => {
-                                                    // In workflow mode, just remove the directive
+                                                    // Just remove the directive - workflowId is added inline in visit_mut_module_items
                                                     self.remove_use_workflow_directive_arrow(
                                                         &mut arrow_expr.body,
                                                     );
-
-                                                    // Mark this function for expansion
-                                                    self.workflow_exports_to_expand.push((
-                                                        name.clone(),
-                                                        Expr::Arrow(arrow_expr.clone()),
-                                                        arrow_expr.span,
-                                                    ));
                                                 }
                                                 TransformMode::Client => {
                                                     // Only replace with throw if function has inline directive
@@ -5741,7 +5829,7 @@ impl VisitMut for StepTransform {
                                 }
                             }
                             TransformMode::Workflow => {
-                                // In workflow mode, just remove the directive
+                                // Remove the directive - workflowId for named default exports is handled inline
                                 self.remove_use_workflow_directive(&mut fn_expr.function.body);
 
                                 if fn_name == "default" {
@@ -5762,16 +5850,8 @@ impl VisitMut for StepTransform {
                                             SyntaxContext::empty(),
                                         )),
                                     ));
-                                } else {
-                                    // Named default export: can reference by name
-                                    // export default async function name() { ... }
-                                    // name.workflowId = "...";
-                                    self.workflow_exports_to_expand.push((
-                                        const_name,
-                                        Expr::Fn(fn_expr.clone()),
-                                        fn_expr.function.span,
-                                    ));
                                 }
+                                // Named default exports: workflowId is added inline in visit_mut_module_items
                             }
                         }
                     }
@@ -6066,12 +6146,12 @@ impl VisitMut for StepTransform {
                     let prop_key = match &**boxed_prop {
                         Prop::KeyValue(kv) => match &kv.key {
                             PropName::Ident(ident) => Some(ident.sym.to_string()),
-                            PropName::Str(s) => Some(s.value.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
                             _ => None,
                         },
                         Prop::Method(m) => match &m.key {
                             PropName::Ident(ident) => Some(ident.sym.to_string()),
-                            PropName::Str(s) => Some(s.value.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
                             _ => None,
                         },
                         _ => None,

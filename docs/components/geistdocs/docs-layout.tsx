@@ -18,7 +18,7 @@ export const DocsLayout = ({
     }}
     sidebar={{
       className:
-        'md:static md:sticky md:top-16 md:h-fit md:w-auto! bg-background! md:bg-transparent! border-none transition-none',
+        'md:static md:sticky md:top-16 md:max-h-[calc(100vh-4rem)] md:overflow-y-auto md:w-auto! bg-background! md:bg-transparent! border-none transition-none',
       collapsible: false,
       components: {
         Folder,

@@ -2,6 +2,7 @@ import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { notFound } from 'next/navigation';
+import { AgentTraces } from '@/components/custom/agent-traces';
 import { AskAI } from '@/components/geistdocs/ask-ai';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
@@ -61,6 +62,7 @@ const Page = async (props: PageProps<'/docs/[[...slug]]'>) => {
             a: createRelativeLink(source, page),
 
             // Add your custom components here
+            AgentTraces,
             Badge,
             TSDoc,
             Step,

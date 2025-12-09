@@ -2,7 +2,7 @@
 title: Workflows and Steps
 ---
 
-import { File, Folder, Files } from 'fumadocs-ui/components/files';
+import { File, Folder, Files } from "fumadocs-ui/components/files";
 
 Workflows (a.k.a. *durable functions*) are a programming model for building long-running, stateful application logic that can maintain its execution state across restarts, failures, or user events. Unlike traditional serverless functions that lose all state when they terminate, workflows persist their progress and can resume exactly where they left off.
 
@@ -29,7 +29,7 @@ export async function processOrderWorkflow(orderId: string) {
   const order = await fetchOrder(orderId);
   const payment = await chargePayment(order);
 
-  return { orderId, status: 'completed' };
+  return { orderId, status: "completed" };
 }
 ```
 
@@ -58,7 +58,7 @@ async function chargePayment(order: Order) {
 
   const charge = await stripe.charges.create({
     amount: order.total,
-    currency: 'usd',
+    currency: "usd",
     source: order.paymentToken
   });
 
@@ -120,7 +120,7 @@ There are multiple ways a workflow can suspend:
 - Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
 
 ```typescript lineNumbers
-import { sleep, createWebhook } from 'workflow';
+import { sleep, createWebhook } from "workflow";
 
 export async function documentReviewProcess(userId: string) {
   "use workflow";

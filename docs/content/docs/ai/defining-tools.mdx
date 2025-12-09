@@ -1,0 +1,71 @@
+---
+title: Patterns for Defining Tools
+---
+
+This page covers the details for some common patterns when defining tools for AI agents using Workflow DevKit.
+
+Using DurableAgent, we model most tools as steps. These can be anything from a simple function call to a entire multi-day long workflow.
+
+## Accessing message context in tools
+
+Just like in regular AI SDK tool definitions, tool in DurableAgent are called with a first argument of the tool's input parameters, and a second argument of the tool call context.
+
+When you tool needs access to the full message history, you can access it via the `messages` property of the tool call context:
+
+```typescript title="tools.ts" lineNumbers
+async function getWeather(
+  { city }: { city: string },
+  { messages, toolCallId }: { messages: LanguageModelV2Prompt, toolCallId: string }) { // [!code highlight]
+  "use step";
+  return `Weather in ${city} is sunny`;
+}
+```
+
+## Writing to Streams
+
+As discussed in [Streaming Updates from Tools](/docs/ai/streaming-updates-from-tools), it's common to use a step just to call `getWritable()` for writing custom data parts to the stream.
+
+This can be made generic, by creating a helper step function to write arbitrary data to the stream:
+
+```typescript title="tools.ts" lineNumbers
+import { getWritable } from "workflow";
+
+async function writeToStream(data: any) {
+  "use step";
+
+  const writable = getWritable();
+  const writer = writable.getWriter();
+  await writer.write(data);
+  writer.releaseLock();
+}
+```
+
+## Step-Level vs Workflow-Level Tools
+
+Tools can be implemented either at the step level or the workflow level, with different capabilities and constraints.
+
+| Capability | Step-Level (`"use step"`) | Workflow-Level (`"use workflow"`) |
+|------------|---------------------------|----------------|
+| `getWritable()` | ✅ | ❌ |
+| Automatic retries | ✅ | ❌ |
+| Side-effects (e.g. API calls) allowed | ✅ | ❌ |
+| `sleep()` | ❌ | ✅ |
+| `createWebhook()` | ❌ | ✅ |
+
+Tools can also combine both by starting out on the workflow level, and calling into steps for I/O operations, like so:
+
+```typescript title="tools.ts" lineNumbers
+// Step: handles I/O with retries
+async function performFetch(url: string) {
+  "use step";
+  const response = await fetch(url);
+  return response.json();
+}
+
+// Workflow-level: orchestrates steps and can use sleep()
+async function executeFetchWithDelay({ url }: { url: string }) {
+  const result = await performFetch(url);
+  await sleep("5s"); // Only available at workflow level
+  return result;
+}
+```

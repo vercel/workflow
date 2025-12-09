@@ -68,9 +68,9 @@ export WORKFLOW_LOCAL_DATA_DIR=./custom-workflow-data
 **Programmatically:**
 
 ```typescript
-import { createLocalWorld } from '@workflow/world-local';
+import { createLocalWorld } from "@workflow/world-local";
 
-const world = createLocalWorld({ dataDir: './custom-workflow-data' });
+const world = createLocalWorld({ dataDir: "./custom-workflow-data" });
 ```
 
 ### Port
@@ -80,7 +80,7 @@ By default, the local world **automatically detects** which port your applicatio
 **Auto-detection example** (recommended):
 
 ```typescript
-import { createLocalWorld } from '@workflow/world-local';
+import { createLocalWorld } from "@workflow/world-local";
 
 // Port is automatically detected - no configuration needed!
 const world = createLocalWorld();
@@ -93,7 +93,7 @@ If auto-detection fails, the world will fall back to the `PORT` environment vari
 You can override the auto-detected port by specifying it explicitly:
 
 ```typescript
-import { createLocalWorld } from '@workflow/world-local';
+import { createLocalWorld } from "@workflow/world-local";
 
 const world = createLocalWorld({ port: 3000 });
 ```
@@ -117,16 +117,16 @@ export WORKFLOW_LOCAL_BASE_URL=https://local.example.com:3000
 **Programmatically:**
 
 ```typescript
-import { createLocalWorld } from '@workflow/world-local';
+import { createLocalWorld } from "@workflow/world-local";
 
 // HTTPS
 const world = createLocalWorld({
-  baseUrl: 'https://localhost:3000'
+  baseUrl: "https://localhost:3000"
 });
 
 // Custom hostname
 const world = createLocalWorld({
-  baseUrl: 'https://local.example.com:3000'
+  baseUrl: "https://local.example.com:3000"
 });
 ```
 
@@ -231,26 +231,26 @@ function createLocalWorld(
 **Examples:**
 
 ```typescript
-import { createLocalWorld } from '@workflow/world-local';
+import { createLocalWorld } from "@workflow/world-local";
 
 // Use all defaults (recommended - auto-detects port)
 const world = createLocalWorld();
 
 // Custom data directory
-const world = createLocalWorld({ dataDir: './my-data' });
+const world = createLocalWorld({ dataDir: "./my-data" });
 
 // Override port
 const world = createLocalWorld({ port: 3000 });
 
 // HTTPS with custom hostname
 const world = createLocalWorld({
-  baseUrl: 'https://local.example.com:3000'
+  baseUrl: "https://local.example.com:3000"
 });
 
 // Multiple options
 const world = createLocalWorld({
-  dataDir: './my-data',
-  baseUrl: 'https://localhost:3000'
+  dataDir: "./my-data",
+  baseUrl: "https://localhost:3000"
 });
 ```
 

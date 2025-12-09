@@ -1,0 +1,47 @@
+/* Custom styling for React Flow controls in dark mode */
+.react-flow__controls {
+    button {
+      background-color: hsl(var(--background));
+      border: 1px solid hsl(var(--border));
+      color: hsl(var(--foreground));
+    }
+  
+    button:hover {
+      background-color: hsl(var(--accent));
+    }
+  
+    button path {
+      fill: currentColor;
+    }
+  }
+  
+  /* Ensure text wraps properly in nodes */
+  .react-flow__node {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  
+  .react-flow__node-default,
+  .react-flow__node-input,
+  .react-flow__node-output {
+    width: 220px !important;
+    min-width: 220px !important;
+    max-width: 220px !important;
+    border-width: 1px;
+  }
+  
+  /* Pulse animation for currently executing node */
+  @keyframes pulse-subtle {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.7;
+    }
+  }
+  
+  .animate-pulse-subtle {
+    animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  

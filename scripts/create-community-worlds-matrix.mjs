@@ -63,6 +63,7 @@ const matrix = {
       package: world.package,
       'service-type': serviceType,
       'env-vars': JSON.stringify(world.env || {}),
+      'setup-command': world.setup || '',
     };
   }),
 };

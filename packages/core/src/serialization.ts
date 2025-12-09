@@ -1,5 +1,5 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
-import * as devalue from 'devalue';
+import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
@@ -9,6 +9,33 @@ import {
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
+
+/**
+ * Format a serialization error with context about what failed.
+ * Extracts path, value, and reason from devalue's DevalueError when available.
+ * Logs the problematic value to the console for better debugging.
+ */
+function formatSerializationError(context: string, error: unknown): string {
+  // Use "returning" for return values, "passing" for arguments/inputs
+  const verb = context.includes('return value') ? 'returning' : 'passing';
+
+  // Build the error message with path info if available from DevalueError
+  let message = `Failed to serialize ${context}`;
+  if (error instanceof DevalueError && error.path) {
+    message += ` at path "${error.path}"`;
+  }
+  message += `. Ensure you're ${verb} serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`;
+
+  // Log the problematic value to console for debugging
+  if (error instanceof DevalueError && error.value !== undefined) {
+    console.error(
+      `[Workflows] Serialization failed for ${context}. Problematic value:`
+    );
+    console.error(error.value);
+  }
+
+  return message;
+}
 
 /**
  * Detect if a readable stream is a byte stream.
@@ -31,12 +58,12 @@ export function getSerializeStream(
   const stream = new TransformStream<any, Uint8Array>({
     transform(chunk, controller) {
       try {
-        const serialized = devalue.stringify(chunk, reducers);
+        const serialized = stringify(chunk, reducers);
         controller.enqueue(encoder.encode(`${serialized}\n`));
       } catch (error) {
         controller.error(
           new WorkflowRuntimeError(
-            "Failed to serialize stream chunk. Ensure you're passing serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).",
+            formatSerializationError('stream chunk', error),
             { slug: 'serialization-failed', cause: error }
           )
         );
@@ -63,7 +90,7 @@ export function getDeserializeStream(
         const line = buffer.slice(0, newlineIndex);
         buffer = buffer.slice(newlineIndex + 1);
         if (line.length > 0) {
-          const obj = devalue.parse(line, revivers);
+          const obj = parse(line, revivers);
           controller.enqueue(obj);
         }
       }
@@ -71,7 +98,7 @@ export function getDeserializeStream(
     flush(controller) {
       // Process any remaining data in the buffer at the end of the stream
       if (buffer && buffer.length > 0) {
-        const obj = devalue.parse(buffer, revivers);
+        const obj = parse(buffer, revivers);
         controller.enqueue(obj);
       }
     },
@@ -884,14 +911,11 @@ export function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis
 ) {
   try {
-    const str = devalue.stringify(
-      value,
-      getExternalReducers(global, ops, runId)
-    );
+    const str = stringify(value, getExternalReducers(global, ops, runId));
     return revive(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
-      `Failed to serialize workflow arguments. Ensure you're passing serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`,
+      formatSerializationError('workflow arguments', error),
       { slug: 'serialization-failed', cause: error }
     );
   }
@@ -907,11 +931,11 @@ export function dehydrateWorkflowArguments(
  * @returns The hydrated value
  */
 export function hydrateWorkflowArguments(
-  value: Parameters<typeof devalue.unflatten>[0],
+  value: Parameters<typeof unflatten>[0],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const obj = devalue.unflatten(value, {
+  const obj = unflatten(value, {
     ...getWorkflowRevivers(global),
     ...extraRevivers,
   });
@@ -931,11 +955,11 @@ export function dehydrateWorkflowReturnValue(
   global: Record<string, any> = globalThis
 ) {
   try {
-    const str = devalue.stringify(value, getWorkflowReducers(global));
+    const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
-      `Failed to serialize workflow return value. Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`,
+      formatSerializationError('workflow return value', error),
       { slug: 'serialization-failed', cause: error }
     );
   }
@@ -954,13 +978,13 @@ export function dehydrateWorkflowReturnValue(
  * @returns The hydrated return value, ready to be consumed by the client
  */
 export function hydrateWorkflowReturnValue(
-  value: Parameters<typeof devalue.unflatten>[0],
+  value: Parameters<typeof unflatten>[0],
   ops: Promise<void>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const obj = devalue.unflatten(value, {
+  const obj = unflatten(value, {
     ...getExternalRevivers(global, ops, runId),
     ...extraRevivers,
   });
@@ -981,11 +1005,11 @@ export function dehydrateStepArguments(
   global: Record<string, any>
 ) {
   try {
-    const str = devalue.stringify(value, getWorkflowReducers(global));
+    const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
-      `Failed to serialize step arguments. Ensure you're passing serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`,
+      formatSerializationError('step arguments', error),
       { slug: 'serialization-failed', cause: error }
     );
   }
@@ -1003,13 +1027,13 @@ export function dehydrateStepArguments(
  * @returns The hydrated value, ready to be consumed by the step user-code function
  */
 export function hydrateStepArguments(
-  value: Parameters<typeof devalue.unflatten>[0],
+  value: Parameters<typeof unflatten>[0],
   ops: Promise<any>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const obj = devalue.unflatten(value, {
+  const obj = unflatten(value, {
     ...getStepRevivers(global, ops, runId),
     ...extraRevivers,
   });
@@ -1034,11 +1058,11 @@ export function dehydrateStepReturnValue(
   global: Record<string, any> = globalThis
 ) {
   try {
-    const str = devalue.stringify(value, getStepReducers(global, ops, runId));
+    const str = stringify(value, getStepReducers(global, ops, runId));
     return revive(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
-      `Failed to serialize step return value. Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`,
+      formatSerializationError('step return value', error),
       { slug: 'serialization-failed', cause: error }
     );
   }
@@ -1055,11 +1079,11 @@ export function dehydrateStepReturnValue(
  * @returns The hydrated return value of a step, ready to be consumed by the workflow handler
  */
 export function hydrateStepReturnValue(
-  value: Parameters<typeof devalue.unflatten>[0],
+  value: Parameters<typeof unflatten>[0],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const obj = devalue.unflatten(value, {
+  const obj = unflatten(value, {
     ...getWorkflowRevivers(global),
     ...extraRevivers,
   });

@@ -12,10 +12,10 @@ import { createWebhook } from "workflow"
 export async function webhookWorkflow() {
   "use workflow";
   const webhook = createWebhook();  // [!code highlight]
-  console.log('Webhook URL:', webhook.url);
+  console.log("Webhook URL:", webhook.url);
 
   const request = await webhook; // Suspends until HTTP request received
-  console.log('Received request:', request.method, request.url);
+  console.log("Received request:", request.method, request.url);
 }
 ```
 
@@ -60,15 +60,15 @@ export async function basicWebhookWorkflow() {
   "use workflow";
 
   const webhook = createWebhook(); // [!code highlight]
-  console.log('Send requests to:', webhook.url);
+  console.log("Send requests to:", webhook.url);
 
   const request = await webhook;
 
-  console.log('Method:', request.method);
-  console.log('Headers:', Object.fromEntries(request.headers));
+  console.log("Method:", request.method);
+  console.log("Headers:", Object.fromEntries(request.headers));
 
   const body = await request.text();
-  console.log('Body:', body);
+  console.log("Body:", body);
 }
 ```
 
@@ -82,9 +82,9 @@ import { createWebhook, type RequestWithResponse } from "workflow"
 async function sendResponse(request: RequestWithResponse) { // [!code highlight]
   "use step"; // [!code highlight]
   await request.respondWith( // [!code highlight]
-    new Response(JSON.stringify({ success: true, message: 'Received!' }), { // [!code highlight]
+    new Response(JSON.stringify({ success: true, message: "Received!" }), { // [!code highlight]
       status: 200, // [!code highlight]
-      headers: { 'Content-Type': 'application/json' } // [!code highlight]
+      headers: { "Content-Type": "application/json" } // [!code highlight]
     }) // [!code highlight]
   ); // [!code highlight]
 } // [!code highlight]
@@ -93,7 +93,7 @@ export async function respondingWebhookWorkflow() {
   "use workflow";
 
   const webhook = createWebhook();
-  console.log('Webhook URL:', webhook.url);
+  console.log("Webhook URL:", webhook.url);
 
   const request = await webhook;
 
@@ -108,7 +108,7 @@ export async function respondingWebhookWorkflow() {
 async function processData(data: any) {
   "use step";
   // Process the webhook data
-  console.log('Processing:', data);
+  console.log("Processing:", data);
 }
 ```
 
@@ -123,7 +123,7 @@ async function sendAck(request: RequestWithResponse) {
   "use step";
   await request.respondWith(
     new Response(JSON.stringify({ received: true }), {
-      headers: { 'Content-Type': 'application/json' }
+      headers: { "Content-Type": "application/json" }
     })
   );
 }
@@ -136,7 +136,7 @@ export async function githubWebhookWorkflow(repoName: string) {
     token: `github_webhook:${repoName}`, // [!code highlight]
   }); // [!code highlight]
 
-  console.log('Configure GitHub webhook:', webhook.url);
+  console.log("Configure GitHub webhook:", webhook.url);
 
   const request = await webhook;
   const event = await request.json();
@@ -164,10 +164,10 @@ async function sendSlackResponse(request: RequestWithResponse, message: string) 
   await request.respondWith(
     new Response(
       JSON.stringify({
-        response_type: 'in_channel',
+        response_type: "in_channel",
         text: message
       }),
-      { headers: { 'Content-Type': 'application/json' } }
+      { headers: { "Content-Type": "application/json" } }
     )
   );
 }
@@ -175,7 +175,7 @@ async function sendSlackResponse(request: RequestWithResponse, message: string) 
 async function sendStopResponse(request: RequestWithResponse) {
   "use step";
   await request.respondWith(
-    new Response('Stopping workflow...')
+    new Response("Stopping workflow...")
   );
 }
 
@@ -188,19 +188,19 @@ export async function slackCommandWorkflow(channelId: string) {
 
   for await (const request of webhook) { // [!code highlight]
     const formData = await request.formData();
-    const command = formData.get('command');
-    const text = formData.get('text');
+    const command = formData.get("command");
+    const text = formData.get("text");
 
-    if (command === '/status') {
+    if (command === "/status") {
       // Respond immediately to Slack
-      await sendSlackResponse(request, 'Checking status...');
+      await sendSlackResponse(request, "Checking status...");
 
       // Process the command
       const status = await checkSystemStatus();
       await postToSlack(channelId, `Status: ${status}`);
     }
 
-    if (text === 'stop') {
+    if (text === "stop") {
       await sendStopResponse(request);
       break;
     }

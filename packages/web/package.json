@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "4.0.1-beta.12",
+  "version": "4.0.1-beta.14",
   "private": false,
   "files": [
     ".next",
@@ -26,7 +26,9 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "next": "16.0.6"
+    "next": "16.0.7",
+    "nuqs": "^2.2.5",
+    "@xyflow/react": "12.9.3"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
@@ -36,6 +38,9 @@
     "@radix-ui/react-slot": "1.1.1",
     "@radix-ui/react-switch": "1.1.2",
     "@radix-ui/react-tooltip": "1.2.8",
+    "@radix-ui/react-dialog": "1.1.15",
+    "@radix-ui/react-tabs": "^1.1.13",
+    "@radix-ui/react-dropdown-menu": "2.1.6",
     "@tailwindcss/postcss": "4",
     "@types/node": "catalog:",
     "@types/react": "19",

@@ -31,8 +31,8 @@ npm i workflow
 Wrap your `next.config.ts` with `withWorkflow()`. This enables usage of the `"use workflow"` and `"use step"` directives.
 
 ```typescript title="next.config.ts" lineNumbers
-import { withWorkflow } from 'workflow/next'; // [!code highlight]
-import type { NextConfig } from 'next';
+import { withWorkflow } from "workflow/next"; // [!code highlight]
+import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // … rest of your Next.js config
@@ -81,8 +81,8 @@ internal paths to prevent the proxy handler from running on them.
 Add `.well-known/workflow/*` to your middleware's exclusion list:
 
 ```typescript title="proxy.ts" lineNumbers
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
 export function proxy(request: NextRequest) {
   // Your middleware logic
@@ -93,7 +93,7 @@ export const config = {
   matcher: [
     // ... your existing matchers
     {
-      source: '/((?!_next/static|_next/image|favicon.ico|.well-known/workflow/).*)', // [!code highlight]
+      source: "/((?!_next/static|_next/image|favicon.ico|.well-known/workflow/).*)", // [!code highlight]
     },
   ],
 };
@@ -196,7 +196,7 @@ We'll dive deeper into workflows, steps, and other ways to suspend or handle eve
 To invoke your new workflow, we'll need to add your workflow to a `POST` API Route Handler, `app/api/signup/route.ts`, with the following code:
 
 ```typescript title="app/api/signup/route.ts"
-import { start } from 'workflow/api';
+import { start } from "workflow/api";
 import { handleUserSignup } from "@/workflows/user-signup";
 import { NextResponse } from "next/server";
 
@@ -241,8 +241,10 @@ Check the Next.js development server logs to see your workflow execute, as well 
 Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
 ```bash
+# Open the observability Web UI
+npx workflow web
+# or if you prefer a terminal interface, use the CLI inspect command
 npx workflow inspect runs
-# or add '--web' for an interactive Web based UI
 ```
 
 <img src="/o11y-ui.png" alt="Workflow DevKit Web UI" />

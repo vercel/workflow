@@ -69,12 +69,12 @@ export async function approvalWorkflow() {
   "use workflow";
 
   const hook = createHook<{ approved: boolean; comment: string }>(); // [!code highlight]
-  console.log('Send approval to token:', hook.token);
+  console.log("Send approval to token:", hook.token);
 
   const result = await hook;
 
   if (result.approved) {
-    console.log('Approved with comment:', result.comment);
+    console.log("Approved with comment:", result.comment);
   }
 }
 ```
@@ -95,7 +95,7 @@ export async function slackBotWorkflow(channelId: string) {
   }); // [!code highlight]
 
   for await (const message of hook) {
-    if (message.text === '/stop') {
+    if (message.text === "/stop") {
       break;
     }
     await processMessage(message);
@@ -111,7 +111,7 @@ You can also wait for multiple payloads by using the `for await...of` syntax.
 import { createHook } from "workflow"
 
 export async function collectHookWorkflow() {
-  'use workflow';
+  "use workflow";
 
   const hook = createHook<{ message: string; done?: boolean }>();
 

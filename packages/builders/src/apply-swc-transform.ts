@@ -34,8 +34,11 @@ export async function applySwcTransform(
   workflowManifest: WorkflowManifest;
 }> {
   // Determine if this is a TypeScript file
-  const isTypeScript = filename.endsWith('.ts') || filename.endsWith('.tsx');
-  const isTsx = filename.endsWith('.tsx');
+  const isTypeScript =
+    filename.endsWith('.ts') ||
+    filename.endsWith('.tsx') ||
+    filename.endsWith('.mts') ||
+    filename.endsWith('.cts');
 
   // Transform with SWC to support syntax esbuild doesn't
   const result = await transform(source, {
@@ -43,8 +46,15 @@ export async function applySwcTransform(
     swcrc: false,
     jsc: {
       parser: {
-        syntax: isTypeScript ? 'typescript' : 'ecmascript',
-        tsx: isTsx,
+        ...(isTypeScript
+          ? {
+              syntax: 'typescript',
+              tsx: filename.endsWith('.tsx'),
+            }
+          : {
+              syntax: 'ecmascript',
+              jsx: filename.endsWith('.jsx'),
+            }),
       },
       target: 'es2022',
       experimental: mode
@@ -52,7 +62,14 @@ export async function applySwcTransform(
             plugins: [[require.resolve('@workflow/swc-plugin'), { mode }]],
           }
         : undefined,
+
       ...jscConfig,
+
+      transform: {
+        react: {
+          runtime: 'preserve',
+        },
+      },
     },
     // TODO: investigate proper source map support as they
     // won't even be used in Node.js by default unless we

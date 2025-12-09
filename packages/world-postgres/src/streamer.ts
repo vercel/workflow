@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Streamer } from '@workflow/world';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, like } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
@@ -206,6 +206,19 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
           cleanups.forEach((fn) => fn());
         },
       });
+    },
+
+    async listStreamsByRunId(runId: string): Promise<string[]> {
+      // Convert runId (wrun_{ULID}) to stream prefix (strm_{ULID}_user)
+      const streamPrefix = runId.replace('wrun_', 'strm_') + '_user';
+
+      // Query distinct stream IDs that match the prefix
+      const results = await drizzle
+        .selectDistinct({ streamId: streams.streamId })
+        .from(streams)
+        .where(like(streams.streamId, `${streamPrefix}%`));
+
+      return results.map((r) => r.streamId);
     },
   };
 }

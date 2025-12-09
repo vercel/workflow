@@ -1,3 +1,7 @@
+import { formatDuration } from '../../lib/utils';
+
+export { formatDuration };
+
 export function getHighResInMs([seconds, nanoseconds]: [
   number,
   number,
@@ -9,18 +13,12 @@ export function getMsInHighRes(ms: number): [number, number] {
   return [Math.floor(ms / 1000), (ms % 1000) * 1000];
 }
 
-const durationFormatter = new Intl.NumberFormat(undefined, {
-  maximumFractionDigits: 2,
-});
-
-export function formatDuration(ms: number): string {
-  if (ms === 0) {
-    return '0';
-  } else if (ms >= 1000) {
-    return `${durationFormatter.format(ms / 1000)}s`;
-  }
-  return `${durationFormatter.format(ms)}ms`;
-}
+/**
+ * Formats a duration for timeline display (compact single-unit format).
+ * @deprecated Use formatDuration(ms, true) instead.
+ */
+export const formatDurationForTimeline = (ms: number): string =>
+  formatDuration(ms, true);
 
 const timeSelectionFormatter = new Intl.NumberFormat(undefined, {
   minimumFractionDigits: 2,

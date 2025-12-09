@@ -123,7 +123,9 @@
 }
 
 /* Fumadocs bug patch */
-#nd-sidebar > div:first-child { @apply hidden; }
+#nd-sidebar > div:first-child {
+  @apply hidden;
+}
 
 /* Reset the counter for each code block */
 .with-line-numbers {

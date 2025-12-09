@@ -8,6 +8,7 @@ const args = process.argv.slice(2);
 let resultsDir = '.';
 let jobName = 'E2E Tests';
 let mode = 'single'; // 'single' for step summary, 'aggregate' for PR comment
+let runUrl = '';
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--job-name' && args[i + 1]) {
@@ -15,6 +16,9 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (args[i] === '--mode' && args[i + 1]) {
     mode = args[i + 1];
+    i++;
+  } else if (args[i] === '--run-url' && args[i + 1]) {
+    runUrl = args[i + 1];
     i++;
   } else if (!args[i].startsWith('--')) {
     resultsDir = args[i];
@@ -32,6 +36,7 @@ function findResultFiles(dir) {
         files.push(...findResultFiles(fullPath));
       } else if (
         entry.name.startsWith('e2e-') &&
+        !entry.name.startsWith('e2e-metadata-') &&
         entry.name.endsWith('.json')
       ) {
         files.push(fullPath);
@@ -41,6 +46,67 @@ function findResultFiles(dir) {
     // Directory doesn't exist or can't be read
   }
   return files;
+}
+
+// Find all e2e metadata JSON files
+function findMetadataFiles(dir) {
+  const files = [];
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...findMetadataFiles(fullPath));
+      } else if (
+        entry.name.startsWith('e2e-metadata-') &&
+        entry.name.endsWith('.json')
+      ) {
+        files.push(fullPath);
+      }
+    }
+  } catch (e) {
+    // Directory doesn't exist or can't be read
+  }
+  return files;
+}
+
+// Load metadata indexed by app name
+function loadMetadata(dir) {
+  const metadata = new Map(); // app -> { runIds, vercel }
+  const metadataFiles = findMetadataFiles(dir);
+
+  for (const file of metadataFiles) {
+    try {
+      const content = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      // Extract app name from filename: e2e-metadata-{app}-vercel.json
+      const basename = path.basename(file, '.json');
+      const match = basename.match(/^e2e-metadata-(.+)-vercel$/);
+      if (match && content.vercel) {
+        const appName = match[1];
+        metadata.set(appName, content);
+      }
+    } catch (e) {
+      // Skip invalid metadata files
+    }
+  }
+
+  return metadata;
+}
+
+// Generate observability URL for a test
+function getObservabilityUrl(metadata, appName, testName) {
+  const appMetadata = metadata.get(appName);
+  if (!appMetadata || !appMetadata.vercel) return null;
+
+  const { vercel, runIds } = appMetadata;
+  if (!vercel.teamSlug || !vercel.projectSlug) return null;
+
+  // Find the runId for this test
+  const runInfo = runIds?.find((r) => r.testName === testName);
+  if (!runInfo) return null;
+
+  const env = vercel.environment === 'production' ? 'production' : 'preview';
+  return `https://vercel.com/${vercel.teamSlug}/${vercel.projectSlug}/observability/workflows/runs/${runInfo.runId}?environment=${env}`;
 }
 
 // Parse vitest JSON output
@@ -106,6 +172,7 @@ function parseJobInfo(filename) {
           'sveltekit',
           'hono',
           'express',
+          'fastify',
           'astro',
           'example',
           'turso',
@@ -211,14 +278,9 @@ function aggregateByCategory(files) {
 function renderSingleJobSummary(summary) {
   const total =
     summary.totalPassed + summary.totalFailed + summary.totalSkipped;
-  const statusEmoji =
-    summary.totalFailed > 0 ? '❌' : summary.totalSkipped > 0 ? '⚠️' : '✅';
+  const statusEmoji = summary.totalFailed > 0 ? '❌' : '✅';
   const statusText =
-    summary.totalFailed > 0
-      ? 'Some tests failed'
-      : summary.totalSkipped > 0
-        ? 'All tests passed (some skipped)'
-        : 'All tests passed';
+    summary.totalFailed > 0 ? 'Some tests failed' : 'All tests passed';
 
   console.log(`## ${statusEmoji} ${jobName}\n`);
   console.log(`**Status:** ${statusText}\n`);
@@ -259,8 +321,7 @@ function renderSingleJobSummary(summary) {
     console.log('| File | Passed | Failed | Skipped |');
     console.log('|:-----|-------:|-------:|--------:|');
     for (const result of summary.fileResults) {
-      const fileStatus =
-        result.failed > 0 ? '❌' : result.skipped > 0 ? '⚠️' : '✅';
+      const fileStatus = result.failed > 0 ? '❌' : '✅';
       console.log(
         `| ${fileStatus} ${result.file} | ${result.passed} | ${result.failed} | ${result.skipped} |`
       );
@@ -292,23 +353,14 @@ const categoryOrder = [
 ];
 
 // Render aggregated PR comment summary
-function renderAggregatedSummary(categories, overallSummary) {
+function renderAggregatedSummary(categories, overallSummary, metadata) {
   const total =
     overallSummary.totalPassed +
     overallSummary.totalFailed +
     overallSummary.totalSkipped;
-  const statusEmoji =
-    overallSummary.totalFailed > 0
-      ? '❌'
-      : overallSummary.totalSkipped > 0
-        ? '⚠️'
-        : '✅';
+  const statusEmoji = overallSummary.totalFailed > 0 ? '❌' : '✅';
   const statusText =
-    overallSummary.totalFailed > 0
-      ? 'Some tests failed'
-      : overallSummary.totalSkipped > 0
-        ? 'All tests passed (some skipped)'
-        : 'All tests passed';
+    overallSummary.totalFailed > 0 ? 'Some tests failed' : 'All tests passed';
 
   console.log('<!-- e2e-test-results -->');
   console.log(`## 🧪 E2E Test Results\n`);
@@ -328,7 +380,7 @@ function renderAggregatedSummary(categories, overallSummary) {
 
   for (const [catName, cat] of sortedCategories) {
     const catTotal = cat.passed + cat.failed + cat.skipped;
-    const catStatus = cat.failed > 0 ? '❌' : cat.skipped > 0 ? '⚠️' : '✅';
+    const catStatus = cat.failed > 0 ? '❌' : '✅';
     const displayName = categoryNames[catName] || catName;
     console.log(
       `| ${catStatus} ${displayName} | ${cat.passed} | ${cat.failed} | ${cat.skipped} | ${catTotal} |`
@@ -340,21 +392,62 @@ function renderAggregatedSummary(categories, overallSummary) {
   );
   console.log('');
 
-  // Failed tests section
+  // Failed tests section - grouped by category and app
   if (overallSummary.allFailedTests.length > 0) {
     console.log('### ❌ Failed Tests\n');
+
+    // Group failed tests by category, then by app
+    const failedByCategory = new Map();
     for (const test of overallSummary.allFailedTests) {
-      const catDisplay = categoryNames[test.category] || test.category;
+      if (!failedByCategory.has(test.category)) {
+        failedByCategory.set(test.category, new Map());
+      }
+      const catMap = failedByCategory.get(test.category);
+      if (!catMap.has(test.app)) {
+        catMap.set(test.app, []);
+      }
+      catMap.get(test.app).push(test);
+    }
+
+    // Sort categories by defined order
+    const sortedFailedCategories = Array.from(failedByCategory.entries()).sort(
+      ([a], [b]) =>
+        (categoryOrder.indexOf(a) === -1 ? 999 : categoryOrder.indexOf(a)) -
+        (categoryOrder.indexOf(b) === -1 ? 999 : categoryOrder.indexOf(b))
+    );
+
+    for (const [catName, appsMap] of sortedFailedCategories) {
+      const catDisplay = categoryNames[catName] || catName;
+      const catFailedCount = Array.from(appsMap.values()).reduce(
+        (sum, tests) => sum + tests.length,
+        0
+      );
+
       console.log(`<details>`);
       console.log(
-        `<summary>${test.app} (${catDisplay}): ${test.name}</summary>\n`
+        `<summary>${catDisplay} (${catFailedCount} failed)</summary>\n`
       );
-      console.log(`**File:** \`${test.file}\`\n`);
-      if (test.message) {
-        console.log('```');
-        console.log(test.message);
-        console.log('```');
+
+      for (const [appName, tests] of appsMap.entries()) {
+        console.log(`**${appName}** (${tests.length} failed):\n`);
+        for (const test of tests) {
+          // Extract just the test name without "e2e " prefix if present
+          const testName = test.name.replace(/^e2e\s+/, '');
+          // Add observability link for vercel-prod tests
+          if (catName === 'vercel-prod') {
+            const obsUrl = getObservabilityUrl(metadata, appName, test.name);
+            if (obsUrl) {
+              console.log(`- \`${testName}\` ([🔍 observability](${obsUrl}))`);
+            } else {
+              console.log(`- \`${testName}\``);
+            }
+          } else {
+            console.log(`- \`${testName}\``);
+          }
+        }
+        console.log('');
       }
+
       console.log('</details>\n');
     }
   }
@@ -363,7 +456,7 @@ function renderAggregatedSummary(categories, overallSummary) {
   console.log('### Details by Category\n');
 
   for (const [catName, cat] of sortedCategories) {
-    const catStatus = cat.failed > 0 ? '❌' : cat.skipped > 0 ? '⚠️' : '✅';
+    const catStatus = cat.failed > 0 ? '❌' : '✅';
     const displayName = categoryNames[catName] || catName;
 
     console.log(`<details>`);
@@ -371,12 +464,18 @@ function renderAggregatedSummary(categories, overallSummary) {
     console.log('| App | Passed | Failed | Skipped |');
     console.log('|:----|-------:|-------:|--------:|');
     for (const app of cat.apps) {
-      const appStatus = app.failed > 0 ? '❌' : app.skipped > 0 ? '⚠️' : '✅';
+      const appStatus = app.failed > 0 ? '❌' : '✅';
       console.log(
         `| ${appStatus} ${app.name} | ${app.passed} | ${app.failed} | ${app.skipped} |`
       );
     }
     console.log('</details>\n');
+  }
+
+  // Add link to workflow run
+  if (runUrl) {
+    console.log('---');
+    console.log(`📋 [View full workflow run](${runUrl})`);
   }
 }
 
@@ -398,7 +497,8 @@ if (resultFiles.length === 0) {
 
 if (mode === 'aggregate') {
   const { categories, overallSummary } = aggregateByCategory(resultFiles);
-  renderAggregatedSummary(categories, overallSummary);
+  const metadata = loadMetadata(resultsDir);
+  renderAggregatedSummary(categories, overallSummary, metadata);
 
   // Exit with non-zero if any tests failed
   if (overallSummary.totalFailed > 0) {

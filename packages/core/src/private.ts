@@ -38,7 +38,11 @@ export { __private_getClosureVars } from './step/get-closure-vars.js';
 export interface WorkflowOrchestratorContext {
   globalThis: typeof globalThis;
   eventsConsumer: EventsConsumer;
-  invocationsQueue: QueueItem[];
+  /**
+   * Map of pending invocations keyed by correlationId.
+   * Using Map instead of Array for O(1) lookup/delete operations.
+   */
+  invocationsQueue: Map<string, QueueItem>;
   onWorkflowError: (error: Error) => void;
   generateUlid: () => string;
   generateNanoid: () => string;

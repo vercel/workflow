@@ -113,6 +113,40 @@ export function createStreamer(basedir: string): Streamer {
       streamEmitter.emit(`close:${name}` as const, { streamName: name });
     },
 
+    async listStreamsByRunId(runId: string) {
+      const chunksDir = path.join(basedir, 'streams', 'chunks');
+      const files = await listJSONFiles(chunksDir);
+
+      // Convert runId (wrun_{ULID}) to stream prefix (strm_{ULID}_user)
+      const streamPrefix = runId.replace('wrun_', 'strm_') + '_user';
+
+      // Extract unique stream names that match the run's prefix
+      const streamNames = new Set<string>();
+      for (const file of files) {
+        // Files are named: {streamName}-{chunkId}
+        // Find the last occurrence of '-strm_' to split correctly
+        const lastDashIndex = file.lastIndexOf('-strm_');
+        if (lastDashIndex === -1) {
+          // Try splitting at the last dash for legacy format
+          const parts = file.split('-');
+          if (parts.length >= 2) {
+            parts.pop(); // Remove chunkId
+            const streamName = parts.join('-');
+            if (streamName.startsWith(streamPrefix)) {
+              streamNames.add(streamName);
+            }
+          }
+        } else {
+          const streamName = file.substring(0, lastDashIndex);
+          if (streamName.startsWith(streamPrefix)) {
+            streamNames.add(streamName);
+          }
+        }
+      }
+
+      return Array.from(streamNames);
+    },
+
     async readFromStream(name: string, startIndex = 0) {
       const chunksDir = path.join(basedir, 'streams', 'chunks');
       let removeListeners = () => {};
@@ -161,7 +195,7 @@ export function createStreamer(basedir: string): Streamer {
             streamEmitter.off(`close:${name}` as const, closeListener);
             try {
               controller.close();
-            } catch (e) {
+            } catch {
               // Ignore if controller is already closed (e.g., from cancel() or EOF)
             }
           };
@@ -218,7 +252,7 @@ export function createStreamer(basedir: string): Streamer {
             removeListeners();
             try {
               controller.close();
-            } catch (e) {
+            } catch {
               // Ignore if controller is already closed (e.g., from closeListener event)
             }
             return;

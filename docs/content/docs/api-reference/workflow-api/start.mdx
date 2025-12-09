@@ -5,8 +5,8 @@ title: start
 Start/enqueue a new workflow run.
 
 ```typescript lineNumbers
-import { start } from 'workflow/api';
-import { myWorkflow } from './workflows/my-workflow';
+import { start } from "workflow/api";
+import { myWorkflow } from "./workflows/my-workflow";
 
 const run = await start(myWorkflow); // [!code highlight]
 ```
@@ -19,7 +19,7 @@ const run = await start(myWorkflow); // [!code highlight]
 definition={`
 import { start } from "workflow/api";
 export default start;`}
-showSections={['parameters']}
+showSections={["parameters"]}
 />
 
 #### StartOptions
@@ -36,9 +36,9 @@ Returns a `Run` object:
 
 <TSDoc
 definition={`
-import { Run } from 'workflow/api';
+import { Run } from "workflow/api";
 export default Run;`}
-showSections={['returns']}
+showSections={["returns"]}
 />
 
 Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-api/get-run#workflowreadablestreamoptions).
@@ -55,19 +55,19 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 ### With Arguments
 
 ```typescript
-import { start } from 'workflow/api';
-import { userSignupWorkflow } from './workflows/user-signup';
+import { start } from "workflow/api";
+import { userSignupWorkflow } from "./workflows/user-signup";
 
-const run = await start(userSignupWorkflow, ['user@example.com']); // [!code highlight]
+const run = await start(userSignupWorkflow, ["user@example.com"]); // [!code highlight]
 ```
 
 ### With `StartOptions`
 
 ```typescript
-import { start } from 'workflow/api';
-import { myWorkflow } from './workflows/my-workflow';
+import { start } from "workflow/api";
+import { myWorkflow } from "./workflows/my-workflow";
 
-const run = await start(myWorkflow, ['arg1', 'arg2'], { // [!code highlight]
-  deploymentId: 'custom-deployment-id' // [!code highlight]
+const run = await start(myWorkflow, ["arg1", "arg2"], { // [!code highlight]
+  deploymentId: "custom-deployment-id" // [!code highlight]
 }); // [!code highlight]
 ```

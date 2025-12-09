@@ -40,10 +40,19 @@ export class WorkflowSuspension extends Error {
   hookCount: number;
   waitCount: number;
 
-  constructor(steps: QueueItem[], global: typeof globalThis) {
-    const stepCount = steps.filter((s) => s.type === 'step').length;
-    const hookCount = steps.filter((s) => s.type === 'hook').length;
-    const waitCount = steps.filter((s) => s.type === 'wait').length;
+  constructor(stepsInput: Map<string, QueueItem>, global: typeof globalThis) {
+    // Convert Map to array for iteration and storage
+    const steps = [...stepsInput.values()];
+
+    // Single-pass counting for efficiency
+    let stepCount = 0;
+    let hookCount = 0;
+    let waitCount = 0;
+    for (const item of steps) {
+      if (item.type === 'step') stepCount++;
+      else if (item.type === 'hook') hookCount++;
+      else if (item.type === 'wait') waitCount++;
+    }
 
     // Build description parts
     const parts: string[] = [];

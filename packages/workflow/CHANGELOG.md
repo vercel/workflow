@@ -1,5 +1,58 @@
 # workflow
 
+## 4.0.1-beta.28
+
+### Patch Changes
+
+- Updated dependencies [57a2c32]
+- Updated dependencies [21cff15]
+  - @workflow/cli@4.0.1-beta.28
+  - @workflow/next@4.0.1-beta.27
+  - @workflow/rollup@4.0.0-beta.6
+  - @workflow/core@4.0.1-beta.24
+  - @workflow/errors@4.0.1-beta.7
+  - @workflow/astro@4.0.0-beta.6
+  - @workflow/nitro@4.0.1-beta.27
+  - @workflow/sveltekit@4.0.0-beta.21
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.16
+
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- @workflow/cli@4.0.1-beta.27
+
+## 4.0.1-beta.26
+
+### Patch Changes
+
+- Updated dependencies [1112901]
+  - @workflow/next@4.0.1-beta.26
+  - @workflow/cli@4.0.1-beta.26
+  - @workflow/core@4.0.1-beta.23
+  - @workflow/nitro@4.0.1-beta.26
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.5
+  - @workflow/sveltekit@4.0.0-beta.20
+  - @workflow/nuxt@4.0.1-beta.15
+
+## 4.0.1-beta.25
+
+### Patch Changes
+
+- Updated dependencies [ac7997b]
+- Updated dependencies [02c41cc]
+  - @workflow/astro@4.0.0-beta.4
+  - @workflow/next@4.0.1-beta.25
+  - @workflow/core@4.0.1-beta.22
+  - @workflow/cli@4.0.1-beta.25
+  - @workflow/nitro@4.0.1-beta.25
+  - @workflow/rollup@4.0.0-beta.5
+  - @workflow/sveltekit@4.0.0-beta.19
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.14
+
 ## 4.0.1-beta.24
 
 ### Patch Changes

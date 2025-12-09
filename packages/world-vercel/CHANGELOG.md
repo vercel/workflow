@@ -1,5 +1,19 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.17
+
+### Patch Changes
+
+- Updated dependencies [57a2c32]
+  - @workflow/world@4.0.1-beta.9
+  - @workflow/errors@4.0.1-beta.7
+
+## 4.0.1-beta.16
+
+### Patch Changes
+
+- c8fa70a: Change Vercel queue max visibility to 11 hours
+
 ## 4.0.1-beta.15
 
 ### Patch Changes

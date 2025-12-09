@@ -30,7 +30,7 @@ This error typically happens when:
 // Error - missing directive
 export async function processOrder(orderId: string) { // [!code highlight]
   // workflow logic
-  return { status: 'completed' };
+  return { status: "completed" };
 }
 ```
 
@@ -42,19 +42,19 @@ export async function processOrder(orderId: string) {
   "use workflow"; // [!code highlight]
 
   // workflow logic
-  return { status: 'completed' };
+  return { status: "completed" };
 }
 ```
 
 ### Incorrect Import
 
 ```typescript lineNumbers title="app/api/route.ts"
-import { start } from 'workflow/api';
+import { start } from "workflow/api";
 // Error - importing step function instead of workflow
-import { processStep } from '@/workflows/order'; // [!code highlight]
+import { processStep } from "@/workflows/order"; // [!code highlight]
 
 export async function POST(request: Request) {
-  await start(processStep, ['order-123']); // Error! // [!code highlight]
+  await start(processStep, ["order-123"]); // Error! // [!code highlight]
   return Response.json({ started: true });
 }
 ```
@@ -62,12 +62,12 @@ export async function POST(request: Request) {
 **Solution:** Import the correct workflow function.
 
 ```typescript lineNumbers title="app/api/route.ts"
-import { start } from 'workflow/api';
+import { start } from "workflow/api";
 // Fixed - import workflow function
-import { processOrder } from '@/workflows/order'; // [!code highlight]
+import { processOrder } from "@/workflows/order"; // [!code highlight]
 
 export async function POST(request: Request) {
-  await start(processOrder, ['order-123']); // [!code highlight]
+  await start(processOrder, ["order-123"]); // [!code highlight]
   return Response.json({ started: true });
 }
 ```
@@ -76,7 +76,7 @@ export async function POST(request: Request) {
 
 ```typescript lineNumbers title="next.config.ts"
 // Error - missing withWorkflow wrapper
-import type { NextConfig } from 'next';
+import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // your config
@@ -89,8 +89,8 @@ export default nextConfig;
 
 ```typescript lineNumbers title="next.config.ts"
 // Fixed - includes withWorkflow
-import { withWorkflow } from 'workflow/next'; // [!code highlight}
-import type { NextConfig } from 'next';
+import { withWorkflow } from "workflow/next"; // [!code highlight}
+import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // your config

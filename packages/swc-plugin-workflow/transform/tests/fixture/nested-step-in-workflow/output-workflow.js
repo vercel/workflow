@@ -19,3 +19,4 @@ export async function example(a, b) {
     return val + val2 + val3 + val4 + val5;
 }
 example.workflowId = "workflow//input.js//example";
+globalThis.__private_workflows.set("workflow//input.js//example", example);

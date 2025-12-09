@@ -15,6 +15,13 @@
       "when": 1763903867386,
       "tag": "0001_tricky_sersi",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1764815363008,
+      "tag": "0002_add_expired_at",
+      "breakpoints": true
     }
   ]
 }

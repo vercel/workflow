@@ -1,21 +1,11 @@
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { BaseBuilder, type SvelteKitConfig } from '@workflow/builders';
-
-// Helper function code for converting SvelteKit requests to standard Request objects
-const SVELTEKIT_REQUEST_CONVERTER = `
-async function convertSvelteKitRequest(request) {
-  const options = {
-    method: request.method,
-    headers: new Headers(request.headers)
-  };
-  if (!['GET', 'HEAD', 'OPTIONS', 'TRACE', 'CONNECT'].includes(request.method)) {
-    options.body = await request.arrayBuffer();
-  }
-  return new Request(request.url, options);
-}
-`;
+import {
+  BaseBuilder,
+  type SvelteKitConfig,
+  NORMALIZE_REQUEST_CODE,
+} from '@workflow/builders';
 
 export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<SvelteKitConfig>) {
@@ -93,9 +83,9 @@ export class SvelteKitBuilder extends BaseBuilder {
     // Replace the default export with SvelteKit-compatible handler
     stepsRouteContent = stepsRouteContent.replace(
       /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
-      `${SVELTEKIT_REQUEST_CONVERTER}
+      `${NORMALIZE_REQUEST_CODE}
 export const POST = async ({request}) => {
-  const normalRequest = await convertSvelteKitRequest(request);
+  const normalRequest = await normalizeRequest(request);
   return stepEntrypoint(normalRequest);
 }`
     );
@@ -134,9 +124,9 @@ export const POST = async ({request}) => {
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
-      `${SVELTEKIT_REQUEST_CONVERTER}
+      `${NORMALIZE_REQUEST_CODE}
 export const POST = async ({request}) => {
-  const normalRequest = await convertSvelteKitRequest(request);
+  const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
 }`
     );
@@ -177,9 +167,9 @@ export const POST = async ({request}) => {
     // Replace all HTTP method exports with SvelteKit-compatible handlers
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
-      `${SVELTEKIT_REQUEST_CONVERTER}
+      `${NORMALIZE_REQUEST_CODE}
 const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
-  const normalRequest = await convertSvelteKitRequest(request);
+  const normalRequest = await normalizeRequest(request);
   const response = await handler(normalRequest, params.token);
   return response;
 };

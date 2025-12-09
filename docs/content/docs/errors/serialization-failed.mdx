@@ -36,7 +36,7 @@ Functions, class instances, symbols, and other non-serializable types cannot be 
 export async function processWorkflow() {
   "use workflow";
 
-  const callback = () => console.log('done'); // [!code highlight]
+  const callback = () => console.log("done"); // [!code highlight]
   await processStep(callback); // Error! // [!code highlight]
 }
 ```
@@ -55,7 +55,7 @@ async function processStep(config: { shouldLog: boolean }) {
   "use step";
 
   if (config.shouldLog) { // [!code highlight]
-    console.log('done'); // [!code highlight]
+    console.log("done"); // [!code highlight]
   } // [!code highlight]
 }
 ```
@@ -72,7 +72,7 @@ class User {
 export async function greetWorkflow() {
   "use workflow";
 
-  await greetStep(new User('Alice')); // Error! // [!code highlight]
+  await greetStep(new User("Alice")); // Error! // [!code highlight]
 }
 ```
 
@@ -88,7 +88,7 @@ class User {
 export async function greetWorkflow() {
   "use workflow";
 
-  await greetStep({ name: 'Alice' }); // [!code highlight]
+  await greetStep({ name: "Alice" }); // [!code highlight]
 }
 
 async function greetStep(userData: { name: string }) {

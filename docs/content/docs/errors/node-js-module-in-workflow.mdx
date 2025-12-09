@@ -25,13 +25,13 @@ For example, when trying to read a file in a workflow function, you should move 
 **Before:**
 
 ```typescript lineNumbers
-import * as fs from 'fs';
+import * as fs from "fs";
 
 export async function processFileWorkflow(filePath: string) {
   "use workflow";
 
   // This will cause an error - Node.js module in workflow context
-  const content = fs.readFileSync(filePath, 'utf-8'); // [!code highlight]
+  const content = fs.readFileSync(filePath, "utf-8"); // [!code highlight]
   return content;
 }
 ```
@@ -39,7 +39,7 @@ export async function processFileWorkflow(filePath: string) {
 **After:**
 
 ```typescript lineNumbers
-import * as fs from 'fs';
+import * as fs from "fs";
 
 export async function processFileWorkflow(filePath: string) {
   "use workflow";
@@ -53,7 +53,7 @@ async function read(filePath: string) {
   "use step";
 
   // Node.js modules are allowed in step functions
-  return fs.readFileSync(filePath, 'utf-8'); // [!code highlight]
+  return fs.readFileSync(filePath, "utf-8"); // [!code highlight]
 }
 ```
 

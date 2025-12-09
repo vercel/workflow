@@ -9,7 +9,7 @@ import {
   listRuns,
   listSleeps,
   listSteps,
-  listStreams,
+  listStreamsByRunId,
   showHook,
   showRun,
   showStep,
@@ -175,7 +175,7 @@ export default class Inspect extends BaseCommand {
         if (id) {
           await showStream(world, id, options);
         } else {
-          await listStreams(world, options);
+          await listStreamsByRunId(world, options);
         }
         process.exit(0);
       }

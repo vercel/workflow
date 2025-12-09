@@ -157,14 +157,14 @@ function createVercelWorld(
 **Example:**
 
 ```typescript
-import { createVercelWorld } from '@workflow/world-vercel';
+import { createVercelWorld } from "@workflow/world-vercel";
 
 const world = createVercelWorld({
   token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
   headers: {
-    'x-vercel-environment': 'production',
-    'x-vercel-project-id': 'my-project',
-    'x-vercel-team-id': 'my-team',
+    "x-vercel-environment": "production",
+    "x-vercel-project-id": "my-project",
+    "x-vercel-team-id": "my-team",
   },
 });
 ```

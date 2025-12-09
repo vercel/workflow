@@ -9,6 +9,17 @@ const ulid = monotonicFactory(() => Math.random());
 
 const Ulid = z.string().ulid();
 
+// In-memory cache of created files to avoid expensive fs.access() calls
+// This is safe because we only write once per file path (no overwrites without explicit flag)
+const createdFilesCache = new Set<string>();
+
+/**
+ * Clear the created files cache. Useful for testing or when files are deleted externally.
+ */
+export function clearCreatedFilesCache(): void {
+  createdFilesCache.clear();
+}
+
 export function ulidToDate(maybeUlid: string): Date | null {
   const ulid = Ulid.safeParse(maybeUlid);
   if (!ulid.success) {
@@ -53,8 +64,20 @@ export async function write(
   opts?: WriteOptions
 ): Promise<void> {
   if (!opts?.overwrite) {
+    // Fast path: check in-memory cache first to avoid expensive fs.access() calls
+    // This provides significant performance improvement when creating many files
+    if (createdFilesCache.has(filePath)) {
+      throw new WorkflowAPIError(
+        `File ${filePath} already exists and 'overwrite' is false`,
+        { status: 409 }
+      );
+    }
+
+    // Slow path: check filesystem for files created before this process started
     try {
       await fs.access(filePath);
+      // File exists on disk, add to cache for future checks
+      createdFilesCache.add(filePath);
       throw new WorkflowAPIError(
         `File ${filePath} already exists and 'overwrite' is false`,
         { status: 409 }
@@ -74,6 +97,8 @@ export async function write(
     await fs.writeFile(tempPath, data);
     tempFileCreated = true;
     await fs.rename(tempPath, filePath);
+    // Track this file in cache so future writes know it exists
+    createdFilesCache.add(filePath);
   } catch (error) {
     // Only try to clean up temp file if it was actually created
     if (tempFileCreated) {

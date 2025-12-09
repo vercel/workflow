@@ -508,7 +508,99 @@ describe('streamer', () => {
         const content = chunks.join('');
         expect(content).toBe('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n');
       });
+    });
 
+    describe('listStreamsByRunId', () => {
+      it('should return empty array when no streams exist', async () => {
+        const { streamer } = await setupStreamer();
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+        expect(streams).toEqual([]);
+      });
+
+      it('should return streams that match the runId prefix', async () => {
+        const { streamer } = await setupStreamer();
+
+        // Create stream names that follow the expected pattern:
+        // runId wrun_test12345678901234 -> stream prefix strm_test12345678901234_user
+        const streamPrefix = TEST_RUN_ID.replace('wrun_', 'strm_') + '_user';
+        const streamName1 = `${streamPrefix}_stdout`;
+        const streamName2 = `${streamPrefix}_stderr`;
+
+        await streamer.writeToStream(streamName1, TEST_RUN_ID, 'stdout output');
+        await streamer.writeToStream(streamName2, TEST_RUN_ID, 'stderr output');
+        await streamer.closeStream(streamName1, TEST_RUN_ID);
+        await streamer.closeStream(streamName2, TEST_RUN_ID);
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        expect(streams).toHaveLength(2);
+        expect(streams).toContain(streamName1);
+        expect(streams).toContain(streamName2);
+      });
+
+      it('should not return streams from different runIds', async () => {
+        const { streamer } = await setupStreamer();
+
+        const otherRunId = 'wrun_other1234567890123';
+        const targetPrefix = TEST_RUN_ID.replace('wrun_', 'strm_') + '_user';
+        const otherPrefix = otherRunId.replace('wrun_', 'strm_') + '_user';
+
+        const targetStream = `${targetPrefix}_stdout`;
+        const otherStream = `${otherPrefix}_stdout`;
+
+        await streamer.writeToStream(
+          targetStream,
+          TEST_RUN_ID,
+          'target output'
+        );
+        await streamer.writeToStream(otherStream, otherRunId, 'other output');
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        expect(streams).toHaveLength(1);
+        expect(streams).toContain(targetStream);
+        expect(streams).not.toContain(otherStream);
+      });
+
+      it('should return unique stream names even with multiple chunks', async () => {
+        const { streamer } = await setupStreamer();
+
+        const streamPrefix = TEST_RUN_ID.replace('wrun_', 'strm_') + '_user';
+        const streamName = `${streamPrefix}_output`;
+
+        // Write multiple chunks to the same stream
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk1');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk2');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk3');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        // Should only return the stream name once, not once per chunk
+        expect(streams).toHaveLength(1);
+        expect(streams).toContain(streamName);
+      });
+
+      it('should handle stream names with dashes', async () => {
+        const { streamer } = await setupStreamer();
+
+        const streamPrefix = TEST_RUN_ID.replace('wrun_', 'strm_') + '_user';
+        const streamName = `${streamPrefix}_my-complex-stream-name`;
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'data');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        expect(streams).toHaveLength(1);
+        expect(streams).toContain(streamName);
+      });
+    });
+
+    describe('integration scenarios', () => {
       it('should handle runId as a promise and flush correctly when promise resolves', async () => {
         const { streamer } = await setupStreamer();
         const streamName = 'promise-runid-test';

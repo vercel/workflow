@@ -13,8 +13,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
 
-    // Add hook creation to invocations queue
-    ctx.invocationsQueue.push({
+    // Add hook creation to invocations queue (using Map for O(1) operations)
+    ctx.invocationsQueue.set(correlationId, {
       type: 'hook',
       correlationId,
       token,
@@ -52,13 +52,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         event?.eventType === 'hook_created' &&
         event.correlationId === correlationId
       ) {
-        // Remove this hook from the invocations queue if it exists
-        const index = ctx.invocationsQueue.findIndex(
-          (item) => item.type === 'hook' && item.correlationId === correlationId
-        );
-        if (index !== -1) {
-          ctx.invocationsQueue.splice(index, 1);
-        }
+        // Remove this hook from the invocations queue (O(1) delete using Map)
+        ctx.invocationsQueue.delete(correlationId);
         return EventConsumerResult.Consumed;
       }
 

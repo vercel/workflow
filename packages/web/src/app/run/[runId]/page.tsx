@@ -1,26 +1,24 @@
 'use client';
 
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { RunDetailView } from '@/components/run-detail-view';
 import { useQueryParamConfig } from '@/lib/config';
+import {
+  useEventIdState,
+  useHookIdState,
+  useStepIdState,
+} from '@/lib/url-state';
 
 export default function RunDetailPage() {
   const params = useParams();
-  const searchParams = useSearchParams();
   const config = useQueryParamConfig();
+  const [stepId] = useStepIdState();
+  const [eventId] = useEventIdState();
+  const [hookId] = useHookIdState();
 
   const runId = params.runId as string;
-  const stepId = searchParams.get('stepId') || searchParams.get('step');
-  const eventId = searchParams.get('eventId') || searchParams.get('event');
-  const hookId = searchParams.get('hookId') || searchParams.get('hook');
-  const selectedId = stepId
-    ? stepId
-    : eventId
-      ? eventId
-      : hookId
-        ? hookId
-        : undefined;
+  const selectedId = stepId || eventId || hookId || undefined;
 
   return (
     <ErrorBoundary

@@ -1,0 +1,12 @@
+{
+  "title": "AI Agents",
+  "pages": [
+    "index",
+    "streaming-updates-from-tools",
+    "resumable-streams",
+    "sleep-and-delays",
+    "human-in-the-loop",
+    "defining-tools"
+  ],
+  "defaultOpen": true
+}

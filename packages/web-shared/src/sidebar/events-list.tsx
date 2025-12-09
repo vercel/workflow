@@ -17,23 +17,26 @@ export function EventsList({
   correlationId,
   env,
   events,
+  expiredAt,
 }: {
   correlationId: string;
   env: EnvMap;
   events: SpanEvent[];
+  expiredAt?: string | Date;
 }) {
+  const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
   const fetchEvents = useCallback(() => {
     return fetchEventsByCorrelationId(env, correlationId, {
       sortOrder: 'asc',
       limit: 100,
-      withData: true,
+      withData: !hasExpired,
     }).then((evts) => {
       if (!evts.success) {
         throw new Error(evts.error?.message || 'Failed to fetch events');
       }
       return convertEventsToSpanEvents(evts.data.data || [], false);
     });
-  }, [env, correlationId]);
+  }, [env, correlationId, hasExpired]);
 
   const {
     data,
@@ -94,25 +97,52 @@ export function EventsList({
                 </>
               }
             >
-              <div className="mt-2 px-4">
+              {/* Bordered container with separator */}
+              <div
+                className="flex flex-col divide-y rounded-md border overflow-hidden"
+                style={{
+                  borderColor: 'var(--ds-gray-300)',
+                  backgroundColor: 'var(--ds-gray-100)',
+                }}
+              >
                 {Object.entries(event.attributes)
                   .filter(([key]) => key !== 'eventData')
                   .map(([key, value]) => (
-                    <AttributeBlock key={key} attribute={key} value={value} />
+                    <div
+                      key={key}
+                      className="flex items-center justify-between px-2.5 py-1.5"
+                      style={{ borderColor: 'var(--ds-gray-300)' }}
+                    >
+                      <span
+                        className="text-[11px] font-medium"
+                        style={{ color: 'var(--ds-gray-500)' }}
+                      >
+                        {key}
+                      </span>
+                      <span
+                        className="text-[11px] font-mono"
+                        style={{ color: 'var(--ds-gray-1000)' }}
+                      >
+                        {String(value)}
+                      </span>
+                    </div>
                   ))}
-                <div className="relative">
-                  {eventError && <div>Error loading event data</div>}
-                  {!eventError &&
-                    !eventsLoading &&
-                    event.attributes.eventData && (
-                      <AttributeBlock
-                        isLoading={eventsLoading}
-                        attribute="eventData"
-                        value={event.attributes.eventData}
-                      />
-                    )}
-                </div>
               </div>
+              {/* Event data section */}
+              {eventError && (
+                <div className="text-xs text-red-500 mt-2">
+                  Error loading event data
+                </div>
+              )}
+              {!eventError && !eventsLoading && event.attributes.eventData && (
+                <div className="mt-2">
+                  <AttributeBlock
+                    isLoading={eventsLoading}
+                    attribute="eventData"
+                    value={event.attributes.eventData}
+                  />
+                </div>
+              )}
             </DetailCard>
           ))}
         </div>

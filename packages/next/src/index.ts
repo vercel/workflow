@@ -62,7 +62,16 @@ export function withWorkflow(
     const nextVersion = require('next/package.json').version;
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
-    for (const key of ['*.tsx', '*.ts', '*.jsx', '*.js']) {
+    for (const key of [
+      '*.tsx',
+      '*.ts',
+      '*.jsx',
+      '*.js',
+      '*.mjs',
+      '*.mts',
+      '*.cjs',
+      '*.cts',
+    ]) {
       nextConfig.turbopack.rules[key] = {
         ...(supportsTurboCondition
           ? {
@@ -119,10 +128,7 @@ export function withWorkflow(
         workflowsBundlePath: '', // not used in base
         stepsBundlePath: '', // not used in base
         webhookBundlePath: '', // node used in base
-        externalPackages: [
-          ...require('next/dist/lib/server-external-packages.json'),
-          ...(nextConfig.serverExternalPackages || []),
-        ],
+        externalPackages: [...(nextConfig.serverExternalPackages || [])],
       });
 
       await workflowBuilder.build();

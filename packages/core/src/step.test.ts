@@ -20,7 +20,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   return {
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events),
-    invocationsQueue: [],
+    invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt), // All generated ulids use the workflow's started at time
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
@@ -99,7 +99,10 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '1 step has not been run yet'
     );
-    expect(ctx.invocationsQueue).toEqual((error as WorkflowSuspension).steps);
+    // Compare Map values with WorkflowSuspension.steps array
+    expect([...ctx.invocationsQueue.values()]).toEqual(
+      (error as WorkflowSuspension).steps
+    );
     expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
       [
         {
@@ -142,7 +145,10 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '3 steps have not been run yet'
     );
-    expect(ctx.invocationsQueue).toEqual((error as WorkflowSuspension).steps);
+    // Compare Map values with WorkflowSuspension.steps array
+    expect([...ctx.invocationsQueue.values()]).toEqual(
+      (error as WorkflowSuspension).steps
+    );
     expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
       [
         {
@@ -228,8 +234,9 @@ describe('createUseStep', () => {
     expect(result).toBe('Result: 42');
 
     // Verify closure variables were added to invocation queue
-    expect(ctx.invocationsQueue).toHaveLength(1);
-    expect(ctx.invocationsQueue[0]).toMatchObject({
+    expect(ctx.invocationsQueue.size).toBe(1);
+    const queueItem = [...ctx.invocationsQueue.values()][0];
+    expect(queueItem).toMatchObject({
       type: 'step',
       stepName: 'calculate',
       args: [],
@@ -263,8 +270,9 @@ describe('createUseStep', () => {
     expect(result).toBe(5);
 
     // Verify empty closure variables were added to invocation queue
-    expect(ctx.invocationsQueue).toHaveLength(1);
-    expect(ctx.invocationsQueue[0]).toMatchObject({
+    expect(ctx.invocationsQueue.size).toBe(1);
+    const queueItem = [...ctx.invocationsQueue.values()][0];
+    expect(queueItem).toMatchObject({
       type: 'step',
       stepName: 'add',
       args: [2, 3],

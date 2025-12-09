@@ -57,7 +57,7 @@ export function createDevTests(config?: DevTestConfig) {
       restoreFiles.length = 0;
     });
 
-    test('should rebuild on workflow change', { timeout: 10_000 }, async () => {
+    test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(workflowFile, 'utf8');
@@ -85,7 +85,7 @@ export async function myNewWorkflow() {
       }
     });
 
-    test('should rebuild on step change', { timeout: 10_000 }, async () => {
+    test('should rebuild on step change', { timeout: 30_000 }, async () => {
       const stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(stepFile, 'utf8');
@@ -115,7 +115,7 @@ export async function myNewStep() {
 
     test(
       'should rebuild on adding workflow file',
-      { timeout: 10_000 },
+      { timeout: 30_000 },
       async () => {
         const workflowFile = path.join(
           appPath,

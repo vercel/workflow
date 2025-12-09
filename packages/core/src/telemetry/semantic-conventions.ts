@@ -205,3 +205,18 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
 export const WebhookHandlersTriggered = SemanticConvention<number>(
   'webhook.handlers.triggered'
 );
+
+// Suspension attributes
+
+export const WorkflowSuspensionState = SemanticConvention<'suspended'>(
+  'workflow.suspension.state'
+);
+export const WorkflowSuspensionHookCount = SemanticConvention<number>(
+  'workflow.suspension.hook_count'
+);
+export const WorkflowSuspensionStepCount = SemanticConvention<number>(
+  'workflow.suspension.step_count'
+);
+export const WorkflowSuspensionWaitCount = SemanticConvention<number>(
+  'workflow.suspension.wait_count'
+);

@@ -1,8 +1,7 @@
 'use client';
 
 import type { EnvMap } from '@workflow/web-shared/server';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useMemo } from 'react';
+import { createSerializer, parseAsString, useQueryStates } from 'nuqs';
 import type { WorldConfig } from '@/lib/config-world';
 
 // Default configuration
@@ -13,6 +12,22 @@ const DEFAULT_CONFIG: WorldConfig = {
   env: 'production',
 };
 
+// nuqs parsers for config params
+const configParsers = {
+  backend: parseAsString.withDefault(DEFAULT_CONFIG.backend || 'embedded'),
+  env: parseAsString.withDefault(DEFAULT_CONFIG.env || 'production'),
+  authToken: parseAsString,
+  project: parseAsString,
+  team: parseAsString,
+  port: parseAsString.withDefault(DEFAULT_CONFIG.port || '3000'),
+  dataDir: parseAsString.withDefault(
+    DEFAULT_CONFIG.dataDir || './.next/workflow-data'
+  ),
+  manifestPath: parseAsString,
+};
+
+// Create a serializer for config params
+const serializeConfig = createSerializer(configParsers);
 export const resolveTargetWorld = (backend?: string) => {
   switch (backend) {
     case 'postgres':
@@ -22,111 +37,61 @@ export const resolveTargetWorld = (backend?: string) => {
   }
 };
 
-// Config query param keys
-const CONFIG_PARAM_KEYS = [
-  'backend',
-  'env',
-  'authToken',
-  'project',
-  'team',
-  'port',
-  'dataDir',
-  'postgresUrl',
-] as const;
-
 /**
  * Hook that reads query params and returns the current config
+ * Uses nuqs for type-safe URL state management
  * Config is derived from default config + query params
  */
 export function useQueryParamConfig(): WorldConfig {
-  const searchParams = useSearchParams();
+  const [config] = useQueryStates(configParsers, {
+    history: 'push',
+    shallow: true,
+  });
 
-  const config = useMemo(() => {
-    const configFromParams: WorldConfig = { ...DEFAULT_CONFIG };
-
-    // Override with query parameters
-    for (const key of CONFIG_PARAM_KEYS) {
-      const value = searchParams.get(key);
-      if (value) {
-        configFromParams[key] = value;
-      }
-    }
-
-    return configFromParams;
-  }, [searchParams]);
-
-  return config;
+  return config as WorldConfig;
 }
 
 /**
  * Hook that returns a function to update config query params
+ * Uses nuqs for type-safe URL state management
  * Preserves all other query params while updating config params
  */
 export function useUpdateConfigQueryParams() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const [, setConfig] = useQueryStates(configParsers, {
+    history: 'push',
+    shallow: true,
+  });
 
-  const updateConfig = useMemo(
-    () => (newConfig: WorldConfig) => {
-      const params = new URLSearchParams(searchParams.toString());
+  return (newConfig: WorldConfig) => {
+    // Filter out null/undefined values and only set non-default values
+    const filtered: Record<string, string | null> = {};
 
-      // Update config params
-      for (const key of CONFIG_PARAM_KEYS) {
-        const value = newConfig[key];
-        if (value !== undefined && value !== null && value !== '') {
-          // Only set if it differs from default or if it was already set
-          if (value !== DEFAULT_CONFIG[key] || searchParams.has(key)) {
-            params.set(key, value);
-          }
-        } else {
-          // Remove param if it's undefined/null/empty
-          params.delete(key);
-        }
+    for (const [key, value] of Object.entries(newConfig)) {
+      if (value === undefined || value === null || value === '') {
+        filtered[key] = null; // nuqs uses null to clear params
+      } else if (value !== DEFAULT_CONFIG[key as keyof WorldConfig]) {
+        filtered[key] = value;
+      } else {
+        filtered[key] = null;
       }
-
-      // Navigate with updated params
-      const queryString = params.toString();
-      const newUrl = queryString ? `${pathname}?${queryString}` : pathname;
-      router.push(newUrl);
-    },
-    [router, pathname, searchParams]
-  );
-
-  return updateConfig;
-}
-
-/**
- * Helper to get config params from a URLSearchParams object
- * Useful for building URLs with config params
- */
-export function getConfigParams(config: WorldConfig): URLSearchParams {
-  const params = new URLSearchParams();
-
-  for (const key of CONFIG_PARAM_KEYS) {
-    const value = config[key];
-    if (
-      value !== undefined &&
-      value !== null &&
-      value !== '' &&
-      value !== DEFAULT_CONFIG[key]
-    ) {
-      params.set(key, value);
     }
-  }
 
-  return params;
+    setConfig(filtered);
+  };
 }
 
 /**
  * Helper to build a URL with config params while preserving other params
+ * Uses nuqs serializer for type-safe URL construction
  */
 export function buildUrlWithConfig(
   path: string,
   config: WorldConfig,
   additionalParams?: Record<string, string>
 ): string {
-  const params = getConfigParams(config);
+  // Serialize config params using nuqs
+  const queryString = serializeConfig(config);
+  const params = new URLSearchParams(queryString);
 
   // Add additional params
   if (additionalParams) {
@@ -137,8 +102,8 @@ export function buildUrlWithConfig(
     }
   }
 
-  const queryString = params.toString();
-  return queryString ? `${path}?${queryString}` : path;
+  const search = params.toString();
+  return search ? `${path}?${search}` : path;
 }
 
 export const worldConfigToEnvMap = (config: WorldConfig): EnvMap => {
@@ -149,6 +114,7 @@ export const worldConfigToEnvMap = (config: WorldConfig): EnvMap => {
     WORKFLOW_VERCEL_PROJECT: config.project,
     WORKFLOW_VERCEL_TEAM: config.team,
     PORT: config.port,
+    WORKFLOW_MANIFEST_PATH: config.manifestPath,
     WORKFLOW_LOCAL_DATA_DIR: config.dataDir,
     // Postgres env vars
     WORKFLOW_POSTGRES_URL: config.postgresUrl,

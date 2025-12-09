@@ -15,6 +15,8 @@ export interface WorldConfig {
   team?: string;
   port?: string;
   dataDir?: string;
+  // Path to the workflow manifest file (defaults to app/.well-known/workflow/v1/manifest.json)
+  manifestPath?: string;
   // Postgres fields
   postgresUrl?: string;
 }
@@ -66,7 +68,17 @@ export async function checkWorldsAvailability(): Promise<WorldAvailability[]> {
   });
 }
 
-// Validate configuration and return errors if any
+export interface ValidationWarning {
+  field: string;
+  message: string;
+}
+
+export interface ValidationResult {
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+}
+
+// Validate configuration and return errors/warnings
 export async function validateWorldConfig(
   config: WorldConfig
 ): Promise<ValidationError[]> {
@@ -95,6 +107,8 @@ export async function validateWorldConfig(
         });
       }
     }
+    // Note: dataDir and manifestPath are optional and don't require validation
+    // The server action will try multiple paths and gracefully handle missing files
   }
 
   if (backend === 'postgres') {

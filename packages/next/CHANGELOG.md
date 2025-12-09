@@ -1,5 +1,45 @@
 # @workflow/next
 
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- 21cff15: Add support for `.mjs`, `.mts`, `.cjs`, and `.cts` file extensions in the SWC transform
+
+  - Updated turbopack rules to include `*.mjs`, `*.mts`, `*.cjs`, `*.cts` in addition to existing extensions
+  - Fixed TypeScript detection for `.mts` and `.cts` files across all transform plugins
+  - Updated esbuild `resolveExtensions` to include `.mts` and `.cts`
+  - Updated the file watcher's `watchableExtensions` to include `.cts`
+
+- Updated dependencies [fc774e5]
+- Updated dependencies [21cff15]
+- Updated dependencies [fa37d26]
+- Updated dependencies [f46c51e]
+- Updated dependencies [af5b005]
+- Updated dependencies [43f2dec]
+  - @workflow/builders@4.0.1-beta.23
+  - @workflow/swc-plugin@4.0.1-beta.12
+  - @workflow/core@4.0.1-beta.24
+
+## 4.0.1-beta.26
+
+### Patch Changes
+
+- 1112901: Stop reading server externals internal list
+  - @workflow/core@4.0.1-beta.23
+  - @workflow/builders@4.0.1-beta.22
+
+## 4.0.1-beta.25
+
+### Patch Changes
+
+- ac7997b: Update to latest swc/core and preserve JSX
+- Updated dependencies [ac7997b]
+- Updated dependencies [02c41cc]
+  - @workflow/swc-plugin@4.0.1-beta.11
+  - @workflow/builders@4.0.1-beta.21
+  - @workflow/core@4.0.1-beta.22
+
 ## 4.0.1-beta.24
 
 ### Patch Changes

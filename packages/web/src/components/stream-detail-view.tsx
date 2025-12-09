@@ -2,11 +2,11 @@
 
 import { readStream } from '@workflow/web-shared';
 import type { EnvMap } from '@workflow/web-shared/server';
-import { useParams } from 'next/navigation';
+import { ChevronLeft } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { buildUrlWithConfig } from '@/lib/config';
-import { BackLink } from './display-utils/back-link';
 
 interface StreamDetailViewProps {
   env: EnvMap;
@@ -19,8 +19,7 @@ interface Chunk {
 }
 
 export function StreamDetailView({ env, streamId }: StreamDetailViewProps) {
-  const params = useParams();
-  const runId = params.runId as string | undefined;
+  const router = useRouter();
   const [chunks, setChunks] = useState<Chunk[]>([]);
   const [isLive, setIsLive] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -105,14 +104,17 @@ export function StreamDetailView({ env, streamId }: StreamDetailViewProps) {
     };
   }, [env, streamId]);
 
-  // Determine back link - if we have a runId, go back to the run detail page, otherwise go home
-  const backHref = runId
-    ? buildUrlWithConfig(`/run/${runId}`, env)
-    : buildUrlWithConfig('/', env);
-
   return (
     <div className="space-y-6">
-      <BackLink href={backHref} />
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => router.back()}
+        className="gap-2"
+      >
+        <ChevronLeft className="h-4 w-4" />
+        Back
+      </Button>
 
       <Card>
         <CardHeader>
@@ -142,13 +144,9 @@ export function StreamDetailView({ env, streamId }: StreamDetailViewProps) {
                 {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
               </div>
             ) : (
-              <>
-                {chunks.map((chunk) => (
-                  <span key={`${streamId}-chunk-${chunk.id}`}>
-                    {chunk.text}
-                  </span>
-                ))}
-              </>
+              chunks.map((chunk) => (
+                <span key={`${streamId}-chunk-${chunk.id}`}>{chunk.text}</span>
+              ))
             )}
           </div>
         </CardContent>
