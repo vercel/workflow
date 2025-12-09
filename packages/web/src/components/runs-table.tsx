@@ -57,17 +57,19 @@ import { StatusBadge } from './display-utils/status-badge';
 import { TableSkeleton } from './display-utils/table-skeleton';
 import { RunActionsDropdownItems } from './run-actions';
 
-// Wrapper that fetches events lazily when dropdown content mounts
-function RunActionsDropdownContent({
+// Inner content that fetches events when it mounts (only rendered when dropdown is open)
+function RunActionsDropdownContentInner({
   env,
   runId,
   runStatus,
   onSuccess,
+  showDebugActions,
 }: {
   env: EnvMap;
   runId: string;
   runStatus: WorkflowRunStatus | undefined;
   onSuccess: () => void;
+  showDebugActions: boolean;
 }) {
   const [events, setEvents] = useState<Event[] | undefined>(undefined);
   const [eventsLoading, setEventsLoading] = useState(true);
@@ -97,17 +99,59 @@ function RunActionsDropdownContent({
   }, [env, runId]);
 
   return (
-    <DropdownMenuContent align="end">
-      <RunActionsDropdownItems
-        env={env}
-        runId={runId}
-        runStatus={runStatus}
-        events={events}
-        eventsLoading={eventsLoading}
-        stopPropagation
-        callbacks={{ onSuccess }}
-      />
-    </DropdownMenuContent>
+    <RunActionsDropdownItems
+      env={env}
+      runId={runId}
+      runStatus={runStatus}
+      events={events}
+      eventsLoading={eventsLoading}
+      stopPropagation
+      callbacks={{ onSuccess }}
+      showDebugActions={showDebugActions}
+    />
+  );
+}
+
+// Wrapper that only renders content when dropdown is open (lazy loading)
+function LazyDropdownMenu({
+  env,
+  runId,
+  runStatus,
+  onSuccess,
+  showDebugActions,
+}: {
+  env: EnvMap;
+  runId: string;
+  runStatus: WorkflowRunStatus | undefined;
+  onSuccess: () => void;
+  showDebugActions: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      {isOpen && (
+        <DropdownMenuContent align="end">
+          <RunActionsDropdownContentInner
+            env={env}
+            runId={runId}
+            runStatus={runStatus}
+            onSuccess={onSuccess}
+            showDebugActions={showDebugActions}
+          />
+        </DropdownMenuContent>
+      )}
+    </DropdownMenu>
   );
 }
 
@@ -326,6 +370,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ? (rawStatus as WorkflowRunStatus | 'all')
       : undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';
+  const showDebugActions = searchParams.get('debug') === '1';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
@@ -485,24 +530,13 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                         )}
                       </TableCell>
                       <TableCell className="py-2">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <RunActionsDropdownContent
-                            env={env}
-                            runId={run.runId}
-                            runStatus={run.status}
-                            onSuccess={reload}
-                          />
-                        </DropdownMenu>
+                        <LazyDropdownMenu
+                          env={env}
+                          runId={run.runId}
+                          runStatus={run.status}
+                          onSuccess={reload}
+                          showDebugActions={showDebugActions}
+                        />
                       </TableCell>
                     </TableRow>
                   ))}

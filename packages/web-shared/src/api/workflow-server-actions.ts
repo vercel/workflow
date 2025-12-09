@@ -508,12 +508,12 @@ export async function recreateRun(
 }
 
 /**
- * Wake up a workflow run by re-enqueuing it.
+ * Re-enqueue a workflow run.
  *
  * This re-enqueues the workflow orchestration layer. It's a no-op unless the workflow
  * got stuck due to an implementation issue in the World. Useful for debugging custom Worlds.
  */
-export async function wakeUpRun(
+export async function reenqueueRun(
   worldEnv: EnvMap,
   runId: string
 ): Promise<ServerActionResult<void>> {
@@ -534,7 +534,7 @@ export async function wakeUpRun(
 
     return createResponse(undefined);
   } catch (error) {
-    return createServerActionError<void>(error, 'wakeUpRun', { runId });
+    return createServerActionError<void>(error, 'reenqueueRun', { runId });
   }
 }
 
@@ -553,16 +553,16 @@ export interface StopSleepOptions {
 }
 
 /**
- * Stop pending sleep() calls for a workflow run.
+ * Wake up a workflow run by interrupting pending sleep() calls.
  *
  * This finds wait_created events without matching wait_completed events,
  * creates wait_completed events for them, and then re-enqueues the run.
  *
  * @param worldEnv - Environment configuration for the World
- * @param runId - The run ID to stop sleep calls for
- * @param options - Optional settings to narrow down targeting
+ * @param runId - The run ID to wake up
+ * @param options - Optional settings to narrow down targeting (specific correlation IDs)
  */
-export async function stopSleepRun(
+export async function wakeUpRun(
   worldEnv: EnvMap,
   runId: string,
   options?: StopSleepOptions
@@ -626,7 +626,7 @@ export async function stopSleepRun(
 
     return createResponse({ stoppedCount: pendingWaits.length });
   } catch (error) {
-    return createServerActionError<StopSleepResult>(error, 'stopSleepRun', {
+    return createServerActionError<StopSleepResult>(error, 'wakeUpRun', {
       runId,
       correlationIds: options?.correlationIds,
     });

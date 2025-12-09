@@ -2,13 +2,10 @@
 
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
-import { AlarmClockOff } from 'lucide-react';
+import { Zap } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import {
-  stopSleepRun,
-  useWorkflowResourceData,
-} from '../api/workflow-api-client';
+import { useWorkflowResourceData, wakeUpRun } from '../api/workflow-api-client';
 import type { EnvMap } from '../api/workflow-server-actions';
 import { EventsList } from '../sidebar/events-list';
 import { useTraceViewer } from '../trace-viewer';
@@ -93,16 +90,16 @@ export function WorkflowDetailPanel({
     }
   }, [error, resource, selected]);
 
-  const handleStopSleep = async () => {
+  const handleWakeUp = async () => {
     if (stoppingSleep || !resourceId) return;
 
     try {
       setStoppingSleep(true);
-      const result = await stopSleepRun(env, run.runId, {
+      const result = await wakeUpRun(env, run.runId, {
         correlationIds: [resourceId],
       });
       if (result.stoppedCount > 0) {
-        toast.success('Sleep interrupted', {
+        toast.success('Run woken up', {
           description:
             'The sleep call has been interrupted and the run woken up.',
         });
@@ -112,11 +109,13 @@ export function WorkflowDetailPanel({
         });
       }
     } catch (err) {
-      console.error('Failed to stop sleep:', err);
-      toast.error('Failed to stop sleep', {
+      console.error('Failed to wake up run:', err);
+      toast.error('Failed to wake up run', {
         description:
           err instanceof Error ? err.message : 'An unknown error occurred',
       });
+    } finally {
+      setStoppingSleep(false);
     }
   };
 
@@ -128,12 +127,12 @@ export function WorkflowDetailPanel({
 
   return (
     <div className={clsx('flex flex-col px-2')}>
-      {/* Stop sleep button for pending sleep calls */}
+      {/* Wake up button for pending sleep calls */}
       {resource === 'sleep' && isSleepPending && (
         <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
           <button
             type="button"
-            onClick={handleStopSleep}
+            onClick={handleWakeUp}
             disabled={stoppingSleep}
             className={clsx(
               'flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md w-full',
@@ -144,11 +143,11 @@ export function WorkflowDetailPanel({
               stoppingSleep ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
             )}
           >
-            <AlarmClockOff className="h-4 w-4" />
-            {stoppingSleep ? 'Stopping sleep...' : 'Stop this sleep'}
+            <Zap className="h-4 w-4" />
+            {stoppingSleep ? 'Waking up...' : 'Wake up'}
           </button>
           <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-            Interrupt this specific sleep call and wake up the run.
+            Interrupt this sleep call and wake up the run.
           </p>
         </div>
       )}

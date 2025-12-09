@@ -1,16 +1,18 @@
 'use client';
 
 import {
+  analyzeEvents,
   cancelRun,
   type EnvMap,
   type Event,
   recreateRun,
-  stopSleepRun,
+  reenqueueRun,
+  shouldShowReenqueueButton,
   wakeUpRun,
 } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
-import { AlarmClockOff, Loader2, RotateCw, XCircle, Zap } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { Loader2, RotateCw, XCircle, Zap } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import {
@@ -19,31 +21,6 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { Button } from './ui/button';
-
-/**
- * Compute whether there are pending sleeps from an events list
- */
-export function hasPendingSleepsFromEvents(
-  events: Event[] | undefined
-): boolean {
-  if (!events || events.length === 0) return false;
-  const waitCreatedCorrelationIds = new Set(
-    events
-      .filter((e) => e.eventType === 'wait_created')
-      .map((e) => e.correlationId)
-  );
-  const waitCompletedCorrelationIds = new Set(
-    events
-      .filter((e) => e.eventType === 'wait_completed')
-      .map((e) => e.correlationId)
-  );
-  for (const correlationId of waitCreatedCorrelationIds) {
-    if (!waitCompletedCorrelationIds.has(correlationId)) {
-      return true;
-    }
-  }
-  return false;
-}
 
 // ============================================================================
 // Shared Props and Types
@@ -64,36 +41,39 @@ export interface RunActionsBaseProps {
 }
 
 // ============================================================================
-// Dropdown Menu Items (for runs-table)
+// Shared Hook for Run Actions
 // ============================================================================
 
-export interface RunActionsDropdownItemsProps extends RunActionsBaseProps {
-  /** Stop click event propagation (useful in table rows) */
-  stopPropagation?: boolean;
+interface UseRunActionsOptions {
+  env: EnvMap;
+  runId: string;
+  runStatus: WorkflowRunStatus | undefined;
+  events?: Event[];
+  callbacks?: RunActionCallbacks;
 }
 
-export function RunActionsDropdownItems({
+function useRunActions({
   env,
   runId,
   runStatus,
   events,
-  eventsLoading,
   callbacks,
-  stopPropagation = false,
-}: RunActionsDropdownItemsProps) {
+}: UseRunActionsOptions) {
   const [rerunning, setRerunning] = useState(false);
+  const [reenqueuing, setReenqueuing] = useState(false);
   const [wakingUp, setWakingUp] = useState(false);
-  const [stoppingSleep, setStoppingSleep] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
-  const hasPendingSleeps = useMemo(
-    () => hasPendingSleepsFromEvents(events),
-    [events]
+  const eventAnalysis = useMemo(() => analyzeEvents(events), [events]);
+  const hasPendingSleeps = eventAnalysis.hasPendingSleeps;
+
+  const showReenqueueForStuckWorkflow = useMemo(
+    () => shouldShowReenqueueButton(events, runStatus),
+    [events, runStatus]
   );
 
-  const handleReplay = async (e: React.MouseEvent) => {
-    if (stopPropagation) e.stopPropagation();
-    if (rerunning) return;
+  const handleReplay = useCallback(async () => {
+    if (rerunning) return null;
 
     try {
       setRerunning(true);
@@ -103,45 +83,45 @@ export function RunActionsDropdownItems({
       });
       callbacks?.onSuccess?.();
       callbacks?.onNavigateToRun?.(newRunId);
+      return newRunId;
     } catch (err) {
       toast.error('Failed to re-run', {
         description: err instanceof Error ? err.message : 'Unknown error',
       });
+      return null;
     } finally {
       setRerunning(false);
     }
-  };
+  }, [env, runId, rerunning, callbacks]);
 
-  const handleWakeUp = async (e: React.MouseEvent) => {
-    if (stopPropagation) e.stopPropagation();
-    if (wakingUp) return;
+  const handleReenqueue = useCallback(async () => {
+    if (reenqueuing) return;
 
     try {
-      setWakingUp(true);
-      await wakeUpRun(env, runId);
-      toast.success('Run woken up', {
+      setReenqueuing(true);
+      await reenqueueRun(env, runId);
+      toast.success('Run re-enqueued', {
         description: 'The workflow orchestration layer has been re-enqueued.',
       });
       callbacks?.onSuccess?.();
     } catch (err) {
-      toast.error('Failed to wake up', {
+      toast.error('Failed to re-enqueue', {
         description: err instanceof Error ? err.message : 'Unknown error',
       });
     } finally {
-      setWakingUp(false);
+      setReenqueuing(false);
     }
-  };
+  }, [env, runId, reenqueuing, callbacks]);
 
-  const handleStopSleep = async (e: React.MouseEvent) => {
-    if (stopPropagation) e.stopPropagation();
-    if (stoppingSleep) return;
+  const handleWakeUp = useCallback(async () => {
+    if (wakingUp) return;
 
     try {
-      setStoppingSleep(true);
-      const result = await stopSleepRun(env, runId);
+      setWakingUp(true);
+      const result = await wakeUpRun(env, runId);
       if (result.stoppedCount > 0) {
-        toast.success('Sleep interrupted', {
-          description: `Stopped ${result.stoppedCount} pending sleep${result.stoppedCount > 1 ? 's' : ''} and woke up the run.`,
+        toast.success('Run woken up', {
+          description: `Interrupted ${result.stoppedCount} pending sleep${result.stoppedCount > 1 ? 's' : ''} and woke up the run.`,
         });
       } else {
         toast.info('No pending sleeps', {
@@ -150,16 +130,15 @@ export function RunActionsDropdownItems({
       }
       callbacks?.onSuccess?.();
     } catch (err) {
-      toast.error('Failed to stop sleep', {
+      toast.error('Failed to wake up', {
         description: err instanceof Error ? err.message : 'Unknown error',
       });
     } finally {
-      setStoppingSleep(false);
+      setWakingUp(false);
     }
-  };
+  }, [env, runId, wakingUp, callbacks]);
 
-  const handleCancel = async (e: React.MouseEvent) => {
-    if (stopPropagation) e.stopPropagation();
+  const handleCancel = useCallback(async () => {
     if (cancelling) return;
 
     if (runStatus !== 'pending') {
@@ -181,15 +160,116 @@ export function RunActionsDropdownItems({
     } finally {
       setCancelling(false);
     }
+  }, [env, runId, runStatus, cancelling, callbacks]);
+
+  return {
+    // State
+    rerunning,
+    reenqueuing,
+    wakingUp,
+    cancelling,
+    hasPendingSleeps,
+    showReenqueueForStuckWorkflow,
+    // Handlers
+    handleReplay,
+    handleReenqueue,
+    handleWakeUp,
+    handleCancel,
+  };
+}
+
+// ============================================================================
+// Shared Tooltip Content
+// ============================================================================
+
+function WakeUpTooltipContent() {
+  return (
+    <>
+      Interrupt any current calls to <code>sleep</code> and wake up the run.
+    </>
+  );
+}
+
+function ReenqueueTooltipContent({ isStuck }: { isStuck: boolean }) {
+  if (isStuck) {
+    return (
+      <>
+        This workflow appears to be stuck. Re-enqueue the workflow orchestration
+        layer to resume execution.
+      </>
+    );
+  }
+  return (
+    <>
+      Re-enqueue the workflow orchestration layer. This is a no-op, unless the
+      workflow got stuck due to an implementation issue in the World. This is
+      useful for debugging custom Worlds.
+    </>
+  );
+}
+
+// ============================================================================
+// Dropdown Menu Items (for runs-table)
+// ============================================================================
+
+export interface RunActionsDropdownItemsProps extends RunActionsBaseProps {
+  /** Stop click event propagation (useful in table rows) */
+  stopPropagation?: boolean;
+  /** Show debug actions like Re-enqueue (requires debug=1 URL param) */
+  showDebugActions?: boolean;
+}
+
+export function RunActionsDropdownItems({
+  env,
+  runId,
+  runStatus,
+  events,
+  eventsLoading,
+  callbacks,
+  stopPropagation = false,
+  showDebugActions = false,
+}: RunActionsDropdownItemsProps) {
+  const {
+    rerunning,
+    reenqueuing,
+    wakingUp,
+    cancelling,
+    hasPendingSleeps,
+    showReenqueueForStuckWorkflow,
+    handleReplay,
+    handleReenqueue,
+    handleWakeUp,
+    handleCancel,
+  } = useRunActions({ env, runId, runStatus, events, callbacks });
+
+  const onReplay = (e: React.MouseEvent) => {
+    if (stopPropagation) e.stopPropagation();
+    handleReplay();
+  };
+
+  const onReenqueue = (e: React.MouseEvent) => {
+    if (stopPropagation) e.stopPropagation();
+    handleReenqueue();
+  };
+
+  const onWakeUp = (e: React.MouseEvent) => {
+    if (stopPropagation) e.stopPropagation();
+    handleWakeUp();
+  };
+
+  const onCancel = (e: React.MouseEvent) => {
+    if (stopPropagation) e.stopPropagation();
+    handleCancel();
   };
 
   return (
     <>
-      <DropdownMenuItem onClick={handleReplay} disabled={rerunning}>
+      <DropdownMenuItem onClick={onReplay} disabled={rerunning}>
         <RotateCw className="h-4 w-4 mr-2" />
         {rerunning ? 'Replaying...' : 'Replay Run'}
       </DropdownMenuItem>
 
+      {/* Wake up button - only shown when there are pending sleeps */}
       {eventsLoading ? (
         <DropdownMenuItem disabled>
           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -198,37 +278,36 @@ export function RunActionsDropdownItems({
       ) : hasPendingSleeps ? (
         <Tooltip>
           <TooltipTrigger asChild>
-            <DropdownMenuItem
-              onClick={handleStopSleep}
-              disabled={stoppingSleep}
-            >
-              <AlarmClockOff className="h-4 w-4 mr-2" />
-              {stoppingSleep ? 'Stopping...' : 'Stop sleep'}
-            </DropdownMenuItem>
-          </TooltipTrigger>
-          <TooltipContent side="left" className="max-w-xs">
-            Interrupt any current calls to <code>sleep</code> and wake up the
-            run.
-          </TooltipContent>
-        </Tooltip>
-      ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <DropdownMenuItem onClick={handleWakeUp} disabled={wakingUp}>
+            <DropdownMenuItem onClick={onWakeUp} disabled={wakingUp}>
               <Zap className="h-4 w-4 mr-2" />
               {wakingUp ? 'Waking up...' : 'Wake up'}
             </DropdownMenuItem>
           </TooltipTrigger>
           <TooltipContent side="left" className="max-w-xs">
-            Re-enqueue the workflow orchestration layer. This is a no-op, unless
-            the workflow got stuck due to an implementation issue in the World.
-            This is useful for debugging custom Worlds.
+            <WakeUpTooltipContent />
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+
+      {/* Re-enqueue button - shown with debug=1 param OR when workflow appears stuck */}
+      {(showDebugActions || showReenqueueForStuckWorkflow) && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuItem onClick={onReenqueue} disabled={reenqueuing}>
+              <Zap className="h-4 w-4 mr-2" />
+              {reenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
+            </DropdownMenuItem>
+          </TooltipTrigger>
+          <TooltipContent side="left" className="max-w-xs">
+            <ReenqueueTooltipContent
+              isStuck={showReenqueueForStuckWorkflow && !showDebugActions}
+            />
           </TooltipContent>
         </Tooltip>
       )}
 
       <DropdownMenuItem
-        onClick={handleCancel}
+        onClick={onCancel}
         disabled={runStatus !== 'pending' || cancelling}
       >
         <XCircle className="h-4 w-4 mr-2" />
@@ -248,6 +327,8 @@ export interface RunActionsButtonsProps extends RunActionsBaseProps {
   onCancelClick?: () => void;
   /** Called when rerun button is clicked - typically shows a confirmation dialog */
   onRerunClick?: () => void;
+  /** Show debug actions like Re-enqueue (requires debug=1 URL param) */
+  showDebugActions?: boolean;
 }
 
 export function RunActionsButtons({
@@ -260,65 +341,19 @@ export function RunActionsButtons({
   callbacks,
   onCancelClick,
   onRerunClick,
+  showDebugActions = false,
 }: RunActionsButtonsProps) {
-  const [wakingUp, setWakingUp] = useState(false);
-  const [stoppingSleep, setStoppingSleep] = useState(false);
-
-  const hasPendingSleeps = useMemo(
-    () => hasPendingSleepsFromEvents(events),
-    [events]
-  );
+  const {
+    reenqueuing,
+    wakingUp,
+    hasPendingSleeps,
+    showReenqueueForStuckWorkflow,
+    handleReenqueue,
+    handleWakeUp,
+  } = useRunActions({ env, runId, runStatus, events, callbacks });
 
   const isRunActive = runStatus === 'pending' || runStatus === 'running';
   const canCancel = isRunActive;
-
-  const handleWakeUp = async () => {
-    if (wakingUp) return;
-
-    try {
-      setWakingUp(true);
-      await wakeUpRun(env, runId);
-      toast.success('Run woken up', {
-        description: 'The workflow orchestration layer has been re-enqueued.',
-      });
-      callbacks?.onSuccess?.();
-    } catch (err) {
-      console.error('Failed to wake up run:', err);
-      toast.error('Failed to wake up run', {
-        description:
-          err instanceof Error ? err.message : 'An unknown error occurred',
-      });
-    } finally {
-      setWakingUp(false);
-    }
-  };
-
-  const handleStopSleep = async () => {
-    if (stoppingSleep) return;
-
-    try {
-      setStoppingSleep(true);
-      const result = await stopSleepRun(env, runId);
-      if (result.stoppedCount > 0) {
-        toast.success('Sleep interrupted', {
-          description: `Stopped ${result.stoppedCount} pending sleep${result.stoppedCount > 1 ? 's' : ''} and woke up the run.`,
-        });
-      } else {
-        toast.info('No pending sleeps', {
-          description: 'There were no pending sleep calls to interrupt.',
-        });
-      }
-      callbacks?.onSuccess?.();
-    } catch (err) {
-      console.error('Failed to stop sleep:', err);
-      toast.error('Failed to stop sleep', {
-        description:
-          err instanceof Error ? err.message : 'An unknown error occurred',
-      });
-    } finally {
-      setStoppingSleep(false);
-    }
-  };
 
   // Rerun button logic
   const canRerun = !loading && !isRunActive;
@@ -328,18 +363,18 @@ export function RunActionsButtons({
       ? 'Cannot re-run while workflow is still running'
       : '';
 
-  // Wake up button logic
-  const canWakeUp = !loading && !wakingUp;
-  const wakeUpDisabledReason = wakingUp
-    ? 'Waking up workflow...'
+  // Re-enqueue button logic
+  const canReenqueue = !loading && !reenqueuing;
+  const reenqueueDisabledReason = reenqueuing
+    ? 'Re-enqueuing workflow...'
     : loading
       ? 'Loading run data...'
       : '';
 
-  // Stop sleep button logic
-  const canStopSleep = !loading && !stoppingSleep && hasPendingSleeps;
-  const stopSleepDisabledReason = stoppingSleep
-    ? 'Stopping sleep...'
+  // Wake up button logic
+  const canWakeUp = !loading && !wakingUp && hasPendingSleeps;
+  const wakeUpDisabledReason = wakingUp
+    ? 'Waking up workflow...'
     : loading
       ? 'Loading run data...'
       : !hasPendingSleeps
@@ -386,38 +421,12 @@ export function RunActionsButtons({
         </TooltipContent>
       </Tooltip>
 
-      {/* Wake up / Stop sleep Button */}
+      {/* Wake up Button - only shown when there are pending sleeps */}
       {eventsLoading ? (
         <Button variant="outline" size="sm" disabled>
           <Loader2 className="h-4 w-4 animate-spin" />
         </Button>
       ) : hasPendingSleeps ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleStopSleep}
-                disabled={!canStopSleep || stoppingSleep}
-              >
-                <AlarmClockOff className="h-4 w-4" />
-                {stoppingSleep ? 'Stopping...' : 'Stop sleep'}
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">
-            {stopSleepDisabledReason ? (
-              <p>{stopSleepDisabledReason}</p>
-            ) : (
-              <p>
-                Interrupt any current calls to <code>sleep</code> and wake up
-                the run.
-              </p>
-            )}
-          </TooltipContent>
-        </Tooltip>
-      ) : (
         <Tooltip>
           <TooltipTrigger asChild>
             <span>
@@ -437,9 +446,37 @@ export function RunActionsButtons({
               <p>{wakeUpDisabledReason}</p>
             ) : (
               <p>
-                Re-enqueue the workflow orchestration layer. This is a no-op,
-                unless the workflow got stuck due to an implementation issue in
-                the World. This is useful for debugging custom Worlds.
+                <WakeUpTooltipContent />
+              </p>
+            )}
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+
+      {/* Re-enqueue Button - shown with debug=1 param OR when workflow appears stuck */}
+      {(showDebugActions || showReenqueueForStuckWorkflow) && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReenqueue}
+                disabled={!canReenqueue || reenqueuing}
+              >
+                <Zap className="h-4 w-4" />
+                {reenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs">
+            {reenqueueDisabledReason ? (
+              <p>{reenqueueDisabledReason}</p>
+            ) : (
+              <p>
+                <ReenqueueTooltipContent
+                  isStuck={showReenqueueForStuckWorkflow && !showDebugActions}
+                />
               </p>
             )}
           </TooltipContent>
