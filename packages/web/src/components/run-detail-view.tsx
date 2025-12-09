@@ -5,12 +5,10 @@ import {
   cancelRun,
   recreateRun,
   StreamViewer,
-  stopSleepRun,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   type WorkflowRun,
   WorkflowTraceViewer,
-  wakeUpRun,
 } from '@workflow/web-shared';
 import { AlertCircle, HelpCircle, List, Loader2 } from 'lucide-react';
 import Link from 'next/link';
@@ -44,14 +42,11 @@ import {
 } from '@/components/ui/tooltip';
 import { buildUrlWithConfig, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import { CancelButton } from './display-utils/cancel-button';
 import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
-import { RerunButton } from './display-utils/rerun-button';
 import { StatusBadge } from './display-utils/status-badge';
-import { StopSleepButton } from './display-utils/stop-sleep-button';
-import { WakeUpButton } from './display-utils/wakeup-button';
+import { RunActionsButtons } from './run-actions';
 import { Skeleton } from './ui/skeleton';
 
 interface RunDetailViewProps {
@@ -70,8 +65,6 @@ export function RunDetailView({
   const searchParams = useSearchParams();
   const [cancelling, setCancelling] = useState(false);
   const [rerunning, setRerunning] = useState(false);
-  const [wakingUp, setWakingUp] = useState(false);
-  const [stoppingSleep, setStoppingSleep] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [showRerunDialog, setShowRerunDialog] = useState(false);
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
@@ -150,28 +143,6 @@ export function RunDetailView({
     error: streamsError,
   } = useWorkflowStreams(env, runId);
 
-  // Check for pending sleeps (wait_created without matching wait_completed)
-  const hasPendingSleeps = useMemo(() => {
-    if (!allEvents || allEvents.length === 0) return false;
-    const waitCreatedCorrelationIds = new Set(
-      allEvents
-        .filter((e) => e.eventType === 'wait_created')
-        .map((e) => e.correlationId)
-    );
-    const waitCompletedCorrelationIds = new Set(
-      allEvents
-        .filter((e) => e.eventType === 'wait_completed')
-        .map((e) => e.correlationId)
-    );
-    // Check if there's any wait_created without a matching wait_completed
-    for (const correlationId of waitCreatedCorrelationIds) {
-      if (!waitCompletedCorrelationIds.has(correlationId)) {
-        return true;
-      }
-    }
-    return false;
-  }, [allEvents]);
-
   // Find the workflow graph for this run
   // The manifest is keyed by workflowId which matches run.workflowName
   // e.g., "workflow//example/workflows/1_simple.ts//simple"
@@ -223,56 +194,6 @@ export function RunDetailView({
     setShowRerunDialog(true);
   };
 
-  const handleWakeUpClick = async () => {
-    if (wakingUp) return;
-
-    try {
-      setWakingUp(true);
-      await wakeUpRun(env, runId);
-      toast.success('Run woken up', {
-        description: 'The workflow orchestration layer has been re-enqueued.',
-      });
-      // Trigger a refresh of the data
-      await update();
-    } catch (err) {
-      console.error('Failed to wake up run:', err);
-      toast.error('Failed to wake up run', {
-        description:
-          err instanceof Error ? err.message : 'An unknown error occurred',
-      });
-    } finally {
-      setWakingUp(false);
-    }
-  };
-
-  const handleStopSleepClick = async () => {
-    if (stoppingSleep) return;
-
-    try {
-      setStoppingSleep(true);
-      const result = await stopSleepRun(env, runId);
-      if (result.stoppedCount > 0) {
-        toast.success('Sleep interrupted', {
-          description: `Stopped ${result.stoppedCount} pending sleep${result.stoppedCount > 1 ? 's' : ''} and woke up the run.`,
-        });
-      } else {
-        toast.info('No pending sleeps', {
-          description: 'There were no pending sleep() calls to interrupt.',
-        });
-      }
-      // Trigger a refresh of the data
-      await update();
-    } catch (err) {
-      console.error('Failed to stop sleep:', err);
-      toast.error('Failed to stop sleep', {
-        description:
-          err instanceof Error ? err.message : 'An unknown error occurred',
-      });
-    } finally {
-      setStoppingSleep(false);
-    }
-  };
-
   const handleConfirmRerun = async () => {
     if (rerunning) return;
 
@@ -314,47 +235,6 @@ export function RunDetailView({
   // So hasError is always false here
   const hasError = false;
   const errorMessage = '';
-
-  // Determine if cancel is allowed and why
-  const canCancel = run.status === 'pending' || run.status === 'running';
-  const getCancelDisabledReason = () => {
-    if (cancelling) return 'Cancelling run...';
-    if (run.status === 'completed') return 'Run has already completed';
-    if (run.status === 'failed') return 'Run has already failed';
-    if (run.status === 'cancelled') return 'Run has already been cancelled';
-    return '';
-  };
-  const cancelDisabledReason = getCancelDisabledReason();
-
-  // Determine if re-run is allowed and why
-  const isRunActive = run.status === 'pending' || run.status === 'running';
-  const canRerun = !loading && !isRunActive && !rerunning;
-  const getRerunDisabledReason = () => {
-    if (rerunning) return 'Re-running workflow...';
-    if (loading) return 'Loading run data...';
-    if (isRunActive) return 'Cannot re-run while workflow is still running';
-    return '';
-  };
-  const rerunDisabledReason = getRerunDisabledReason();
-
-  // Determine if wake up is allowed and why
-  const canWakeUp = !loading && !wakingUp;
-  const getWakeUpDisabledReason = () => {
-    if (wakingUp) return 'Waking up workflow...';
-    if (loading) return 'Loading run data...';
-    return '';
-  };
-  const wakeUpDisabledReason = getWakeUpDisabledReason();
-
-  // Determine if stop sleep is allowed and why
-  const canStopSleep = !loading && !stoppingSleep && hasPendingSleeps;
-  const getStopSleepDisabledReason = () => {
-    if (stoppingSleep) return 'Stopping sleep...';
-    if (loading) return 'Loading run data...';
-    if (!hasPendingSleeps) return 'No pending sleep() calls to interrupt';
-    return '';
-  };
-  const stopSleepDisabledReason = getStopSleepDisabledReason();
 
   return (
     <>
@@ -435,32 +315,16 @@ export function RunDetailView({
               <div className="flex items-center justify-between gap-2">
                 {/* Right side controls */}
                 <LiveStatus hasError={hasError} errorMessage={errorMessage} />
-                <RerunButton
-                  canRerun={canRerun}
-                  rerunning={rerunning}
-                  rerunDisabledReason={rerunDisabledReason}
-                  onRerun={handleRerunClick}
-                />
-                {hasPendingSleeps ? (
-                  <StopSleepButton
-                    canStopSleep={canStopSleep}
-                    stoppingSleep={stoppingSleep}
-                    stopSleepDisabledReason={stopSleepDisabledReason}
-                    onStopSleep={handleStopSleepClick}
-                  />
-                ) : (
-                  <WakeUpButton
-                    canWakeUp={canWakeUp}
-                    wakingUp={wakingUp}
-                    wakeUpDisabledReason={wakeUpDisabledReason}
-                    onWakeUp={handleWakeUpClick}
-                  />
-                )}
-                <CancelButton
-                  canCancel={canCancel}
-                  cancelling={cancelling}
-                  cancelDisabledReason={cancelDisabledReason}
-                  onCancel={handleCancelClick}
+                <RunActionsButtons
+                  env={env}
+                  runId={runId}
+                  runStatus={run.status}
+                  events={allEvents}
+                  eventsLoading={auxiliaryDataLoading}
+                  loading={loading}
+                  onRerunClick={handleRerunClick}
+                  onCancelClick={handleCancelClick}
+                  callbacks={{ onSuccess: update }}
                 />
               </div>
             </div>

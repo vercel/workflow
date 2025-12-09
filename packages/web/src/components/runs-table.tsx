@@ -2,11 +2,11 @@
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
 import {
-  cancelRun,
+  type EnvMap,
+  type Event,
+  fetchEvents,
   getErrorMessage,
-  recreateRun,
   useWorkflowRuns,
-  wakeUpRun,
 } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import {
@@ -17,13 +17,9 @@ import {
   ChevronRight,
   MoreHorizontal,
   RefreshCw,
-  RotateCw,
-  XCircle,
-  Zap,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -31,7 +27,6 @@ import { DocsLink } from '@/components/ui/docs-link';
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
@@ -60,6 +55,61 @@ import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { TableSkeleton } from './display-utils/table-skeleton';
+import { RunActionsDropdownItems } from './run-actions';
+
+// Wrapper that fetches events lazily when dropdown content mounts
+function RunActionsDropdownContent({
+  env,
+  runId,
+  runStatus,
+  onSuccess,
+}: {
+  env: EnvMap;
+  runId: string;
+  runStatus: WorkflowRunStatus | undefined;
+  onSuccess: () => void;
+}) {
+  const [events, setEvents] = useState<Event[] | undefined>(undefined);
+  const [eventsLoading, setEventsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setEventsLoading(true);
+
+    fetchEvents(env, runId, { limit: 1000 })
+      .then((result: Awaited<ReturnType<typeof fetchEvents>>) => {
+        if (!cancelled && result.success) {
+          setEvents(result.data.data);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to fetch events:', err);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setEventsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [env, runId]);
+
+  return (
+    <DropdownMenuContent align="end">
+      <RunActionsDropdownItems
+        env={env}
+        runId={runId}
+        runStatus={runStatus}
+        events={events}
+        eventsLoading={eventsLoading}
+        stopPropagation
+        callbacks={{ onSuccess }}
+      />
+    </DropdownMenuContent>
+  );
+}
 
 interface RunsTableProps {
   config: WorldConfig;
@@ -446,94 +496,12 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                               <MoreHorizontal className="h-4 w-4" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                try {
-                                  const newRunId = await recreateRun(
-                                    env,
-                                    run.runId
-                                  );
-                                  toast.success('New run started', {
-                                    description: `Run ID: ${newRunId}`,
-                                  });
-                                  reload();
-                                } catch (err) {
-                                  toast.error('Failed to re-run', {
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : 'Unknown error',
-                                  });
-                                }
-                              }}
-                            >
-                              <RotateCw className="h-4 w-4 mr-2" />
-                              Replay Run
-                            </DropdownMenuItem>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <DropdownMenuItem
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    try {
-                                      await wakeUpRun(env, run.runId);
-                                      toast.success('Run woken up', {
-                                        description:
-                                          'The workflow orchestration layer has been re-enqueued.',
-                                      });
-                                      reload();
-                                    } catch (err) {
-                                      toast.error('Failed to wake up', {
-                                        description:
-                                          err instanceof Error
-                                            ? err.message
-                                            : 'Unknown error',
-                                      });
-                                    }
-                                  }}
-                                >
-                                  <Zap className="h-4 w-4 mr-2" />
-                                  Wake up
-                                </DropdownMenuItem>
-                              </TooltipTrigger>
-                              <TooltipContent side="left" className="max-w-xs">
-                                Re-enqueue the workflow orchestration layer.
-                                This is a no-op, unless the workflow got stuck
-                                due to an implementation issue in the World.
-                                This is useful for debugging custom Worlds.
-                              </TooltipContent>
-                            </Tooltip>
-                            <DropdownMenuItem
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                if (run.status !== 'pending') {
-                                  toast.error('Cannot cancel', {
-                                    description:
-                                      'Only pending runs can be cancelled',
-                                  });
-                                  return;
-                                }
-                                try {
-                                  await cancelRun(env, run.runId);
-                                  toast.success('Run cancelled');
-                                  reload();
-                                } catch (err) {
-                                  toast.error('Failed to cancel', {
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : 'Unknown error',
-                                  });
-                                }
-                              }}
-                              disabled={run.status !== 'pending'}
-                            >
-                              <XCircle className="h-4 w-4 mr-2" />
-                              Cancel
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
+                          <RunActionsDropdownContent
+                            env={env}
+                            runId={run.runId}
+                            runStatus={run.status}
+                            onSuccess={reload}
+                          />
                         </DropdownMenu>
                       </TableCell>
                     </TableRow>

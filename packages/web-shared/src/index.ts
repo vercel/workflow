@@ -5,13 +5,14 @@ export {
 
 export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 export * from './api/workflow-api-client';
+export { stopSleepRun, wakeUpRun } from './api/workflow-api-client';
 export type { EnvMap } from './api/workflow-server-actions';
 export {
+  fetchEvents,
   fetchEventsByCorrelationId,
   fetchStreams,
   fetchWorkflowsManifest,
 } from './api/workflow-server-actions';
-export { stopSleepRun, wakeUpRun } from './api/workflow-api-client';
 export { formatDuration } from './lib/utils';
 export { RunTraceView } from './run-trace-view';
 export { StreamViewer } from './stream-viewer';
