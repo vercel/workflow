@@ -141,9 +141,10 @@ function useRunActions({
   const handleCancel = useCallback(async () => {
     if (cancelling) return;
 
-    if (runStatus !== 'pending') {
+    const isRunActive = runStatus === 'pending' || runStatus === 'running';
+    if (!isRunActive) {
       toast.error('Cannot cancel', {
-        description: 'Only pending runs can be cancelled',
+        description: 'Only active runs can be cancelled',
       });
       return;
     }
@@ -262,6 +263,12 @@ export function RunActionsDropdownItems({
     handleCancel();
   };
 
+  const isRunActive = runStatus === 'pending' || runStatus === 'running';
+
+  // Determine which button to show: Wake up, Re-enqueue, or disabled Wake up
+  const showReenqueue =
+    !eventsLoading && (showDebugActions || showReenqueueForStuckWorkflow);
+
   return (
     <>
       <DropdownMenuItem onClick={onReplay} disabled={rerunning}>
@@ -269,28 +276,15 @@ export function RunActionsDropdownItems({
         {rerunning ? 'Replaying...' : 'Replay Run'}
       </DropdownMenuItem>
 
-      {/* Wake up button - only shown when there are pending sleeps */}
+      {/* Wake up / Re-enqueue button - mutually exclusive */}
       {eventsLoading ? (
+        // Loading state: show Wake up button with spinner
         <DropdownMenuItem disabled>
           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          Loading...
+          Wake up
         </DropdownMenuItem>
-      ) : hasPendingSleeps ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <DropdownMenuItem onClick={onWakeUp} disabled={wakingUp}>
-              <Zap className="h-4 w-4 mr-2" />
-              {wakingUp ? 'Waking up...' : 'Wake up'}
-            </DropdownMenuItem>
-          </TooltipTrigger>
-          <TooltipContent side="left" className="max-w-xs">
-            <WakeUpTooltipContent />
-          </TooltipContent>
-        </Tooltip>
-      ) : null}
-
-      {/* Re-enqueue button - shown with debug=1 param OR when workflow appears stuck */}
-      {(showDebugActions || showReenqueueForStuckWorkflow) && (
+      ) : showReenqueue ? (
+        // Re-enqueue: shown when debug flag or stuck workflow detected
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuItem onClick={onReenqueue} disabled={reenqueuing}>
@@ -304,11 +298,31 @@ export function RunActionsDropdownItems({
             />
           </TooltipContent>
         </Tooltip>
+      ) : (
+        // Wake up: enabled if pending sleeps, disabled otherwise
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuItem
+              onClick={onWakeUp}
+              disabled={!hasPendingSleeps || wakingUp}
+            >
+              <Zap className="h-4 w-4 mr-2" />
+              {wakingUp ? 'Waking up...' : 'Wake up'}
+            </DropdownMenuItem>
+          </TooltipTrigger>
+          <TooltipContent side="left" className="max-w-xs">
+            {hasPendingSleeps ? (
+              <WakeUpTooltipContent />
+            ) : (
+              <>No pending sleep calls to interrupt.</>
+            )}
+          </TooltipContent>
+        </Tooltip>
       )}
 
       <DropdownMenuItem
         onClick={onCancel}
-        disabled={runStatus !== 'pending' || cancelling}
+        disabled={!isRunActive || cancelling}
       >
         <XCircle className="h-4 w-4 mr-2" />
         {cancelling ? 'Cancelling...' : 'Cancel'}
@@ -391,6 +405,10 @@ export function RunActionsButtons({
           ? 'Run has already been cancelled'
           : '';
 
+  // Determine which button to show: Wake up, Re-enqueue, or disabled Wake up
+  const showReenqueue =
+    !eventsLoading && (showDebugActions || showReenqueueForStuckWorkflow);
+
   return (
     <>
       {/* Rerun Button */}
@@ -421,40 +439,15 @@ export function RunActionsButtons({
         </TooltipContent>
       </Tooltip>
 
-      {/* Wake up Button - only shown when there are pending sleeps */}
+      {/* Wake up / Re-enqueue Button - mutually exclusive */}
       {eventsLoading ? (
+        // Loading state: show Wake up button with spinner
         <Button variant="outline" size="sm" disabled>
           <Loader2 className="h-4 w-4 animate-spin" />
+          Wake up
         </Button>
-      ) : hasPendingSleeps ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleWakeUp}
-                disabled={!canWakeUp || wakingUp}
-              >
-                <Zap className="h-4 w-4" />
-                {wakingUp ? 'Waking up...' : 'Wake up'}
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">
-            {wakeUpDisabledReason ? (
-              <p>{wakeUpDisabledReason}</p>
-            ) : (
-              <p>
-                <WakeUpTooltipContent />
-              </p>
-            )}
-          </TooltipContent>
-        </Tooltip>
-      ) : null}
-
-      {/* Re-enqueue Button - shown with debug=1 param OR when workflow appears stuck */}
-      {(showDebugActions || showReenqueueForStuckWorkflow) && (
+      ) : showReenqueue ? (
+        // Re-enqueue: shown when debug flag or stuck workflow detected
         <Tooltip>
           <TooltipTrigger asChild>
             <span>
@@ -477,6 +470,32 @@ export function RunActionsButtons({
                 <ReenqueueTooltipContent
                   isStuck={showReenqueueForStuckWorkflow && !showDebugActions}
                 />
+              </p>
+            )}
+          </TooltipContent>
+        </Tooltip>
+      ) : (
+        // Wake up: enabled if pending sleeps, disabled otherwise
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleWakeUp}
+                disabled={!canWakeUp || wakingUp}
+              >
+                <Zap className="h-4 w-4" />
+                {wakingUp ? 'Waking up...' : 'Wake up'}
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs">
+            {wakeUpDisabledReason ? (
+              <p>{wakeUpDisabledReason}</p>
+            ) : (
+              <p>
+                <WakeUpTooltipContent />
               </p>
             )}
           </TooltipContent>
