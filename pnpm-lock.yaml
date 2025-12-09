@@ -934,9 +934,6 @@ importers:
       '@tailwindcss/postcss':
         specifier: '4'
         version: 4.1.13
-      '@workflow/ai':
-        specifier: workspace:*
-        version: link:../ai
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
@@ -992,6 +989,9 @@ importers:
       '@types/react-dom':
         specifier: '19'
         version: 19.1.9(@types/react@19.1.13)
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
