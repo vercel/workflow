@@ -194,8 +194,8 @@ function ReenqueueTooltipContent({ isStuck }: { isStuck: boolean }) {
   if (isStuck) {
     return (
       <>
-        This workflow appears to be stuck. Re-enqueue the workflow orchestration
-        layer to resume execution.
+        This workflow has no active steps or sleep calls, it maybe be stuck.
+        Re-enqueue the workflow orchestration layer to resume execution.
       </>
     );
   }
