@@ -943,6 +943,9 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
+      ai:
+        specifier: 'catalog:'
+        version: 5.0.104(zod@4.1.12)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -989,9 +992,6 @@ importers:
       '@types/react-dom':
         specifier: '19'
         version: 19.1.9(@types/react@19.1.13)
-      '@workflow/ai':
-        specifier: workspace:*
-        version: link:../ai
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -13387,6 +13387,13 @@ snapshots:
       '@vercel/oidc': 3.0.5
       zod: 4.1.11
 
+  '@ai-sdk/gateway@2.0.17(zod@4.1.12)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.0
+      '@ai-sdk/provider-utils': 3.0.18(zod@4.1.12)
+      '@vercel/oidc': 3.0.5
+      zod: 4.1.12
+
   '@ai-sdk/google@2.0.43(zod@4.1.11)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
@@ -13425,6 +13432,13 @@ snapshots:
       '@standard-schema/spec': 1.0.0
       eventsource-parser: 3.0.6
       zod: 4.1.11
+
+  '@ai-sdk/provider-utils@3.0.18(zod@4.1.12)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.0
+      '@standard-schema/spec': 1.0.0
+      eventsource-parser: 3.0.6
+      zod: 4.1.12
 
   '@ai-sdk/provider@2.0.0':
     dependencies:
@@ -19626,6 +19640,14 @@ snapshots:
       '@ai-sdk/provider-utils': 3.0.18(zod@4.1.11)
       '@opentelemetry/api': 1.9.0
       zod: 4.1.11
+
+  ai@5.0.104(zod@4.1.12):
+    dependencies:
+      '@ai-sdk/gateway': 2.0.17(zod@4.1.12)
+      '@ai-sdk/provider': 2.0.0
+      '@ai-sdk/provider-utils': 3.0.18(zod@4.1.12)
+      '@opentelemetry/api': 1.9.0
+      zod: 4.1.12
 
   ai@5.0.76(zod@4.1.11):
     dependencies:

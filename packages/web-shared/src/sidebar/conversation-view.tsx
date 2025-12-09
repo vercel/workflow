@@ -1,4 +1,4 @@
-import type { ModelMessage } from '@workflow/ai';
+import type { ModelMessage } from 'ai';
 import { Streamdown } from 'streamdown';
 
 interface ConversationViewProps {

@@ -1,5 +1,5 @@
-import type { ModelMessage } from '@workflow/ai';
 import type { Step } from '@workflow/world';
+import type { ModelMessage } from 'ai';
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 

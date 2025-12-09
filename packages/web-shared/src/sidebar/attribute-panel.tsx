@@ -1,8 +1,8 @@
 'use client';
 
-import type { ModelMessage } from '@workflow/ai';
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type { ModelMessage } from 'ai';
 import { AlertCircle } from 'lucide-react';
 import {
   createContext,
