@@ -4,10 +4,10 @@ import { parseWorkflowName } from '@workflow/core/parse-name';
 import {
   type EnvMap,
   type Event,
-  fetchEvents,
   getErrorMessage,
   useWorkflowRuns,
 } from '@workflow/web-shared';
+import { fetchEvents } from '@workflow/web-shared/server';
 import type { WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,

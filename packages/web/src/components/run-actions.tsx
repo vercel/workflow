@@ -10,7 +10,7 @@ import {
 } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import { AlarmClockOff, Loader2, RotateCw, XCircle, Zap } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import {
