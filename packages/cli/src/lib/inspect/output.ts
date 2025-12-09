@@ -1,6 +1,5 @@
 import { hydrateResourceIO } from '@workflow/core/observability';
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
-import { getRun } from '@workflow/core/runtime';
 import {
   getDeserializeStream,
   getExternalRevivers,
