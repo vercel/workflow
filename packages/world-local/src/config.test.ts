@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveBaseUrl } from './config';
 
-// Mock the getPort function from @workflow/utils/get-port
+// Mock the getWorkflowPort function from @workflow/utils/get-port
 vi.mock('@workflow/utils/get-port', () => ({
-  getPort: vi.fn(),
+  getWorkflowPort: vi.fn(),
 }));
 
 describe('resolveBaseUrl', () => {
@@ -20,8 +20,8 @@ describe('resolveBaseUrl', () => {
 
   describe('priority order', () => {
     it('should prioritize config.baseUrl over all other options', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(5173);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
       process.env.PORT = '8080';
 
       const result = await resolveBaseUrl({
@@ -30,12 +30,12 @@ describe('resolveBaseUrl', () => {
       });
 
       expect(result).toBe('https://custom.example.com:3000');
-      expect(getPort).not.toHaveBeenCalled();
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
     it('should use config.port when baseUrl is not provided', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(5173);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
       process.env.PORT = '8080';
 
       const result = await resolveBaseUrl({
@@ -43,40 +43,40 @@ describe('resolveBaseUrl', () => {
       });
 
       expect(result).toBe('http://localhost:4000');
-      expect(getPort).not.toHaveBeenCalled();
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
     it('should use PORT env var when neither baseUrl nor port is provided', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(5173);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
       process.env.PORT = '8080';
 
       const result = await resolveBaseUrl({});
 
       expect(result).toBe('http://localhost:8080');
-      expect(getPort).not.toHaveBeenCalled();
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
     it('should use auto-detected port when PORT env var is not set', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(5173);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
       delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
 
       expect(result).toBe('http://localhost:5173');
-      expect(getPort).toHaveBeenCalled();
+      expect(getWorkflowPort).toHaveBeenCalled();
     });
 
     it('should throw error when all detection methods fail', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(undefined);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
       await expect(resolveBaseUrl({})).rejects.toThrow(
         'Unable to resolve base URL for workflow queue.'
       );
-      expect(getPort).toHaveBeenCalled();
+      expect(getWorkflowPort).toHaveBeenCalled();
     });
   });
 
@@ -124,14 +124,14 @@ describe('resolveBaseUrl', () => {
     });
 
     it('should handle port 0 (OS-assigned port)', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
 
       const result = await resolveBaseUrl({
         port: 0,
       });
 
       expect(result).toBe('http://localhost:0');
-      expect(getPort).not.toHaveBeenCalled();
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
     it('should handle port 80', async () => {
@@ -153,8 +153,8 @@ describe('resolveBaseUrl', () => {
 
   describe('auto-detection', () => {
     it('should use auto-detected port for SvelteKit default (5173)', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(5173);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
       delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
@@ -163,8 +163,8 @@ describe('resolveBaseUrl', () => {
     });
 
     it('should use auto-detected port for Vite default (5173)', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(5173);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
       delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
@@ -173,8 +173,8 @@ describe('resolveBaseUrl', () => {
     });
 
     it('should use auto-detected port for Next.js default (3000)', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(3000);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(3000);
       delete process.env.PORT;
 
       const result = await resolveBaseUrl({});
@@ -183,8 +183,8 @@ describe('resolveBaseUrl', () => {
     });
 
     it('should throw error when auto-detection fails', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(undefined);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
       await expect(resolveBaseUrl({})).rejects.toThrow(
@@ -195,8 +195,8 @@ describe('resolveBaseUrl', () => {
 
   describe('environment variables', () => {
     it('should use PORT env var as fallback', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(undefined);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
       process.env.PORT = '4173';
 
       const result = await resolveBaseUrl({});
@@ -205,7 +205,7 @@ describe('resolveBaseUrl', () => {
     });
 
     it('should ignore PORT env var when config.port is provided', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
       process.env.PORT = '4173';
 
       const result = await resolveBaseUrl({
@@ -213,11 +213,11 @@ describe('resolveBaseUrl', () => {
       });
 
       expect(result).toBe('http://localhost:5000');
-      expect(getPort).not.toHaveBeenCalled();
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
     it('should ignore PORT env var when config.baseUrl is provided', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
       process.env.PORT = '4173';
 
       const result = await resolveBaseUrl({
@@ -225,14 +225,14 @@ describe('resolveBaseUrl', () => {
       });
 
       expect(result).toBe('https://example.com');
-      expect(getPort).not.toHaveBeenCalled();
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     });
   });
 
   describe('edge cases', () => {
     it('should throw error with empty config object when no port is detected', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(undefined);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
       await expect(resolveBaseUrl({})).rejects.toThrow(
@@ -241,8 +241,8 @@ describe('resolveBaseUrl', () => {
     });
 
     it('should throw error when all resolution methods fail', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(undefined);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
       await expect(resolveBaseUrl({})).rejects.toThrow(
@@ -251,8 +251,8 @@ describe('resolveBaseUrl', () => {
     });
 
     it('should handle config with only dataDir and use PORT env var', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(5173);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
       process.env.PORT = '4000';
 
       const result = await resolveBaseUrl({
@@ -260,12 +260,12 @@ describe('resolveBaseUrl', () => {
       });
 
       expect(result).toBe('http://localhost:4000');
-      expect(getPort).not.toHaveBeenCalled();
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
     it('should skip null port and use PORT env var or auto-detection', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(5173);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
       delete process.env.PORT;
 
       const result = await resolveBaseUrl({
@@ -273,12 +273,12 @@ describe('resolveBaseUrl', () => {
       });
 
       expect(result).toBe('http://localhost:5173');
-      expect(getPort).toHaveBeenCalled();
+      expect(getWorkflowPort).toHaveBeenCalled();
     });
 
     it('should provide helpful error message when no URL can be resolved', async () => {
-      const { getPort } = await import('@workflow/utils/get-port');
-      vi.mocked(getPort).mockResolvedValue(undefined);
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
       delete process.env.PORT;
 
       await expect(resolveBaseUrl({})).rejects.toThrow(
