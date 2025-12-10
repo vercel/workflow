@@ -184,8 +184,8 @@ describe('getAllPorts', () => {
     const server2 = http.createServer();
     servers.push(server1, server2);
 
-    server1.listen(0);
-    server2.listen(0);
+    await new Promise<void>((resolve) => server1.listen(0, resolve));
+    await new Promise<void>((resolve) => server2.listen(0, resolve));
 
     const ports = await getAllPorts();
     const addr1 = server1.address() as AddressInfo;
@@ -201,8 +201,8 @@ describe('getAllPorts', () => {
     const server2 = http.createServer();
     servers.push(server1, server2);
 
-    server1.listen(0);
-    server2.listen(0);
+    await new Promise<void>((resolve) => server1.listen(0, resolve));
+    await new Promise<void>((resolve) => server2.listen(0, resolve));
 
     // Call multiple times and verify order is consistent
     const ports1 = await getAllPorts();
@@ -260,8 +260,8 @@ describe('getWorkflowPort', () => {
 
     servers.push(nonWorkflowServer, workflowServer);
 
-    nonWorkflowServer.listen(0);
-    workflowServer.listen(0);
+    await new Promise<void>((resolve) => nonWorkflowServer.listen(0, resolve));
+    await new Promise<void>((resolve) => workflowServer.listen(0, resolve));
 
     const port = await getWorkflowPort();
     const workflowAddr = workflowServer.address() as AddressInfo;
@@ -281,8 +281,8 @@ describe('getWorkflowPort', () => {
     });
 
     servers.push(server1, server2);
-    server1.listen(0);
-    server2.listen(0);
+    await new Promise<void>((resolve) => server1.listen(0, resolve));
+    await new Promise<void>((resolve) => server2.listen(0, resolve));
 
     const port = await getWorkflowPort();
     const addr1 = server1.address() as AddressInfo;
@@ -308,8 +308,8 @@ describe('getWorkflowPort', () => {
     });
 
     servers.push(slowServer, fastServer);
-    slowServer.listen(0);
-    fastServer.listen(0);
+    await new Promise<void>((resolve) => slowServer.listen(0, resolve));
+    await new Promise<void>((resolve) => fastServer.listen(0, resolve));
 
     const start = Date.now();
     const port = await getWorkflowPort({ timeout: 100 });
@@ -332,7 +332,7 @@ describe('getWorkflowPort', () => {
       }
     });
     servers.push(server);
-    server.listen(0);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
 
     const addr = server.address() as AddressInfo;
 
