@@ -2,10 +2,101 @@
 
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type { ModelMessage } from 'ai';
 import { AlertCircle } from 'lucide-react';
-import { createContext, type ReactNode, useContext } from 'react';
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useMemo,
+  useState,
+} from 'react';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { extractConversation, isDoStreamStep } from '../lib/utils';
+import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
+
+/**
+ * Tabbed view for conversation and raw JSON
+ */
+function ConversationWithTabs({
+  conversation,
+  args,
+}: {
+  conversation: ModelMessage[];
+  args: unknown[];
+}) {
+  const [activeTab, setActiveTab] = useState<'conversation' | 'json'>(
+    'conversation'
+  );
+
+  return (
+    <DetailCard summary={`Input (${conversation.length} messages)`}>
+      <div
+        className="rounded-md border"
+        style={{ borderColor: 'var(--ds-gray-300)' }}
+      >
+        {/* Tab buttons */}
+        <div
+          className="flex gap-1 border-b"
+          style={{ borderColor: 'var(--ds-gray-300)' }}
+        >
+          <button
+            type="button"
+            onClick={() => setActiveTab('conversation')}
+            className="px-3 py-1.5 text-[11px] font-medium transition-colors"
+            style={{
+              color:
+                activeTab === 'conversation'
+                  ? 'var(--ds-gray-1000)'
+                  : 'var(--ds-gray-600)',
+              borderBottom:
+                activeTab === 'conversation'
+                  ? '2px solid var(--ds-blue-600)'
+                  : '2px solid transparent',
+              marginBottom: '-1px',
+            }}
+          >
+            Conversation
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('json')}
+            className="px-3 py-1.5 text-[11px] font-medium transition-colors"
+            style={{
+              color:
+                activeTab === 'json'
+                  ? 'var(--ds-gray-1000)'
+                  : 'var(--ds-gray-600)',
+              borderBottom:
+                activeTab === 'json'
+                  ? '2px solid var(--ds-blue-600)'
+                  : '2px solid transparent',
+              marginBottom: '-1px',
+            }}
+          >
+            Raw JSON
+          </button>
+        </div>
+
+        {/* Tab content */}
+        {activeTab === 'conversation' ? (
+          <ConversationView messages={conversation} />
+        ) : (
+          <div className="p-3 max-h-[400px] overflow-y-auto">
+            {Array.isArray(args)
+              ? args.map((v, i) => (
+                  <div className="mt-2 first:mt-0" key={i}>
+                    {JsonBlock(v)}
+                  </div>
+                ))
+              : JsonBlock(args)}
+          </div>
+        )}
+      </div>
+    </DetailCard>
+  );
+}
 
 /**
  * Context for stream click handler
@@ -231,9 +322,13 @@ const sortByAttributeOrder = (a: string, b: string): number => {
   return aIndex - bIndex;
 };
 
+interface DisplayContext {
+  stepName?: string;
+}
+
 const attributeToDisplayFn: Record<
   AttributeKey,
-  (value: unknown) => null | string | ReactNode
+  (value: unknown, context?: DisplayContext) => null | string | ReactNode
 > = {
   // Names that need pretty-printing
   workflowName: (value: unknown) =>
@@ -270,7 +365,7 @@ const attributeToDisplayFn: Record<
   resumeAt: (value: unknown) => new Date(String(value)).toLocaleString(),
   // Resolved attributes, won't actually use this function
   metadata: JsonBlock,
-  input: (value: unknown) => {
+  input: (value: unknown, context?: DisplayContext) => {
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
       const { args, closureVars } = value as {
@@ -279,6 +374,23 @@ const attributeToDisplayFn: Record<
       };
       const argCount = Array.isArray(args) ? args.length : 0;
       const hasClosureVars = closureVars && Object.keys(closureVars).length > 0;
+
+      // Check if this is a doStreamStep - show conversation view with tabs
+      if (context?.stepName && isDoStreamStep(context.stepName)) {
+        const conversation = extractConversation(args);
+        if (conversation && conversation.length > 0) {
+          return (
+            <>
+              <ConversationWithTabs conversation={conversation} args={args} />
+              {hasClosureVars && (
+                <DetailCard summary="Closure Variables">
+                  {JsonBlock(closureVars)}
+                </DetailCard>
+              )}
+            </>
+          );
+        }
+      }
 
       return (
         <>
@@ -411,18 +523,20 @@ export const AttributeBlock = ({
   value,
   isLoading,
   inline = false,
+  context,
 }: {
   attribute: string;
   value: unknown;
   isLoading?: boolean;
   inline?: boolean;
+  context?: DisplayContext;
 }) => {
   const displayFn =
     attributeToDisplayFn[attribute as keyof typeof attributeToDisplayFn];
   if (!displayFn) {
     return null;
   }
-  const displayValue = displayFn(value);
+  const displayValue = displayFn(value, context);
   if (!displayValue) {
     return null;
   }
@@ -502,6 +616,14 @@ export const AttributePanel = ({
     return displayValue !== null;
   });
 
+  // Memoize context object to avoid object reconstruction on render
+  const displayContext = useMemo(
+    () => ({
+      stepName: displayData.stepName as string | undefined,
+    }),
+    [displayData.stepName]
+  );
+
   return (
     <StreamClickContext.Provider value={onStreamClick}>
       <div>
@@ -557,6 +679,7 @@ export const AttributePanel = ({
               key={attribute}
               attribute={attribute}
               value={displayData[attribute as keyof typeof displayData]}
+              context={displayContext}
             />
           ))
         )}
