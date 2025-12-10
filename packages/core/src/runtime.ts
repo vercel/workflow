@@ -731,6 +731,28 @@ export const stepEntrypoint =
                   ...Attribute.StepSkipped(true),
                   ...Attribute.StepSkipReason(step.status),
                 });
+                // There's a chance that a step terminates correctly, but the underlying process
+                // fails or gets killed before the stepEntrypoint has a chance to re-enqueue the run.
+                // The queue lease expires and stepEntrypoint again, which leads us here, so
+                // we optimistically re-enqueue the workflow if the step is in a terminal state,
+                // under the assumption that this edge case happened.
+                // Until we move to atomic entity/event updates (World V2), there _could_ be an edge case
+                // where the we execute this code based on the `step` entity status, but the runtime
+                // failed to create the `step_completed` event (due to failing between step and event update),
+                // in which case, this might lead to an infinite loop.
+                // https://vercel.slack.com/archives/C09125LC4AX/p1765313809066679
+                const isTerminalStep = [
+                  'completed',
+                  'failed',
+                  'cancelled',
+                ].includes(step.status);
+                if (isTerminalStep) {
+                  await queueMessage(world, `__wkf_workflow_${workflowName}`, {
+                    runId: workflowRunId,
+                    traceCarrier: await serializeTraceCarrier(),
+                    requestedAt: new Date(),
+                  });
+                }
                 return;
               }
 
