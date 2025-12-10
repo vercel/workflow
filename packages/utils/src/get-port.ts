@@ -22,15 +22,15 @@ const join = (arr: string[], sep: string) => arr.join(sep);
 const PROC_ROOT = join(['', 'proc'], '/');
 
 /**
- * Gets listening ports for the current process on Linux by reading /proc filesystem.
- * This approach requires no external commands and works on all Linux systems.
+ * Gets ALL listening ports for the current process on Linux by reading /proc filesystem.
+ * Returns ports in order of file descriptor (deterministic ordering).
  */
-async function getLinuxPort(pid: number): Promise<number | undefined> {
+async function getLinuxPorts(pid: number): Promise<number[]> {
   const listenState = '0A'; // TCP LISTEN state in /proc/net/tcp
   const tcpFiles = [`${PROC_ROOT}/net/tcp`, `${PROC_ROOT}/net/tcp6`] as const;
 
   // Step 1: Get socket inodes from /proc/<pid>/fd/ in order
-  // We preserve order to maintain deterministic behavior (return first port)
+  // We preserve order to maintain deterministic behavior
   // Use both array (for order) and Set (for O(1) lookup)
   const socketInodes: string[] = [];
   const socketInodesSet = new Set<string>();
@@ -62,24 +62,23 @@ async function getLinuxPort(pid: number): Promise<number | undefined> {
     }
   } catch {
     // Process might not exist or no permission
-    return undefined;
+    return [];
   }
 
   if (socketInodes.length === 0) {
-    return undefined;
+    return [];
   }
 
   // Step 2: Read /proc/net/tcp and /proc/net/tcp6 to find listening sockets
   // Format: sl local_address rem_address st ... inode
   // local_address is hex IP:port, st=0A means LISTEN
-  // We iterate through socket inodes in order to maintain deterministic behavior
+  const inodeToPort = new Map<string, number>();
+
   for (const tcpFile of tcpFiles) {
     try {
       const content = await readFile(tcpFile, 'utf8');
       const lines = content.split('\n').slice(1); // Skip header
 
-      // Build a map of inode -> port for quick lookup
-      const inodeToPort = new Map<string, number>();
       for (const line of lines) {
         if (!line.trim()) continue; // Skip empty lines
 
@@ -105,21 +104,126 @@ async function getLinuxPort(pid: number): Promise<number | undefined> {
           inodeToPort.set(inode, port);
         }
       }
-
-      // Return the first port matching our socket inodes in order
-      for (const inode of socketInodes) {
-        const port = inodeToPort.get(inode);
-        if (port !== undefined) {
-          return port;
-        }
-      }
     } catch {
       // File might not exist (e.g., no IPv6 support) - continue to next file
       continue;
     }
   }
 
-  return undefined;
+  // Return all ports in socket inode order (deterministic)
+  const ports: number[] = [];
+  for (const inode of socketInodes) {
+    const port = inodeToPort.get(inode);
+    if (port !== undefined) {
+      ports.push(port);
+    }
+  }
+
+  return ports;
+}
+
+/**
+ * Gets ALL listening ports for the current process on macOS using lsof.
+ * Returns ports in the order they appear in lsof output.
+ */
+async function getDarwinPorts(pid: number): Promise<number[]> {
+  try {
+    const { stdout } = await execFileAsync('lsof', [
+      '-a',
+      '-i',
+      '-P',
+      '-n',
+      '-p',
+      pid.toString(),
+    ]);
+
+    const ports: number[] = [];
+    const lines = stdout.split('\n');
+
+    for (const line of lines) {
+      if (line.includes('LISTEN')) {
+        // Column 9 (0-indexed: 8) contains the address like "*:3000" or "127.0.0.1:3000"
+        const parts = line.trim().split(/\s+/);
+        const addr = parts[8];
+        if (addr) {
+          const colonIndex = addr.lastIndexOf(':');
+          if (colonIndex !== -1) {
+            const port = parsePort(addr.slice(colonIndex + 1));
+            if (port !== undefined) {
+              ports.push(port);
+            }
+          }
+        }
+      }
+    }
+
+    return ports;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Gets ALL listening ports for the current process on Windows using netstat.
+ * Returns ports in the order they appear in netstat output.
+ */
+async function getWindowsPorts(pid: number): Promise<number[]> {
+  try {
+    const { stdout } = await execFileAsync('cmd', [
+      '/c',
+      `netstat -ano | findstr ${pid} | findstr LISTENING`,
+    ]);
+
+    const ports: number[] = [];
+    const trimmedOutput = stdout.trim();
+
+    if (trimmedOutput) {
+      const lines = trimmedOutput.split('\n');
+      for (const line of lines) {
+        // Extract port from the local address column
+        // Matches both IPv4 (e.g., "127.0.0.1:3000") and IPv6 bracket notation (e.g., "[::1]:3000")
+        const match = line
+          .trim()
+          .match(/^\s*TCP\s+(?:\[[\da-f:]+\]|[\d.]+):(\d+)\s+/i);
+        if (match) {
+          const port = parsePort(match[1]);
+          if (port !== undefined) {
+            ports.push(port);
+          }
+        }
+      }
+    }
+
+    return ports;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Gets all listening ports for the current process.
+ * @returns Array of port numbers the process is listening on, in deterministic order.
+ */
+export async function getAllPorts(): Promise<number[]> {
+  const { pid, platform } = process;
+
+  try {
+    switch (platform) {
+      case 'linux':
+        return await getLinuxPorts(pid);
+      case 'darwin':
+        return await getDarwinPorts(pid);
+      case 'win32':
+        return await getWindowsPorts(pid);
+      default:
+        return [];
+    }
+  } catch (error) {
+    if (process.env.NODE_ENV === 'development') {
+      console.debug('[getAllPorts] Detection failed:', error);
+    }
+    return [];
+  }
 }
 
 /**
@@ -127,82 +231,97 @@ async function getLinuxPort(pid: number): Promise<number | undefined> {
  * @returns The port number that the process is listening on, or undefined if the process is not listening on any port.
  */
 export async function getPort(): Promise<number | undefined> {
-  const { pid, platform } = process;
+  const ports = await getAllPorts();
+  return ports[0];
+}
 
-  let port: number | undefined;
+// Configuration for HTTP probing
+const PROBE_TIMEOUT_MS = 1000;
+const PROBE_ENDPOINT = '/.well-known/workflow/v1/flow';
+
+export interface ProbeOptions {
+  endpoint?: string;
+  timeout?: number;
+}
+
+/**
+ * Probes a port to check if it's serving the workflow HTTP server.
+ * Uses HEAD request to minimize overhead.
+ *
+ * @returns true if the port responds as a workflow server (non-404 response)
+ */
+async function probePort(
+  port: number,
+  options: ProbeOptions = {}
+): Promise<boolean> {
+  const { endpoint = PROBE_ENDPOINT, timeout = PROBE_TIMEOUT_MS } = options;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
 
   try {
-    switch (platform) {
-      case 'linux': {
-        port = await getLinuxPort(pid);
-        break;
-      }
-      case 'darwin': {
-        const { stdout } = await execFileAsync('lsof', [
-          '-a',
-          '-i',
-          '-P',
-          '-n',
-          '-p',
-          pid.toString(),
-        ]);
-        // Parse lsof output in JS instead of piping to awk
-        // Find first LISTEN line and extract port from address (e.g., "*:3000" or "127.0.0.1:3000")
-        const lines = stdout.split('\n');
-        for (const line of lines) {
-          if (line.includes('LISTEN')) {
-            // Column 9 (0-indexed: 8) contains the address like "*:3000" or "127.0.0.1:3000"
-            const parts = line.trim().split(/\s+/);
-            const addr = parts[8];
-            if (addr) {
-              const colonIndex = addr.lastIndexOf(':');
-              if (colonIndex !== -1) {
-                port = parsePort(addr.slice(colonIndex + 1));
-                if (port !== undefined) {
-                  break;
-                }
-              }
-            }
-          }
-        }
-        break;
-      }
+    const response = await fetch(`http://localhost:${port}${endpoint}`, {
+      method: 'HEAD',
+      signal: controller.signal,
+    });
 
-      case 'win32': {
-        // Use cmd to run the piped command
-        const { stdout } = await execFileAsync('cmd', [
-          '/c',
-          `netstat -ano | findstr ${pid} | findstr LISTENING`,
-        ]);
+    // The workflow endpoints return 400 for missing headers, not 404
+    // A 400/405/200 indicates the endpoint exists (workflow server)
+    // A 404 indicates wrong port (endpoint doesn't exist)
+    return response.status !== 404;
+  } catch {
+    // Connection refused, timeout, or other error
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
-        const trimmedOutput = stdout.trim();
+/**
+ * Gets the workflow server port by probing all listening ports.
+ * This is more reliable than getPort() when other services (like Node.js inspector)
+ * may also be listening on ports.
+ *
+ * @param options - Optional configuration for probing
+ * @returns The port number of the workflow server, or undefined if not found
+ */
+export async function getWorkflowPort(
+  options?: ProbeOptions
+): Promise<number | undefined> {
+  const ports = await getAllPorts();
 
-        if (trimmedOutput) {
-          const lines = trimmedOutput.split('\n');
-          for (const line of lines) {
-            // Extract port from the local address column
-            // Matches both IPv4 (e.g., "127.0.0.1:3000") and IPv6 bracket notation (e.g., "[::1]:3000")
-            const match = line
-              .trim()
-              .match(/^\s*TCP\s+(?:\[[\da-f:]+\]|[\d.]+):(\d+)\s+/i);
-            if (match) {
-              port = parsePort(match[1]);
-              if (port !== undefined) {
-                break;
-              }
-            }
-          }
-        }
-        break;
-      }
-    }
-  } catch (error) {
-    // In dev, it's helpful to know why detection failed
-    if (process.env.NODE_ENV === 'development') {
-      console.debug('[getPort] Detection failed:', error);
-    }
+  if (ports.length === 0) {
     return undefined;
   }
 
-  return Number.isNaN(port) ? undefined : port;
+  if (ports.length === 1) {
+    // Only one port, no need to probe
+    return ports[0];
+  }
+
+  // Probe all ports in parallel
+  const probeResults = await Promise.all(
+    ports.map(async (port) => ({
+      port,
+      isWorkflow: await probePort(port, options),
+    }))
+  );
+
+  // Return first port that responded as workflow server
+  const workflowPort = probeResults.find((r) => r.isWorkflow);
+  if (workflowPort) {
+    return workflowPort.port;
+  }
+
+  // Fallback to first port if probing doesn't identify workflow server
+  // This handles cases where:
+  // - Server hasn't started workflow routes yet
+  // - Network issues during probing
+  if (process.env.NODE_ENV === 'development') {
+    console.debug(
+      '[getWorkflowPort] Probing failed, falling back to first port:',
+      ports[0]
+    );
+  }
+  return ports[0];
 }
