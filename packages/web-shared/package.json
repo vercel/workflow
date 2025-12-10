@@ -37,6 +37,8 @@
     "format": "biome format --write"
   },
   "dependencies": {
+    "@radix-ui/react-dialog": "1.1.14",
+    "@radix-ui/react-slot": "1.2.3",
     "@tailwindcss/postcss": "4",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",

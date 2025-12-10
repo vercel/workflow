@@ -1,11 +1,27 @@
 import type { ModelMessage } from 'ai';
+import { Check, GitBranch, Pencil } from 'lucide-react';
+import { useState } from 'react';
 import { Streamdown } from 'streamdown';
 
 interface ConversationViewProps {
   messages: ModelMessage[];
+  /** Callback when user clicks fork button on a user message. Receives the message index. */
+  onFork?: (messageIndex: number) => void;
+  /** Enable editing of user messages */
+  editable?: boolean;
+  /** Callback when a user message is edited. Receives the message index and new content. */
+  onMessageChange?: (messageIndex: number, newContent: string) => void;
+  /** Callback when editing state changes */
+  onEditingChange?: (isEditing: boolean) => void;
 }
 
-export function ConversationView({ messages }: ConversationViewProps) {
+export function ConversationView({
+  messages,
+  onFork,
+  editable,
+  onMessageChange,
+  onEditingChange,
+}: ConversationViewProps) {
   if (messages.length === 0) {
     return (
       <div
@@ -17,23 +33,73 @@ export function ConversationView({ messages }: ConversationViewProps) {
     );
   }
 
+  // Find the index of the last user message (only this one is editable)
+  const lastUserMessageIndex = messages.reduce(
+    (lastIdx, msg, idx) => (msg.role === 'user' ? idx : lastIdx),
+    -1
+  );
+
   return (
     <div className="flex flex-col gap-3 max-h-[400px] overflow-y-auto p-3">
       {messages.map((message, index) => (
-        <MessageBubble key={index} message={message} />
+        <MessageBubble
+          key={index}
+          message={message}
+          index={index}
+          onFork={onFork}
+          editable={editable && index === lastUserMessageIndex}
+          onMessageChange={onMessageChange}
+          onEditingChange={onEditingChange}
+        />
       ))}
     </div>
   );
 }
 
-function MessageBubble({ message }: { message: ModelMessage }) {
+function MessageBubble({
+  message,
+  index,
+  onFork,
+  editable,
+  onMessageChange,
+  onEditingChange,
+}: {
+  message: ModelMessage;
+  index: number;
+  onFork?: (messageIndex: number) => void;
+  editable?: boolean;
+  onMessageChange?: (messageIndex: number, newContent: string) => void;
+  onEditingChange?: (isEditing: boolean) => void;
+}) {
   const role = message.role;
-  const parts = parseContent(message.content);
   const style = getRoleStyle(role);
+  const showForkButton = role === 'user' && onFork;
+  const canEdit = editable && role === 'user' && onMessageChange;
+
+  // Local editing state
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+
+  // Extract text content for editing
+  const textContent = getTextContent(message.content);
+
+  const handleStartEdit = () => {
+    setEditValue(textContent);
+    setIsEditing(true);
+    onEditingChange?.(true);
+  };
+
+  const handleSaveEdit = () => {
+    if (onMessageChange) {
+      onMessageChange(index, editValue);
+    }
+    setIsEditing(false);
+    onEditingChange?.(false);
+  };
 
   return (
     <div
-      className="rounded-md border text-[11px]"
+      className="rounded-md border text-[11px] group"
       style={{
         backgroundColor: style.bg,
         borderColor: style.border,
@@ -41,23 +107,102 @@ function MessageBubble({ message }: { message: ModelMessage }) {
     >
       {/* Role header */}
       <div
-        className="px-2.5 py-1 border-b text-[10px] font-medium uppercase tracking-wide"
+        className="px-2.5 py-1 border-b text-[10px] font-medium uppercase tracking-wide flex items-center justify-between"
         style={{
           borderColor: style.border,
           color: style.label,
         }}
       >
-        {role}
+        <span>{role}</span>
+        <div className="flex items-center gap-1">
+          {canEdit && !isEditing && (
+            <button
+              type="button"
+              onClick={handleStartEdit}
+              className="p-1 rounded border"
+              title="Edit message"
+              style={{
+                color: style.label,
+                backgroundColor: 'var(--ds-background-100)',
+                borderColor: style.border,
+              }}
+            >
+              <Pencil size={10} />
+            </button>
+          )}
+          {canEdit && isEditing && (
+            <button
+              type="button"
+              onClick={handleSaveEdit}
+              className="p-1 rounded border"
+              title="Save edit"
+              style={{
+                color: 'var(--ds-green-700)',
+                backgroundColor: 'var(--ds-green-100)',
+                borderColor: 'var(--ds-green-300)',
+              }}
+            >
+              <Check size={10} />
+            </button>
+          )}
+          {showForkButton && (
+            <button
+              type="button"
+              onClick={() => onFork(index)}
+              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded border"
+              title="Fork workflow from this message"
+              style={{
+                color: style.label,
+                backgroundColor: 'var(--ds-background-100)',
+                borderColor: style.border,
+              }}
+            >
+              <GitBranch size={10} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Content */}
       <div className="px-2.5 py-2 space-y-2">
-        {parts.map((part, i) => (
-          <ContentPart key={i} part={part} role={role} />
-        ))}
+        {isEditing ? (
+          <textarea
+            className="w-full min-h-[60px] p-2 rounded border text-[11px] resize-y"
+            style={{
+              backgroundColor: 'var(--ds-background-100)',
+              borderColor: 'var(--ds-blue-400)',
+              color: 'var(--ds-gray-1000)',
+            }}
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+          />
+        ) : (
+          parseContent(message.content).map((part, i) => (
+            <ContentPart key={i} part={part} role={role} />
+          ))
+        )}
       </div>
     </div>
   );
+}
+
+/**
+ * Extract text content from a message for editing
+ */
+function getTextContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (part?.type === 'text') return String(part.text ?? '');
+        return '';
+      })
+      .join('');
+  }
+  return '';
 }
 
 interface ParsedPart {

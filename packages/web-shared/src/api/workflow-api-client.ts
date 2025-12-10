@@ -7,6 +7,7 @@ import type {
   WorkflowRun,
   WorkflowRunStatus,
 } from '@workflow/world';
+import type { ModelMessage } from 'ai';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getPaginationDisplay } from '../lib/utils';
 import type { EnvMap, ServerActionError } from './workflow-server-actions';
@@ -21,6 +22,7 @@ import {
   fetchStep,
   fetchSteps,
   fetchStreams,
+  forkRunFromConversation,
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
 } from './workflow-server-actions';
@@ -1094,6 +1096,31 @@ export async function cancelRun(env: EnvMap, runId: string): Promise<void> {
 export async function recreateRun(env: EnvMap, runId: string): Promise<string> {
   const { error, result: resultData } = await unwrapServerActionResult(
     recreateRunServerAction(env, runId)
+  );
+  if (error) {
+    throw error;
+  }
+  return resultData;
+}
+
+/**
+ * Fork a workflow run from a specific point in a conversation.
+ *
+ * Creates a new run with a truncated conversation, allowing the LLM to
+ * generate a fresh response from that point.
+ *
+ * @param env - Environment variables for world configuration
+ * @param runId - The original run ID to fork from
+ * @param truncatedMessages - The conversation messages truncated to the fork point
+ * @returns The new run ID
+ */
+export async function forkRun(
+  env: EnvMap,
+  runId: string,
+  truncatedMessages: ModelMessage[]
+): Promise<string> {
+  const { error, result: resultData } = await unwrapServerActionResult(
+    forkRunFromConversation(env, runId, truncatedMessages)
   );
   if (error) {
     throw error;
