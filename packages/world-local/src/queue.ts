@@ -83,6 +83,10 @@ export function createQueue(config: Partial<Config>): Queue {
       try {
         let defaultRetriesLeft = 3;
         const baseUrl = await resolveBaseUrl(config);
+        console.log(
+          'Queue posting to:',
+          `${baseUrl}/.well-known/workflow/v1/${pathname}`
+        );
         for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
           defaultRetriesLeft--;
 
