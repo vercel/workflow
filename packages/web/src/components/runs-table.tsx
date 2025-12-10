@@ -7,8 +7,8 @@ import {
   getErrorMessage,
   useWorkflowRuns,
 } from '@workflow/web-shared';
-import { fetchEvents } from '@workflow/web-shared/server';
-import type { WorkflowRunStatus } from '@workflow/world';
+import { fetchEvents, fetchRun } from '@workflow/web-shared/server';
+import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
   ArrowDownAZ,
@@ -72,39 +72,40 @@ function RunActionsDropdownContentInner({
   showDebugActions: boolean;
 }) {
   const [events, setEvents] = useState<Event[] | undefined>(undefined);
-  const [eventsLoading, setEventsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const [run, setRun] = useState<WorkflowRun | undefined>(undefined);
+  const status = run?.status || runStatus;
 
   useEffect(() => {
-    let cancelled = false;
-    setEventsLoading(true);
+    setIsLoading(true);
 
-    fetchEvents(env, runId, { limit: 1000 })
-      .then((result: Awaited<ReturnType<typeof fetchEvents>>) => {
-        if (!cancelled && result.success) {
-          setEvents(result.data.data);
+    Promise.all([
+      fetchRun(env, runId, 'none'),
+      fetchEvents(env, runId, { limit: 1000, sortOrder: 'desc' }),
+    ])
+      .then(([runResult, eventsResult]) => {
+        if (runResult.success) {
+          setRun(runResult.data);
+        }
+        if (eventsResult.success) {
+          setEvents(eventsResult.data.data);
         }
       })
       .catch((err: unknown) => {
-        console.error('Failed to fetch events:', err);
+        console.error('Failed to fetch run or events:', err);
       })
       .finally(() => {
-        if (!cancelled) {
-          setEventsLoading(false);
-        }
+        setIsLoading(false);
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, [env, runId]);
 
   return (
     <RunActionsDropdownItems
       env={env}
       runId={runId}
-      runStatus={runStatus}
+      runStatus={status}
       events={events}
-      eventsLoading={eventsLoading}
+      eventsLoading={isLoading}
       stopPropagation
       callbacks={{ onSuccess }}
       showDebugActions={showDebugActions}

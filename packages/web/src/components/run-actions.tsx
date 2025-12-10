@@ -530,58 +530,6 @@ export function RunActionsButtons({
 }
 
 // ============================================================================
-// Lazy-loading wrapper for dropdown (fetches events when dropdown opens)
-// ============================================================================
-
-interface LazyRunActionsDropdownContentProps
-  extends RunActionsDropdownItemsProps {
-  fetchEvents: () => Promise<Event[]>;
-}
-
-export function LazyRunActionsDropdownContent({
-  fetchEvents,
-  ...props
-}: LazyRunActionsDropdownContentProps) {
-  const [events, setEvents] = useState<Event[] | undefined>(undefined);
-  const [eventsLoading, setEventsLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setEventsLoading(true);
-
-    fetchEvents()
-      .then((result) => {
-        if (!cancelled) {
-          setEvents(result);
-        }
-      })
-      .catch((err) => {
-        console.error('Failed to fetch events:', err);
-        if (!cancelled) {
-          setEvents(undefined);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setEventsLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [fetchEvents]);
-
-  return (
-    <RunActionsDropdownItems
-      {...props}
-      events={events}
-      eventsLoading={eventsLoading}
-    />
-  );
-}
-
-// ============================================================================
 // Hook for lazy loading events (alternative approach)
 // ============================================================================
 
