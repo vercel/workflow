@@ -1,5 +1,15 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- [#586](https://github.com/vercel/workflow/pull/586) [`a4b67a9`](https://github.com/vercel/workflow/commit/a4b67a9b3aa0130785e6376fbeb636ca3c39b3a1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Show a conversation view in the trace viewer UI for `doStreamStep` steps from DurableAgent
+
+- Updated dependencies [[`696e7e3`](https://github.com/vercel/workflow/commit/696e7e31e88eae5d86e9d4b9f0344f0777ae9673)]:
+  - @workflow/core@4.0.1-beta.26
+  - @workflow/errors@4.0.1-beta.8
+
 ## 4.0.1-beta.26
 
 ### Patch Changes

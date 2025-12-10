@@ -1,5 +1,17 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.23
+
+### Patch Changes
+
+- [#573](https://github.com/vercel/workflow/pull/573) [`8d2cabe`](https://github.com/vercel/workflow/commit/8d2cabe27e80979a5f3cfb4fef373ca3938b5950) Thanks [@adriandlam](https://github.com/adriandlam)! - Externalize SvelteKit virtual modules in builder
+
+- [#590](https://github.com/vercel/workflow/pull/590) [`c9b8d84`](https://github.com/vercel/workflow/commit/c9b8d843fd0a88de268d603a14ebe2e7c726169a) Thanks [@adriandlam](https://github.com/adriandlam)! - Improve port detection with HTTP probing
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.25
+  - @workflow/vite@4.0.0-beta.2
+
 ## 4.0.0-beta.22
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 4.0.1-beta.6
+
+### Patch Changes
+
+- [#590](https://github.com/vercel/workflow/pull/590) [`c9b8d84`](https://github.com/vercel/workflow/commit/c9b8d843fd0a88de268d603a14ebe2e7c726169a) Thanks [@adriandlam](https://github.com/adriandlam)! - Improve port detection with HTTP probing
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

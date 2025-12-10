@@ -1,5 +1,12 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/errors@4.0.1-beta.8
+
 ## 4.0.1-beta.18
 
 ### Patch Changes

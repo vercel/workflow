@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-local",
-  "version": "4.0.1-beta.16",
+  "version": "4.0.1-beta.17",
   "description": "Local development World implementation for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",

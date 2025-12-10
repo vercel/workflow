@@ -1,5 +1,17 @@
 # @workflow/core
 
+## 4.0.1-beta.26
+
+### Patch Changes
+
+- [#588](https://github.com/vercel/workflow/pull/588) [`696e7e3`](https://github.com/vercel/workflow/commit/696e7e31e88eae5d86e9d4b9f0344f0777ae9673) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix rare case where workflows get stuck due to edge case in step update logic
+
+- Updated dependencies [[`c9b8d84`](https://github.com/vercel/workflow/commit/c9b8d843fd0a88de268d603a14ebe2e7c726169a)]:
+  - @workflow/world-local@4.0.1-beta.17
+  - @workflow/utils@4.0.1-beta.6
+  - @workflow/errors@4.0.1-beta.8
+  - @workflow/world-vercel@4.0.1-beta.19
+
 ## 4.0.1-beta.25
 
 ### Patch Changes
