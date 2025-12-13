@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.16
+
+### Patch Changes
+
+- [#604](https://github.com/vercel/workflow/pull/604) [`6265534`](https://github.com/vercel/workflow/commit/6265534d6be2cba54265ef23b94a0810d9e25c9c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump next.js to address CVE-2025-55184
+
 ## 4.0.1-beta.15
 
 ### Patch Changes
