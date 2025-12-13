@@ -17,6 +17,7 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
+import type { ModelMessage } from 'ai';
 
 export type EnvMap = Record<string, string | undefined>;
 
@@ -504,6 +505,62 @@ export async function recreateRun(
     return createResponse(newRun.runId);
   } catch (error) {
     return createServerActionError<string>(error, 'recreateRun', { runId });
+  }
+}
+
+/**
+ * Fork a workflow run from a specific point in a conversation.
+ *
+ * This creates a new run with a truncated conversation - all messages up to and
+ * including the specified message index. The workflow will re-execute with this
+ * modified input, allowing the LLM to generate a fresh response.
+ *
+ * System messages are filtered out from the truncated conversation since the
+ * workflow's DurableAgent will add its own system message, preventing duplicates.
+ *
+ * @param worldEnv - Environment variables for world configuration
+ * @param runId - The original run ID to fork from
+ * @param truncatedMessages - The conversation messages truncated to the fork point
+ */
+export async function forkRunFromConversation(
+  worldEnv: EnvMap,
+  runId: string,
+  truncatedMessages: ModelMessage[]
+): Promise<ServerActionResult<string>> {
+  try {
+    const world = getWorldFromEnv({ ...worldEnv });
+    const run = await world.runs.get(runId);
+    const hydratedRun = hydrate(run as WorkflowRun);
+    const deploymentId = run.deploymentId;
+
+    // Filter out system messages from the truncated conversation.
+    // The workflow's DurableAgent will add its own system message, so including
+    // one from the original conversation would cause duplication.
+    const messagesWithoutSystem = truncatedMessages.filter((msg) => {
+      if (msg && typeof msg === 'object' && 'role' in msg) {
+        return (msg as { role: string }).role !== 'system';
+      }
+      return true;
+    });
+
+    // The input for doStreamStep is [conversationPrompt, model, writable, tools, options]
+    // We need to replace the first argument (conversation) with the truncated version
+    const modifiedInput = [...hydratedRun.input];
+    modifiedInput[0] = messagesWithoutSystem;
+
+    const newRun = await start(
+      { workflowId: run.workflowName },
+      modifiedInput,
+      {
+        deploymentId,
+      }
+    );
+    return createResponse(newRun.runId);
+  } catch (error) {
+    return createServerActionError<string>(error, 'forkRunFromConversation', {
+      runId,
+      messageCount: truncatedMessages.length,
+    });
   }
 }
 

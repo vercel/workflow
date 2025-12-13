@@ -7,14 +7,124 @@ import { AlertCircle } from 'lucide-react';
 import {
   createContext,
   type ReactNode,
+  useCallback,
   useContext,
   useMemo,
   useState,
 } from 'react';
+import { forkRun } from '../api/workflow-api-client';
+import type { EnvMap } from '../api/workflow-server-actions';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { Button } from '../components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
 import { extractConversation, isDoStreamStep } from '../lib/utils';
 import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
+
+/**
+ * Confirmation dialog for forking a workflow run
+ */
+function ForkConfirmationDialog({
+  open,
+  previewMessages,
+  isForking,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  previewMessages: ModelMessage[];
+  isForking: boolean;
+  onConfirm: (editedMessages: ModelMessage[]) => void;
+  onCancel: () => void;
+}) {
+  // Filter out system messages for the preview (they won't be sent)
+  const messagesToShow = previewMessages.filter((m) => m.role !== 'system');
+
+  // Track edited messages - initialize when dialog opens
+  const [editedMessages, setEditedMessages] =
+    useState<ModelMessage[]>(messagesToShow);
+
+  // Track if user is currently editing a message
+  const [isEditingMessage, setIsEditingMessage] = useState(false);
+
+  // Reset edited messages when previewMessages change
+  useMemo(() => {
+    setEditedMessages(messagesToShow);
+  }, [previewMessages]);
+
+  // Handle user message edits (only user messages can be edited)
+  const handleMessageChange = useCallback(
+    (messageIndex: number, newContent: string) => {
+      setEditedMessages((prev) =>
+        prev.map((msg, idx) => {
+          if (idx !== messageIndex || msg.role !== 'user') return msg;
+          // For user messages, content can be a string or array of content parts
+          // We replace with a simple string content
+          return {
+            role: 'user' as const,
+            content: newContent,
+            providerOptions: msg.providerOptions,
+          };
+        })
+      );
+    },
+    []
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onCancel()}>
+      <DialogContent className="max-w-lg max-h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle>Fork Workflow</DialogTitle>
+          <DialogDescription>
+            A new workflow run will be created with the following{' '}
+            {editedMessages.length} message
+            {editedMessages.length !== 1 ? 's' : ''} as input. You can edit the
+            last user message before forking.
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Preview content */}
+        <div className="flex-1 overflow-y-auto my-4">
+          <div
+            className="rounded-md border"
+            style={{ borderColor: 'var(--ds-gray-300)' }}
+          >
+            <ConversationView
+              messages={editedMessages}
+              editable
+              onMessageChange={handleMessageChange}
+              onEditingChange={setIsEditingMessage}
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={onCancel}
+            disabled={isForking || isEditingMessage}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={() => onConfirm(editedMessages)}
+            disabled={isForking || isEditingMessage}
+          >
+            {isForking ? 'Forking...' : 'Fork Run'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 /**
  * Tabbed view for conversation and raw JSON
@@ -22,9 +132,11 @@ import { DetailCard } from './detail-card';
 function ConversationWithTabs({
   conversation,
   args,
+  onFork,
 }: {
   conversation: ModelMessage[];
   args: unknown[];
+  onFork?: (messageIndex: number) => void;
 }) {
   const [activeTab, setActiveTab] = useState<'conversation' | 'json'>(
     'conversation'
@@ -81,7 +193,7 @@ function ConversationWithTabs({
 
         {/* Tab content */}
         {activeTab === 'conversation' ? (
-          <ConversationView messages={conversation} />
+          <ConversationView messages={conversation} onFork={onFork} />
         ) : (
           <div className="p-3 max-h-[400px] overflow-y-auto">
             {Array.isArray(args)
@@ -324,6 +436,7 @@ const sortByAttributeOrder = (a: string, b: string): number => {
 
 interface DisplayContext {
   stepName?: string;
+  onFork?: (messageIndex: number) => void;
 }
 
 const attributeToDisplayFn: Record<
@@ -381,7 +494,11 @@ const attributeToDisplayFn: Record<
         if (conversation && conversation.length > 0) {
           return (
             <>
-              <ConversationWithTabs conversation={conversation} args={args} />
+              <ConversationWithTabs
+                conversation={conversation}
+                args={args}
+                onFork={context.onFork}
+              />
               {hasClosureVars && (
                 <DetailCard summary="Closure Variables">
                   {JsonBlock(closureVars)}
@@ -588,6 +705,9 @@ export const AttributePanel = ({
   error,
   expiredAt,
   onStreamClick,
+  env,
+  runId,
+  onForkComplete,
 }: {
   data: Record<string, unknown>;
   isLoading?: boolean;
@@ -595,6 +715,12 @@ export const AttributePanel = ({
   expiredAt?: string | Date;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Environment variables for API calls (required for fork functionality) */
+  env?: EnvMap;
+  /** Run ID for forking (required for fork functionality) */
+  runId?: string;
+  /** Callback when fork is complete, receives the new run ID */
+  onForkComplete?: (newRunId: string) => void;
 }) => {
   const displayData = data;
   const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
@@ -616,12 +742,62 @@ export const AttributePanel = ({
     return displayValue !== null;
   });
 
+  // Extract conversation for fork functionality
+  const inputData = displayData.input as
+    | { args?: unknown[]; closureVars?: Record<string, unknown> }
+    | undefined;
+  const conversation = inputData?.args
+    ? extractConversation(inputData.args)
+    : null;
+
+  // Fork dialog state
+  const [forkPreview, setForkPreview] = useState<ModelMessage[] | null>(null);
+  const [isForking, setIsForking] = useState(false);
+
+  // Opens the fork confirmation dialog with preview
+  const handleForkClick = useCallback(
+    (messageIndex: number) => {
+      if (!conversation) return;
+      // Truncate conversation up to and including the selected message
+      const truncatedMessages = conversation.slice(0, messageIndex + 1);
+      setForkPreview(truncatedMessages);
+    },
+    [conversation]
+  );
+
+  // Confirms and executes the fork with the (potentially edited) messages
+  const handleForkConfirm = useCallback(
+    async (editedMessages: ModelMessage[]) => {
+      if (!env || !runId) return;
+
+      setIsForking(true);
+      try {
+        const newRunId = await forkRun(env, runId, editedMessages);
+        setForkPreview(null);
+        onForkComplete?.(newRunId);
+      } catch (err) {
+        console.error('Failed to fork workflow:', err);
+      } finally {
+        setIsForking(false);
+      }
+    },
+    [env, runId, onForkComplete]
+  );
+
+  // Cancels the fork dialog
+  const handleForkCancel = useCallback(() => {
+    if (!isForking) {
+      setForkPreview(null);
+    }
+  }, [isForking]);
+
   // Memoize context object to avoid object reconstruction on render
   const displayContext = useMemo(
     () => ({
       stepName: displayData.stepName as string | undefined,
+      onFork: env && runId && conversation ? handleForkClick : undefined,
     }),
-    [displayData.stepName]
+    [displayData.stepName, env, runId, conversation, handleForkClick]
   );
 
   return (
@@ -683,6 +859,15 @@ export const AttributePanel = ({
             />
           ))
         )}
+
+        {/* Fork confirmation dialog */}
+        <ForkConfirmationDialog
+          open={forkPreview !== null}
+          previewMessages={forkPreview ?? []}
+          isForking={isForking}
+          onConfirm={handleForkConfirm}
+          onCancel={handleForkCancel}
+        />
       </div>
     </StreamClickContext.Provider>
   );

@@ -89,6 +89,8 @@ export function WorkflowDetailPanel({
         isLoading={loading}
         error={error ?? undefined}
         onStreamClick={onStreamClick}
+        env={env}
+        runId={run.runId}
       />
       {resource !== 'run' && (
         <EventsList
