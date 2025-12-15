@@ -2,12 +2,13 @@
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
 import {
-  cancelRun,
+  type EnvMap,
+  type Event,
   getErrorMessage,
-  recreateRun,
   useWorkflowRuns,
 } from '@workflow/web-shared';
-import type { WorkflowRunStatus } from '@workflow/world';
+import { fetchEvents, fetchRun } from '@workflow/web-shared/server';
+import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
   ArrowDownAZ,
@@ -16,12 +17,9 @@ import {
   ChevronRight,
   MoreHorizontal,
   RefreshCw,
-  RotateCw,
-  XCircle,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -29,7 +27,6 @@ import { DocsLink } from '@/components/ui/docs-link';
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
@@ -58,6 +55,106 @@ import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { TableSkeleton } from './display-utils/table-skeleton';
+import { RunActionsDropdownItems } from './run-actions';
+
+// Inner content that fetches events when it mounts (only rendered when dropdown is open)
+function RunActionsDropdownContentInner({
+  env,
+  runId,
+  runStatus,
+  onSuccess,
+  showDebugActions,
+}: {
+  env: EnvMap;
+  runId: string;
+  runStatus: WorkflowRunStatus | undefined;
+  onSuccess: () => void;
+  showDebugActions: boolean;
+}) {
+  const [events, setEvents] = useState<Event[] | undefined>(undefined);
+  const [isLoading, setIsLoading] = useState(true);
+  const [run, setRun] = useState<WorkflowRun | undefined>(undefined);
+  const status = run?.status || runStatus;
+
+  useEffect(() => {
+    setIsLoading(true);
+
+    Promise.all([
+      fetchRun(env, runId, 'none'),
+      fetchEvents(env, runId, { limit: 1000, sortOrder: 'desc' }),
+    ])
+      .then(([runResult, eventsResult]) => {
+        if (runResult.success) {
+          setRun(runResult.data);
+        }
+        if (eventsResult.success) {
+          setEvents(eventsResult.data.data);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to fetch run or events:', err);
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
+  }, [env, runId]);
+
+  return (
+    <RunActionsDropdownItems
+      env={env}
+      runId={runId}
+      runStatus={status}
+      events={events}
+      eventsLoading={isLoading}
+      stopPropagation
+      callbacks={{ onSuccess }}
+      showDebugActions={showDebugActions}
+    />
+  );
+}
+
+// Wrapper that only renders content when dropdown is open (lazy loading)
+function LazyDropdownMenu({
+  env,
+  runId,
+  runStatus,
+  onSuccess,
+  showDebugActions,
+}: {
+  env: EnvMap;
+  runId: string;
+  runStatus: WorkflowRunStatus | undefined;
+  onSuccess: () => void;
+  showDebugActions: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      {isOpen && (
+        <DropdownMenuContent align="end">
+          <RunActionsDropdownContentInner
+            env={env}
+            runId={runId}
+            runStatus={runStatus}
+            onSuccess={onSuccess}
+            showDebugActions={showDebugActions}
+          />
+        </DropdownMenuContent>
+      )}
+    </DropdownMenu>
+  );
+}
 
 interface RunsTableProps {
   config: WorldConfig;
@@ -274,6 +371,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ? (rawStatus as WorkflowRunStatus | 'all')
       : undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';
+  const showDebugActions = searchParams.get('debug') === '1';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
@@ -433,73 +531,13 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                         )}
                       </TableCell>
                       <TableCell className="py-2">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                try {
-                                  const newRunId = await recreateRun(
-                                    env,
-                                    run.runId
-                                  );
-                                  toast.success('New run started', {
-                                    description: `Run ID: ${newRunId}`,
-                                  });
-                                  reload();
-                                } catch (err) {
-                                  toast.error('Failed to re-run', {
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : 'Unknown error',
-                                  });
-                                }
-                              }}
-                            >
-                              <RotateCw className="h-4 w-4 mr-2" />
-                              Re-run
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                if (run.status !== 'pending') {
-                                  toast.error('Cannot cancel', {
-                                    description:
-                                      'Only pending runs can be cancelled',
-                                  });
-                                  return;
-                                }
-                                try {
-                                  await cancelRun(env, run.runId);
-                                  toast.success('Run cancelled');
-                                  reload();
-                                } catch (err) {
-                                  toast.error('Failed to cancel', {
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : 'Unknown error',
-                                  });
-                                }
-                              }}
-                              disabled={run.status !== 'pending'}
-                            >
-                              <XCircle className="h-4 w-4 mr-2" />
-                              Cancel
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        <LazyDropdownMenu
+                          env={env}
+                          runId={run.runId}
+                          runStatus={run.status}
+                          onSuccess={reload}
+                          showDebugActions={showDebugActions}
+                        />
                       </TableCell>
                     </TableRow>
                   ))}

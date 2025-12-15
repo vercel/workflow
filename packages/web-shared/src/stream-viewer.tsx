@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { readStream } from './api/workflow-api-client';
 import type { EnvMap } from './api/workflow-server-actions';
 
 interface StreamViewerProps {
   env: EnvMap;
+  runId: string;
   streamId: string;
 }
 
@@ -23,28 +24,16 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
   const [chunks, setChunks] = useState<Chunk[]>([]);
   const [isLive, setIsLive] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [hasMoreBelow, setHasMoreBelow] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const chunkIdRef = useRef(0);
 
-  const checkScrollPosition = useCallback(() => {
-    if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      const isAtBottom = scrollHeight - scrollTop - clientHeight < 10;
-      setHasMoreBelow(!isAtBottom && scrollHeight > clientHeight);
-    }
-  }, []);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: chunks.length triggers scroll on new chunks
   useEffect(() => {
     // Auto-scroll to bottom when new content arrives
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-    // Check scroll position after content changes
-    checkScrollPosition();
-  }, [chunks.length, checkScrollPosition]);
+  }, [chunks.length]);
 
   useEffect(() => {
     let mounted = true;
@@ -112,7 +101,7 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
   }, [env, streamId]);
 
   return (
-    <div className="flex flex-col h-full pb-4">
+    <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-3 px-1">
         <code
           className="text-xs font-mono truncate max-w-[80%]"
@@ -139,67 +128,55 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
         </span>
       </div>
 
-      <div className="relative flex-1 min-h-[200px]">
-        <div
-          ref={scrollRef}
-          onScroll={checkScrollPosition}
-          className="absolute inset-0 overflow-auto flex flex-col gap-2"
-        >
-          {error ? (
-            <div
-              className="text-[11px] rounded-md border p-3"
-              style={{
-                borderColor: 'var(--ds-red-300)',
-                backgroundColor: 'var(--ds-red-100)',
-                color: 'var(--ds-red-700)',
-              }}
-            >
-              <div>Error reading stream:</div>
-              <div>{error}</div>
-            </div>
-          ) : chunks.length === 0 ? (
-            <div
-              className="text-[11px] rounded-md border p-3"
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto min-h-[200px] flex flex-col gap-2"
+      >
+        {error ? (
+          <div
+            className="text-[11px] rounded-md border p-3"
+            style={{
+              borderColor: 'var(--ds-red-300)',
+              backgroundColor: 'var(--ds-red-100)',
+              color: 'var(--ds-red-700)',
+            }}
+          >
+            <div>Error reading stream:</div>
+            <div>{error}</div>
+          </div>
+        ) : chunks.length === 0 ? (
+          <div
+            className="text-[11px] rounded-md border p-3"
+            style={{
+              borderColor: 'var(--ds-gray-300)',
+              backgroundColor: 'var(--ds-gray-100)',
+              color: 'var(--ds-gray-600)',
+            }}
+          >
+            {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
+          </div>
+        ) : (
+          chunks.map((chunk, index) => (
+            <pre
+              key={`${streamId}-chunk-${chunk.id}`}
+              className="text-[11px] rounded-md border p-3 m-0 whitespace-pre-wrap break-words"
               style={{
                 borderColor: 'var(--ds-gray-300)',
                 backgroundColor: 'var(--ds-gray-100)',
-                color: 'var(--ds-gray-600)',
+                color: 'var(--ds-gray-1000)',
               }}
             >
-              {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
-            </div>
-          ) : (
-            chunks.map((chunk, index) => (
-              <pre
-                key={`${streamId}-chunk-${chunk.id}`}
-                className="text-[11px] rounded-md border p-3 m-0 whitespace-pre-wrap break-words"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                  backgroundColor: 'var(--ds-gray-100)',
-                  color: 'var(--ds-gray-1000)',
-                }}
-              >
-                <code>
-                  <span
-                    className="select-none mr-2"
-                    style={{ color: 'var(--ds-gray-500)' }}
-                  >
-                    [{index}]
-                  </span>
-                  {chunk.text}
-                </code>
-              </pre>
-            ))
-          )}
-        </div>
-        {hasMoreBelow && (
-          <div
-            className="absolute bottom-0 left-0 right-0 h-8 pointer-events-none"
-            style={{
-              background:
-                'linear-gradient(to top, var(--ds-background-100), transparent)',
-            }}
-          />
+              <code>
+                <span
+                  className="select-none mr-2"
+                  style={{ color: 'var(--ds-gray-500)' }}
+                >
+                  [{index}]
+                </span>
+                {chunk.text}
+              </code>
+            </pre>
+          ))
         )}
       </div>
     </div>

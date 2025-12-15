@@ -212,7 +212,7 @@ export function HooksTable({
           <TooltipTrigger asChild>
             <span className="font-semibold cursor-help">{displayText}</span>
           </TooltipTrigger>
-          <TooltipContent>
+          <TooltipContent className="max-w-xs">
             <div className="text-xs">
               Showing first 100 invocations. There may be more.
             </div>
@@ -365,7 +365,7 @@ export function HooksTable({
                               }}
                             >
                               <RotateCw className="h-4 w-4 mr-2" />
-                              Re-run
+                              Replay Run
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               onClick={async (e) => {

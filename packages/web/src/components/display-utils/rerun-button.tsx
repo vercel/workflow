@@ -30,15 +30,21 @@ export function RerunButton({
             disabled={!canRerun || rerunning}
           >
             <RotateCw className="h-4 w-4" />
-            {rerunning ? 'Re-running...' : 'Re-run'}
+            {rerunning ? 'Replaying...' : 'Replay'}
           </Button>
         </span>
       </TooltipTrigger>
-      {rerunDisabledReason && (
-        <TooltipContent>
+      <TooltipContent className="max-w-xs">
+        {rerunDisabledReason ? (
           <p>{rerunDisabledReason}</p>
-        </TooltipContent>
-      )}
+        ) : (
+          <p>
+            This will start a new copy of the current run using the same
+            deployment, environment, and inputs. It will not affect the current
+            run.
+          </p>
+        )}
+      </TooltipContent>
     </Tooltip>
   );
 }

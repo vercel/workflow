@@ -507,6 +507,132 @@ export async function recreateRun(
   }
 }
 
+/**
+ * Re-enqueue a workflow run.
+ *
+ * This re-enqueues the workflow orchestration layer. It's a no-op unless the workflow
+ * got stuck due to an implementation issue in the World. Useful for debugging custom Worlds.
+ */
+export async function reenqueueRun(
+  worldEnv: EnvMap,
+  runId: string
+): Promise<ServerActionResult<void>> {
+  try {
+    const world = getWorldFromEnv({ ...worldEnv });
+    const run = await world.runs.get(runId);
+    const deploymentId = run.deploymentId;
+
+    await world.queue(
+      `__wkf_workflow_${run.workflowName}`,
+      {
+        runId,
+      },
+      {
+        deploymentId,
+      }
+    );
+
+    return createResponse(undefined);
+  } catch (error) {
+    return createServerActionError<void>(error, 'reenqueueRun', { runId });
+  }
+}
+
+export interface StopSleepResult {
+  /** Number of pending sleeps that were stopped */
+  stoppedCount: number;
+}
+
+export interface StopSleepOptions {
+  /**
+   * Optional list of specific correlation IDs to target.
+   * If provided, only these sleep calls will be interrupted.
+   * If not provided, all pending sleep calls will be interrupted.
+   */
+  correlationIds?: string[];
+}
+
+/**
+ * Wake up a workflow run by interrupting pending sleep() calls.
+ *
+ * This finds wait_created events without matching wait_completed events,
+ * creates wait_completed events for them, and then re-enqueues the run.
+ *
+ * @param worldEnv - Environment configuration for the World
+ * @param runId - The run ID to wake up
+ * @param options - Optional settings to narrow down targeting (specific correlation IDs)
+ */
+export async function wakeUpRun(
+  worldEnv: EnvMap,
+  runId: string,
+  options?: StopSleepOptions
+): Promise<ServerActionResult<StopSleepResult>> {
+  try {
+    const world = getWorldFromEnv({ ...worldEnv });
+    const run = await world.runs.get(runId);
+    const deploymentId = run.deploymentId;
+
+    // Fetch all events for the run
+    const eventsResult = await world.events.list({
+      runId,
+      pagination: { limit: 1000 },
+      resolveData: 'none',
+    });
+
+    // Find wait_created events without matching wait_completed events
+    const waitCreatedEvents = eventsResult.data.filter(
+      (e) => e.eventType === 'wait_created'
+    );
+    const waitCompletedCorrelationIds = new Set(
+      eventsResult.data
+        .filter((e) => e.eventType === 'wait_completed')
+        .map((e) => e.correlationId)
+    );
+
+    let pendingWaits = waitCreatedEvents.filter(
+      (e) => !waitCompletedCorrelationIds.has(e.correlationId)
+    );
+
+    // If specific correlation IDs are provided, filter to only those
+    if (options?.correlationIds && options.correlationIds.length > 0) {
+      const targetCorrelationIds = new Set(options.correlationIds);
+      pendingWaits = pendingWaits.filter(
+        (e) => e.correlationId && targetCorrelationIds.has(e.correlationId)
+      );
+    }
+
+    // Create wait_completed events for each pending wait
+    for (const waitEvent of pendingWaits) {
+      if (waitEvent.correlationId) {
+        await world.events.create(runId, {
+          eventType: 'wait_completed',
+          correlationId: waitEvent.correlationId,
+        });
+      }
+    }
+
+    // Re-enqueue the run to wake it up
+    if (pendingWaits.length > 0) {
+      await world.queue(
+        `__wkf_workflow_${run.workflowName}`,
+        {
+          runId,
+        },
+        {
+          deploymentId,
+        }
+      );
+    }
+
+    return createResponse({ stoppedCount: pendingWaits.length });
+  } catch (error) {
+    return createServerActionError<StopSleepResult>(error, 'wakeUpRun', {
+      runId,
+      correlationIds: options?.correlationIds,
+    });
+  }
+}
+
 export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,

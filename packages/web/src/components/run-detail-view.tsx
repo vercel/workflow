@@ -42,12 +42,11 @@ import {
 } from '@/components/ui/tooltip';
 import { buildUrlWithConfig, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
-import { CancelButton } from './display-utils/cancel-button';
 import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
-import { RerunButton } from './display-utils/rerun-button';
 import { StatusBadge } from './display-utils/status-badge';
+import { RunActionsButtons } from './run-actions';
 import { Skeleton } from './ui/skeleton';
 
 interface RunDetailViewProps {
@@ -73,6 +72,7 @@ export function RunDetailView({
   // Read tab and streamId from URL search params
   const activeTab = (searchParams.get('tab') as 'trace' | 'streams') || 'trace';
   const selectedStreamId = searchParams.get('streamId');
+  const showDebugActions = searchParams.get('debug') === '1';
 
   // Helper to update URL search params
   const updateSearchParams = useCallback(
@@ -237,28 +237,6 @@ export function RunDetailView({
   const hasError = false;
   const errorMessage = '';
 
-  // Determine if cancel is allowed and why
-  const canCancel = run.status === 'pending' || run.status === 'running';
-  const getCancelDisabledReason = () => {
-    if (cancelling) return 'Cancelling run...';
-    if (run.status === 'completed') return 'Run has already completed';
-    if (run.status === 'failed') return 'Run has already failed';
-    if (run.status === 'cancelled') return 'Run has already been cancelled';
-    return '';
-  };
-  const cancelDisabledReason = getCancelDisabledReason();
-
-  // Determine if re-run is allowed and why
-  const isRunActive = run.status === 'pending' || run.status === 'running';
-  const canRerun = !loading && !isRunActive && !rerunning;
-  const getRerunDisabledReason = () => {
-    if (rerunning) return 'Re-running workflow...';
-    if (loading) return 'Loading run data...';
-    if (isRunActive) return 'Cannot re-run while workflow is still running';
-    return '';
-  };
-  const rerunDisabledReason = getRerunDisabledReason();
-
   return (
     <>
       {/* Cancel Confirmation Dialog */}
@@ -284,20 +262,20 @@ export function RunDetailView({
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Re-run Confirmation Dialog */}
+      {/* Replay Run Confirmation Dialog */}
       <AlertDialog open={showRerunDialog} onOpenChange={setShowRerunDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Re-run Workflow?</AlertDialogTitle>
+            <AlertDialogTitle>Replay Run?</AlertDialogTitle>
             <AlertDialogDescription>
               This can potentially re-run code that is meant to only execute
-              once. Are you sure you want to re-run the workflow?
+              once. Are you sure you want to replay the workflow run?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleConfirmRerun}>
-              Re-run Workflow
+              Replay Run
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -338,17 +316,17 @@ export function RunDetailView({
               <div className="flex items-center justify-between gap-2">
                 {/* Right side controls */}
                 <LiveStatus hasError={hasError} errorMessage={errorMessage} />
-                <RerunButton
-                  canRerun={canRerun}
-                  rerunning={rerunning}
-                  rerunDisabledReason={rerunDisabledReason}
-                  onRerun={handleRerunClick}
-                />
-                <CancelButton
-                  canCancel={canCancel}
-                  cancelling={cancelling}
-                  cancelDisabledReason={cancelDisabledReason}
-                  onCancel={handleCancelClick}
+                <RunActionsButtons
+                  env={env}
+                  runId={runId}
+                  runStatus={run.status}
+                  events={allEvents}
+                  eventsLoading={auxiliaryDataLoading}
+                  loading={loading}
+                  onRerunClick={handleRerunClick}
+                  onCancelClick={handleCancelClick}
+                  callbacks={{ onSuccess: update }}
+                  showDebugActions={showDebugActions}
                 />
               </div>
             </div>
@@ -566,7 +544,11 @@ export function RunDetailView({
                 {/* Stream viewer */}
                 <div className="flex-1 min-w-0">
                   {selectedStreamId ? (
-                    <StreamViewer env={env} streamId={selectedStreamId} />
+                    <StreamViewer
+                      env={env}
+                      runId={runId}
+                      streamId={selectedStreamId}
+                    />
                   ) : (
                     <div
                       className="h-full flex items-center justify-center rounded-lg border"

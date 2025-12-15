@@ -23,6 +23,10 @@ import {
   fetchStreams,
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
+  wakeUpRun as wakeUpRunServerAction,
+  type StopSleepOptions,
+  type StopSleepResult,
+  reenqueueRun as reenqueueRunServerAction,
 } from './workflow-server-actions';
 
 const MAX_ITEMS = 1000;
@@ -1094,6 +1098,35 @@ export async function cancelRun(env: EnvMap, runId: string): Promise<void> {
 export async function recreateRun(env: EnvMap, runId: string): Promise<string> {
   const { error, result: resultData } = await unwrapServerActionResult(
     recreateRunServerAction(env, runId)
+  );
+  if (error) {
+    throw error;
+  }
+  return resultData;
+}
+
+/**
+ * Wake up a workflow run by re-enqueuing it
+ */
+export async function reenqueueRun(env: EnvMap, runId: string): Promise<void> {
+  const { error } = await unwrapServerActionResult(
+    reenqueueRunServerAction(env, runId)
+  );
+  if (error) {
+    throw error;
+  }
+}
+
+/**
+ * Wake up a workflow run by interrupting any pending sleep() calls
+ */
+export async function wakeUpRun(
+  env: EnvMap,
+  runId: string,
+  options?: StopSleepOptions
+): Promise<StopSleepResult> {
+  const { error, result: resultData } = await unwrapServerActionResult(
+    wakeUpRunServerAction(env, runId, options)
   );
   if (error) {
     throw error;
