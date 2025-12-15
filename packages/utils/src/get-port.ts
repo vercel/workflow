@@ -265,9 +265,7 @@ async function probePort(
       signal: controller.signal,
     });
 
-    // The workflow endpoints return 400 for missing headers, not 404
-    // A 400/405/200 indicates the endpoint exists (workflow server)
-    // A 404 indicates wrong port (endpoint doesn't exist)
+    // The workflow health endpoint returns 200 for healthy
     return response.status === 200;
   } catch {
     // Connection refused, timeout, or other error
