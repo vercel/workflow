@@ -263,13 +263,21 @@ async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
   return allEvents;
 }
 
+/**
+ * Wraps a request/response handler and adds a health check "mode"
+ * based on the presence of a `__health` query parameter.
+ */
 function withHealthCheck(
   handler: (req: Request) => Promise<Response>
 ): (req: Request) => Promise<Response> {
   return async (req) => {
-    const isHealthCheck = new URL(req.url).searchParams.has('__health');
+    const url = new URL(req.url);
+    const isHealthCheck = url.searchParams.has('__health');
     if (isHealthCheck) {
-      return new Response('OK', { status: 200 });
+      return new Response(
+        `Workflow DevKit "${url.pathname}" endpoint is healthy`,
+        { status: 200, headers: { 'Content-Type': 'text/plain' } }
+      );
     }
     return await handler(req);
   };
