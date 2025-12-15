@@ -248,9 +248,12 @@ describe('getWorkflowPort', () => {
       res.end();
     });
 
-    // Workflow server (returns 400 for missing headers on workflow endpoint)
+    // Workflow server (returns 200 for health check endpoint)
     const workflowServer = http.createServer((req, res) => {
-      if (req.url?.startsWith('/.well-known/workflow/v1/')) {
+      if (req.url?.includes('__health')) {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Workflow DevKit endpoint is healthy');
+      } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing required headers' }));
       } else {
@@ -297,9 +300,12 @@ describe('getWorkflowPort', () => {
     const slowServer = http.createServer(() => {
       // Never respond
     });
-    // Fast workflow server
+    // Fast workflow server (returns 200 for health check)
     const fastServer = http.createServer((req, res) => {
-      if (req.url?.startsWith('/.well-known/workflow/v1/')) {
+      if (req.url?.includes('__health')) {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Workflow DevKit endpoint is healthy');
+      } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
         res.end();
       } else {
@@ -324,7 +330,10 @@ describe('getWorkflowPort', () => {
 
   it('should handle concurrent getWorkflowPort calls', async () => {
     const server = http.createServer((req, res) => {
-      if (req.url?.startsWith('/.well-known/workflow/v1/')) {
+      if (req.url?.includes('__health')) {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Workflow DevKit endpoint is healthy');
+      } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
         res.end();
       } else {

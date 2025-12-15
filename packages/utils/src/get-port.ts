@@ -236,8 +236,8 @@ export async function getPort(): Promise<number | undefined> {
 }
 
 // Configuration for HTTP probing
-const PROBE_TIMEOUT_MS = 1000;
-const PROBE_ENDPOINT = '/.well-known/workflow/v1/flow';
+const PROBE_TIMEOUT_MS = 500;
+const PROBE_ENDPOINT = '/.well-known/workflow/v1/flow?__health';
 
 export interface ProbeOptions {
   endpoint?: string;
@@ -268,7 +268,7 @@ async function probePort(
     // The workflow endpoints return 400 for missing headers, not 404
     // A 400/405/200 indicates the endpoint exists (workflow server)
     // A 404 indicates wrong port (endpoint doesn't exist)
-    return response.status !== 404;
+    return response.status === 200;
   } catch {
     // Connection refused, timeout, or other error
     return false;
