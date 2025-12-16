@@ -208,17 +208,24 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     candidateFileIds = relevantFileIds.filter((fileId) => {
       const filenameDate = getCreatedAt(`${fileId}.json`);
       if (filenameDate) {
-        // Use filename timestamp for cursor filtering.
-        // We use inclusive inequality (<=, >=) to ensure the cursor item itself is
-        // always included. This is intentional for live polling - it allows callers
-        // to pick up status updates for the last item (e.g., step running→completed).
-        // Callers handle deduplication via merge-by-ID logic.
+        // Use filename timestamp for cursor filtering
+        // We need to be careful here: if parsedCursor has an ID (for tie-breaking),
+        // we need to include items with the same timestamp for later ID-based filtering.
+        // If no ID, we can use strict inequality for optimization.
         const cursorTime = parsedCursor.timestamp.getTime();
         const fileTime = filenameDate.getTime();
 
-        return sortOrder === 'desc'
-          ? fileTime <= cursorTime
-          : fileTime >= cursorTime;
+        if (parsedCursor.id) {
+          // Tie-breaking mode: include items at or near cursor timestamp
+          return sortOrder === 'desc'
+            ? fileTime <= cursorTime
+            : fileTime >= cursorTime;
+        } else {
+          // No tie-breaking: strict inequality
+          return sortOrder === 'desc'
+            ? fileTime < cursorTime
+            : fileTime > cursorTime;
+        }
       }
       // Can't extract timestamp from filename (e.g., steps use sequential IDs).
       // Include the file and defer to JSON-based filtering below.
@@ -239,29 +246,25 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
 
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)
-      // NOTE: We use inclusive comparison (< instead of <=, > instead of >=) so
-      // the cursor item is always included. This allows live polling to pick up
-      // status updates for the last item (e.g., step transitioning from running to completed).
-      // Callers handle deduplication via merge-by-ID logic.
       if (parsedCursor) {
         const itemTime = item.createdAt.getTime();
         const cursorTime = parsedCursor.timestamp.getTime();
 
         if (sortOrder === 'desc') {
-          // For descending order, skip items after cursor (but include cursor item)
+          // For descending order, skip items >= cursor
           if (itemTime > cursorTime) continue;
-          // If timestamps are equal, use ID for tie-breaking (skip if ID > cursorId)
+          // If timestamps are equal, use ID for tie-breaking (skip if ID >= cursorId)
           if (itemTime === cursorTime && parsedCursor.id && getId) {
             const itemId = getId(item);
-            if (itemId > parsedCursor.id) continue;
+            if (itemId >= parsedCursor.id) continue;
           }
         } else {
-          // For ascending order, skip items before cursor (but include cursor item)
+          // For ascending order, skip items <= cursor
           if (itemTime < cursorTime) continue;
-          // If timestamps are equal, use ID for tie-breaking (skip if ID < cursorId)
+          // If timestamps are equal, use ID for tie-breaking (skip if ID <= cursorId)
           if (itemTime === cursorTime && parsedCursor.id && getId) {
             const itemId = getId(item);
-            if (itemId < parsedCursor.id) continue;
+            if (itemId <= parsedCursor.id) continue;
           }
         }
       }
