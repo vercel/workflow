@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 4.0.1-beta.7
+
+### Patch Changes
+
+- [#616](https://github.com/vercel/workflow/pull/616) [`1ef6b2f`](https://github.com/vercel/workflow/commit/1ef6b2fdc8dc7e4d665aa2fe1a7d9e68ce7f1e95) Thanks [@adriandlam](https://github.com/adriandlam)! - Update port detection to probe workflow health check endpoint
+
 ## 4.0.1-beta.6
 
 ### Patch Changes

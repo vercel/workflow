@@ -1,5 +1,13 @@
 # @workflow/world-local
 
+## 4.0.1-beta.18
+
+### Patch Changes
+
+- Updated dependencies [[`1ef6b2f`](https://github.com/vercel/workflow/commit/1ef6b2fdc8dc7e4d665aa2fe1a7d9e68ce7f1e95), [`b56aae3`](https://github.com/vercel/workflow/commit/b56aae3fe9b5568d7bdda592ed025b3499149240)]:
+  - @workflow/utils@4.0.1-beta.7
+  - @workflow/errors@4.0.1-beta.9
+
 ## 4.0.1-beta.17
 
 ### Patch Changes
