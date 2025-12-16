@@ -56,19 +56,35 @@ export function WorkflowDetailPanel({
     return { resource: undefined, resourceId: undefined, runId: undefined };
   }, [selected, data]);
 
-  // Check if this sleep is still pending (no wait_completed event)
-  // We include events length to ensure recomputation when new events are added
-  // (the array reference might not change when events are pushed to it)
+  // Check if this sleep is still pending and can be woken up
+  // Requirements: no wait_completed event, resumeAt is in the future, run is not terminal
   const spanEvents = selected?.span.events;
   const spanEventsLength = spanEvents?.length ?? 0;
-  const isSleepPending = useMemo(() => {
+  const canWakeUp = useMemo(() => {
     void spanEventsLength; // Force dependency on length for reactivity
     if (resource !== 'sleep' || !spanEvents) return false;
+
+    // Check run is not in a terminal state
+    const terminalStates = ['completed', 'failed', 'cancelled'];
+    if (terminalStates.includes(run.status)) return false;
+
+    // Check if wait has already completed
     const hasWaitCompleted = spanEvents.some(
       (e) => e.name === 'wait_completed'
     );
-    return !hasWaitCompleted;
-  }, [resource, spanEvents, spanEventsLength]);
+    if (hasWaitCompleted) return false;
+
+    // Check if resumeAt is in the future
+    const waitCreatedEvent = spanEvents.find((e) => e.name === 'wait_created');
+    const eventData = waitCreatedEvent?.attributes?.eventData as
+      | { resumeAt?: string | Date }
+      | undefined;
+    const resumeAt = eventData?.resumeAt;
+    if (!resumeAt) return false;
+
+    const resumeAtDate = new Date(resumeAt);
+    return resumeAtDate.getTime() > Date.now();
+  }, [resource, spanEvents, spanEventsLength, run.status]);
 
   // Fetch full resource data with events
   const {
@@ -128,7 +144,7 @@ export function WorkflowDetailPanel({
   return (
     <div className={clsx('flex flex-col px-2')}>
       {/* Wake up button for pending sleep calls */}
-      {resource === 'sleep' && isSleepPending && (
+      {resource === 'sleep' && canWakeUp && (
         <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
           <button
             type="button"
