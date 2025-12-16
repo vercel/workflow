@@ -382,7 +382,7 @@ export function getExternalReducers(
         throw new Error('ReadableStream is locked');
       }
 
-      const name = global.crypto.randomUUID();
+      const name = (global.stableUlid || global.crypto.randomUUID)();
       const type = getStreamType(value);
 
       const writable = new WorkflowServerWritableStream(name, runId);
@@ -406,7 +406,7 @@ export function getExternalReducers(
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
-      const name = global.crypto.randomUUID();
+      const name = (global.stableUlid || global.crypto.randomUUID)();
 
       const readable = new WorkflowServerReadableStream(name);
       ops.push(readable.pipeTo(value));
@@ -500,7 +500,7 @@ function getStepReducers(
           );
         }
 
-        name = global.crypto.randomUUID();
+        name = (global.stableUlid || global.crypto.randomUUID)();
         type = getStreamType(value);
 
         const writable = new WorkflowServerWritableStream(name, runId);
@@ -533,7 +533,7 @@ function getStepReducers(
           );
         }
 
-        name = global.crypto.randomUUID();
+        name = (global.stableUlid || global.crypto.randomUUID)();
         ops.push(
           new WorkflowServerReadableStream(name)
             .pipeThrough(
