@@ -248,7 +248,7 @@ export interface ProbeOptions {
  * Probes a port to check if it's serving the workflow HTTP server.
  * Uses HEAD request to minimize overhead.
  *
- * @returns true if the port responds as a workflow server (non-404 response)
+ * @returns true if the port responds with a 200 status from the health check endpoint
  */
 async function probePort(
   port: number,
