@@ -2438,8 +2438,10 @@ impl StepTransform {
 
     // Remove dead code (unused functions, variables, statements, and imports) recursively
     fn remove_dead_code(&self, items: &mut Vec<ModuleItem>) {
-        // Only runs in workflow and client mode
-        if !matches!(self.mode, TransformMode::Workflow | TransformMode::Client) {
+        // Only runs in workflow mode.
+        // Client mode must preserve all imports because step functions should work
+        // as normal functions when called outside a workflow context.
+        if !matches!(self.mode, TransformMode::Workflow) {
             return;
         }
 

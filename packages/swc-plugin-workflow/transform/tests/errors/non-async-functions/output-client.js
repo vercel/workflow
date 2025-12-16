@@ -9,6 +9,13 @@ export const syncWorkflow = ()=>{
     'use workflow';
     return 'test';
 };
+// Error: sync method with use step
+const obj = {
+    syncMethod () {
+        'use step';
+        return true;
+    }
+};
 // These are ok
 export async function validStep() {
     return 42;
