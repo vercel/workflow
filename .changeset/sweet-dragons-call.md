@@ -2,4 +2,4 @@
 "@workflow/web-shared": patch
 ---
 
-Show separate lines for createdAt and startedAt
+Indicate time between createdAt and startedAt for runs/steps, fix when "wake up from sleep" is shown
