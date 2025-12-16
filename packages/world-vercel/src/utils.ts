@@ -9,6 +9,7 @@ export interface APIConfig {
   baseUrl?: string;
   token?: string;
   headers?: RequestInit['headers'];
+  skipProxy?: boolean;
   projectConfig?: {
     projectId?: string;
     teamId?: string;
@@ -112,9 +113,11 @@ export const getHttpUrl = (
   const projectConfig = config?.projectConfig;
   const defaultUrl = 'https://vercel-workflow.com/api';
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
-  const usingProxy = Boolean(
-    config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)
-  );
+  const usingProxy =
+    !config?.skipProxy &&
+    Boolean(
+      config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)
+    );
   const baseUrl =
     config?.baseUrl || (usingProxy ? defaultProxyUrl : defaultUrl);
   return { baseUrl, usingProxy };
