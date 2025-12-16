@@ -29,5 +29,5 @@ export function createRandomUUID(rng: () => number) {
 
 export function createStableUlid(rng?: () => number) {
   const ulid = monotonicFactory(rng);
-  return `strm_${ulid()}`;
+  return ulid;
 }
