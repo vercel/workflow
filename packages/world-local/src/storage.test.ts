@@ -530,16 +530,19 @@ describe('Storage', () => {
           pagination: { limit: 4, cursor: page2.cursor || undefined },
         });
 
-        // Should return the older 4 items (step_3, step_2, step_1, step_0)
+        // Should return cursor item + older 4 items (step_4, step_3, step_2, step_1, step_0)
+        // But with limit 4, we get: cursor item + 3 more = 4 items
         expect(page3.data).toHaveLength(4);
-        expect(page3.hasMore).toBe(false);
+        expect(page3.hasMore).toBe(true); // Still more items after this page
 
-        // Verify no overlap
+        // Cursor item (last of page2) should be first item of page3
+        const lastItemPage2 = page2.data[page2.data.length - 1];
+        expect(page3.data[0]?.stepId).toBe(lastItemPage2?.stepId);
+
+        // Remaining items in page3 should be new (not in page2)
         const page2Ids = new Set(page2.data.map((s) => s.stepId));
-        const page3Ids = new Set(page3.data.map((s) => s.stepId));
-
-        for (const id of page3Ids) {
-          expect(page2Ids.has(id)).toBe(false);
+        for (let i = 1; i < page3.data.length; i++) {
+          expect(page2Ids.has(page3.data[i]?.stepId ?? '')).toBe(false);
         }
       });
 
@@ -563,14 +566,16 @@ describe('Storage', () => {
         expect(page1.hasMore).toBe(true);
         const cursor1 = page1.cursor;
 
-        // Get second page
+        // Get second page - includes cursor item from page 1 + 1 more item
         const page2 = await storage.steps.list({
           runId: testRunId,
           pagination: { limit: 2, cursor: cursor1 || undefined },
         });
 
+        // Page 2: cursor item (step_2) + step_1 = 2 items
+        // step_0 is still remaining, so hasMore=true
         expect(page2.data).toHaveLength(2);
-        expect(page2.hasMore).toBe(false);
+        expect(page2.hasMore).toBe(true);
         const cursor2 = page2.cursor;
 
         // With the fix, cursor2 should NOT be null even when hasMore is false
@@ -585,15 +590,19 @@ describe('Storage', () => {
           });
         }
 
-        // Try to continue with cursor2 (should return no items since we're at the end)
-        // The cursor marks where we left off, so continuing from there should not return
-        // the newly created items (which are newer than the cursor position)
+        // Try to continue with cursor2.
+        // With inclusive cursor, we always get at least the cursor item back.
+        // This allows picking up status updates for the last item.
         const page3 = await storage.steps.list({
           runId: testRunId,
           pagination: { limit: 2, cursor: cursor2 || undefined },
         });
 
-        expect(page3.data).toHaveLength(0);
+        // Page 2 cursor is at step_1 (not step_0 due to inclusive behavior)
+        // Page 3: step_1 (cursor) + step_0 = 2 items
+        expect(page3.data).toHaveLength(2);
+        expect(page3.data[0]?.stepId).toBe('step_1'); // The cursor item
+        expect(page3.data[1]?.stepId).toBe('step_0'); // The remaining item
         expect(page3.hasMore).toBe(false);
 
         // But if we use cursor1 again (from the first page), we should still get the next 2 items
@@ -648,15 +657,17 @@ describe('Storage', () => {
           });
         }
 
-        // Next page with cursor=<previous-request-cursor> should return 0 items
-        // because the cursor marks where we left off, and there are no items
-        // OLDER than the cursor position (in descending order)
+        // Next page with cursor=<previous-request-cursor> returns the cursor item.
+        // With inclusive cursor behavior, we always include the cursor item to allow
+        // picking up status updates. There are no items OLDER than step_0, so we only
+        // get the cursor item back.
         const nextPage = await storage.steps.list({
           runId: testRunId,
           pagination: { limit: 4, cursor: firstCursor || undefined },
         });
 
-        expect(nextPage.data).toHaveLength(0);
+        expect(nextPage.data).toHaveLength(1);
+        expect(nextPage.data[0]?.stepId).toBe('step_0'); // The cursor item (oldest)
         expect(nextPage.hasMore).toBe(false);
 
         // If we start from the beginning (no cursor), we should get the newest 4 items
@@ -674,17 +685,19 @@ describe('Storage', () => {
         expect(freshPage.data[2].stepId).toBe('step_5');
         expect(freshPage.data[3].stepId).toBe('step_4');
 
-        // And the second page should contain the original items
+        // And the second page should contain cursor item + original items
         const secondPage = await storage.steps.list({
           runId: testRunId,
           pagination: { limit: 4, cursor: freshPage.cursor || undefined },
         });
 
+        // With inclusive cursor: step_4 (cursor) + step_3, step_2, step_1 = 4 items
         expect(secondPage.data).toHaveLength(4);
-        expect(secondPage.data[0].stepId).toBe('step_3');
-        expect(secondPage.data[1].stepId).toBe('step_2');
-        expect(secondPage.data[2].stepId).toBe('step_1');
-        expect(secondPage.data[3].stepId).toBe('step_0');
+        expect(secondPage.data[0].stepId).toBe('step_4'); // Cursor item
+        expect(secondPage.data[1].stepId).toBe('step_3');
+        expect(secondPage.data[2].stepId).toBe('step_2');
+        expect(secondPage.data[3].stepId).toBe('step_1');
+        // step_0 would be on the next page
       });
     });
   });
@@ -959,14 +972,19 @@ describe('Storage', () => {
         expect(page1.hasMore).toBe(true);
         expect(page1.cursor).toBeDefined();
 
-        // Get second page
+        // Get second page - includes cursor item + remaining events
         const page2 = await storage.events.listByCorrelationId({
           correlationId,
           pagination: { limit: 2, cursor: page1.cursor || undefined },
         });
 
-        expect(page2.data).toHaveLength(1);
+        // With inclusive cursor: cursor item + 1 remaining = 2 events
+        expect(page2.data).toHaveLength(2);
         expect(page2.hasMore).toBe(false);
+
+        // First item should be cursor item (last from page 1)
+        const lastPage1Event = page1.data[page1.data.length - 1];
+        expect(page2.data[0]?.eventId).toBe(lastPage1Event?.eventId);
       });
 
       it('should filter event data when resolveData is "none"', async () => {

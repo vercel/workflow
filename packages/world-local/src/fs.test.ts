@@ -503,8 +503,8 @@ describe('fs utilities', () => {
       });
 
       it('should handle pagination correctly when items have identical timestamps', async () => {
-        // This test reproduces the bug where items with the same timestamp
-        // are incorrectly filtered out during pagination, causing items to be skipped.
+        // This test verifies that items with the same timestamp are handled correctly
+        // using ID-based tie-breaking for stable pagination.
 
         // Create a separate test directory
         const sameTimeDir = await fs.mkdtemp(
@@ -562,20 +562,29 @@ describe('fs utilities', () => {
             sortOrder: 'asc',
           });
 
-          // THIS IS THE KEY ASSERTION
-          expect(secondPage.data).toHaveLength(5);
+          // Second page includes cursor item (for live updates) + remaining 5 items = 6 items
+          expect(secondPage.data).toHaveLength(6);
           expect(secondPage.hasMore).toBe(false);
 
-          // Verify no overlap between pages
-          const firstPageIds = new Set(firstPage.data.map((item) => item.id));
-          const secondPageIds = new Set(secondPage.data.map((item) => item.id));
+          // Cursor item (last of page 1) should be first item of page 2
+          const lastItemFirstPage = firstPage.data[firstPage.data.length - 1];
+          assert(
+            lastItemFirstPage,
+            'expected last item of first page to be defined'
+          );
+          expect(secondPage.data[0]?.id).toBe(lastItemFirstPage.id);
 
-          for (const id of secondPageIds) {
-            expect(firstPageIds).not.toContain(id);
+          // Remaining items in page 2 should be new (not in page 1)
+          const firstPageIds = new Set(firstPage.data.map((item) => item.id));
+          for (let i = 1; i < secondPage.data.length; i++) {
+            expect(firstPageIds).not.toContain(secondPage.data[i]?.id);
           }
 
-          // Verify we got all 25 items across both pages
-          const allIds = new Set([...firstPageIds, ...secondPageIds]);
+          // Verify we got all 25 unique items across both pages
+          const allIds = new Set([
+            ...firstPage.data.map((item) => item.id),
+            ...secondPage.data.map((item) => item.id),
+          ]);
           expect(allIds.size).toBe(25);
         } finally {
           await fs.rm(sameTimeDir, { recursive: true, force: true });
@@ -789,7 +798,7 @@ describe('fs utilities', () => {
         let cursor: string | null = null;
         let hasMore = true;
 
-        while (hasMore && pages.length < 5) {
+        while (hasMore && pages.length < 10) {
           const page = await paginatedFileSystemQuery({
             directory: testDir,
             schema: TestItemSchema,
@@ -807,25 +816,26 @@ describe('fs utilities', () => {
         // Verify we got multiple pages
         expect(pages.length).toBeGreaterThan(1);
 
-        // Verify total items across all pages
+        // With inclusive cursor behavior, each page after the first includes
+        // the cursor item. Dedupe to get unique items.
         const allItems = pages.flatMap((page) => page.data);
-        expect(allItems.length).toBeLessThanOrEqual(fileCount);
+        const uniqueIds = new Set(allItems.map((item) => item.id));
 
-        // Verify no duplicates across pages
-        const allIds = allItems.map((item) => item.id);
-        const uniqueIds = new Set(allIds);
-        expect(uniqueIds.size).toBe(allIds.length);
+        // Verify we collected all unique items
+        expect(uniqueIds.size).toBe(fileCount);
 
-        // Verify items are properly sorted across pages
-        for (let i = 1; i < allItems.length; i++) {
-          assert(
-            allItems[i - 1],
-            `expected item at index ${i - 1} to be defined`
-          );
-          assert(allItems[i], `expected item at index ${i} to be defined`);
-          expect(allItems[i - 1].createdAt.getTime()).toBeGreaterThanOrEqual(
-            allItems[i].createdAt.getTime()
-          );
+        // Verify items are properly sorted within each page
+        for (const page of pages) {
+          for (let i = 1; i < page.data.length; i++) {
+            assert(
+              page.data[i - 1],
+              `expected item at index ${i - 1} to be defined`
+            );
+            assert(page.data[i], `expected item at index ${i} to be defined`);
+            expect(page.data[i - 1].createdAt.getTime()).toBeGreaterThanOrEqual(
+              page.data[i].createdAt.getTime()
+            );
+          }
         }
       });
     });

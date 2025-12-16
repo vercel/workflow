@@ -185,11 +185,9 @@ function createHooksStorage(basedir: string): Storage['hooks'] {
         return true;
       },
       getCreatedAt: () => {
-        // Hook files don't have ULID timestamps in filename
-        // We need to read the file to get createdAt, but that's inefficient
-        // So we return the hook's createdAt directly (item.createdAt will be used for sorting)
-        // Return a dummy date to pass the null check, actual sorting uses item.createdAt
-        return new Date(0);
+        // Hook files use hookId (not ULID) in filename - no timestamp available.
+        // Return null to skip filename-based optimization and defer to JSON-based filtering.
+        return null;
       },
       getId: (hook) => hook.hookId,
     });
