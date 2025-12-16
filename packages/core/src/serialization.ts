@@ -390,7 +390,8 @@ export function getExternalReducers(
         throw new Error('ReadableStream is locked');
       }
 
-      const name = (global.stableUlid || defaultUlid)();
+      const streamId = (global.stableUlid || defaultUlid)();
+      const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
       const writable = new WorkflowServerWritableStream(name, runId);
