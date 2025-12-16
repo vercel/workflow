@@ -1,5 +1,6 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
+import { monotonicFactory } from 'ulid';
 import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
@@ -9,6 +10,13 @@ import {
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
+
+/**
+ * Default ULID generator for contexts where VM's seeded `stableUlid` isn't available.
+ * Used as a fallback when serializing streams outside the workflow VM context
+ * (e.g., when starting a workflow or handling step return values).
+ */
+const defaultUlid = monotonicFactory();
 
 /**
  * Format a serialization error with context about what failed.
@@ -382,7 +390,7 @@ export function getExternalReducers(
         throw new Error('ReadableStream is locked');
       }
 
-      const name = (global.stableUlid || global.crypto.randomUUID)();
+      const name = (global.stableUlid || defaultUlid)();
       const type = getStreamType(value);
 
       const writable = new WorkflowServerWritableStream(name, runId);
@@ -406,7 +414,7 @@ export function getExternalReducers(
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
-      const name = (global.stableUlid || global.crypto.randomUUID)();
+      const name = (global.stableUlid || defaultUlid)();
 
       const readable = new WorkflowServerReadableStream(name);
       ops.push(readable.pipeTo(value));
@@ -500,7 +508,7 @@ function getStepReducers(
           );
         }
 
-        name = (global.stableUlid || global.crypto.randomUUID)();
+        name = (global.stableUlid || defaultUlid)();
         type = getStreamType(value);
 
         const writable = new WorkflowServerWritableStream(name, runId);
@@ -533,7 +541,7 @@ function getStepReducers(
           );
         }
 
-        name = (global.stableUlid || global.crypto.randomUUID)();
+        name = (global.stableUlid || defaultUlid)();
         ops.push(
           new WorkflowServerReadableStream(name)
             .pipeThrough(
