@@ -114,6 +114,10 @@ export const getHttpUrl = (
   const defaultUrl = 'https://vercel-workflow.com/api';
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   const usingProxy =
+    // Skipping proxy is specifically used for e2e testing. Normally, we assume calls from
+    // CLI and web UI are not running inside the Vercel runtime environment, and so need to
+    // use the proxy for authentication. However, during e2e tests, this is not the case,
+    // so we allow skipping the proxy.
     !config?.skipProxy &&
     Boolean(
       config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)

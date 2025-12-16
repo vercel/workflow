@@ -243,7 +243,7 @@ jobs:
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
           APP_NAME: ${{ matrix.app.name }}
-          WORKFLOW_VERCEL_BACKEND_URL: 'https://workflow-server-git-peter-redis-switchover.vercel.sh/api'
+          WORKFLOW_VERCEL_BACKEND_URL: 'https://workflow-server-git-peter-fix-created-at.vercel.sh'
           WORKFLOW_VERCEL_SKIP_PROXY: 'true'
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
