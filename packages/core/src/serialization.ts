@@ -415,7 +415,8 @@ export function getExternalReducers(
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
-      const name = (global.stableUlid || defaultUlid)();
+      const streamId = (global.stableUlid || defaultUlid)();
+      const name = `strm_${streamId}`;
 
       const readable = new WorkflowServerReadableStream(name);
       ops.push(readable.pipeTo(value));
@@ -509,7 +510,8 @@ function getStepReducers(
           );
         }
 
-        name = (global.stableUlid || defaultUlid)();
+        const streamId = (global.stableUlid || defaultUlid)();
+        name = `strm_${streamId}`;
         type = getStreamType(value);
 
         const writable = new WorkflowServerWritableStream(name, runId);
@@ -542,7 +544,8 @@ function getStepReducers(
           );
         }
 
-        name = (global.stableUlid || defaultUlid)();
+        const streamId = (global.stableUlid || defaultUlid)();
+        name = `strm_${streamId}`;
         ops.push(
           new WorkflowServerReadableStream(name)
             .pipeThrough(
