@@ -518,14 +518,12 @@ describe('streamer', () => {
         expect(streams).toEqual([]);
       });
 
-      it('should return streams that match the runId prefix', async () => {
+      it('should return streams associated with the runId', async () => {
         const { streamer } = await setupStreamer();
 
-        // Create stream names that follow the expected pattern:
-        // runId wrun_test12345678901234 -> stream prefix strm_test12345678901234_user
-        const streamPrefix = TEST_RUN_ID.replace('wrun_', 'strm_') + '_user';
-        const streamName1 = `${streamPrefix}_stdout`;
-        const streamName2 = `${streamPrefix}_stderr`;
+        // Stream names can be anything - they're tracked via explicit mapping
+        const streamName1 = 'my-stdout-stream';
+        const streamName2 = 'my-stderr-stream';
 
         await streamer.writeToStream(streamName1, TEST_RUN_ID, 'stdout output');
         await streamer.writeToStream(streamName2, TEST_RUN_ID, 'stderr output');
@@ -543,11 +541,9 @@ describe('streamer', () => {
         const { streamer } = await setupStreamer();
 
         const otherRunId = 'wrun_other1234567890123';
-        const targetPrefix = TEST_RUN_ID.replace('wrun_', 'strm_') + '_user';
-        const otherPrefix = otherRunId.replace('wrun_', 'strm_') + '_user';
 
-        const targetStream = `${targetPrefix}_stdout`;
-        const otherStream = `${otherPrefix}_stdout`;
+        const targetStream = 'target-stdout';
+        const otherStream = 'other-stdout';
 
         await streamer.writeToStream(
           targetStream,
@@ -561,13 +557,17 @@ describe('streamer', () => {
         expect(streams).toHaveLength(1);
         expect(streams).toContain(targetStream);
         expect(streams).not.toContain(otherStream);
+
+        // Also verify the other run has only its stream
+        const otherStreams = await streamer.listStreamsByRunId(otherRunId);
+        expect(otherStreams).toHaveLength(1);
+        expect(otherStreams).toContain(otherStream);
       });
 
       it('should return unique stream names even with multiple chunks', async () => {
         const { streamer } = await setupStreamer();
 
-        const streamPrefix = TEST_RUN_ID.replace('wrun_', 'strm_') + '_user';
-        const streamName = `${streamPrefix}_output`;
+        const streamName = 'chunked-output';
 
         // Write multiple chunks to the same stream
         await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk1');
@@ -587,10 +587,23 @@ describe('streamer', () => {
       it('should handle stream names with dashes', async () => {
         const { streamer } = await setupStreamer();
 
-        const streamPrefix = TEST_RUN_ID.replace('wrun_', 'strm_') + '_user';
-        const streamName = `${streamPrefix}_my-complex-stream-name`;
+        const streamName = 'my-complex-stream-name';
 
         await streamer.writeToStream(streamName, TEST_RUN_ID, 'data');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        expect(streams).toHaveLength(1);
+        expect(streams).toContain(streamName);
+      });
+
+      it('should register stream even if only closeStream is called', async () => {
+        const { streamer } = await setupStreamer();
+
+        const streamName = 'close-only-stream';
+
+        // Only call closeStream without writeToStream
         await streamer.closeStream(streamName, TEST_RUN_ID);
 
         const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
