@@ -266,6 +266,12 @@ async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
 /**
  * CORS headers for health check responses.
  * Allows the observability UI to check endpoint health from a different origin.
+ *
+ * Security Note: Uses wildcard 'Access-Control-Allow-Origin: *' to allow any origin
+ * to access the health check endpoints. This is acceptable for health checks as they
+ * only return a simple status message and do not expose sensitive information or allow
+ * any state-changing operations. The health check responses contain no user data,
+ * authentication tokens, or system configuration details.
  */
 const HEALTH_CHECK_CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
