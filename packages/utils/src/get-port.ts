@@ -236,8 +236,8 @@ export async function getPort(): Promise<number | undefined> {
 }
 
 // Configuration for HTTP probing
-const PROBE_TIMEOUT_MS = 1000;
-const PROBE_ENDPOINT = '/.well-known/workflow/v1/flow';
+const PROBE_TIMEOUT_MS = 500;
+const PROBE_ENDPOINT = '/.well-known/workflow/v1/flow?__health';
 
 export interface ProbeOptions {
   endpoint?: string;
@@ -248,7 +248,7 @@ export interface ProbeOptions {
  * Probes a port to check if it's serving the workflow HTTP server.
  * Uses HEAD request to minimize overhead.
  *
- * @returns true if the port responds as a workflow server (non-404 response)
+ * @returns true if the port responds with a 200 status from the health check endpoint
  */
 async function probePort(
   port: number,
@@ -265,10 +265,8 @@ async function probePort(
       signal: controller.signal,
     });
 
-    // The workflow endpoints return 400 for missing headers, not 404
-    // A 400/405/200 indicates the endpoint exists (workflow server)
-    // A 404 indicates wrong port (endpoint doesn't exist)
-    return response.status !== 404;
+    // The workflow health endpoint returns 200 for healthy
+    return response.status === 200;
   } catch {
     // Connection refused, timeout, or other error
     return false;
