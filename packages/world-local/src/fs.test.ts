@@ -239,12 +239,19 @@ describe('fs utilities', () => {
         expect(secondPage.data).toHaveLength(3);
         expect(secondPage.hasMore).toBe(true);
 
-        // Verify behavior: no overlap between pages
-        const firstPageIds = new Set(firstPage.data.map((item) => item.id));
-        const secondPageIds = new Set(secondPage.data.map((item) => item.id));
+        // Verify behavior: cursor item (last of page 1) is included in page 2
+        // This is intentional for live polling - allows picking up status updates
+        const lastItemFirstPage = firstPage.data[firstPage.data.length - 1];
+        assert(
+          lastItemFirstPage,
+          'expected last item of first page to be defined'
+        );
+        expect(secondPage.data[0]?.id).toBe(lastItemFirstPage.id);
 
-        for (const id of secondPageIds) {
-          expect(firstPageIds).not.toContain(id);
+        // Remaining items in page 2 should be new (not in page 1)
+        const firstPageIds = new Set(firstPage.data.map((item) => item.id));
+        for (let i = 1; i < secondPage.data.length; i++) {
+          expect(firstPageIds).not.toContain(secondPage.data[i]?.id);
         }
       });
 
@@ -275,12 +282,18 @@ describe('fs utilities', () => {
         expect(secondPage.data).toHaveLength(4);
         expect(secondPage.hasMore).toBe(true);
 
-        // Verify no overlap between pages
-        const firstPageIds = new Set(firstPage.data.map((item) => item.id));
-        const secondPageIds = new Set(secondPage.data.map((item) => item.id));
+        // Verify cursor item (last of page 1) is included in page 2
+        const lastItemFirstPage = firstPage.data[firstPage.data.length - 1];
+        assert(
+          lastItemFirstPage,
+          'expected last item of first page to be defined'
+        );
+        expect(secondPage.data[0]?.id).toBe(lastItemFirstPage.id);
 
-        for (const id of secondPageIds) {
-          expect(firstPageIds).not.toContain(id);
+        // Remaining items in page 2 should be new
+        const firstPageIds = new Set(firstPage.data.map((item) => item.id));
+        for (let i = 1; i < secondPage.data.length; i++) {
+          expect(firstPageIds).not.toContain(secondPage.data[i]?.id);
         }
 
         // Verify ordering within pages
@@ -336,7 +349,7 @@ describe('fs utilities', () => {
 
         expect(secondPage.data).toHaveLength(3);
 
-        // Verify second page continues chronologically after first page
+        // Verify cursor item (last of page 1) is included as first item of page 2
         const lastItemFirstPage = firstPage.data[firstPage.data.length - 1];
         const firstItemSecondPage = secondPage.data[0];
         assert(
@@ -348,16 +361,18 @@ describe('fs utilities', () => {
           'expected first item of second page to be defined'
         );
 
-        expect(firstItemSecondPage.createdAt.getTime()).toBeGreaterThan(
+        // Cursor item should be the same
+        expect(firstItemSecondPage.id).toBe(lastItemFirstPage.id);
+
+        // Remaining items in page 2 should be newer
+        expect(secondPage.data[1]?.createdAt.getTime()).toBeGreaterThan(
           lastItemFirstPage.createdAt.getTime()
         );
 
-        // Verify no overlap between pages
+        // Remaining items should not overlap with page 1
         const firstPageIds = new Set(firstPage.data.map((item) => item.id));
-        const secondPageIds = new Set(secondPage.data.map((item) => item.id));
-
-        for (const id of secondPageIds) {
-          expect(firstPageIds).not.toContain(id);
+        for (let i = 1; i < secondPage.data.length; i++) {
+          expect(firstPageIds).not.toContain(secondPage.data[i]?.id);
         }
       });
 
@@ -388,6 +403,103 @@ describe('fs utilities', () => {
         );
         expect(includedItem).toBeDefined(); // Should be found
         expect(includedItem?.name).toBe('should-be-included');
+      });
+
+      it('should allow picking up status updates for cursor item via live polling', async () => {
+        // This test ensures that when polling with a cursor, the cursor item
+        // is included in results. This is critical for live updates where
+        // an ongoing item (like a step) may change status.
+
+        // Scenario:
+        // 1. Query items A, B, C, D (ascending order)
+        // 2. Cursor is now at D
+        // 3. Query again with cursor D
+        // 4. Should return D (to pick up any status changes) + any new items
+
+        // Create a test directory with sequential items
+        const liveDir = await fs.mkdtemp(
+          path.join(os.tmpdir(), 'live-poll-test-')
+        );
+
+        try {
+          const baseTime = new Date('2024-01-01T00:00:00.000Z').getTime();
+
+          // Create items A, B, C, D with sequential timestamps
+          const files: Record<string, object> = {};
+          const itemIds = ['item_A', 'item_B', 'item_C', 'item_D'];
+          for (let i = 0; i < itemIds.length; i++) {
+            const id = ulid(baseTime + i * 1000); // 1 second apart
+            files[id] = {
+              id: itemIds[i],
+              name: `Item ${itemIds[i]}`,
+              createdAt: new Date(baseTime + i * 1000),
+            };
+          }
+
+          await createFilesystem(liveDir, files);
+
+          // First query: get all items
+          const firstQuery = await paginatedFileSystemQuery({
+            directory: liveDir,
+            schema: TestItemSchema,
+            getCreatedAt: getCreatedAt,
+            limit: 10,
+            sortOrder: 'asc',
+          });
+
+          expect(firstQuery.data.length).toBe(4);
+          expect(firstQuery.data.map((d) => d.id)).toEqual([
+            'item_A',
+            'item_B',
+            'item_C',
+            'item_D',
+          ]);
+          assert(firstQuery.cursor, 'expected cursor to be defined');
+
+          // Second query: poll with cursor from first query
+          // Should include item_D (cursor item) to pick up status updates
+          const pollQuery = await paginatedFileSystemQuery({
+            directory: liveDir,
+            schema: TestItemSchema,
+            getCreatedAt: getCreatedAt,
+            limit: 10,
+            cursor: firstQuery.cursor,
+            sortOrder: 'asc',
+          });
+
+          // Should return item_D (the cursor item)
+          expect(pollQuery.data.length).toBe(1);
+          expect(pollQuery.data[0]?.id).toBe('item_D');
+
+          // Now add a new item E
+          const newId = ulid(baseTime + 5000);
+          await createFilesystem(liveDir, {
+            [newId]: {
+              id: 'item_E',
+              name: 'Item E',
+              createdAt: new Date(baseTime + 5000),
+            },
+          });
+
+          // Third query: poll again with same cursor
+          // Should return item_D (cursor item) + item_E (new item)
+          const pollQuery2 = await paginatedFileSystemQuery({
+            directory: liveDir,
+            schema: TestItemSchema,
+            getCreatedAt: getCreatedAt,
+            limit: 10,
+            cursor: firstQuery.cursor,
+            sortOrder: 'asc',
+          });
+
+          expect(pollQuery2.data.length).toBe(2);
+          expect(pollQuery2.data.map((d) => d.id)).toEqual([
+            'item_D',
+            'item_E',
+          ]);
+        } finally {
+          await fs.rm(liveDir, { recursive: true, force: true });
+        }
       });
 
       it('should handle pagination correctly when items have identical timestamps', async () => {

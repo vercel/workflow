@@ -246,25 +246,29 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
 
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)
+      // NOTE: We use inclusive comparison (< instead of <=, > instead of >=) so
+      // the cursor item is always included. This allows live polling to pick up
+      // status updates for the last item (e.g., step transitioning from running to completed).
+      // Callers handle deduplication via merge-by-ID logic.
       if (parsedCursor) {
         const itemTime = item.createdAt.getTime();
         const cursorTime = parsedCursor.timestamp.getTime();
 
         if (sortOrder === 'desc') {
-          // For descending order, skip items >= cursor
+          // For descending order, skip items after cursor (but include cursor item)
           if (itemTime > cursorTime) continue;
-          // If timestamps are equal, use ID for tie-breaking (skip if ID >= cursorId)
+          // If timestamps are equal, use ID for tie-breaking (skip if ID > cursorId)
           if (itemTime === cursorTime && parsedCursor.id && getId) {
             const itemId = getId(item);
-            if (itemId >= parsedCursor.id) continue;
+            if (itemId > parsedCursor.id) continue;
           }
         } else {
-          // For ascending order, skip items <= cursor
+          // For ascending order, skip items before cursor (but include cursor item)
           if (itemTime < cursorTime) continue;
-          // If timestamps are equal, use ID for tie-breaking (skip if ID <= cursorId)
+          // If timestamps are equal, use ID for tie-breaking (skip if ID < cursorId)
           if (itemTime === cursorTime && parsedCursor.id && getId) {
             const itemId = getId(item);
-            if (itemId <= parsedCursor.id) continue;
+            if (itemId < parsedCursor.id) continue;
           }
         }
       }
