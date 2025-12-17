@@ -40,7 +40,7 @@ export class LocalBuilder extends BaseBuilder {
         watch: nitro.options.dev,
         dirs: ['.'], // Different apps that use nitro have different directories
       }),
-      buildTarget: 'next', // Placeholder, not actually used
+      buildTarget: 'nitro' as any, // Placeholder, not actually used
     });
     this.#outDir = outDir;
   }
