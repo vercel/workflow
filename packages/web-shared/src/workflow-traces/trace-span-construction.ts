@@ -20,6 +20,7 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'hook_created',
   'hook_received',
   'hook_disposed',
+  'step_started',
   'step_retrying',
   'step_failed',
   'workflow_failed',
