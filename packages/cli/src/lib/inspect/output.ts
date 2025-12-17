@@ -4,6 +4,7 @@ import {
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
+import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import type {
   Event,
   Hook,
@@ -139,9 +140,7 @@ const checkAndHandleVercelAccessError = (
   if (backend === 'vercel' && error && typeof error === 'object') {
     const err = error as Record<string, unknown>;
     if (err.status === 403) {
-      logger.error(
-        'Your current vercel account does not have access to this workflow run. Please use `vercel login` to login, or use `vercel switch` to ensure you can access the correct team.'
-      );
+      logger.error(VERCEL_403_ERROR_MESSAGE);
       return true;
     }
   }

@@ -1,5 +1,6 @@
 'use client';
 
+import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import type {
   Event,
   Hook,
@@ -55,7 +56,7 @@ export const getErrorMessage = (error: Error | WorkflowWebAPIError): string => {
   if ('layer' in error && error.layer) {
     if (error instanceof WorkflowWebAPIError) {
       if (error.request?.status === 403) {
-        return 'Your current Vercel account does not have access to this data. Please use `vercel login` to log in, or use `vercel switch` to ensure you can access the correct team.';
+        return VERCEL_403_ERROR_MESSAGE;
       }
     }
 
