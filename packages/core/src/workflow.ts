@@ -16,6 +16,7 @@ import {
 import { createUseStep } from './step.js';
 import {
   BODY_INIT_SYMBOL,
+  STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
   WORKFLOW_SLEEP,
@@ -118,6 +119,8 @@ export async function runWorkflow(
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CONTEXT_SYMBOL] = ctx;
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[STABLE_ULID] = ulid;
 
     // NOTE: Will have a config override to use the custom fetch step.
     //       For now `fetch` must be explicitly imported from `workflow`.

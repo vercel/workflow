@@ -1,6 +1,6 @@
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import seedrandom from 'seedrandom';
-import { createRandomUUID, createStableUlid } from './uuid.js';
+import { createRandomUUID } from './uuid.js';
 
 export interface CreateContextOptions {
   seed: string;
@@ -53,8 +53,6 @@ export function createContext(options: CreateContextOptions) {
     }
     return array;
   }
-
-  (g as any).stableUlid = createStableUlid(rng);
 
   const randomUUID = createRandomUUID(rng);
 

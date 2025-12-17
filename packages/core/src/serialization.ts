@@ -6,6 +6,7 @@ import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
 import {
   BODY_INIT_SYMBOL,
+  STABLE_ULID,
   STREAM_NAME_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
@@ -390,7 +391,7 @@ export function getExternalReducers(
         throw new Error('ReadableStream is locked');
       }
 
-      const streamId = (global.stableUlid || defaultUlid)();
+      const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
@@ -415,7 +416,7 @@ export function getExternalReducers(
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
-      const streamId = (global.stableUlid || defaultUlid)();
+      const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
 
       const readable = new WorkflowServerReadableStream(name);
@@ -510,7 +511,7 @@ function getStepReducers(
           );
         }
 
-        const streamId = (global.stableUlid || defaultUlid)();
+        const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
         type = getStreamType(value);
 
@@ -544,7 +545,7 @@ function getStepReducers(
           );
         }
 
-        const streamId = (global.stableUlid || defaultUlid)();
+        const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
         ops.push(
           new WorkflowServerReadableStream(name)

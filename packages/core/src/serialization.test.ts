@@ -13,7 +13,7 @@ import {
   hydrateStepArguments,
   hydrateWorkflowArguments,
 } from './serialization.js';
-import { STREAM_NAME_SYMBOL } from './symbols.js';
+import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
 
 const mockRunId = 'wrun_mockidnumber0001';
@@ -507,9 +507,9 @@ describe('workflow arguments', () => {
   });
 
   it('should work with Request (without responseWritable)', () => {
-    // Mock stableUlid to return a deterministic value
-    const originalStableUlid = (globalThis as any).stableUlid;
-    (globalThis as any).stableUlid = () => '01ARZ3NDEKTSV4RRFFQ69G5FA1';
+    // Mock STABLE_ULID to return a deterministic value
+    const originalStableUlid = (globalThis as any)[STABLE_ULID];
+    (globalThis as any)[STABLE_ULID] = () => '01ARZ3NDEKTSV4RRFFQ69G5FA1';
 
     try {
       const request = new Request('https://example.com/api', {
@@ -600,15 +600,15 @@ describe('workflow arguments', () => {
       expect(hydrated.body).toBeInstanceOf(OurReadableStream);
       expect(hydrated.duplex).toBe('half');
     } finally {
-      (globalThis as any).stableUlid = originalStableUlid;
+      (globalThis as any)[STABLE_ULID] = originalStableUlid;
     }
   });
 
   it('should work with Request (with responseWritable)', () => {
-    // Mock stableUlid to return deterministic values
-    const originalStableUlid = (globalThis as any).stableUlid;
+    // Mock STABLE_ULID to return deterministic values
+    const originalStableUlid = (globalThis as any)[STABLE_ULID];
     let ulidCounter = 0;
-    (globalThis as any).stableUlid = () => {
+    (globalThis as any)[STABLE_ULID] = () => {
       const ulids = [
         '01ARZ3NDEKTSV4RRFFQ69G5FA1',
         '01ARZ3NDEKTSV4RRFFQ69G5FA2',
@@ -722,7 +722,7 @@ describe('workflow arguments', () => {
         '`respondWith()` must be called from within a step function'
       );
     } finally {
-      (globalThis as any).stableUlid = originalStableUlid;
+      (globalThis as any)[STABLE_ULID] = originalStableUlid;
     }
   });
 

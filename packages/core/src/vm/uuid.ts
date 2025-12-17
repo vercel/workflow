@@ -1,5 +1,3 @@
-import { monotonicFactory } from 'ulid';
-
 /**
  * Returns a function that generates a random UUID, based on the given RNG.
  *
@@ -25,9 +23,4 @@ export function createRandomUUID(rng: () => number) {
     }
     return uuid as ReturnType<typeof crypto.randomUUID>;
   };
-}
-
-export function createStableUlid(rng?: () => number) {
-  const ulid = monotonicFactory(rng);
-  return ulid;
 }
