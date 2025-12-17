@@ -130,10 +130,6 @@ export function stepToSpan(
     activeStartTime = new Date(firstStartEvent.createdAt);
   }
 
-  console.log(
-    `creating span: name=${parsedName?.shortName ?? ''} spanStart=${spanStartTime.getTime()}, spanEndTime=${endTime.getTime()}, spanEnd=${dateToOtelTime(endTime)}, duration=${calculateDuration(spanStartTime, endTime)}`
-  );
-
   return {
     spanId: String(step.stepId),
     name: parsedName?.shortName ?? '',

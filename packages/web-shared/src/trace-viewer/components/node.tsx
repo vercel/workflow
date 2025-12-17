@@ -134,22 +134,11 @@ export const SpanComponent = memo(function SpanComponent({
     ? customSpanClassNameFunc(node)
     : '';
 
-  // Calculate the "queued" width if there's an activeStartTime
-  const hasQueuedTime =
-    node.activeStartTime !== undefined && node.activeStartTime > node.startTime;
-  const queuedWidth = hasQueuedTime
-    ? (node.activeStartTime! - node.startTime) * scale
-    : 0;
-
   return (
     <>
       <button
         aria-label={`${span.name} - ${duration}`}
-        className={clsx(
-          getSpanClassName(node, scale),
-          customClassName,
-          hasQueuedTime && styles.hasQueuedTime
-        )}
+        className={clsx(getSpanClassName(node, scale), customClassName)}
         data-span-id={span.spanId}
         data-start-time={node.startTime - root.startTime}
         data-right-side={isNearRightSide}
@@ -158,8 +147,6 @@ export const SpanComponent = memo(function SpanComponent({
           {
             // Use actualWidth for CSS variable so hover expansion is accurate
             '--span-width': `${Math.max(actualWidth, 1)}px`,
-            // Width of the "queued" portion (before activeStartTime)
-            '--queued-width': hasQueuedTime ? `${queuedWidth}px` : undefined,
             minWidth: isHovered ? width : undefined,
             width: isHovered ? undefined : width,
             height,

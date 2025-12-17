@@ -322,6 +322,22 @@ const sortByAttributeOrder = (a: string, b: string): number => {
   return aIndex - bIndex;
 };
 
+export const localMilliSecondTime = (value: unknown): string => {
+  const date = new Date(String(value));
+
+  // e.g. 12/17/2025, 9:08:55.182 AM
+
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    fractionalSecondDigits: 3,
+  });
+};
+
 interface DisplayContext {
   stepName?: string;
 }
@@ -356,13 +372,13 @@ const attributeToDisplayFn: Record<
   executionContext: (_value: unknown) => null,
   // Dates
   // TODO: relative time with tooltips for ISO times
-  createdAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  startedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  updatedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  completedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  expiredAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  retryAfter: (value: unknown) => new Date(String(value)).toLocaleString(),
-  resumeAt: (value: unknown) => new Date(String(value)).toLocaleString(),
+  createdAt: localMilliSecondTime,
+  startedAt: localMilliSecondTime,
+  updatedAt: localMilliSecondTime,
+  completedAt: localMilliSecondTime,
+  expiredAt: localMilliSecondTime,
+  retryAfter: localMilliSecondTime,
+  resumeAt: localMilliSecondTime,
   // Resolved attributes, won't actually use this function
   metadata: JsonBlock,
   input: (value: unknown, context?: DisplayContext) => {
