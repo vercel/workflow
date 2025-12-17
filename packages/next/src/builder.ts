@@ -418,7 +418,7 @@ export async function getNextBuilder() {
       await writeFile(join(workflowDir, 'webhook/inner.js'), innerStubContent);
       await writeFile(
         join(workflowDir, 'webhook/[token]/inner.js'),
-        routeStubContent
+        innerStubContent
       );
     }
   }

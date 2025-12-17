@@ -4,6 +4,8 @@ import { withWorkflow } from 'workflow/next';
 const nextConfig: NextConfig = {
   /* config options here */
   serverExternalPackages: ['@node-rs/xxhash'],
+
+  experimental: { turbopackModuleIds: 'named' },
 };
 
 // export default nextConfig;

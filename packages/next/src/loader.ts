@@ -159,7 +159,6 @@ export default async function workflowLoader(
 
   // Check for workflow and step directives
   const hasWorkflow = useWorkflowPattern.test(normalizedSource);
-  normalizedSource;
   const hasStep = useStepPattern.test(normalizedSource);
 
   // only apply the transform if file needs it
