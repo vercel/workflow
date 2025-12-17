@@ -109,7 +109,7 @@ export function stepToSpan(
   };
 
   const resource = 'step';
-  const endTime = step.completedAt ?? now;
+  const endTime = new Date(step.completedAt ?? now);
 
   // Convert step-related events to span events (for markers like hook_created, step_retrying, etc.)
   // This determines which events are displayed as markers. In the detail view,
@@ -119,7 +119,20 @@ export function stepToSpan(
   // Use createdAt as span start time, with activeStartTime for when execution began
   // This allows visualization of the "queued" period before execution
   const spanStartTime = new Date(step.createdAt);
-  const activeStartTime = step.startedAt ? new Date(step.startedAt) : undefined;
+  let activeStartTime = step.startedAt ? new Date(step.startedAt) : undefined;
+  const firstStartEvent = stepEvents.find(
+    (event) => event.eventType === 'step_started'
+  );
+  if (firstStartEvent) {
+    // `step.startedAt` is the server-side creation timestamp, and `event.createdAt` is
+    // the client-side creation timestamp. For now, to align the event marker with the
+    // line we show for step.startedAt, we overwrite here to always use client-side time.
+    activeStartTime = new Date(firstStartEvent.createdAt);
+  }
+
+  console.log(
+    `creating span: name=${parsedName?.shortName ?? ''} spanStart=${spanStartTime.getTime()}, spanEndTime=${endTime.getTime()}, spanEnd=${dateToOtelTime(endTime)}, duration=${calculateDuration(spanStartTime, endTime)}`
+  );
 
   return {
     spanId: String(step.stepId),
