@@ -115,6 +115,11 @@ export function stepToSpan(
   // we'll show all events that correlate with the selected resource.
   const events = convertEventsToSpanEvents(stepEvents);
 
+  // Use createdAt as span start time, with activeStartTime for when execution began
+  // This allows visualization of the "queued" period before execution
+  const spanStartTime = new Date(step.createdAt);
+  const activeStartTime = step.startedAt ? new Date(step.startedAt) : undefined;
+
   return {
     spanId: String(step.stepId),
     name: parsedName?.shortName ?? '',
@@ -126,9 +131,14 @@ export function stepToSpan(
     attributes,
     links: [],
     events,
-    startTime: dateToOtelTime(step.startedAt),
+    startTime: dateToOtelTime(spanStartTime),
     endTime: dateToOtelTime(endTime),
-    duration: calculateDuration(step.startedAt, endTime),
+    duration: calculateDuration(spanStartTime, endTime),
+    // Only set activeStartTime if it differs from startTime (i.e., there was a queued period)
+    activeStartTime:
+      activeStartTime && activeStartTime.getTime() > spanStartTime.getTime()
+        ? dateToOtelTime(activeStartTime)
+        : undefined,
   };
 }
 
@@ -196,7 +206,9 @@ export function runToSpan(
     data: run,
   };
 
-  const startDate = run.startedAt ?? run.createdAt;
+  // Use createdAt as span start time, with activeStartTime for when execution began
+  const spanStartTime = new Date(run.createdAt);
+  const activeStartTime = run.startedAt ? new Date(run.startedAt) : undefined;
   const endTime = run.completedAt ?? now;
 
   // Convert run-level events to span events
@@ -213,8 +225,13 @@ export function runToSpan(
     attributes,
     links: [],
     events,
-    startTime: dateToOtelTime(startDate),
+    startTime: dateToOtelTime(spanStartTime),
     endTime: dateToOtelTime(endTime),
-    duration: calculateDuration(startDate, endTime),
+    duration: calculateDuration(spanStartTime, endTime),
+    // Only set activeStartTime if it differs from startTime (i.e., there was a queued period)
+    activeStartTime:
+      activeStartTime && activeStartTime.getTime() > spanStartTime.getTime()
+        ? dateToOtelTime(activeStartTime)
+        : undefined,
   };
 }

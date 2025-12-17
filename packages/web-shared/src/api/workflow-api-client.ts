@@ -23,10 +23,10 @@ import {
   fetchStreams,
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
-  wakeUpRun as wakeUpRunServerAction,
+  reenqueueRun as reenqueueRunServerAction,
   type StopSleepOptions,
   type StopSleepResult,
-  reenqueueRun as reenqueueRunServerAction,
+  wakeUpRun as wakeUpRunServerAction,
 } from './workflow-server-actions';
 
 const MAX_ITEMS = 1000;
@@ -801,7 +801,10 @@ export function useWorkflowTraceViewerData(
 
     if (result.data.length > 0) {
       setSteps((prev) => mergeSteps(prev, result.data));
-      if (result.cursor) {
+      // We intentionally leave the cursor where it is, unless we're at the end of the page
+      // in which case we roll over. This is so that we re-fetch existing steps, to ensure
+      // their status gets updated.
+      if (result.cursor && result.hasMore) {
         setStepsCursor(result.cursor);
       }
       return true;

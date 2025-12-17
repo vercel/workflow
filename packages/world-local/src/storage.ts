@@ -86,10 +86,9 @@ const getObjectCreatedAt =
 
     // For composite keys like {runId}-{stepId}, extract from the appropriate part
     if (idPrefix === 'step') {
-      // For steps: wrun_ULID-step_123.json - extract from the runId part
-      const runId = filename.substring(0, dashIndex);
-      const ulid = runId.replace(/^wrun_/, '');
-      return ulidToDate(ulid);
+      // Steps use sequential IDs (step_0, step_1, etc.) - no timestamp in filename.
+      // Return null to skip filename-based optimization and defer to JSON-based filtering.
+      return null;
     }
 
     // For events: wrun_ULID-evnt_ULID.json - extract from the eventId part

@@ -227,13 +227,9 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
             : fileTime > cursorTime;
         }
       }
-      // Skip files where we can't extract timestamp - no optimization benefit
-      return false;
-    });
-  } else {
-    // Even without cursor, skip files where getCreatedAt returns null for consistency
-    candidateFileIds = relevantFileIds.filter((fileId) => {
-      return getCreatedAt(`${fileId}.json`) !== null;
+      // Can't extract timestamp from filename (e.g., steps use sequential IDs).
+      // Include the file and defer to JSON-based filtering below.
+      return true;
     });
   }
 
