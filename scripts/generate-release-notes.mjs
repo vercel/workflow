@@ -10,8 +10,8 @@
  * Output: JSON with { tag, title, body } for the GitHub release
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,6 +19,7 @@ const ROOT_DIR = join(__dirname, '..');
 const PACKAGES_DIR = join(ROOT_DIR, 'packages');
 
 // Packages to include in the release notes (in order of importance)
+// It's fine if a package isn't listed here, it will be sorted alphabetically.
 const PACKAGE_ORDER = [
   'core',
   'cli',
@@ -30,6 +31,10 @@ const PACKAGE_ORDER = [
   'world-testing',
   'web',
   'web-shared',
+  'ai',
+  'typescript-plugin',
+  'swc-plugin-workflow',
+  'builders',
   'next',
   'nitro',
   'nuxt',
@@ -37,12 +42,8 @@ const PACKAGE_ORDER = [
   'astro',
   'vite',
   'rollup',
-  'builders',
-  'ai',
   'errors',
   'utils',
-  'typescript-plugin',
-  'swc-plugin-workflow',
 ];
 
 // Packages to exclude from release notes (internal/example packages)
