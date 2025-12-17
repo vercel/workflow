@@ -43,7 +43,35 @@ jobs:
         with:
           version: pnpm ci:version
           publish: pnpm ci:publish
-          createGithubReleases: true
+          createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN_ELEVATED }}
+
+      - name: Create GitHub Release
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+        run: |
+          # Generate release notes
+          RELEASE_JSON=$(node scripts/generate-release-notes.mjs)
+          TAG=$(echo "$RELEASE_JSON" | jq -r '.tag')
+          TITLE=$(echo "$RELEASE_JSON" | jq -r '.title')
+          BODY=$(echo "$RELEASE_JSON" | jq -r '.body')
+
+          # Check if a release with this tag already exists
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Release $TAG already exists, updating..."
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --notes "$BODY" \
+              --latest \
+              --prerelease=false
+          else
+            echo "Creating new release $TAG..."
+            gh release create "$TAG" \
+              --title "$TITLE" \
+              --notes "$BODY" \
+              --latest \
+              --prerelease=false
+          fi
