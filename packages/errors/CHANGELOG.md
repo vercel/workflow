@@ -1,5 +1,14 @@
 # @workflow/errors
 
+## 4.0.1-beta.9
+
+### Patch Changes
+
+- [#505](https://github.com/vercel/workflow/pull/505) [`b56aae3`](https://github.com/vercel/workflow/commit/b56aae3fe9b5568d7bdda592ed025b3499149240) Thanks [@copilot-swe-agent](https://github.com/apps/copilot-swe-agent)! - Override setTimeout, setInterval, and related functions in workflow VM context to throw helpful errors suggesting to use `sleep` instead
+
+- Updated dependencies [[`1ef6b2f`](https://github.com/vercel/workflow/commit/1ef6b2fdc8dc7e4d665aa2fe1a7d9e68ce7f1e95)]:
+  - @workflow/utils@4.0.1-beta.7
+
 ## 4.0.1-beta.8
 
 ### Patch Changes

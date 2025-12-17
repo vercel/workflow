@@ -20,6 +20,7 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'hook_created',
   'hook_received',
   'hook_disposed',
+  'step_started',
   'step_retrying',
   'step_failed',
   'workflow_failed',
@@ -108,12 +109,26 @@ export function stepToSpan(
   };
 
   const resource = 'step';
-  const endTime = step.completedAt ?? now;
+  const endTime = new Date(step.completedAt ?? now);
 
   // Convert step-related events to span events (for markers like hook_created, step_retrying, etc.)
   // This determines which events are displayed as markers. In the detail view,
   // we'll show all events that correlate with the selected resource.
   const events = convertEventsToSpanEvents(stepEvents);
+
+  // Use createdAt as span start time, with activeStartTime for when execution began
+  // This allows visualization of the "queued" period before execution
+  const spanStartTime = new Date(step.createdAt);
+  let activeStartTime = step.startedAt ? new Date(step.startedAt) : undefined;
+  const firstStartEvent = stepEvents.find(
+    (event) => event.eventType === 'step_started'
+  );
+  if (firstStartEvent) {
+    // `step.startedAt` is the server-side creation timestamp, and `event.createdAt` is
+    // the client-side creation timestamp. For now, to align the event marker with the
+    // line we show for step.startedAt, we overwrite here to always use client-side time.
+    activeStartTime = new Date(firstStartEvent.createdAt);
+  }
 
   return {
     spanId: String(step.stepId),
@@ -126,9 +141,14 @@ export function stepToSpan(
     attributes,
     links: [],
     events,
-    startTime: dateToOtelTime(step.startedAt),
+    startTime: dateToOtelTime(spanStartTime),
     endTime: dateToOtelTime(endTime),
-    duration: calculateDuration(step.startedAt, endTime),
+    duration: calculateDuration(spanStartTime, endTime),
+    // Only set activeStartTime if it differs from startTime (i.e., there was a queued period)
+    activeStartTime:
+      activeStartTime && activeStartTime.getTime() > spanStartTime.getTime()
+        ? dateToOtelTime(activeStartTime)
+        : undefined,
   };
 }
 
@@ -196,7 +216,9 @@ export function runToSpan(
     data: run,
   };
 
-  const startDate = run.startedAt ?? run.createdAt;
+  // Use createdAt as span start time, with activeStartTime for when execution began
+  const spanStartTime = new Date(run.createdAt);
+  const activeStartTime = run.startedAt ? new Date(run.startedAt) : undefined;
   const endTime = run.completedAt ?? now;
 
   // Convert run-level events to span events
@@ -213,8 +235,13 @@ export function runToSpan(
     attributes,
     links: [],
     events,
-    startTime: dateToOtelTime(startDate),
+    startTime: dateToOtelTime(spanStartTime),
     endTime: dateToOtelTime(endTime),
-    duration: calculateDuration(startDate, endTime),
+    duration: calculateDuration(spanStartTime, endTime),
+    // Only set activeStartTime if it differs from startTime (i.e., there was a queued period)
+    activeStartTime:
+      activeStartTime && activeStartTime.getTime() > spanStartTime.getTime()
+        ? dateToOtelTime(activeStartTime)
+        : undefined,
   };
 }

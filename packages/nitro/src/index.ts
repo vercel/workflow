@@ -50,13 +50,19 @@ export default {
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
       const builder = new LocalBuilder(nitro);
+      let isInitialBuild = true;
+
       nitro.hooks.hook('build:before', async () => {
         await builder.build();
       });
 
-      // Allows for HMR
+      // Allows for HMR - but skip the first dev:reload since build:before already ran
       if (nitro.options.dev) {
         nitro.hooks.hook('dev:reload', async () => {
+          if (isInitialBuild) {
+            isInitialBuild = false;
+            return;
+          }
           await builder.build();
         });
       }

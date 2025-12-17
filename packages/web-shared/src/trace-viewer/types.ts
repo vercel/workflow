@@ -23,6 +23,12 @@ export interface Span {
   startTime: [number, number];
   endTime: [number, number];
   duration: [number, number];
+  /**
+   * The time when the span became active/started executing (optional).
+   * If provided and different from startTime, the portion between startTime
+   * and activeStartTime will be rendered as a "queued" period with different styling.
+   */
+  activeStartTime?: [number, number];
 }
 
 export interface SpanEvent {
@@ -109,6 +115,11 @@ export interface SpanNode extends EveryNode {
    * The index of the resource that this node belongs to (used for color)
    */
   resourceIndex: number;
+  /**
+   * The time when execution actually started (in milliseconds).
+   * If present and greater than startTime, represents a "queued" period.
+   */
+  activeStartTime?: number;
 }
 
 export interface SpanNodeEvent {

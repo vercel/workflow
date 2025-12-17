@@ -775,7 +775,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             }
 
             await world.events.create(workflowRunId, {
-              eventType: 'step_started', // TODO: Replace with 'step_retrying'
+              eventType: 'step_started', // TODO: Replace with 'step_retrying' when appropriate
               correlationId: stepId,
             });
 
