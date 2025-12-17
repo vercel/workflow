@@ -82,6 +82,9 @@ export function withWorkflow(
                   {
                     content: /(use workflow|use step)/,
                   },
+                  {
+                    path: /.*\.well-known[/\\]workflow.*/,
+                  },
                 ],
               },
             }
@@ -131,7 +134,10 @@ export function withWorkflow(
         externalPackages: [...(nextConfig.serverExternalPackages || [])],
       });
 
-      await workflowBuilder.build();
+      // Pass the nextConfig to the builder so it can access distDir
+      workflowBuilder.setNextConfig(nextConfig);
+
+      await workflowBuilder.init();
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';
     }
 

@@ -1,7 +1,7 @@
-import { constants } from 'node:fs';
-import { access, mkdir, stat, writeFile } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
-import Watchpack from 'watchpack';
+import { constants, unlinkSync } from 'node:fs';
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import type { NextConfig } from 'next';
 
 let CachedNextBuilder: any;
 
@@ -17,13 +17,74 @@ export async function getNextBuilder() {
     BaseBuilder: BaseBuilderClass,
     STEP_QUEUE_TRIGGER,
     WORKFLOW_QUEUE_TRIGGER,
-    // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
-  } = (await eval(
-    'import("@workflow/builders")'
-  )) as typeof import('@workflow/builders');
+  } = await import('@workflow/builders');
 
   class NextBuilder extends BaseBuilderClass {
-    async build() {
+    private socketIO?: any;
+    private nextConfig?: NextConfig;
+
+    setNextConfig(config: NextConfig) {
+      this.nextConfig = config;
+    }
+
+    private getDistDir(): string {
+      return this.nextConfig?.distDir || '.next';
+    }
+
+    private async writeWorkflowsCache(
+      workflowFiles: Set<string>,
+      stepFiles: Set<string>
+    ) {
+      const cwd = this.config.workingDir;
+      const distDir = this.getDistDir();
+      const cacheDir = join(cwd, distDir, 'cache');
+      const cacheFile = join(cacheDir, 'workflows.json');
+
+      try {
+        await mkdir(cacheDir, { recursive: true });
+        const cacheData = {
+          workflowFiles: Array.from(workflowFiles),
+          stepFiles: Array.from(stepFiles),
+          timestamp: Date.now(),
+        };
+        await writeFile(cacheFile, JSON.stringify(cacheData, null, 2));
+      } catch (error) {
+        console.error('Failed to write workflows cache:', error);
+      }
+    }
+
+    private async readWorkflowsCache(): Promise<{
+      workflowFiles: string[];
+      stepFiles: string[];
+    } | null> {
+      const cwd = this.config.workingDir;
+      const distDir = this.getDistDir();
+      const cacheFile = join(cwd, distDir, 'cache', 'workflows.json');
+
+      try {
+        const cacheContent = await readFile(cacheFile, 'utf-8');
+        const cacheData = JSON.parse(cacheContent);
+        return {
+          workflowFiles: cacheData.workflowFiles || [],
+          stepFiles: cacheData.stepFiles || [],
+        };
+      } catch {
+        // Cache file doesn't exist or is invalid, return null
+        return null;
+      }
+    }
+
+    async init() {
+      const outputDir = await this.findAppDirectory();
+
+      // Write stub files
+      await this.writeStubFiles(outputDir);
+
+      // Create socket server for file path communication
+      await this.createSocketServer(outputDir);
+    }
+
+    async build(inputFiles?: string[]) {
       const outputDir = await this.findAppDirectory();
       const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');
 
@@ -33,308 +94,25 @@ export async function getNextBuilder() {
 
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
 
-      const inputFiles = await this.getInputFiles();
+      // Use provided inputFiles or discover them
+      const files = inputFiles || (await this.getInputFiles());
       const tsConfig = await this.getTsConfigOptions();
 
       const options = {
-        inputFiles,
+        inputFiles: files,
         workflowGeneratedDir,
         tsBaseUrl: tsConfig.baseUrl,
         tsPaths: tsConfig.paths,
       };
 
-      const stepsBuildContext = await this.buildStepsFunction(options);
-      const workflowsBundle = await this.buildWorkflowsFunction(options);
+      await this.buildStepsFunction(options);
+      await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
       await this.writeFunctionsConfig(outputDir);
 
-      if (this.config.watch) {
-        if (!stepsBuildContext) {
-          throw new Error(
-            'Invariant: expected steps build context in watch mode'
-          );
-        }
-        if (!workflowsBundle) {
-          throw new Error('Invariant: expected workflows bundle in watch mode');
-        }
-
-        let stepsCtx = stepsBuildContext;
-        let workflowsCtx = workflowsBundle;
-
-        const normalizePath = (pathname: string) =>
-          pathname.replace(/\\/g, '/');
-        const knownFiles = new Set<string>();
-        type WatchpackTimeInfoEntry = {
-          safeTime: number;
-          timestamp?: number;
-        };
-        let previousTimeInfo = new Map<string, WatchpackTimeInfoEntry>();
-
-        const watchableExtensions = new Set([
-          '.js',
-          '.jsx',
-          '.ts',
-          '.tsx',
-          '.mts',
-          '.cts',
-          '.cjs',
-          '.mjs',
-        ]);
-        const ignoredPathFragments = [
-          '/.git/',
-          '/node_modules/',
-          '/.next/',
-          '/.turbo/',
-          '/.vercel/',
-          '/dist/',
-          '/build/',
-          '/out/',
-          '/.cache/',
-          '/.yarn/',
-          '/.pnpm-store/',
-          '/.parcel-cache/',
-          '/.well-known/workflow/',
-        ];
-        const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
-        ignoredPathFragments.push(normalizedGeneratedDir);
-
-        // There is a node.js bug on MacOS which causes closing file watchers to be really slow.
-        // This limits the number of watchers to mitigate the issue.
-        // https://github.com/nodejs/node/issues/29949
-        process.env.WATCHPACK_WATCHER_LIMIT =
-          process.platform === 'darwin' ? '20' : undefined;
-
-        const watcher = new Watchpack({
-          // Watchpack default is 200ms which adds 200ms of dead time on bootup.
-          aggregateTimeout: 5,
-          ignored: (pathname: string) => {
-            const normalizedPath = pathname.replace(/\\/g, '/');
-            const extension = extname(normalizedPath);
-            if (extension && !watchableExtensions.has(extension)) {
-              return true;
-            }
-            if (normalizedPath.startsWith(normalizedGeneratedDir)) {
-              return true;
-            }
-            for (const fragment of ignoredPathFragments) {
-              if (normalizedPath.includes(fragment)) {
-                return true;
-              }
-            }
-            return false;
-          },
-        });
-
-        const readTimeInfoEntries = () => {
-          const rawEntries = watcher.getTimeInfoEntries() as Map<
-            string,
-            WatchpackTimeInfoEntry
-          >;
-          const normalizedEntries = new Map<string, WatchpackTimeInfoEntry>();
-          for (const [path, info] of rawEntries) {
-            normalizedEntries.set(normalizePath(path), info);
-          }
-          return normalizedEntries;
-        };
-
-        let rebuildQueue = Promise.resolve();
-
-        const enqueue = (task: () => Promise<void>) => {
-          rebuildQueue = rebuildQueue.then(task).catch((error) => {
-            console.error('Failed to process file change', error);
-          });
-          return rebuildQueue;
-        };
-
-        const fullRebuild = async () => {
-          const newInputFiles = await this.getInputFiles();
-          options.inputFiles = newInputFiles;
-
-          await stepsCtx.dispose();
-          const newStepsCtx = await this.buildStepsFunction(options);
-          if (!newStepsCtx) {
-            throw new Error(
-              'Invariant: expected steps build context after rebuild'
-            );
-          }
-          stepsCtx = newStepsCtx;
-
-          await workflowsCtx.interimBundleCtx.dispose();
-          const newWorkflowsCtx = await this.buildWorkflowsFunction(options);
-          if (!newWorkflowsCtx) {
-            throw new Error(
-              'Invariant: expected workflows bundle context after rebuild'
-            );
-          }
-          workflowsCtx = newWorkflowsCtx;
-        };
-
-        const logBuildMessages = (
-          result: {
-            errors?: import('esbuild').Message[];
-            warnings?: import('esbuild').Message[];
-          },
-          label: string
-        ) => {
-          const logByType = (
-            messages: import('esbuild').Message[] | undefined,
-            method: 'error' | 'warn'
-          ) => {
-            if (!messages || messages.length === 0) {
-              return;
-            }
-            const descriptor = method === 'error' ? 'errors' : 'warnings';
-            console[method](`${descriptor} while rebuilding ${label}`);
-            for (const message of messages) {
-              console[method](message);
-            }
-          };
-
-          logByType(result.errors, 'error');
-          logByType(result.warnings, 'warn');
-        };
-
-        const rebuildExistingFiles = async () => {
-          const rebuiltStepStart = Date.now();
-          const stepsResult = await stepsCtx.rebuild();
-          logBuildMessages(stepsResult, 'steps bundle');
-          console.log(
-            'Rebuilt steps bundle',
-            `${Date.now() - rebuiltStepStart}ms`
-          );
-
-          const rebuiltWorkflowStart = Date.now();
-          const workflowResult = await workflowsCtx.interimBundleCtx.rebuild();
-          logBuildMessages(workflowResult, 'workflows bundle');
-
-          if (
-            !workflowResult.outputFiles ||
-            workflowResult.outputFiles.length === 0
-          ) {
-            console.error(
-              'No output generated while rebuilding workflows bundle'
-            );
-            return;
-          }
-          await workflowsCtx.bundleFinal(workflowResult.outputFiles[0].text);
-          console.log(
-            'Rebuilt workflow bundle',
-            `${Date.now() - rebuiltWorkflowStart}ms`
-          );
-        };
-
-        const isWatchableFile = (path: string) =>
-          watchableExtensions.has(extname(path));
-
-        const getComparableTimestamp = (entry: WatchpackTimeInfoEntry) =>
-          entry.timestamp ?? entry.safeTime;
-
-        const findRemovedFiles = (
-          currentEntries: Map<string, WatchpackTimeInfoEntry>,
-          previousEntries: Map<string, WatchpackTimeInfoEntry>
-        ) => {
-          const removed: string[] = [];
-          for (const path of previousEntries.keys()) {
-            if (!currentEntries.has(path) && isWatchableFile(path)) {
-              removed.push(path);
-            }
-          }
-          return removed;
-        };
-
-        const findAddedAndModifiedFiles = (
-          currentEntries: Map<string, WatchpackTimeInfoEntry>,
-          previousEntries: Map<string, WatchpackTimeInfoEntry>
-        ) => {
-          const added: string[] = [];
-          const modified: string[] = [];
-
-          for (const [path, info] of currentEntries) {
-            if (!isWatchableFile(path)) {
-              continue;
-            }
-
-            const previous = previousEntries.get(path);
-            if (!previous) {
-              added.push(path);
-              continue;
-            }
-
-            if (
-              getComparableTimestamp(info) !== getComparableTimestamp(previous)
-            ) {
-              modified.push(path);
-            }
-          }
-
-          return { added, modified };
-        };
-
-        const determineFileChanges = (
-          currentEntries: Map<string, WatchpackTimeInfoEntry>,
-          previousEntries: Map<string, WatchpackTimeInfoEntry>
-        ) => {
-          const removedFiles = findRemovedFiles(
-            currentEntries,
-            previousEntries
-          );
-          const { added, modified } = findAddedAndModifiedFiles(
-            currentEntries,
-            previousEntries
-          );
-
-          return {
-            addedFiles: added,
-            modifiedFiles: modified,
-            removedFiles,
-          };
-        };
-
-        let isInitial = true;
-
-        watcher.on('aggregated', () => {
-          const currentEntries = readTimeInfoEntries();
-          const { addedFiles, modifiedFiles, removedFiles } =
-            determineFileChanges(currentEntries, previousTimeInfo);
-
-          previousTimeInfo = currentEntries;
-
-          if (isInitial) {
-            isInitial = false;
-            return;
-          }
-
-          if (
-            addedFiles.length === 0 &&
-            modifiedFiles.length === 0 &&
-            removedFiles.length === 0
-          ) {
-            return;
-          }
-
-          for (const removal of removedFiles) {
-            knownFiles.delete(removal);
-          }
-          for (const added of addedFiles) {
-            knownFiles.add(added);
-          }
-
-          enqueue(async () => {
-            if (addedFiles.length > 0 || removedFiles.length > 0) {
-              await fullRebuild();
-              return;
-            }
-
-            if (modifiedFiles.length > 0) {
-              await rebuildExistingFiles();
-            }
-          });
-        });
-
-        watcher.watch({
-          directories: [this.config.workingDir],
-          startTime: 0,
-        });
+      // Signal build complete to connected clients
+      if (this.socketIO) {
+        this.socketIO.emit('build-complete');
       }
     }
 
@@ -466,6 +244,182 @@ export async function getNextBuilder() {
           );
         }
       }
+    }
+
+    private async createSocketServer(_usersAppDir: string): Promise<void> {
+      const { createServer } = await import('node:net');
+      const { tmpdir } = await import('node:os');
+      const { unlink } = await import('node:fs/promises');
+
+      const workflowFiles = new Set<string>();
+      const stepFiles = new Set<string>();
+      const clients = new Set<any>();
+      let debounceTimer: NodeJS.Timeout | null = null;
+
+      const BUILD_DEBOUNCE_MS =
+        process.env.NODE_ENV === 'development' ? 300 : 1_000;
+
+      // Attempt to load cached workflows/steps from previous build
+      const cache = await this.readWorkflowsCache();
+      if (cache) {
+        for (const file of cache.workflowFiles) {
+          workflowFiles.add(file);
+        }
+        for (const file of cache.stepFiles) {
+          stepFiles.add(file);
+        }
+      }
+
+      // Debounced build trigger
+      const triggerBuild = () => {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+
+        debounceTimer = setTimeout(async () => {
+          // Combine workflow and step files into single array
+          const allFiles = new Set([...workflowFiles, ...stepFiles]);
+          const inputFiles = Array.from(allFiles);
+
+          if (inputFiles.length > 0) {
+            console.log(
+              `Triggering build with ${inputFiles.length} discovered files`
+            );
+            try {
+              await this.build(inputFiles);
+              // Write cache after successful build
+              await this.writeWorkflowsCache(workflowFiles, stepFiles);
+            } catch (error) {
+              console.error('Build failed:', error);
+            }
+          }
+        }, BUILD_DEBOUNCE_MS);
+      };
+
+      // Generate socket path in tmp directory
+      const socketPath = join(
+        tmpdir(),
+        `workflow-${process.pid}-${Date.now()}.sock`
+      );
+
+      process.on('exit', () => {
+        try {
+          unlinkSync(socketPath);
+        } catch {}
+      });
+
+      // Create Unix domain socket server
+      const server = createServer((socket) => {
+        clients.add(socket);
+
+        let buffer = '';
+
+        socket.on('data', (data) => {
+          buffer += data.toString();
+
+          // Process complete messages (newline-delimited JSON)
+          let newlineIndex = buffer.indexOf('\n');
+          while (newlineIndex !== -1) {
+            const line = buffer.slice(0, newlineIndex);
+            buffer = buffer.slice(newlineIndex + 1);
+            newlineIndex = buffer.indexOf('\n');
+
+            if (line.trim()) {
+              try {
+                const message = JSON.parse(line);
+
+                if (message.type === 'file-discovered') {
+                  const { filePath, hasWorkflow, hasStep } = message;
+
+                  if (hasWorkflow) {
+                    workflowFiles.add(filePath);
+                  }
+
+                  if (hasStep) {
+                    stepFiles.add(filePath);
+                  }
+
+                  // Trigger debounced build
+                  triggerBuild();
+                } else if (message.type === 'trigger-build') {
+                  // enqueue new build if one isn't already pending
+                  triggerBuild();
+                }
+              } catch (error) {
+                console.error('Failed to parse socket message:', error);
+              }
+            }
+          }
+        });
+
+        socket.on('end', () => {
+          clients.delete(socket);
+        });
+
+        socket.on('error', (err) => {
+          console.error('Socket error:', err);
+          clients.delete(socket);
+        });
+      });
+
+      // Clean up existing socket file if it exists
+      try {
+        await unlink(socketPath);
+      } catch {
+        // Ignore error if file doesn't exist
+      }
+
+      // Listen on Unix domain socket
+      await new Promise<void>((resolve) => {
+        server.listen(socketPath, () => {
+          // Expose the socket path via environment variable
+          process.env.WORKFLOW_SOCKET_PATH = socketPath;
+          resolve();
+        });
+      });
+
+      // Store the server and broadcast function
+      this.socketIO = {
+        emit: (event: string) => {
+          if (event === 'build-complete') {
+            const message = JSON.stringify({ type: 'build-complete' }) + '\n';
+            for (const client of clients) {
+              client.write(message);
+            }
+          }
+        },
+      };
+    }
+
+    private async writeStubFiles(usersAppDir: string): Promise<void> {
+      const routeStubContent = "export * from './inner'";
+      // this needs to change on each build so can refresh workflows
+      const innerStubContent = 'WORKFLOW_INNER_STUB_FILE_' + Date.now();
+      const workflowDir = join(usersAppDir, '.well-known/workflow/v1');
+
+      // Ensure directories exist
+      await mkdir(join(workflowDir, 'flow'), { recursive: true });
+      await mkdir(join(workflowDir, 'step'), { recursive: true });
+      await mkdir(join(workflowDir, 'webhook'), { recursive: true });
+      await mkdir(join(workflowDir, 'webhook/[token]'), { recursive: true });
+
+      // Write route.ts stub files (re-export from inner)
+      await writeFile(join(workflowDir, 'flow/route.js'), routeStubContent);
+      await writeFile(join(workflowDir, 'step/route.js'), routeStubContent);
+      await writeFile(join(workflowDir, 'webhook/route.js'), routeStubContent);
+      await writeFile(
+        join(workflowDir, 'webhook/[token]/route.js'),
+        routeStubContent
+      );
+
+      // Write inner.js stub files (actual stub marker)
+      await writeFile(join(workflowDir, 'flow/inner.js'), innerStubContent);
+      await writeFile(join(workflowDir, 'step/inner.js'), innerStubContent);
+      await writeFile(join(workflowDir, 'webhook/inner.js'), innerStubContent);
+      await writeFile(
+        join(workflowDir, 'webhook/[token]/inner.js'),
+        routeStubContent
+      );
     }
   }
 

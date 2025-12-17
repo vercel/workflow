@@ -137,6 +137,12 @@ export abstract class BaseBuilder {
     discoveredSteps: string[];
     discoveredWorkflows: string[];
   }> {
+    if (this.config.buildTarget === 'next') {
+      return {
+        discoveredWorkflows: inputs,
+        discoveredSteps: inputs,
+      };
+    }
     const previousResult = this.discoveredEntries.get(inputs);
 
     if (previousResult) {
