@@ -10,7 +10,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import type { SpanEvent } from '../trace-viewer/types';
 import { convertEventsToSpanEvents } from '../workflow-traces/trace-span-construction';
-import { AttributeBlock, localMilliSecondTime } from './attribute-panel';
+import { AttributeBlock, localMillisecondTime } from './attribute-panel';
 import { DetailCard } from './detail-card';
 
 export function EventsList({
@@ -90,10 +90,8 @@ export function EventsList({
                   </span>{' '}
                   -{' '}
                   <span style={{ color: 'var(--ds-gray-700)' }}>
-                    {localMilliSecondTime(
-                      new Date(
-                        event.timestamp[0] * 1000 + event.timestamp[1] / 1e6
-                      )
+                    {localMillisecondTime(
+                      event.timestamp[0] * 1000 + event.timestamp[1] / 1e6
                     )}
                   </span>
                 </>
