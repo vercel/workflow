@@ -169,12 +169,15 @@ export async function makeRequest<T>({
 }): Promise<T> {
   const { baseUrl, headers } = await getHttpConfig(config);
   headers.set('Content-Type', 'application/json');
+  // NOTE: Add a unique header to bypass RSC request memoization.
+  // See: https://github.com/vercel/workflow/issues/618
+  headers.set('X-Request-Time', Date.now().toString());
 
   const url = `${baseUrl}${endpoint}`;
   const response = await fetch(url, {
     ...options,
     headers,
-  });
+  } as RequestInit);
 
   if (!response.ok) {
     const errorData = (await response.json().catch(() => ({}))) as any;
