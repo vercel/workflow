@@ -162,7 +162,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
+        run: pnpm turbo run build --force --filter='!./workbench/*'
 
       - name: Generate Workflows Registry
         run: node workbench/scripts/generate-workflows-registry.js workbench/nextjs-turbopack/workflows workbench/nextjs-turbopack/_workflows.ts
@@ -225,7 +225,7 @@ jobs:
           build-packages: 'false'
 
       - name: Build CLI
-        run: pnpm turbo run build --filter='@workflow/cli'
+        run: pnpm turbo run build --force --filter='@workflow/cli'
 
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
@@ -318,7 +318,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
+        run: pnpm turbo run build --force --filter='!./workbench/*'
 
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
@@ -380,7 +380,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
+        run: pnpm turbo run build --force --filter='!./workbench/*'
 
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
@@ -462,7 +462,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*'
+        run: pnpm turbo run build --force --filter='!./workbench/*'
 
       - name: Setup PostgreSQL Database
         run: ./packages/world-postgres/bin/setup.js
@@ -529,7 +529,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run Initial Build
-        run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
+        run: pnpm turbo run build --force --filter='!./workbench/*' --filter='!./docs'
 
       - name: Run E2E Tests (Next.js)
         run: |

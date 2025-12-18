@@ -64,35 +64,6 @@ export function createDevTests(config?: DevTestConfig) {
       restoreFiles.length = 0;
     });
 
-    test('should rebuild on workflow change', { timeout: 15_000 }, async () => {
-      const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
-
-      const content = await fs.readFile(workflowFile, 'utf8');
-
-      await fs.writeFile(
-        workflowFile,
-        `${content}
-
-export async function myNewWorkflow() {
-  'use workflow'
-  return 'hello world'
-}
-`
-      );
-      restoreFiles.push({ path: workflowFile, content });
-
-      while (true) {
-        try {
-          await warmEndpoint();
-          const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
-          expect(workflowContent).toContain('myNewWorkflow');
-          break;
-        } catch (_) {
-          await new Promise((res) => setTimeout(res, 1_000));
-        }
-      }
-    });
-
     test('should rebuild on step change', { timeout: 15_000 }, async () => {
       const stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
@@ -122,6 +93,35 @@ export async function myNewStep() {
       }
     });
 
+    test('should rebuild on workflow change', { timeout: 15_000 }, async () => {
+      const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
+
+      const content = await fs.readFile(workflowFile, 'utf8');
+
+      await fs.writeFile(
+        workflowFile,
+        `${content}
+
+export async function myNewWorkflow() {
+  'use workflow'
+  return 'hello world'
+}
+`
+      );
+      restoreFiles.push({ path: workflowFile, content });
+
+      while (true) {
+        try {
+          await warmEndpoint();
+          const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
+          expect(workflowContent).toContain('myNewWorkflow');
+          break;
+        } catch (_) {
+          await new Promise((res) => setTimeout(res, 1_000));
+        }
+      }
+    });
+
     test(
       'should rebuild on adding workflow file',
       { timeout: 15_000 },
@@ -140,11 +140,11 @@ export async function myNewStep() {
 }
 `
         );
-        restoreFiles.push({ path: workflowFile, content: '' });
         const apiFile = path.join(appPath, finalConfig.apiFilePath);
-
         const apiFileContent = await fs.readFile(apiFile, 'utf8');
+
         restoreFiles.push({ path: apiFile, content: apiFileContent });
+        restoreFiles.push({ path: workflowFile, content: '' });
 
         await fs.writeFile(
           apiFile,
