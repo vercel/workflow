@@ -48,6 +48,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN_ELEVATED }}
 
+      - name: Add latest dist-tag to published packages
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN_ELEVATED }}
+        run: |
+          # Configure npm auth for dist-tag operations
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
+          # Parse published packages and add latest tag to each
+          echo '${{ steps.changesets.outputs.publishedPackages }}' | jq -c '.[]' | while read -r pkg; do
+            NAME=$(echo "$pkg" | jq -r '.name')
+            VERSION=$(echo "$pkg" | jq -r '.version')
+            echo "Adding 'latest' dist-tag to ${NAME}@${VERSION}..."
+            npm dist-tag add "${NAME}@${VERSION}" latest || echo "Failed to add dist-tag for ${NAME}, continuing..."
+          done
+
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
         env:
