@@ -251,7 +251,6 @@ export async function getNextBuilder() {
         return;
       }
       const { createServer } = await import('node:net');
-      const { tmpdir } = await import('node:os');
       const { unlink } = await import('node:fs/promises');
 
       const workflowFiles = new Set<string>();
@@ -300,9 +299,13 @@ export async function getNextBuilder() {
         }, BUILD_DEBOUNCE_MS);
       };
 
-      // Generate socket path in tmp directory
+      // Generate socket path in distDir
+      const cwd = this.config.workingDir;
+      const distDir = this.getDistDir();
+      const socketDir = join(cwd, distDir);
+      await mkdir(socketDir, { recursive: true });
       const socketPath = join(
-        tmpdir(),
+        socketDir,
         `workflow-${process.pid}-${Date.now()}.sock`
       );
 
