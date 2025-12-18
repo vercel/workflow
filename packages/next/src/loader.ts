@@ -82,10 +82,6 @@ async function waitForBuildComplete(): Promise<void> {
     }
 
     let buffer = '';
-    const timeout = setTimeout(() => {
-      socket.off('data', onData);
-      reject(new Error('Build complete timeout'));
-    }, 60000); // 60 second timeout
 
     const onData = (data: Buffer) => {
       buffer += data.toString();
@@ -100,7 +96,6 @@ async function waitForBuildComplete(): Promise<void> {
           try {
             const message = JSON.parse(line);
             if (message.type === 'build-complete') {
-              clearTimeout(timeout);
               socket.off('data', onData);
               resolve();
             }
