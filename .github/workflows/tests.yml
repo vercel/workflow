@@ -13,6 +13,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+
 jobs:
   # Phase 0: Update PR comment to show tests are running
   pr-comment-start:

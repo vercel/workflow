@@ -3,6 +3,7 @@
  * similar to "stdlib" except that are not meant to be imported by users, but are instead "just available"
  * alongside user defined steps. They are used internally by the runtime
  */
+export * from '../stdlib.js';
 
 export async function __builtin_response_array_buffer(res: Response) {
   'use step';
