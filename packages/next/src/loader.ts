@@ -13,14 +13,21 @@ let socketClientPromise: Promise<Socket | null> | null = null;
 async function getSocketClient() {
   if (!socketClientPromise) {
     socketClientPromise = (async () => {
-      const socketPath = process.env.WORKFLOW_SOCKET_PATH;
-      if (!socketPath) {
+      const socketPort = process.env.WORKFLOW_SOCKET_PORT;
+      if (!socketPort) {
         throw new Error(
-          `Invariant: no socket path provided for workflow loader`
+          `Invariant: no socket port provided for workflow loader`
         );
       }
 
-      const socket = connect(socketPath);
+      const port = Number.parseInt(socketPort, 10);
+      if (Number.isNaN(port)) {
+        throw new Error(
+          `Invariant: invalid socket port provided: ${socketPort}`
+        );
+      }
+
+      const socket = connect({ port, host: '127.0.0.1' });
 
       // Wait for connection
       await new Promise<void>((resolve, reject) => {

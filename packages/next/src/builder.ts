@@ -1,4 +1,4 @@
-import { constants, unlinkSync } from 'node:fs';
+import { constants } from 'node:fs';
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { NextConfig } from 'next';
@@ -247,11 +247,10 @@ export async function getNextBuilder() {
     }
 
     private async createSocketServer(_usersAppDir: string): Promise<void> {
-      if (process.env.WORKFLOW_SOCKET_PATH) {
+      if (process.env.WORKFLOW_SOCKET_PORT) {
         return;
       }
       const { createServer } = await import('node:net');
-      const { unlink } = await import('node:fs/promises');
 
       const workflowFiles = new Set<string>();
       const stepFiles = new Set<string>();
@@ -259,7 +258,7 @@ export async function getNextBuilder() {
       let debounceTimer: NodeJS.Timeout | null = null;
 
       const BUILD_DEBOUNCE_MS =
-        process.env.NODE_ENV === 'development' ? 250 : 1_000;
+        process.env.NODE_ENV === 'development' ? 350 : 1_000;
 
       // Attempt to load cached workflows/steps from previous build
       const cache = await this.readWorkflowsCache();
@@ -299,23 +298,7 @@ export async function getNextBuilder() {
         }, BUILD_DEBOUNCE_MS);
       };
 
-      // Generate socket path in distDir
-      const cwd = this.config.workingDir;
-      const distDir = this.getDistDir();
-      const socketDir = join(cwd, distDir, 'cache');
-      await mkdir(socketDir, { recursive: true });
-      const socketPath = join(
-        socketDir,
-        `workflow-${process.pid}-${Date.now()}.sock`
-      );
-
-      process.on('exit', () => {
-        try {
-          unlinkSync(socketPath);
-        } catch {}
-      });
-
-      // Create Unix domain socket server
+      // Create TCP server
       const server = createServer((socket) => {
         clients.add(socket);
 
@@ -371,18 +354,15 @@ export async function getNextBuilder() {
         });
       });
 
-      // Clean up existing socket file if it exists
-      try {
-        await unlink(socketPath);
-      } catch {
-        // Ignore error if file doesn't exist
-      }
-
-      // Listen on Unix domain socket
+      // Listen on random available port
       await new Promise<void>((resolve) => {
-        server.listen(socketPath, () => {
-          // Expose the socket path via environment variable
-          process.env.WORKFLOW_SOCKET_PATH = socketPath;
+        // Port 0 tells the OS to assign a random available port
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          if (address && typeof address === 'object') {
+            // Expose the port via environment variable
+            process.env.WORKFLOW_SOCKET_PORT = String(address.port);
+          }
           resolve();
         });
       });
