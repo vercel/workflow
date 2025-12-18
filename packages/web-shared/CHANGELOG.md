@@ -1,5 +1,21 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.29
+
+### Patch Changes
+
+- [#636](https://github.com/vercel/workflow/pull/636) [`c6f33ee`](https://github.com/vercel/workflow/commit/c6f33ee9d3a7889389f3ad30a30704e552dc596a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Show event markers for step_started events
+
+- [#623](https://github.com/vercel/workflow/pull/623) [`ce7d428`](https://github.com/vercel/workflow/commit/ce7d428a07cd415d2ea64c779b84ecdc796927a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Re-fetch previous steps in live trace viewer to ensure status gets updated correctly even for parallel step invocations
+
+- [#622](https://github.com/vercel/workflow/pull/622) [`a84f0db`](https://github.com/vercel/workflow/commit/a84f0db22715644e2a08d5455b68836255826828) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Indicate time between createdAt and startedAt for runs/steps, fix when "wake up from sleep" is shown
+
+- [#638](https://github.com/vercel/workflow/pull/638) [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Move auth error messages into @workflow/errors package
+
+- Updated dependencies [[`ea2a67e`](https://github.com/vercel/workflow/commit/ea2a67e19c5d224b4b4fd1c1a417810562df0807), [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005), [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3)]:
+  - @workflow/core@4.0.1-beta.28
+  - @workflow/errors@4.0.1-beta.10
+
 ## 4.0.1-beta.28
 
 ### Patch Changes

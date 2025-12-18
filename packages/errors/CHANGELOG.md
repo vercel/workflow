@@ -1,5 +1,11 @@
 # @workflow/errors
 
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- [#638](https://github.com/vercel/workflow/pull/638) [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Move auth error messages into @workflow/errors package
+
 ## 4.0.1-beta.9
 
 ### Patch Changes

@@ -1,5 +1,23 @@
 # @workflow/core
 
+## 4.0.1-beta.28
+
+### Patch Changes
+
+- [#544](https://github.com/vercel/workflow/pull/544) [`ea2a67e`](https://github.com/vercel/workflow/commit/ea2a67e19c5d224b4b4fd1c1a417810562df0807) Thanks [@pranaygp](https://github.com/pranaygp)! - perf: parallelize suspension handler and refactor runtime
+
+  - Process hooks first, then steps and waits in parallel to prevent race conditions
+  - Refactor runtime.ts into modular files: `suspension-handler.ts`, `step-handler.ts`, `helpers.ts`
+  - Add otel attributes for hooks created (`workflow.hooks.created`) and waits created (`workflow.waits.created`)
+  - Update suspension status from `pending_steps` to `workflow_suspended`
+
+- [#625](https://github.com/vercel/workflow/pull/625) [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Change serialized stream names from v4 UUIDs to ULIDs
+
+- Updated dependencies [[`ce7d428`](https://github.com/vercel/workflow/commit/ce7d428a07cd415d2ea64c779b84ecdc796927a0), [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005), [`ab55ba2`](https://github.com/vercel/workflow/commit/ab55ba2d61b41e2b2cd9e213069c93be988c9b1e), [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3)]:
+  - @workflow/world-local@4.0.1-beta.19
+  - @workflow/world-vercel@4.0.1-beta.21
+  - @workflow/errors@4.0.1-beta.10
+
 ## 4.0.1-beta.27
 
 ### Patch Changes

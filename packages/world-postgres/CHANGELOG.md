@@ -1,5 +1,15 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.21
+
+### Patch Changes
+
+- [#625](https://github.com/vercel/workflow/pull/625) [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - List implicitly passed streams for `world.listStreamsByRun`
+
+- Updated dependencies [[`ce7d428`](https://github.com/vercel/workflow/commit/ce7d428a07cd415d2ea64c779b84ecdc796927a0), [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005), [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3)]:
+  - @workflow/world-local@4.0.1-beta.19
+  - @workflow/errors@4.0.1-beta.10
+
 ## 4.1.0-beta.20
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "workflow",
-  "version": "4.0.1-beta.32",
+  "version": "4.0.1-beta.33",
   "description": "Workflow DevKit - Build durable, resilient, and observable workflows",
   "main": "dist/typescript-plugin.cjs",
   "type": "module",
