@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { getWorkbenchAppPath } from './utils';
 
 export interface DevTestConfig {
@@ -57,7 +57,13 @@ export function createDevTests(config?: DevTestConfig) {
       restoreFiles.length = 0;
     });
 
-    test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
+    beforeEach(async () => {
+      // ensure Next.js is building route
+      await fetch(new URL('/api/trigger', process.env.DEPLOYMENT_URL));
+      await fetch(new URL('/api/chat', process.env.DEPLOYMENT_URL));
+    });
+
+    test('should rebuild on workflow change', { timeout: 15_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(workflowFile, 'utf8');
@@ -85,7 +91,7 @@ export async function myNewWorkflow() {
       }
     });
 
-    test('should rebuild on step change', { timeout: 30_000 }, async () => {
+    test('should rebuild on step change', { timeout: 15_000 }, async () => {
       const stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(stepFile, 'utf8');
@@ -115,7 +121,7 @@ export async function myNewStep() {
 
     test(
       'should rebuild on adding workflow file',
-      { timeout: 30_000 },
+      { timeout: 15_000 },
       async () => {
         const workflowFile = path.join(
           appPath,

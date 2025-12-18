@@ -55,7 +55,7 @@ async function notifySocketServer(
   try {
     const socket = await getSocketClient();
     if (!socket) {
-      return;
+      throw new Error(`Invariant: missing workflow socket connection`);
     }
 
     // Send single message with both workflow and step information
