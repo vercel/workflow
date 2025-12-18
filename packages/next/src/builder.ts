@@ -258,7 +258,7 @@ export async function getNextBuilder() {
       let debounceTimer: NodeJS.Timeout | null = null;
 
       const BUILD_DEBOUNCE_MS =
-        process.env.NODE_ENV === 'development' ? 350 : 3_000;
+        process.env.NODE_ENV === 'development' ? 350 : 1_000;
 
       // Attempt to load cached workflows/steps from previous build
       const cache = await this.readWorkflowsCache();
@@ -272,7 +272,6 @@ export async function getNextBuilder() {
       }
 
       // Debounced build trigger
-      let buildTriggered = false;
 
       const triggerBuild = () => {
         if (debounceTimer) {
@@ -300,7 +299,6 @@ export async function getNextBuilder() {
               console.error('Build failed:', error);
             }
           }
-          buildTriggered = true;
           debounceTimer = null;
         }, BUILD_DEBOUNCE_MS);
       };
@@ -340,12 +338,7 @@ export async function getNextBuilder() {
                   triggerBuild();
                 } else if (message.type === 'trigger-build') {
                   // enqueue new build if one isn't already pending
-                  if (
-                    !debounceTimer &&
-                    !(process.env.NODE_ENV === 'production' && buildTriggered)
-                  ) {
-                    triggerBuild();
-                  }
+                  triggerBuild();
                 }
               } catch (error) {
                 console.error('Failed to parse socket message:', error);

@@ -59,24 +59,20 @@ async function notifySocketServer(
   hasWorkflow: boolean,
   hasStep: boolean
 ) {
-  try {
-    const socket = await getSocketClient();
-    if (!socket) {
-      throw new Error(`Invariant: missing workflow socket connection`);
-    }
-
-    // Send single message with both workflow and step information
-    const message =
-      JSON.stringify({
-        type: 'file-discovered',
-        filePath: filename,
-        hasWorkflow,
-        hasStep,
-      }) + '\n';
-    socket.write(message);
-  } catch {
-    // Silently fail - socket server might not be available yet
+  const socket = await getSocketClient();
+  if (!socket) {
+    throw new Error(`Invariant: missing workflow socket connection`);
   }
+
+  // Send single message with both workflow and step information
+  const message =
+    JSON.stringify({
+      type: 'file-discovered',
+      filePath: filename,
+      hasWorkflow,
+      hasStep,
+    }) + '\n';
+  socket.write(message);
 }
 
 async function waitForBuildComplete(): Promise<void> {

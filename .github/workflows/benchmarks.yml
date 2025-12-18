@@ -146,7 +146,7 @@ jobs:
       fail-fast: false
       matrix:
         # Note: Use actual directory names, not symlinks (nitro -> nitro-v3)
-        app: [nextjs-webpack, nitro-v3, express]
+        app: [nextjs-turbopack, nitro-v3, express]
 
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -223,7 +223,7 @@ jobs:
       fail-fast: false
       matrix:
         # Note: Use actual directory names, not symlinks (nitro -> nitro-v3)
-        app: [nextjs-webpack, nitro-v3, express]
+        app: [nextjs-turbopack, nitro-v3, express]
 
     services:
       postgres:
@@ -321,9 +321,9 @@ jobs:
       fail-fast: false
       matrix:
         app:
-          - name: "nextjs-webpack"
-            project-id: "prj_avRPBF3eWjh6iDNQgmhH4VOg27h0"
-            project-slug: "example-nextjs-workflow-webpack"
+          - name: "nextjs-turbopack"
+            project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+            project-slug: "example-nextjs-workflow-turbopack"
           - name: "nitro-v3"
             project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
             project-slug: "workbench-nitro-workflow"

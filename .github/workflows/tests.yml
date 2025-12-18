@@ -8,13 +8,13 @@ on:
       - "!*"
   pull_request:
 
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+
 concurrency:
   # Unique group for this workflow and branch
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  NEXT_TELEMETRY_DISABLED: 1
 
 jobs:
   # Phase 0: Update PR comment to show tests are running
@@ -173,8 +173,7 @@ jobs:
       - name: Run Build Error Tests
         run: pnpm vitest run packages/core/e2e/build-errors.test.ts
         env:
-          # TODO: move back to turbopack after build mode fixed
-          APP_NAME: "nextjs-webpack"
+          APP_NAME: "nextjs-turbopack"
 
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
@@ -538,13 +537,12 @@ jobs:
       - name: Run E2E Tests (Next.js)
         run: |
           cd workbench/nextjs-turbopack
-          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev 2>&1 | Tee-Object -FilePath "../../dev-server.log" }
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
           Start-Sleep -Seconds 15
           cd ../..
           pnpm vitest run packages/core/e2e/dev.test.ts
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-windows-nextjs-turbopack.json
           Stop-Job $job
-          Get-Content dev-server.log
         shell: powershell
         env:
           APP_NAME: "nextjs-turbopack"
@@ -561,9 +559,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-windows-nextjs-turbopack
-          path: |
-            e2e-windows-nextjs-turbopack.json
-            dev-server.log
+          path: e2e-windows-nextjs-turbopack.json
           retention-days: 7
           if-no-files-found: ignore
 

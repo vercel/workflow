@@ -93,6 +93,13 @@ export function withWorkflow(
       };
     }
 
+    if (process.env.TURBOPACK) {
+      if (!nextConfig.experimental) {
+        nextConfig.experimental = {};
+      }
+      nextConfig.experimental.turbopackScopeHoisting = false;
+    }
+
     // configure the loader for webpack
     const existingWebpackModify = nextConfig.webpack;
     nextConfig.webpack = (...args) => {
