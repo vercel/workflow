@@ -19,9 +19,16 @@ const MessageWrapper = z.object({
   messageQueuedAt: z.coerce.date().optional(),
 });
 
-const VERCEL_QUEUE_MAX_VISIBILITY = 39600; // 11 hours in seconds
-const VERCEL_QUEUE_MESSAGE_LIFETIME = 86400; // 24 hours in seconds
-const MESSAGE_LIFETIME_BUFFER = 3600; // 1 hour buffer before lifetime expires
+// Queue timing constants - can be overridden via environment variables for testing
+const VERCEL_QUEUE_MAX_VISIBILITY = Number(
+  process.env.VERCEL_QUEUE_MAX_VISIBILITY ?? 39600 // 11 hours in seconds
+);
+const VERCEL_QUEUE_MESSAGE_LIFETIME = Number(
+  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME ?? 86400 // 24 hours in seconds
+);
+const MESSAGE_LIFETIME_BUFFER = Number(
+  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME_BUFFER ?? 3600 // 1 hour buffer before lifetime expires
+);
 
 export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
@@ -109,6 +116,11 @@ export function createQueue(config?: APIConfig): Queue {
               // The new message will be delivered immediately, and the handler will
               // short-circuit by checking the persistent state (step.retryAfter or
               // wait_created event) and returning the remaining timeoutSeconds.
+              console.log(
+                `[Workflows] Message approaching lifetime limit (age: ${Math.round(messageAge)}s, ` +
+                  `lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s). ` +
+                  `Re-enqueueing to reset 24-hour clock.`
+              );
               await sendMessage(queueName, payload, new Date());
 
               // Return undefined to acknowledge the current message
