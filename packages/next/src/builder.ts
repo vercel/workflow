@@ -331,7 +331,6 @@ export async function getNextBuilder() {
             if (line.trim()) {
               try {
                 const message = JSON.parse(line);
-                console.log('got msg', message);
 
                 if (message.type === 'file-discovered') {
                   const { filePath, hasWorkflow, hasStep } = message;

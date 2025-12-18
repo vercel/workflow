@@ -44,6 +44,12 @@ export function createDevTests(config?: DevTestConfig) {
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
+    const warmEndpoint = async () => {
+      // ensure Next.js is building route
+      await fetch(new URL('/api/trigger', process.env.DEPLOYMENT_URL));
+      await fetch(new URL('/api/chat', process.env.DEPLOYMENT_URL));
+    };
+
     afterEach(async () => {
       await Promise.all(
         restoreFiles.map(async (item) => {
@@ -54,14 +60,9 @@ export function createDevTests(config?: DevTestConfig) {
           }
         })
       );
+      await warmEndpoint();
       restoreFiles.length = 0;
     });
-
-    const warmEndpoint = async () => {
-      // ensure Next.js is building route
-      await fetch(new URL('/api/trigger', process.env.DEPLOYMENT_URL));
-      await fetch(new URL('/api/chat', process.env.DEPLOYMENT_URL));
-    };
 
     test('should rebuild on workflow change', { timeout: 15_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);

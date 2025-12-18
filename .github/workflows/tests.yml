@@ -534,12 +534,13 @@ jobs:
       - name: Run E2E Tests (Next.js)
         run: |
           cd workbench/nextjs-turbopack
-          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev 2>&1 | Tee-Object -FilePath "../../dev-server.log" }
           Start-Sleep -Seconds 15
           cd ../..
           pnpm vitest run packages/core/e2e/dev.test.ts
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-windows-nextjs-turbopack.json
           Stop-Job $job
+          Get-Content dev-server.log
         shell: powershell
         env:
           APP_NAME: "nextjs-turbopack"
@@ -556,7 +557,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-windows-nextjs-turbopack
-          path: e2e-windows-nextjs-turbopack.json
+          path: |
+            e2e-windows-nextjs-turbopack.json
+            dev-server.log
           retention-days: 7
           if-no-files-found: ignore
 
