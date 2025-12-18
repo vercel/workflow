@@ -8,6 +8,7 @@ export interface StepInvocationQueueItem {
   args: Serializable[];
   closureVars?: Record<string, Serializable>;
   thisVal?: Serializable;
+  hasCreatedEvent?: boolean;
 }
 
 export interface HookInvocationQueueItem {

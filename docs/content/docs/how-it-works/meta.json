@@ -3,7 +3,8 @@
   "pages": [
     "understanding-directives",
     "code-transform",
-    "framework-integrations"
+    "framework-integrations",
+    "event-sourcing"
   ],
   "defaultOpen": false
 }

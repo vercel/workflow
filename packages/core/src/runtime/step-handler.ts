@@ -131,27 +131,21 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           }
 
           let result: unknown;
-          const attempt = step.attempt + 1;
 
           // Check max retries FIRST before any state changes.
+          // step.attempt tracks how many times step_started has been called.
+          // If step.attempt >= maxRetries, we've already tried maxRetries times.
           // This handles edge cases where the step handler is invoked after max retries have been exceeded
-          // (e.g., when the step repeatedly times out or fails before reaching the catch handler at line 822).
+          // (e.g., when the step repeatedly times out or fails before reaching the catch handler).
           // Without this check, the step would retry forever.
           // Note: maxRetries is the number of RETRIES after the first attempt, so total attempts = maxRetries + 1
           // Use > here (not >=) because this guards against re-invocation AFTER all attempts are used.
           // The post-failure check uses >= to decide whether to retry after a failure.
-          if (attempt > maxRetries + 1) {
-            const retryCount = attempt - 1;
+          if (step.attempt > maxRetries + 1) {
+            const retryCount = step.attempt - 1;
             const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
             console.error(`[Workflows] "${workflowRunId}" - ${errorMessage}`);
-            // Update step status first (idempotent), then create event
-            await world.steps.update(workflowRunId, stepId, {
-              status: 'failed',
-              error: {
-                message: errorMessage,
-                stack: undefined,
-              },
-            });
+            // Fail the step via event (event-sourced architecture)
             await world.events.create(workflowRunId, {
               eventType: 'step_failed',
               correlationId: stepId,
@@ -214,15 +208,23 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               return;
             }
 
-            await world.events.create(workflowRunId, {
-              eventType: 'step_started', // TODO: Replace with 'step_retrying'
+            // Start the step via event (event-sourced architecture)
+            // step_started increments the attempt counter in the World implementation
+            const startResult = await world.events.create(workflowRunId, {
+              eventType: 'step_started',
               correlationId: stepId,
             });
 
-            step = await world.steps.update(workflowRunId, stepId, {
-              attempt,
-              status: 'running',
-            });
+            // Use the step entity from the event response (no extra get call needed)
+            if (!startResult.step) {
+              throw new WorkflowRuntimeError(
+                `step_started event for "${stepId}" did not return step entity`
+              );
+            }
+            step = startResult.step;
+
+            // step.attempt is now the current attempt number (after increment)
+            const attempt = step.attempt;
 
             if (!step.startedAt) {
               throw new WorkflowRuntimeError(
@@ -280,16 +282,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               })
             );
 
-            // Mark the step as completed first. This order is important. If a concurrent
-            // execution marked the step as complete, this request should throw, and
-            // this prevent the step_completed event in the event log
-            // TODO: this should really be atomic and handled by the world
-            await world.steps.update(workflowRunId, stepId, {
-              status: 'completed',
-              output: result as Serializable,
-            });
-
-            // Then, append the event log with the step result
+            // Complete the step via event (event-sourced architecture)
+            // The event creation atomically updates the step entity
             await world.events.create(workflowRunId, {
               eventType: 'step_completed',
               correlationId: stepId,
@@ -324,22 +318,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               console.error(
                 `[Workflows] "${workflowRunId}" - Encountered \`FatalError\` while executing step "${stepName}":\n  > ${stackLines.join('\n    > ')}\n\nBubbling up error to parent workflow`
               );
-              // Fatal error - store the error in the event log and re-invoke the workflow
+              // Fail the step via event (event-sourced architecture)
               await world.events.create(workflowRunId, {
                 eventType: 'step_failed',
                 correlationId: stepId,
                 eventData: {
                   error: String(err),
                   stack: errorStack,
-                  fatal: true,
-                },
-              });
-              await world.steps.update(workflowRunId, stepId, {
-                status: 'failed',
-                error: {
-                  message: err.message || String(err),
-                  stack: errorStack,
-                  // TODO: include error codes when we define them
                 },
               });
 
@@ -349,35 +334,30 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               });
             } else {
               const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+              // step.attempt was incremented by step_started, use it here
+              const currentAttempt = step.attempt;
 
               span?.setAttributes({
-                ...Attribute.StepAttempt(attempt),
+                ...Attribute.StepAttempt(currentAttempt),
                 ...Attribute.StepMaxRetries(maxRetries),
               });
 
               // Note: maxRetries is the number of RETRIES after the first attempt, so total attempts = maxRetries + 1
-              if (attempt >= maxRetries + 1) {
+              if (currentAttempt >= maxRetries + 1) {
                 // Max retries reached
                 const errorStack = getErrorStack(err);
                 const stackLines = errorStack.split('\n').slice(0, 4);
-                const retryCount = attempt - 1;
+                const retryCount = step.attempt - 1;
                 console.error(
-                  `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${attempt}, ${retryCount} ${pluralize('retry', 'retries', retryCount)}):\n  > ${stackLines.join('\n    > ')}\n\n  Max retries reached\n  Bubbling error to parent workflow`
+                  `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${step.attempt}, ${retryCount} ${pluralize('retry', 'retries', retryCount)}):\n  > ${stackLines.join('\n    > ')}\n\n  Max retries reached\n  Bubbling error to parent workflow`
                 );
                 const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${String(err)}`;
+                // Fail the step via event (event-sourced architecture)
                 await world.events.create(workflowRunId, {
                   eventType: 'step_failed',
                   correlationId: stepId,
                   eventData: {
                     error: errorMessage,
-                    stack: errorStack,
-                    fatal: true,
-                  },
-                });
-                await world.steps.update(workflowRunId, stepId, {
-                  status: 'failed',
-                  error: {
-                    message: errorMessage,
                     stack: errorStack,
                   },
                 });
@@ -390,28 +370,27 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 // Not at max retries yet - log as a retryable error
                 if (RetryableError.is(err)) {
                   console.warn(
-                    `[Workflows] "${workflowRunId}" - Encountered \`RetryableError\` while executing step "${stepName}" (attempt ${attempt}):\n  > ${String(err.message)}\n\n  This step has failed but will be retried`
+                    `[Workflows] "${workflowRunId}" - Encountered \`RetryableError\` while executing step "${stepName}" (attempt ${currentAttempt}):\n  > ${String(err.message)}\n\n  This step has failed but will be retried`
                   );
                 } else {
                   const stackLines = getErrorStack(err).split('\n').slice(0, 4);
                   console.error(
-                    `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${attempt}):\n  > ${stackLines.join('\n    > ')}\n\n  This step has failed but will be retried`
+                    `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${currentAttempt}):\n  > ${stackLines.join('\n    > ')}\n\n  This step has failed but will be retried`
                   );
                 }
+                // Set step to pending for retry via event (event-sourced architecture)
+                // step_retrying records the error and sets status to pending
+                const errorStack = getErrorStack(err);
                 await world.events.create(workflowRunId, {
-                  eventType: 'step_failed',
+                  eventType: 'step_retrying',
                   correlationId: stepId,
                   eventData: {
                     error: String(err),
-                    stack: getErrorStack(err),
+                    stack: errorStack,
+                    ...(RetryableError.is(err) && {
+                      retryAfter: err.retryAfter,
+                    }),
                   },
-                });
-
-                await world.steps.update(workflowRunId, stepId, {
-                  status: 'pending', // TODO: Should be "retrying" once we have that status
-                  ...(RetryableError.is(err) && {
-                    retryAfter: err.retryAfter,
-                  }),
                 });
 
                 const timeoutSeconds = Math.max(

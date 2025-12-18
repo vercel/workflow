@@ -97,7 +97,7 @@ export async function listWorkflowRuns(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs${queryString ? `?${queryString}` : ''}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -121,7 +121,7 @@ export async function createWorkflowRun(
   config?: APIConfig
 ): Promise<WorkflowRun> {
   const run = await makeRequest({
-    endpoint: '/v1/runs/create',
+    endpoint: '/v2/runs/create',
     options: {
       method: 'POST',
       body: JSON.stringify(data, dateToStringReplacer),
@@ -144,7 +144,7 @@ export async function getWorkflowRun(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${id}${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({
@@ -173,7 +173,7 @@ export async function updateWorkflowRun(
   try {
     const serialized = serializeError(data);
     const run = await makeRequest({
-      endpoint: `/v1/runs/${id}`,
+      endpoint: `/v2/runs/${id}`,
       options: {
         method: 'PUT',
         body: JSON.stringify(serialized, dateToStringReplacer),
@@ -202,7 +202,7 @@ export async function cancelWorkflowRun(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}/cancel${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${id}/cancel${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({

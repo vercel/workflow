@@ -960,6 +960,11 @@ describe('e2e', () => {
     }
   );
 
+  // TODO: Add test for concurrent hook token conflict once workflow-server PR is merged and deployed
+  // PR: https://github.com/vercel/workflow-server/pull/XXX (pranaygp/event-sourced-api-v3 branch)
+  // The test should verify that two concurrent workflows cannot use the same hook token
+  // See: hookCleanupTestWorkflow for sequential token reuse (after workflow completion)
+
   test(
     'stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)',
     { timeout: 60_000 },

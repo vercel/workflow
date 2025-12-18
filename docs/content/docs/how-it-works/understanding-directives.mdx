@@ -48,7 +48,7 @@ export async function onboardUser(userId: string) {
 }
 ```
 
-**The key insight:** Workflows resume from suspension by replaying their code using cached step results from the event log. When a step like `await fetchUserData(userId)` is called:
+**The key insight:** Workflows resume from suspension by replaying their code using cached step results from the [event log](/docs/how-it-works/event-sourcing). When a step like `await fetchUserData(userId)` is called:
 
 - **If already executed:** Returns the cached result immediately from the event log
 - **If not yet executed:** Suspends the workflow, enqueues the step for background execution, and resumes later with the result

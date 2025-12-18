@@ -42,11 +42,6 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
 
       ctx.invocationsQueue.set(correlationId, queueItem);
 
-      // Track whether we've already seen a "step_started" event for this step.
-      // This is important because after a retryable failure, the step moves back to
-      // "pending" status which causes another "step_started" event to be emitted.
-      let hasSeenStepStarted = false;
-
       stepLogger.debug('Step consumer setup', {
         correlationId,
         stepName,
@@ -80,49 +75,61 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
-        if (event.eventType === 'step_started') {
-          // Step has started - so remove from the invocations queue (only on the first "step_started" event)
-          if (!hasSeenStepStarted) {
-            // O(1) lookup and delete using Map
-            if (ctx.invocationsQueue.has(correlationId)) {
-              ctx.invocationsQueue.delete(correlationId);
-            } else {
-              setTimeout(() => {
-                reject(
-                  new WorkflowRuntimeError(
-                    `Corrupted event log: step ${correlationId} (${stepName}) started but not found in invocation queue`
-                  )
-                );
-              }, 0);
-              return EventConsumerResult.Finished;
-            }
-            hasSeenStepStarted = true;
+        if (event.eventType === 'step_created') {
+          // Step has been created (registered for execution) - mark as having event
+          // but keep in queue so suspension handler knows to queue execution without
+          // creating a duplicate step_created event
+          const queueItem = ctx.invocationsQueue.get(correlationId);
+          if (!queueItem || queueItem.type !== 'step') {
+            // This indicates event log corruption - step_created received
+            // but the step was never invoked in the workflow during replay.
+            setTimeout(() => {
+              reject(
+                new WorkflowRuntimeError(
+                  `Corrupted event log: step ${correlationId} (${stepName}) created but not found in invocation queue`
+                )
+              );
+            }, 0);
+            return EventConsumerResult.Finished;
           }
-          // If this is a subsequent "step_started" event (after a retry), we just consume it
-          // without trying to remove from the queue again or logging a warning
+          queueItem.hasCreatedEvent = true;
+          // Continue waiting for step_started/step_completed/step_failed events
+          return EventConsumerResult.Consumed;
+        }
+
+        if (event.eventType === 'step_started') {
+          // Step was started - don't do anything. The step is left in the invocationQueue which
+          // will allow it to be re-enqueued. We rely on the queue's idempotency to prevent it from
+          // actually being over enqueued.
+          return EventConsumerResult.Consumed;
+        }
+
+        if (event.eventType === 'step_retrying') {
+          // Step is being retried - just consume the event and wait for next step_started
           return EventConsumerResult.Consumed;
         }
 
         if (event.eventType === 'step_failed') {
+          // Terminal state - we can remove the invocationQueue item
+          ctx.invocationsQueue.delete(event.correlationId);
           // Step failed - bubble up to workflow
-          if (event.eventData.fatal) {
-            setTimeout(() => {
-              const error = new FatalError(event.eventData.error);
-              // Preserve the original stack trace from the step execution
-              // This ensures that deeply nested errors show the full call chain
-              if (event.eventData.stack) {
-                error.stack = event.eventData.stack;
-              }
-              reject(error);
-            }, 0);
-            return EventConsumerResult.Finished;
-          } else {
-            // This is a retryable error, so nothing to do here,
-            // but we will consume the event
-            return EventConsumerResult.Consumed;
-          }
-        } else if (event.eventType === 'step_completed') {
-          // Step has already completed, so resolve the Promise with the cached result
+          setTimeout(() => {
+            const error = new FatalError(event.eventData.error);
+            // Preserve the original stack trace from the step execution
+            // This ensures that deeply nested errors show the full call chain
+            if (event.eventData.stack) {
+              error.stack = event.eventData.stack;
+            }
+            reject(error);
+          }, 0);
+          return EventConsumerResult.Finished;
+        }
+
+        if (event.eventType === 'step_completed') {
+          // Terminal state - we can remove the invocationQueue item
+          ctx.invocationsQueue.delete(event.correlationId);
+
+          // Step has completed, so resolve the Promise with the cached result
           const hydratedResult = hydrateStepReturnValue(
             event.eventData.result,
             ctx.globalThis
@@ -131,17 +138,17 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             resolve(hydratedResult);
           }, 0);
           return EventConsumerResult.Finished;
-        } else {
-          // An unexpected event type has been received, but it does belong to this step (matching `correlationId`)
-          setTimeout(() => {
-            reject(
-              new WorkflowRuntimeError(
-                `Unexpected event type: "${event.eventType}"`
-              )
-            );
-          }, 0);
-          return EventConsumerResult.Finished;
         }
+
+        // An unexpected event type has been received, but it does belong to this step (matching `correlationId`)
+        setTimeout(() => {
+          reject(
+            new WorkflowRuntimeError(
+              `Unexpected event type for step ${correlationId} (${stepName}) "${event.eventType}"`
+            )
+          );
+        }, 0);
+        return EventConsumerResult.Finished;
       });
 
       return promise;

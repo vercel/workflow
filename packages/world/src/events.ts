@@ -3,15 +3,26 @@ import type { PaginationOptions, ResolveData } from './shared.js';
 
 // Event type enum
 export const EventTypeSchema = z.enum([
+  // Run lifecycle events
+  'run_created',
+  'run_started',
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+  // Step lifecycle events
+  'step_created',
   'step_completed',
   'step_failed',
   'step_retrying',
   'step_started',
+  // Hook lifecycle events
   'hook_created',
   'hook_received',
   'hook_disposed',
+  // Wait lifecycle events
   'wait_created',
   'wait_completed',
+  // Legacy workflow events (deprecated, use run_* instead)
   'workflow_completed',
   'workflow_failed',
   'workflow_started',
@@ -41,28 +52,58 @@ const StepFailedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     error: z.any(),
     stack: z.string().optional(),
-    fatal: z.boolean().optional(),
   }),
 });
 
-// TODO: this is not actually used anywhere yet, we could remove it
-// on client and server if needed
+/**
+ * Event created when a step fails and will be retried.
+ * Sets the step status back to 'pending' and records the error.
+ * The error is stored in step.error for debugging.
+ */
 const StepRetryingEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_retrying'),
   correlationId: z.string(),
   eventData: z.object({
-    attempt: z.number().min(1),
+    error: z.any(),
+    stack: z.string().optional(),
+    retryAfter: z.coerce.date().optional(),
   }),
 });
 
 const StepStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_started'),
   correlationId: z.string(),
+  eventData: z
+    .object({
+      attempt: z.number().optional(),
+    })
+    .optional(),
 });
 
+/**
+ * Event created when a step is first invoked. The World implementation
+ * atomically creates both the event and the step entity.
+ */
+const StepCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('step_created'),
+  correlationId: z.string(),
+  eventData: z.object({
+    stepName: z.string(),
+    input: z.any(), // SerializedData
+  }),
+});
+
+/**
+ * Event created when a hook is first invoked. The World implementation
+ * atomically creates both the event and the hook entity.
+ */
 const HookCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_created'),
   correlationId: z.string(),
+  eventData: z.object({
+    token: z.string(),
+    metadata: z.any().optional(), // SerializedData
+  }),
 });
 
 const HookReceivedEventSchema = BaseEventSchema.extend({
@@ -91,12 +132,73 @@ const WaitCompletedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
 });
 
-// TODO: not used yet
+// =============================================================================
+// Run lifecycle events
+// =============================================================================
+
+/**
+ * Event created when a workflow run is first created. The World implementation
+ * atomically creates both the event and the run entity with status 'pending'.
+ */
+const RunCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_created'),
+  eventData: z.object({
+    deploymentId: z.string(),
+    workflowName: z.string(),
+    input: z.array(z.any()), // SerializedData[]
+    executionContext: z.record(z.string(), z.any()).optional(),
+  }),
+});
+
+/**
+ * Event created when a workflow run starts executing.
+ * Updates the run entity to status 'running'.
+ */
+const RunStartedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_started'),
+});
+
+/**
+ * Event created when a workflow run completes successfully.
+ * Updates the run entity to status 'completed' with output.
+ */
+const RunCompletedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_completed'),
+  eventData: z.object({
+    output: z.any().optional(), // SerializedData
+  }),
+});
+
+/**
+ * Event created when a workflow run fails.
+ * Updates the run entity to status 'failed' with error.
+ */
+const RunFailedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_failed'),
+  eventData: z.object({
+    error: z.any(),
+    errorCode: z.string().optional(),
+  }),
+});
+
+/**
+ * Event created when a workflow run is cancelled.
+ * Updates the run entity to status 'cancelled'.
+ */
+const RunCancelledEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('run_cancelled'),
+});
+
+// =============================================================================
+// Legacy workflow events (deprecated, use run_* events instead)
+// =============================================================================
+
+/** @deprecated Use run_completed instead */
 const WorkflowCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('workflow_completed'),
 });
 
-// TODO: not used yet
+/** @deprecated Use run_failed instead */
 const WorkflowFailedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('workflow_failed'),
   eventData: z.object({
@@ -104,22 +206,33 @@ const WorkflowFailedEventSchema = BaseEventSchema.extend({
   }),
 });
 
-// TODO: not used yet
+/** @deprecated Use run_started instead */
 const WorkflowStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('workflow_started'),
 });
 
 // Discriminated union (used for both creation requests and server responses)
 export const CreateEventSchema = z.discriminatedUnion('eventType', [
+  // Run lifecycle events
+  RunCreatedEventSchema,
+  RunStartedEventSchema,
+  RunCompletedEventSchema,
+  RunFailedEventSchema,
+  RunCancelledEventSchema,
+  // Step lifecycle events
+  StepCreatedEventSchema,
   StepCompletedEventSchema,
   StepFailedEventSchema,
   StepRetryingEventSchema,
   StepStartedEventSchema,
+  // Hook lifecycle events
   HookCreatedEventSchema,
   HookReceivedEventSchema,
   HookDisposedEventSchema,
+  // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
+  // Legacy workflow events (deprecated)
   WorkflowCompletedEventSchema,
   WorkflowFailedEventSchema,
   WorkflowStartedEventSchema,
@@ -136,11 +249,47 @@ export const EventSchema = CreateEventSchema.and(
 
 // Inferred types
 export type Event = z.infer<typeof EventSchema>;
-export type CreateEventRequest = z.infer<typeof CreateEventSchema>;
 export type HookReceivedEvent = z.infer<typeof HookReceivedEventSchema>;
+
+/**
+ * Union of all possible event request types.
+ * @internal Use CreateEventRequest or RunCreatedEventRequest instead.
+ */
+export type AnyEventRequest = z.infer<typeof CreateEventSchema>;
+
+/**
+ * Event request for creating a new workflow run.
+ * Must be used with runId: null since the server generates the runId.
+ */
+export type RunCreatedEventRequest = z.infer<typeof RunCreatedEventSchema>;
+
+/**
+ * Event request types that require an existing runId.
+ * This is the common case for all events except run_created.
+ */
+export type CreateEventRequest = Exclude<
+  AnyEventRequest,
+  RunCreatedEventRequest
+>;
 
 export interface CreateEventParams {
   resolveData?: ResolveData;
+}
+
+/**
+ * Result of creating an event. Includes the created event and optionally
+ * the entity that was created or updated as a result of the event.
+ * This reduces round-trips by returning entity data along with the event.
+ */
+export interface EventResult {
+  /** The created event */
+  event: Event;
+  /** The workflow run entity (for run_* events) */
+  run?: import('./runs.js').WorkflowRun;
+  /** The step entity (for step_* events) */
+  step?: import('./steps.js').Step;
+  /** The hook entity (for hook_created events) */
+  hook?: import('./hooks.js').Hook;
 }
 
 export interface ListEventsParams {

@@ -59,7 +59,6 @@ describe('createUseStep', () => {
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           error: 'test',
-          fatal: true,
         },
         createdAt: new Date(),
       },

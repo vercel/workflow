@@ -145,7 +145,7 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 - The workflow function gets a `workflowId` property for runtime identification
 - The `"use workflow"` directive is removed
 
-**Why this transformation?** When a workflow executes, it needs to replay past steps from the event log rather than re-executing them. The `WORKFLOW_USE_STEP` symbol is a special runtime hook that:
+**Why this transformation?** When a workflow executes, it needs to replay past steps from the [event log](/docs/how-it-works/event-sourcing) rather than re-executing them. The `WORKFLOW_USE_STEP` symbol is a special runtime hook that:
 
 1. Checks if the step has already been executed (in the event log)
 2. If yes: Returns the cached result
@@ -290,7 +290,7 @@ Because workflow functions are deterministic and have no side effects, they can 
 
 - Can make API calls, database queries, etc.
 - Have full access to Node.js runtime and APIs
-- Results are cached in the event log after first execution
+- Results are cached in the [event log](/docs/how-it-works/event-sourcing) after first execution
 
 Learn more about [Workflows and Steps](/docs/foundations/workflows-and-steps).
 

@@ -105,6 +105,12 @@ export const events = schema.table(
   (tb) => [index().on(tb.runId), index().on(tb.correlationId)]
 );
 
+/**
+ * Database schema for steps. Note: DB column names differ from Step interface:
+ * - error (DB) → error (Step interface, parsed from JSON string)
+ * - startedAt (DB) → startedAt (Step interface)
+ * The mapping is done in storage.ts deserializeStepError()
+ */
 export const steps = schema.table(
   'workflow_steps',
   {
@@ -118,8 +124,10 @@ export const steps = schema.table(
     /** @deprecated we stream binary data */
     outputJson: jsonb('output').$type<SerializedContent>(),
     output: Cbor<SerializedContent>()('output_cbor'),
+    /** JSON-stringified StructuredError - parsed and set as error in Step interface */
     error: text('error'),
     attempt: integer('attempt').notNull(),
+    /** Maps to startedAt in Step interface */
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -129,7 +137,14 @@ export const steps = schema.table(
       .notNull(),
     retryAfter: timestamp('retry_after'),
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Step, 'input'> & { input?: unknown }, 'output' | 'input'>
+    Cborized<
+      Omit<Step, 'input' | 'error' | 'startedAt'> & {
+        input?: unknown;
+        error?: string;
+        startedAt?: Date;
+      },
+      'output' | 'input'
+    >
   >,
   (tb) => [index().on(tb.runId), index().on(tb.status)]
 );

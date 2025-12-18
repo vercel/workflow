@@ -1,13 +1,18 @@
 import {
+  type AnyEventRequest,
   type CreateEventParams,
-  type CreateEventRequest,
   type Event,
+  type EventResult,
   EventSchema,
   EventTypeSchema,
+  HookSchema,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  type Step,
+  StepSchema,
+  WorkflowRunSchema,
 } from '@workflow/world';
 import z from 'zod';
 import type { APIConfig } from './utils.js';
@@ -17,6 +22,69 @@ import {
   makeRequest,
 } from './utils.js';
 
+/**
+ * Wire format schema for step in event results.
+ * Handles error deserialization from wire format.
+ */
+const StepWireSchema = StepSchema.omit({
+  error: true,
+}).extend({
+  // Backend returns error either as:
+  // - A JSON string (legacy/lazy mode)
+  // - An object {message, stack} (when errorRef is resolved)
+  error: z
+    .union([
+      z.string(),
+      z.object({
+        message: z.string(),
+        stack: z.string().optional(),
+        code: z.string().optional(),
+      }),
+    ])
+    .optional(),
+  errorRef: z.any().optional(),
+});
+
+/**
+ * Deserialize step from wire format to Step interface format.
+ */
+function deserializeStep(wireStep: z.infer<typeof StepWireSchema>): Step {
+  const { error, errorRef, ...rest } = wireStep;
+
+  const result: any = {
+    ...rest,
+  };
+
+  // Deserialize error to StructuredError
+  const errorSource = errorRef ?? error;
+  if (errorSource) {
+    if (typeof errorSource === 'string') {
+      try {
+        const parsed = JSON.parse(errorSource);
+        if (typeof parsed === 'object' && parsed.message !== undefined) {
+          result.error = {
+            message: parsed.message,
+            stack: parsed.stack,
+            code: parsed.code,
+          };
+        } else {
+          result.error = { message: String(parsed) };
+        }
+      } catch {
+        result.error = { message: errorSource };
+      }
+    } else if (typeof errorSource === 'object' && errorSource !== null) {
+      result.error = {
+        message: errorSource.message ?? 'Unknown error',
+        stack: errorSource.stack,
+        code: errorSource.code,
+      };
+    }
+  }
+
+  return result as Step;
+}
+
 // Helper to filter event data based on resolveData setting
 function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
   if (resolveData === 'none') {
@@ -25,6 +93,15 @@ function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
   }
   return event;
 }
+
+// Schema for EventResult wire format returned by events.create
+// Uses wire format schemas for step to handle field name mapping
+const EventResultWireSchema = z.object({
+  event: EventSchema,
+  run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.optional(),
+  hook: HookSchema.optional(),
+});
 
 // Would usually "EventSchema.omit({ eventData: true })" but that doesn't work
 // on zod unions. Re-creating the schema manually.
@@ -68,8 +145,8 @@ export async function getWorkflowRunEvents(
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
-    ? `/v1/events${query}`
-    : `/v1/runs/${runId}/events${query}`;
+    ? `/v2/events${query}`
+    : `/v2/runs/${runId}/events${query}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -89,22 +166,31 @@ export async function getWorkflowRunEvents(
 }
 
 export async function createWorkflowRunEvent(
-  id: string,
-  data: CreateEventRequest,
+  id: string | null,
+  data: AnyEventRequest,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<Event> {
+): Promise<EventResult> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
 
-  const event = await makeRequest({
-    endpoint: `/v1/runs/${id}/events`,
+  // For run_created events, runId is null - use "null" string in the URL path
+  const runIdPath = id === null ? 'null' : id;
+
+  const wireResult = await makeRequest({
+    endpoint: `/v2/runs/${runIdPath}/events`,
     options: {
       method: 'POST',
       body: JSON.stringify(data, dateToStringReplacer),
     },
     config,
-    schema: EventSchema,
+    schema: EventResultWireSchema,
   });
 
-  return filterEventData(event, resolveData);
+  // Transform wire format to interface format
+  return {
+    event: filterEventData(wireResult.event, resolveData),
+    run: wireResult.run,
+    step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
+    hook: wireResult.hook,
+  };
 }
