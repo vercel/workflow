@@ -1,3 +1,4 @@
+import type { Span } from '@opentelemetry/api';
 import { waitUntil } from '@vercel/functions';
 import { WorkflowAPIError } from '@workflow/errors';
 import type { World } from '@workflow/world';
@@ -11,7 +12,6 @@ import type { Serializable } from '../schemas.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
-import type { Span } from '@opentelemetry/api';
 import { queueMessage } from './helpers.js';
 
 export interface SuspensionHandlerParams {
@@ -31,7 +31,7 @@ interface ProcessHookParams {
   queueItem: HookInvocationQueueItem;
   world: World;
   runId: string;
-  globalThis: typeof globalThis;
+  global: typeof globalThis;
 }
 
 /**
@@ -41,14 +41,14 @@ async function processHook({
   queueItem,
   world,
   runId,
-  globalThis,
+  global,
 }: ProcessHookParams): Promise<void> {
   try {
     // Create hook in database
     const hookMetadata =
       typeof queueItem.metadata === 'undefined'
         ? undefined
-        : dehydrateStepArguments(queueItem.metadata, globalThis);
+        : dehydrateStepArguments(queueItem.metadata, global);
     await world.hooks.create(runId, {
       hookId: queueItem.correlationId,
       token: queueItem.token,
@@ -86,7 +86,7 @@ interface ProcessStepParams {
   runId: string;
   workflowName: string;
   workflowStartedAt: number;
-  globalThis: typeof globalThis;
+  global: typeof globalThis;
 }
 
 /**
@@ -98,7 +98,7 @@ async function processStep({
   runId,
   workflowName,
   workflowStartedAt,
-  globalThis,
+  global,
 }: ProcessStepParams): Promise<void> {
   const ops: Promise<void>[] = [];
   const dehydratedInput = dehydrateStepArguments(
@@ -106,7 +106,7 @@ async function processStep({
       args: queueItem.args,
       closureVars: queueItem.closureVars,
     },
-    globalThis
+    global
   );
 
   try {
@@ -226,7 +226,7 @@ export async function handleSuspension({
         queueItem,
         world,
         runId,
-        globalThis: suspension.globalThis,
+        global: suspension.globalThis,
       })
     )
   );
@@ -241,7 +241,7 @@ export async function handleSuspension({
           runId,
           workflowName,
           workflowStartedAt,
-          globalThis: suspension.globalThis,
+          global: suspension.globalThis,
         })
       )
     ),
