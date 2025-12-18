@@ -258,7 +258,11 @@ export abstract class BaseBuilder {
       }
     }
 
-    if (result.warnings && result.warnings.length > 0) {
+    if (
+      this.config.buildTarget !== 'next' &&
+      result.warnings &&
+      result.warnings.length > 0
+    ) {
       console.warn(`!  esbuild warnings in ${phase}:`);
       for (const warning of result.warnings) {
         console.warn(`  ${warning.text}`);
@@ -320,9 +324,15 @@ export abstract class BaseBuilder {
       );
     });
 
-    const combinedStepFiles = [
+    const combinedStepFiles: string[] = [
       ...stepFiles,
-      ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
+      ...(resolvedBuiltInSteps
+        ? [
+            resolvedBuiltInSteps,
+            // TODO: expose this in workflow/package.json and use resolve?
+            join(dirname(resolvedBuiltInSteps), '../stdlib.js'),
+          ]
+        : []),
     ];
 
     // Create a virtual entry that imports all files. All step definitions
