@@ -392,7 +392,8 @@ export async function getNextBuilder() {
     }
 
     private async writeStubFiles(usersAppDir: string): Promise<void> {
-      const routeStubContent = "export * from './inner'";
+      const routeStubContent =
+        "import 'workflow'\n" + "export * from './inner'";
       // this needs to change on each build so can refresh workflows
       const innerStubContent = 'WORKFLOW_INNER_STUB_FILE_' + Date.now();
       const workflowDir = join(usersAppDir, '.well-known/workflow/v1');
