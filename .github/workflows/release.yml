@@ -86,6 +86,7 @@ jobs:
           else
             echo "Creating new release $TAG..."
             gh release create "$TAG" \
+              --target "${{ github.sha }}" \
               --title "$TITLE" \
               --notes "$BODY" \
               --latest \
