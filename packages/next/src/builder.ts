@@ -291,6 +291,9 @@ export async function getNextBuilder() {
               // Write cache after successful build
               await this.writeWorkflowsCache(workflowFiles, stepFiles);
             } catch (error) {
+              if (process.env.NODE_ENV !== 'development') {
+                throw error;
+              }
               console.error('Build failed:', error);
             }
           }

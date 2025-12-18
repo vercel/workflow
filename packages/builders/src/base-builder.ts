@@ -320,9 +320,14 @@ export abstract class BaseBuilder {
       );
     });
 
+    const combinedStepFiles = [
+      ...stepFiles,
+      ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
+    ];
+
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
-    const imports = stepFiles
+    const imports = combinedStepFiles
       .map((file) => {
         // Normalize both paths to forward slashes before calling relative()
         // This is critical on Windows where relative() can produce unexpected results with mixed path formats
@@ -388,12 +393,7 @@ export abstract class BaseBuilder {
       plugins: [
         createSwcPlugin({
           mode: 'step',
-          entriesToBundle: externalizeNonSteps
-            ? [
-                ...stepFiles,
-                ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
-              ]
-            : undefined,
+          entriesToBundle: externalizeNonSteps ? combinedStepFiles : undefined,
           outdir: outfile ? dirname(outfile) : undefined,
           tsBaseUrl,
           tsPaths,

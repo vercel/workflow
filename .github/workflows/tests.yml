@@ -173,7 +173,8 @@ jobs:
       - name: Run Build Error Tests
         run: pnpm vitest run packages/core/e2e/build-errors.test.ts
         env:
-          APP_NAME: "nextjs-turbopack"
+          # TODO: move back to turbopack after build mode fixed
+          APP_NAME: "nextjs-webpack"
 
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
