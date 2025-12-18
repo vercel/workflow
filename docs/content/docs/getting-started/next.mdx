@@ -255,6 +255,23 @@ Workflow DevKit apps currently work best when deployed to [Vercel](https://verce
 
 Check the [Deploying](/docs/deploying) section to learn how your workflows can be deployed elsewhere.
 
+## Troubleshooting
+
+### Next.js 16.1+ compatibility
+
+If you see this error when upgrading to Next.js 16.1 or later:
+
+```
+Build error occurred
+Error: Cannot find module 'next/dist/lib/server-external-packages.json'
+```
+
+Upgrade to `workflow@4.0.1-beta.26` or later:
+
+```package-install
+workflow@latest
+```
+
 ## Next Steps
 
 * Learn more about the [Foundations](/docs/foundations).
