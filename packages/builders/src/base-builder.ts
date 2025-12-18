@@ -372,6 +372,7 @@ export abstract class BaseBuilder {
       keepNames: true,
       minify: false,
       jsx: 'preserve',
+      logLevel: 'error',
       resolveExtensions: [
         '.ts',
         '.tsx',

@@ -247,6 +247,9 @@ export async function getNextBuilder() {
     }
 
     private async createSocketServer(_usersAppDir: string): Promise<void> {
+      if (process.env.WORKFLOW_SOCKET_PATH) {
+        return;
+      }
       const { createServer } = await import('node:net');
       const { tmpdir } = await import('node:os');
       const { unlink } = await import('node:fs/promises');
@@ -257,7 +260,7 @@ export async function getNextBuilder() {
       let debounceTimer: NodeJS.Timeout | null = null;
 
       const BUILD_DEBOUNCE_MS =
-        process.env.NODE_ENV === 'development' ? 300 : 1_000;
+        process.env.NODE_ENV === 'development' ? 250 : 1_000;
 
       // Attempt to load cached workflows/steps from previous build
       const cache = await this.readWorkflowsCache();
@@ -293,6 +296,7 @@ export async function getNextBuilder() {
               console.error('Build failed:', error);
             }
           }
+          debounceTimer = null;
         }, BUILD_DEBOUNCE_MS);
       };
 
@@ -327,6 +331,7 @@ export async function getNextBuilder() {
             if (line.trim()) {
               try {
                 const message = JSON.parse(line);
+                console.log('got msg', message);
 
                 if (message.type === 'file-discovered') {
                   const { filePath, hasWorkflow, hasStep } = message;
@@ -343,7 +348,9 @@ export async function getNextBuilder() {
                   triggerBuild();
                 } else if (message.type === 'trigger-build') {
                   // enqueue new build if one isn't already pending
-                  triggerBuild();
+                  if (!debounceTimer) {
+                    triggerBuild();
+                  }
                 }
               } catch (error) {
                 console.error('Failed to parse socket message:', error);

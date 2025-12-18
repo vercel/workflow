@@ -57,11 +57,11 @@ export function createDevTests(config?: DevTestConfig) {
       restoreFiles.length = 0;
     });
 
-    beforeEach(async () => {
+    const warmEndpoint = async () => {
       // ensure Next.js is building route
       await fetch(new URL('/api/trigger', process.env.DEPLOYMENT_URL));
       await fetch(new URL('/api/chat', process.env.DEPLOYMENT_URL));
-    });
+    };
 
     test('should rebuild on workflow change', { timeout: 15_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
@@ -82,6 +82,7 @@ export async function myNewWorkflow() {
 
       while (true) {
         try {
+          await warmEndpoint();
           const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
           expect(workflowContent).toContain('myNewWorkflow');
           break;
@@ -110,6 +111,7 @@ export async function myNewStep() {
 
       while (true) {
         try {
+          await warmEndpoint();
           const workflowContent = await fs.readFile(generatedStep, 'utf8');
           expect(workflowContent).toContain('myNewStep');
           break;
@@ -151,6 +153,7 @@ ${apiFileContent}`
 
         while (true) {
           try {
+            await warmEndpoint();
             const workflowContent = await fs.readFile(
               generatedWorkflow,
               'utf8'
