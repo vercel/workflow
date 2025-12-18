@@ -2,7 +2,7 @@ import os from 'node:os';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
-import { ZodError, type z } from 'zod';
+import type { z } from 'zod';
 import { version } from './version.js';
 
 export interface APIConfig {
