@@ -302,7 +302,7 @@ export async function getNextBuilder() {
       // Generate socket path in distDir
       const cwd = this.config.workingDir;
       const distDir = this.getDistDir();
-      const socketDir = join(cwd, distDir);
+      const socketDir = join(cwd, distDir, 'cache');
       await mkdir(socketDir, { recursive: true });
       const socketPath = join(
         socketDir,
