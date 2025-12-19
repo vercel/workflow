@@ -81,13 +81,18 @@ export const waitEventsToWaitEntity = (
 /**
  * Converts a workflow Wait to an OpenTelemetry Span
  */
-export function waitToSpan(events: Event[], nowTime?: Date): Span | null {
+export function waitToSpan(
+  events: Event[],
+  run: WorkflowRun,
+  nowTime: Date
+): Span | null {
   const wait = waitEventsToWaitEntity(events);
   if (!wait) {
     return null;
   }
+  const viewerEndTime = new Date(run.completedAt || nowTime) ?? nowTime;
   const startTime = wait?.createdAt ?? nowTime;
-  const endTime = wait?.completedAt ?? nowTime;
+  const endTime = wait?.completedAt ?? viewerEndTime;
   const start = dateToOtelTime(startTime);
   const end = dateToOtelTime(endTime);
   const duration = calculateDuration(startTime, endTime);

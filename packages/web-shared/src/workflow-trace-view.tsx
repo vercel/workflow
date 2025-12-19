@@ -126,7 +126,7 @@ export const WorkflowTraceViewer = ({
 
     const waitSpans = Array.from(timerEvents.entries())
       .map(([_, events]) => {
-        return waitToSpan(events, now);
+        return waitToSpan(events, run, now);
       })
       .filter((span) => span !== null);
 
