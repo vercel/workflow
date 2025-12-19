@@ -258,7 +258,7 @@ export async function getNextBuilder() {
       let debounceTimer: NodeJS.Timeout | null = null;
 
       const BUILD_DEBOUNCE_MS =
-        process.env.NODE_ENV === 'development' ? 500 : 5_000;
+        process.env.NODE_ENV === 'development' ? 500 : 2_500;
 
       // Attempt to load cached workflows/steps from previous build
       const cache = await this.readWorkflowsCache();

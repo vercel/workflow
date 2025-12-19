@@ -159,13 +159,13 @@ export default async function workflowLoader(
   const hasWorkflow = useWorkflowPattern.test(normalizedSource);
   const hasStep = useStepPattern.test(normalizedSource);
 
+  // Send message to socket server if workflow or step detected
+  await notifySocketServer(filename, hasWorkflow, hasStep);
+
   // only apply the transform if file needs it
   if (!hasWorkflow && !hasStep) {
     return normalizedSource;
   }
-
-  // Send message to socket server if workflow or step detected
-  await notifySocketServer(filename, hasWorkflow, hasStep);
 
   const isTypeScript =
     filename.endsWith('.ts') ||
