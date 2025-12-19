@@ -72,8 +72,8 @@ describe('createQueue', () => {
       return capturedHandlers[handlerKey].default;
     }
 
-    it('should clamp timeoutSeconds to max visibility when message is fresh', async () => {
-      const handler = setupHandler({ timeoutSeconds: 50000 }); // More than 11 hours
+    it('should pass through timeoutSeconds when message is fresh', async () => {
+      const handler = setupHandler({ timeoutSeconds: 50000 });
 
       const result = await handler(
         {
@@ -84,7 +84,8 @@ describe('createQueue', () => {
         { messageId: 'msg-123', deliveryCount: 1 }
       );
 
-      expect(result).toEqual({ timeoutSeconds: 39600 }); // Clamped to 11 hours
+      // Should pass through unchanged since message is fresh
+      expect(result).toEqual({ timeoutSeconds: 50000 });
       expect(mockSend).not.toHaveBeenCalled(); // No re-enqueue
     });
 
@@ -139,7 +140,7 @@ describe('createQueue', () => {
     });
 
     it('should handle messages without messageQueuedAt (backwards compatibility)', async () => {
-      const handler = setupHandler({ timeoutSeconds: 50000 }); // More than 11 hours
+      const handler = setupHandler({ timeoutSeconds: 50000 });
 
       const result = await handler(
         {
@@ -150,8 +151,8 @@ describe('createQueue', () => {
         { messageId: 'msg-123', deliveryCount: 1 }
       );
 
-      // Should treat as fresh message and just clamp
-      expect(result).toEqual({ timeoutSeconds: 39600 });
+      // Should treat as fresh message (age = 0) and pass through
+      expect(result).toEqual({ timeoutSeconds: 50000 });
       expect(mockSend).not.toHaveBeenCalled();
     });
 

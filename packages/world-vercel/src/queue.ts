@@ -20,9 +20,6 @@ const MessageWrapper = z.object({
 });
 
 // Queue timing constants - can be overridden via environment variables for testing
-const VERCEL_QUEUE_MAX_VISIBILITY = Number(
-  process.env.VERCEL_QUEUE_MAX_VISIBILITY ?? 39600 // 11 hours in seconds
-);
 const VERCEL_QUEUE_MESSAGE_LIFETIME = Number(
   process.env.VERCEL_QUEUE_MESSAGE_LIFETIME ?? 86400 // 24 hours in seconds
 );
@@ -99,12 +96,8 @@ export function createQueue(config?: APIConfig): Queue {
               : 0;
 
             // Calculate when the message would next be processed
-            const timeUntilNextProcessing = Math.min(
-              result.timeoutSeconds,
-              VERCEL_QUEUE_MAX_VISIBILITY
-            );
             const messageAgeAtNextProcessing =
-              messageAge + timeUntilNextProcessing;
+              messageAge + result.timeoutSeconds;
 
             // If the message would exceed its lifetime before next processing,
             // we need to re-enqueue a fresh message and acknowledge this one
@@ -118,6 +111,7 @@ export function createQueue(config?: APIConfig): Queue {
               // wait_created event) and returning the remaining timeoutSeconds.
               console.log(
                 `[Workflows] Message approaching lifetime limit (age: ${Math.round(messageAge)}s, ` +
+                  `timeoutSeconds: ${result.timeoutSeconds}s, ageAtNextProcessing: ${Math.round(messageAgeAtNextProcessing)}s, ` +
                   `lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s). ` +
                   `Re-enqueueing to reset 24-hour clock.`
               );
@@ -125,16 +119,6 @@ export function createQueue(config?: APIConfig): Queue {
 
               // Return undefined to acknowledge the current message
               return undefined;
-            }
-
-            // Otherwise, just clamp the timeout to the max visibility
-            const adjustedTimeoutSeconds = Math.min(
-              result.timeoutSeconds,
-              VERCEL_QUEUE_MAX_VISIBILITY
-            );
-
-            if (adjustedTimeoutSeconds !== result.timeoutSeconds) {
-              result.timeoutSeconds = adjustedTimeoutSeconds;
             }
           }
           return result;
