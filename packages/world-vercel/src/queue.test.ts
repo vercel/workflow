@@ -89,12 +89,38 @@ describe('createQueue', () => {
       expect(mockSend).not.toHaveBeenCalled(); // No re-enqueue
     });
 
-    it('should re-enqueue when message is approaching 24-hour lifetime', async () => {
-      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+    it('should clamp timeoutSeconds when message has limited lifetime remaining', async () => {
       const handler = setupHandler({ timeoutSeconds: 7200 }); // 2 hours
 
-      // Message that was queued 22 hours ago (approaching 24h limit)
+      // Message that was queued 22 hours ago
+      // maxAllowedTimeout = 86400 - 3600 - 79200 = 3600s (1 hour)
       const oldMessageTime = new Date(Date.now() - 22 * 60 * 60 * 1000);
+
+      const result = await handler(
+        {
+          payload: { runId: 'run-123' },
+          queueName: '__wkf_workflow_test',
+          messageQueuedAt: oldMessageTime,
+        },
+        { messageId: 'msg-123', deliveryCount: 1 }
+      );
+
+      // Should clamp to maxAllowedTimeout (~3600s)
+      expect(result).toBeDefined();
+      expect((result as { timeoutSeconds: number }).timeoutSeconds).toBeCloseTo(
+        3600,
+        0
+      );
+      expect(mockSend).not.toHaveBeenCalled(); // No re-enqueue, just clamping
+    });
+
+    it('should re-enqueue when message has no lifetime remaining', async () => {
+      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+      const handler = setupHandler({ timeoutSeconds: 3600 }); // 1 hour
+
+      // Message that was queued 23 hours ago (at the buffer limit)
+      // maxAllowedTimeout = 86400 - 3600 - 82800 = 0s
+      const oldMessageTime = new Date(Date.now() - 23 * 60 * 60 * 1000);
 
       const result = await handler(
         {

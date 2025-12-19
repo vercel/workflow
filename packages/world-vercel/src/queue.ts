@@ -95,23 +95,20 @@ export function createQueue(config?: APIConfig): Queue {
               ? (now - messageQueuedAt.getTime()) / 1000 // Convert to seconds
               : 0;
 
-            // Calculate when the message would next be processed
-            const messageAgeAtNextProcessing =
-              messageAge + result.timeoutSeconds;
+            // Calculate the maximum timeout this message can handle before expiring
+            const maxAllowedTimeout =
+              VERCEL_QUEUE_MESSAGE_LIFETIME -
+              MESSAGE_LIFETIME_BUFFER -
+              messageAge;
 
-            // If the message would exceed its lifetime before next processing,
-            // we need to re-enqueue a fresh message and acknowledge this one
-            if (
-              messageAgeAtNextProcessing >
-              VERCEL_QUEUE_MESSAGE_LIFETIME - MESSAGE_LIFETIME_BUFFER
-            ) {
-              // Re-enqueue with a fresh messageQueuedAt to reset the 24-hour clock.
+            if (maxAllowedTimeout <= 0) {
+              // Message is already at or past its safe limit, re-enqueue immediately
               // The new message will be delivered immediately, and the handler will
               // short-circuit by checking the persistent state (step.retryAfter or
               // wait_created event) and returning the remaining timeoutSeconds.
               console.log(
-                `[Workflows] Message approaching lifetime limit (age: ${Math.round(messageAge)}s, ` +
-                  `timeoutSeconds: ${result.timeoutSeconds}s, ageAtNextProcessing: ${Math.round(messageAgeAtNextProcessing)}s, ` +
+                `[Workflows] Message at lifetime limit (age: ${Math.round(messageAge)}s, ` +
+                  `timeoutSeconds: ${result.timeoutSeconds}s, maxAllowedTimeout: ${Math.round(maxAllowedTimeout)}s, ` +
                   `lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s). ` +
                   `Re-enqueueing to reset 24-hour clock.`
               );
@@ -119,6 +116,13 @@ export function createQueue(config?: APIConfig): Queue {
 
               // Return undefined to acknowledge the current message
               return undefined;
+            } else if (result.timeoutSeconds > maxAllowedTimeout) {
+              // Timeout would exceed message lifetime, clamp it
+              console.log(
+                `[Workflows] Clamping timeoutSeconds from ${result.timeoutSeconds}s to ${Math.round(maxAllowedTimeout)}s ` +
+                  `(age: ${Math.round(messageAge)}s, lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s).`
+              );
+              result.timeoutSeconds = maxAllowedTimeout;
             }
           }
           return result;
