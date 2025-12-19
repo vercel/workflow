@@ -200,14 +200,14 @@ export const hookEventsToHookEntity = (
   const disposedEvents = events.filter(
     (event) => event.eventType === 'hook_disposed'
   );
-  const lastReceivedEvent = receivedEvents.at(0);
+  const lastReceivedEvent = receivedEvents.at(-1);
   return {
     hookId: createdEvent.correlationId,
     runId: createdEvent.runId,
     createdAt: createdEvent.createdAt,
     receivedCount: receivedEvents.length,
     lastReceivedAt: lastReceivedEvent?.createdAt || undefined,
-    disposedAt: disposedEvents.at(0)?.createdAt || undefined,
+    disposedAt: disposedEvents.at(-1)?.createdAt || undefined,
   };
 };
 
