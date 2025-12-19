@@ -151,7 +151,7 @@ export interface HookResolveModalProps {
  */
 export function HookResolveModalWrapper({
   hookActions,
-}: HookResolveModalProps): React.JSX.Element {
+}: HookResolveModalProps): React.JSX.Element | null {
   const { selectedHook, closeResolveModal, handleResolve, isResolving } =
     hookActions;
 
