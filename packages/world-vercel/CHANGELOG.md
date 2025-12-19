@@ -1,5 +1,13 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.22
+
+### Patch Changes
+
+- [#651](https://github.com/vercel/workflow/pull/651) [`75a5060`](https://github.com/vercel/workflow/commit/75a506047304f6dd1ac07d9150e8a9563f69283c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Handle Vercel Queue 24 hour message TTL by re-enqueueing message
+
+- [#647](https://github.com/vercel/workflow/pull/647) [`6cd1a47`](https://github.com/vercel/workflow/commit/6cd1a47b3146770f5cb9d4c384971331aab6b28a) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Additional error debugging when failing to validate server response
+
 ## 4.0.1-beta.21
 
 ### Patch Changes
