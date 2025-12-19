@@ -11,7 +11,6 @@ export type { EventAnalysis } from './lib/event-analysis';
 export {
   analyzeEvents,
   hasPendingHooksFromEvents,
-  hasPendingSleepsFromEvents,
   hasPendingStepsFromEvents,
   isTerminalStatus,
   shouldShowReenqueueButton,
