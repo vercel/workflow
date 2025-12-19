@@ -13,12 +13,36 @@ const MessageWrapper = z.object({
   queueName: ValidQueueName,
 });
 
-// Queue timing constants - can be overridden via environment variables for testing
+/**
+ * Message Lifetime Management
+ *
+ * Vercel Queue messages have a maximum lifetime of 24 hours. After this period,
+ * messages are automatically deleted regardless of their visibility timeout.
+ * This creates a problem for long-running sleep() or retryAfter delays that
+ * exceed 24 hours - the message would be deleted before the handler fires.
+ *
+ * To handle delays longer than the message lifetime, we use a two-part strategy:
+ *
+ * 1. **Timeout Clamping**: If the requested timeoutSeconds would cause the message
+ *    to expire before the next processing, we clamp the timeout to fit within
+ *    the remaining message lifetime. The handler stores the target time in
+ *    persistent state (step.retryAfter or wait_created event), so when the
+ *    clamped timeout fires, it recalculates the remaining time and returns
+ *    another timeout if needed.
+ *
+ * 2. **Message Re-enqueueing**: If the message is already at or past its safe
+ *    lifetime limit (lifetime - buffer), we enqueue a fresh message and
+ *    acknowledge the current one. The new message gets a fresh 24-hour clock.
+ *    It fires immediately, and the handler short-circuits by checking the
+ *    persistent state and returning the remaining timeoutSeconds.
+ *
+ * These constants can be overridden via environment variables for testing.
+ */
 const VERCEL_QUEUE_MESSAGE_LIFETIME = Number(
-  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME ?? 86400 // 24 hours in seconds
+  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME || 86400 // 24 hours in seconds
 );
 const MESSAGE_LIFETIME_BUFFER = Number(
-  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME_BUFFER ?? 3600 // 1 hour buffer before lifetime expires
+  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME_BUFFER || 3600 // 1 hour buffer before lifetime expires
 );
 
 export function createQueue(config?: APIConfig): Queue {
@@ -79,26 +103,11 @@ export function createQueue(config?: APIConfig): Queue {
               messageAge;
 
             if (maxAllowedTimeout <= 0) {
-              // Message is already at or past its safe limit, re-enqueue immediately
-              // The new message will be delivered immediately, and the handler will
-              // short-circuit by checking the persistent state (step.retryAfter or
-              // wait_created event) and returning the remaining timeoutSeconds.
-              console.log(
-                `[Workflows] Message at lifetime limit (age: ${Math.round(messageAge)}s, ` +
-                  `timeoutSeconds: ${result.timeoutSeconds}s, maxAllowedTimeout: ${Math.round(maxAllowedTimeout)}s, ` +
-                  `lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s). ` +
-                  `Re-enqueueing to reset 24-hour clock.`
-              );
+              // Message is at its lifetime limit - re-enqueue to get a fresh 24-hour clock
               await queue(queueName, payload);
-
-              // Return undefined to acknowledge the current message
               return undefined;
             } else if (result.timeoutSeconds > maxAllowedTimeout) {
-              // Timeout would exceed message lifetime, clamp it
-              console.log(
-                `[Workflows] Clamping timeoutSeconds from ${result.timeoutSeconds}s to ${Math.round(maxAllowedTimeout)}s ` +
-                  `(age: ${Math.round(messageAge)}s, lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s).`
-              );
+              // Clamp timeout to fit within remaining message lifetime
               result.timeoutSeconds = maxAllowedTimeout;
             }
           }
