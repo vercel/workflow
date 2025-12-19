@@ -305,6 +305,7 @@ export async function getNextBuilder() {
 
       // Create TCP server
       const server = createServer((socket) => {
+        socket.setNoDelay(true);
         clients.add(socket);
 
         let buffer = '';

@@ -37,6 +37,7 @@ async function getSocketClient() {
         }, 1000);
 
         socket.on('connect', () => {
+          socket.setNoDelay(true);
           clearTimeout(timeout);
           resolve();
         });
