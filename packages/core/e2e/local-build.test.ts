@@ -27,6 +27,9 @@ describe.each([
       cwd: getWorkbenchAppPath(project),
     });
 
+    console.log(result.stdout);
+    console.log(result.stderr);
+
     expect(result.stderr).not.toContain('Error:');
   });
 });
