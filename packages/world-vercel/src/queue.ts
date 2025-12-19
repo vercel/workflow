@@ -11,6 +11,11 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
   queueName: ValidQueueName,
+  /**
+   * The deployment ID to use when re-enqueueing the message.
+   * This ensures the message is processed by the same deployment.
+   */
+  deploymentId: z.string().optional(),
 });
 
 /**
@@ -74,6 +79,8 @@ export function createQueue(config?: APIConfig): Queue {
     const encoded = encoder({
       payload,
       queueName,
+      // Store deploymentId in the message so it can be preserved when re-enqueueing
+      deploymentId: opts?.deploymentId,
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     const { messageId } = await queueClient.send(
@@ -88,7 +95,8 @@ export function createQueue(config?: APIConfig): Queue {
     return queueClient.handleCallback({
       [`${prefix}*`]: {
         default: async (body, meta) => {
-          const { payload, queueName } = MessageWrapper.parse(body);
+          const { payload, queueName, deploymentId } =
+            MessageWrapper.parse(body);
           const result = await handler(payload, {
             queueName,
             messageId: MessageId.parse(meta.messageId),
@@ -108,7 +116,8 @@ export function createQueue(config?: APIConfig): Queue {
 
             if (maxAllowedTimeout <= 0) {
               // Message is at its lifetime limit - re-enqueue to get a fresh 24-hour clock
-              await queue(queueName, payload);
+              // Preserve the original deploymentId to ensure routing to the same deployment
+              await queue(queueName, payload, { deploymentId });
               return undefined;
             } else if (result.timeoutSeconds > maxAllowedTimeout) {
               // Clamp timeout to fit within remaining message lifetime
