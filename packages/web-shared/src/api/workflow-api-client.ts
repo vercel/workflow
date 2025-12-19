@@ -1005,7 +1005,6 @@ export function useWorkflowResourceData(
   const [error, setError] = useState<Error | null>(null);
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
     setData(null);
     setError(null);
     if (resource === 'hook' || resource === 'sleep') {
@@ -1025,9 +1024,18 @@ export function useWorkflowResourceData(
         resource === 'hook'
           ? hookEventsToHookEntity(events)
           : waitEventsToWaitEntity(events);
+      if (data === null) {
+        setError(
+          new Error(
+            `Failed to load ${resource} details: missing required event data`
+          )
+        );
+        return;
+      }
       setData(data as unknown as Hook | Event);
       return;
     }
+    setLoading(true);
     // Fetch resource with full data
     try {
       const { data: resourceData } = await fetchResourceWithCorrelationId(
