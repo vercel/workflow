@@ -93,25 +93,6 @@ export function useHookActions({
 }
 
 // ============================================================================
-// Helper to check if a hook can be resolved
-// ============================================================================
-
-/**
- * Check if a hook can be resolved based on run status.
- * A hook can be resolved if the run is not in a terminal state.
- */
-export function canResolveHook(
-  runStatus: WorkflowRunStatus | undefined
-): boolean {
-  const terminalStates: WorkflowRunStatus[] = [
-    'completed',
-    'failed',
-    'cancelled',
-  ];
-  return runStatus !== undefined && !terminalStates.includes(runStatus);
-}
-
-// ============================================================================
 // Dropdown Menu Item Component
 // ============================================================================
 
@@ -138,20 +119,17 @@ export interface HookActionsDropdownItemProps {
  */
 export function ResolveHookDropdownItem({
   hook,
-  runStatus,
   stopPropagation = false,
   onResolveClick,
   DropdownMenuItem,
 }: HookActionsDropdownItemProps): React.JSX.Element {
-  const canResolve = canResolveHook(runStatus);
-
   const handleClick = (e: React.MouseEvent) => {
     if (stopPropagation) e.stopPropagation();
     onResolveClick(hook);
   };
 
   return (
-    <DropdownMenuItem onClick={handleClick} disabled={!canResolve}>
+    <DropdownMenuItem onClick={handleClick}>
       <Send className="h-4 w-4 mr-2" />
       Resolve Hook
     </DropdownMenuItem>

@@ -14,7 +14,6 @@ export type {
   UseHookActionsReturn,
 } from './hook-actions';
 export {
-  canResolveHook,
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
   ResolveHookModal,
