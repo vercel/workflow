@@ -3,7 +3,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { hydrateResourceIO } from '@workflow/core/observability';
-import { createWorld, start } from '@workflow/core/runtime';
+import {
+  createWorld,
+  resumeHook as resumeHookRuntime,
+  start,
+} from '@workflow/core/runtime';
 import {
   getDeserializeStream,
   getExternalRevivers,
@@ -629,6 +633,46 @@ export async function wakeUpRun(
     return createServerActionError<StopSleepResult>(error, 'wakeUpRun', {
       runId,
       correlationIds: options?.correlationIds,
+    });
+  }
+}
+
+export interface ResumeHookResult {
+  /** The hook ID that was resumed */
+  hookId: string;
+  /** The run ID associated with the hook */
+  runId: string;
+}
+
+/**
+ * Resume a hook by sending a payload.
+ *
+ * This sends a payload to a hook identified by its token, which resumes
+ * the associated workflow run. The payload will be available as the return
+ * value of the `createHook()` call in the workflow.
+ *
+ * @param worldEnv - Environment configuration for the World
+ * @param token - The hook token
+ * @param payload - The JSON payload to send to the hook
+ */
+export async function resumeHook(
+  worldEnv: EnvMap,
+  token: string,
+  payload: unknown
+): Promise<ServerActionResult<ResumeHookResult>> {
+  try {
+    // Initialize the world so resumeHookRuntime can access it
+    getWorldFromEnv({ ...worldEnv });
+
+    const hook = await resumeHookRuntime(token, payload);
+
+    return createResponse({
+      hookId: hook.hookId,
+      runId: hook.runId,
+    });
+  } catch (error) {
+    return createServerActionError<ResumeHookResult>(error, 'resumeHook', {
+      token,
     });
   }
 }

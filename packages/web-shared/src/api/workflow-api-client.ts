@@ -25,6 +25,8 @@ import {
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
   reenqueueRun as reenqueueRunServerAction,
+  resumeHook as resumeHookServerAction,
+  type ResumeHookResult,
   type StopSleepOptions,
   type StopSleepResult,
   wakeUpRun as wakeUpRunServerAction,
@@ -1131,6 +1133,25 @@ export async function wakeUpRun(
 ): Promise<StopSleepResult> {
   const { error, result: resultData } = await unwrapServerActionResult(
     wakeUpRunServerAction(env, runId, options)
+  );
+  if (error) {
+    throw error;
+  }
+  return resultData;
+}
+
+export type { ResumeHookResult };
+
+/**
+ * Resume a hook by sending a JSON payload
+ */
+export async function resumeHook(
+  env: EnvMap,
+  token: string,
+  payload: unknown
+): Promise<ResumeHookResult> {
+  const { error, result: resultData } = await unwrapServerActionResult(
+    resumeHookServerAction(env, token, payload)
   );
   if (error) {
     throw error;
