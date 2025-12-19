@@ -106,16 +106,17 @@ export const WorkflowTraceViewer = ({
       return stepToSpan(step, stepEvents, now);
     });
 
-    const hookSpans = hooks.map((hook) => {
-      const hookEvents = eventsByHookId.get(hook.hookId) || [];
-      return hookToSpan(hook, hookEvents, now);
-    });
+    const hookSpans = Array.from(hookEvents.entries())
+      .map(([_, events]) => {
+        return hookToSpan(events, now);
+      })
+      .filter((span) => span !== null);
 
-    const waitSpans = Array.from(timerEvents.entries()).map(
-      ([correlationId, events]) => {
-        return waitToSpan(correlationId, events, now);
-      }
-    );
+    const waitSpans = Array.from(timerEvents.entries())
+      .map(([_, events]) => {
+        return waitToSpan(events, now);
+      })
+      .filter((span) => span !== null);
 
     const runSpan = runToSpan(run, runLevelEvents, now);
     const spans = [...stepSpans, ...hookSpans, ...waitSpans];

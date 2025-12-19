@@ -10,6 +10,10 @@ import type {
 } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getPaginationDisplay } from '../lib/utils';
+import {
+  hookEventsToHookEntity,
+  waitEventsToWaitEntity,
+} from '../workflow-traces/trace-span-construction';
 import type { EnvMap, ServerActionError } from './workflow-server-actions';
 import {
   cancelRun as cancelRunServerAction,
@@ -22,9 +26,11 @@ import {
   fetchStep,
   fetchSteps,
   fetchStreams,
+  type ResumeHookResult,
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
   reenqueueRun as reenqueueRunServerAction,
+  resumeHook as resumeHookServerAction,
   type StopSleepOptions,
   type StopSleepResult,
   wakeUpRun as wakeUpRunServerAction,
@@ -1004,7 +1010,7 @@ export function useWorkflowResourceData(
     setLoading(true);
     setData(null);
     setError(null);
-    if (resource === 'sleep') {
+    if (resource === 'hook' || resource === 'sleep') {
       const { error, result } = await unwrapServerActionResult(
         fetchEventsByCorrelationId(env, resourceId, {
           sortOrder: 'asc',
@@ -1016,18 +1022,12 @@ export function useWorkflowResourceData(
         setError(error);
         return;
       }
-      const eventsData = result;
-      const waitStartEvent = eventsData.data.find(
-        (event) => event.eventType === 'wait_created'
-      );
-      if (waitStartEvent) {
-        setData({
-          waitId: waitStartEvent.correlationId,
-          runId: waitStartEvent.runId,
-          createdAt: waitStartEvent.createdAt,
-          resumeAt: waitStartEvent.eventData.resumeAt,
-        } as unknown as Event);
-      }
+      const events = result.data as unknown as Event[];
+      const data =
+        resource === 'hook'
+          ? hookEventsToHookEntity(events)
+          : waitEventsToWaitEntity(events);
+      setData(data as unknown as Hook | Event);
       return;
     }
     // Fetch resource with full data
