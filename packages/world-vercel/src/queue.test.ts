@@ -31,23 +31,17 @@ describe('createQueue', () => {
   });
 
   describe('queue()', () => {
-    it('should include messageQueuedAt in the message', async () => {
+    it('should send message with payload and queueName', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
 
       const queue = createQueue();
-      const beforeTime = Date.now();
-
       await queue.queue('__wkf_workflow_test', { runId: 'run-123' });
-
-      const afterTime = Date.now();
 
       expect(mockSend).toHaveBeenCalledTimes(1);
       const sentPayload = mockSend.mock.calls[0][1];
 
-      expect(sentPayload.messageQueuedAt).toBeDefined();
-      const queuedAt = new Date(sentPayload.messageQueuedAt).getTime();
-      expect(queuedAt).toBeGreaterThanOrEqual(beforeTime);
-      expect(queuedAt).toBeLessThanOrEqual(afterTime);
+      expect(sentPayload.payload).toEqual({ runId: 'run-123' });
+      expect(sentPayload.queueName).toBe('__wkf_workflow_test');
     });
   });
 
@@ -79,9 +73,8 @@ describe('createQueue', () => {
         {
           payload: { runId: 'run-123' },
           queueName: '__wkf_workflow_test',
-          messageQueuedAt: new Date(), // Fresh message
         },
-        { messageId: 'msg-123', deliveryCount: 1 }
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
       );
 
       // Should pass through unchanged since message is fresh
@@ -92,7 +85,7 @@ describe('createQueue', () => {
     it('should clamp timeoutSeconds when message has limited lifetime remaining', async () => {
       const handler = setupHandler({ timeoutSeconds: 7200 }); // 2 hours
 
-      // Message that was queued 22 hours ago
+      // Message that was created 22 hours ago
       // maxAllowedTimeout = 86400 - 3600 - 79200 = 3600s (1 hour)
       const oldMessageTime = new Date(Date.now() - 22 * 60 * 60 * 1000);
 
@@ -100,9 +93,8 @@ describe('createQueue', () => {
         {
           payload: { runId: 'run-123' },
           queueName: '__wkf_workflow_test',
-          messageQueuedAt: oldMessageTime,
         },
-        { messageId: 'msg-123', deliveryCount: 1 }
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: oldMessageTime }
       );
 
       // Should clamp to maxAllowedTimeout (~3600s)
@@ -118,7 +110,7 @@ describe('createQueue', () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
       const handler = setupHandler({ timeoutSeconds: 3600 }); // 1 hour
 
-      // Message that was queued 23 hours ago (at the buffer limit)
+      // Message that was created 23 hours ago (at the buffer limit)
       // maxAllowedTimeout = 86400 - 3600 - 82800 = 0s
       const oldMessageTime = new Date(Date.now() - 23 * 60 * 60 * 1000);
 
@@ -126,9 +118,8 @@ describe('createQueue', () => {
         {
           payload: { runId: 'run-123' },
           queueName: '__wkf_workflow_test',
-          messageQueuedAt: oldMessageTime,
         },
-        { messageId: 'msg-123', deliveryCount: 1 }
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: oldMessageTime }
       );
 
       // Should return undefined (acknowledge old message)
@@ -139,46 +130,24 @@ describe('createQueue', () => {
       const sentPayload = mockSend.mock.calls[0][1];
       expect(sentPayload.payload).toEqual({ runId: 'run-123' });
       expect(sentPayload.queueName).toBe('__wkf_workflow_test');
-      // New message should have fresh timestamp
-      expect(new Date(sentPayload.messageQueuedAt).getTime()).toBeGreaterThan(
-        oldMessageTime.getTime()
-      );
     });
 
     it('should not re-enqueue when message has enough lifetime remaining', async () => {
       const handler = setupHandler({ timeoutSeconds: 7200 }); // 2 hours
 
-      // Message that was queued 10 hours ago (plenty of time remaining)
+      // Message that was created 10 hours ago (plenty of time remaining)
       const messageTime = new Date(Date.now() - 10 * 60 * 60 * 1000);
 
       const result = await handler(
         {
           payload: { runId: 'run-123' },
           queueName: '__wkf_workflow_test',
-          messageQueuedAt: messageTime,
         },
-        { messageId: 'msg-123', deliveryCount: 1 }
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: messageTime }
       );
 
       // Should return the timeout (not re-enqueue)
       expect(result).toEqual({ timeoutSeconds: 7200 });
-      expect(mockSend).not.toHaveBeenCalled();
-    });
-
-    it('should handle messages without messageQueuedAt (backwards compatibility)', async () => {
-      const handler = setupHandler({ timeoutSeconds: 50000 });
-
-      const result = await handler(
-        {
-          payload: { runId: 'run-123' },
-          queueName: '__wkf_workflow_test',
-          // No messageQueuedAt - old message format
-        },
-        { messageId: 'msg-123', deliveryCount: 1 }
-      );
-
-      // Should treat as fresh message (age = 0) and pass through
-      expect(result).toEqual({ timeoutSeconds: 50000 });
       expect(mockSend).not.toHaveBeenCalled();
     });
 
@@ -189,9 +158,8 @@ describe('createQueue', () => {
         {
           payload: { runId: 'run-123' },
           queueName: '__wkf_workflow_test',
-          messageQueuedAt: new Date(),
         },
-        { messageId: 'msg-123', deliveryCount: 1 }
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
       );
 
       expect(result).toBeUndefined();
@@ -216,9 +184,8 @@ describe('createQueue', () => {
         {
           payload: stepPayload,
           queueName: '__wkf_step_myStep',
-          messageQueuedAt: oldMessageTime,
         },
-        { messageId: 'msg-123', deliveryCount: 1 }
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: oldMessageTime }
       );
 
       expect(mockSend).toHaveBeenCalledTimes(1);

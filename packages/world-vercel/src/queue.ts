@@ -2,7 +2,6 @@ import { Client } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
-  type QueuePayload,
   QueuePayloadSchema,
   ValidQueueName,
 } from '@workflow/world';
@@ -12,11 +11,6 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
   queueName: ValidQueueName,
-  /**
-   * Timestamp when this message was first enqueued.
-   * Used to track message age and re-enqueue before the 24-hour message lifetime expires.
-   */
-  messageQueuedAt: z.coerce.date().optional(),
 });
 
 // Queue timing constants - can be overridden via environment variables for testing
@@ -37,16 +31,7 @@ export function createQueue(config?: APIConfig): Queue {
     headers: Object.fromEntries(headers.entries()),
   });
 
-  /**
-   * Internal function to send a message to the queue with optional messageQueuedAt override.
-   * This is used both for initial queue() calls and for re-enqueueing when extending message lifetime.
-   */
-  const sendMessage = async (
-    queueName: ValidQueueName,
-    payload: QueuePayload,
-    messageQueuedAt: Date,
-    opts?: Parameters<Queue['queue']>[2]
-  ) => {
+  const queue: Queue['queue'] = async (queueName, payload, opts) => {
     // zod v3 doesn't have the `encode` method. We only support zod v4 officially,
     // but codebases that pin zod v3 are still common.
     const hasEncoder = typeof MessageWrapper.encode === 'function';
@@ -61,7 +46,6 @@ export function createQueue(config?: APIConfig): Queue {
     const encoded = encoder({
       payload,
       queueName,
-      messageQueuedAt,
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     const { messageId } = await queueClient.send(
@@ -72,16 +56,11 @@ export function createQueue(config?: APIConfig): Queue {
     return { messageId: MessageId.parse(messageId) };
   };
 
-  const queue: Queue['queue'] = async (queueName, x, opts) => {
-    return sendMessage(queueName, x, new Date(), opts);
-  };
-
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return queueClient.handleCallback({
       [`${prefix}*`]: {
         default: async (body, meta) => {
-          const { payload, queueName, messageQueuedAt } =
-            MessageWrapper.parse(body);
+          const { payload, queueName } = MessageWrapper.parse(body);
           const result = await handler(payload, {
             queueName,
             messageId: MessageId.parse(meta.messageId),
@@ -90,10 +69,8 @@ export function createQueue(config?: APIConfig): Queue {
           if (typeof result?.timeoutSeconds === 'number') {
             const now = Date.now();
 
-            // Calculate how old this message is
-            const messageAge = messageQueuedAt
-              ? (now - messageQueuedAt.getTime()) / 1000 // Convert to seconds
-              : 0;
+            // Calculate how old this message is using the queue's createdAt timestamp
+            const messageAge = (now - meta.createdAt.getTime()) / 1000; // Convert to seconds
 
             // Calculate the maximum timeout this message can handle before expiring
             const maxAllowedTimeout =
@@ -112,7 +89,7 @@ export function createQueue(config?: APIConfig): Queue {
                   `lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s). ` +
                   `Re-enqueueing to reset 24-hour clock.`
               );
-              await sendMessage(queueName, payload, new Date());
+              await queue(queueName, payload);
 
               // Return undefined to acknowledge the current message
               return undefined;
