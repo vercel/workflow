@@ -209,7 +209,11 @@ export const hookEventsToHookEntity = (
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(hookEvents: Event[], nowTime: Date): Span | null {
+export function hookToSpan(
+  hookEvents: Event[],
+  run: WorkflowRun,
+  nowTime: Date
+): Span | null {
   const hook = hookEventsToHookEntity(hookEvents);
   if (!hook) {
     return null;
@@ -220,8 +224,8 @@ export function hookToSpan(hookEvents: Event[], nowTime: Date): Span | null {
 
   // We display hooks as a minimum span size of 10 seconds, just to ensure
   // it's clickable even if there is no
-  const endTime =
-    hook.disposedAt || new Date(hook.createdAt.getTime() + 10_000);
+  const viewerEndTime = new Date(run.completedAt || nowTime) ?? nowTime;
+  const endTime = hook.disposedAt || viewerEndTime;
 
   return {
     spanId: String(hook.hookId),

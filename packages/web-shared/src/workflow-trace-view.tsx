@@ -120,7 +120,7 @@ export const WorkflowTraceViewer = ({
 
     const hookSpans = Array.from(hookEvents.entries())
       .map(([_, events]) => {
-        return hookToSpan(events, now);
+        return hookToSpan(events, run, now);
       })
       .filter((span) => span !== null);
 
