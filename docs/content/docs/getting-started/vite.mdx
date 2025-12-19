@@ -30,7 +30,10 @@ npm i workflow nitro
 ```
 
 <Callout>
-While Vite provides the build tooling and development server, Nitro adds the server framework needed for API routes and deployment. Together they enable building full-stack applications with workflow support. Learn more about Nitro [here](https://v3.nitro.build).
+  While Vite provides the build tooling and development server, Nitro adds the
+  server framework needed for API routes and deployment. Together they enable
+  building full-stack applications with workflow support. Learn more about Nitro
+  [here](https://v3.nitro.build).
 </Callout>
 
 ### Configure Vite
@@ -44,7 +47,8 @@ import { workflow } from "workflow/vite";
 
 export default defineConfig({
   plugins: [nitro(), workflow()], // [!code highlight]
-  nitro: { // [!code highlight]
+  nitro: {
+    // [!code highlight]
     serverDir: "./", // [!code highlight]
   }, // [!code highlight]
 });
@@ -57,12 +61,12 @@ export default defineConfig({
     </AccordionTrigger>
     <AccordionContent className="[&_p]:my-2">
 
-To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json`:
+To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.app.json`:
 
-```json title="tsconfig.json" lineNumbers
+```json title="tsconfig.app.json" lineNumbers
 {
   "compilerOptions": {
-    // ... rest of your TypeScript config
+    // ... rest of your compiler options
     "plugins": [
       {
         "name": "workflow" // [!code highlight]
@@ -73,6 +77,7 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
 ```
 
     </AccordionContent>
+
   </AccordionItem>
 </Accordion>
 
@@ -98,22 +103,29 @@ export async function handleUserSignup(email: string) {
 
   return { userId: user.id, status: "onboarded" };
 }
-
 ```
 
 We'll fill in those functions next, but let's take a look at this code:
 
-* We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
-* The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
+- We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
+- The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
 ## Create Your Workflow Steps
 
 Let's now define those missing functions.
 
 ```typescript title="workflows/user-signup.ts" lineNumbers
-import { FatalError } from "workflow"
+import { FatalError } from "workflow"; // [!code highlight]
+import { sleep } from "workflow";
 
-// Our workflow function defined earlier
+export async function handleUserSignup(email: string) {
+  "use workflow";
+  const user = await createUser(email);
+  await sendWelcomeEmail(user);
+  await sleep("5s"); // Pause for 5s - doesn't consume any resources
+  await sendOnboardingEmail(user);
+  return { userId: user.id, status: "onboarded" };
+}
 
 async function createUser(email: string) {
   "use step"; // [!code highlight]
@@ -124,18 +136,18 @@ async function createUser(email: string) {
   return { id: crypto.randomUUID(), email };
 }
 
-async function sendWelcomeEmail(user: { id: string; email: string; }) {
+async function sendWelcomeEmail(user: { id: string; email: string }) {
   "use step"; // [!code highlight]
 
   console.log(`Sending welcome email to user: ${user.id}`);
 
   if (Math.random() < 0.3) {
-  // By default, steps will be retried for unhandled errors
-   throw new Error("Retryable!");
+    // By default, steps will be retried for unhandled errors
+    throw new Error("Retryable!");
   }
 }
 
-async function sendOnboardingEmail(user: { id: string; email: string}) {
+async function sendOnboardingEmail(user: { id: string; email: string }) {
   "use step"; // [!code highlight]
 
   if (!user.email.includes("@")) {
@@ -149,12 +161,13 @@ async function sendOnboardingEmail(user: { id: string; email: string}) {
 
 Taking a look at this code:
 
-* Business logic lives inside **steps**. When a step is invoked inside a **workflow**, it gets enqueued to run on a separate request while the workflow is suspended, just like `sleep`.
-* If a step throws an error, like in `sendWelcomeEmail`, the step will automatically be retried until it succeeds (or hits the step's max retry count).
-* Steps can throw a `FatalError` if an error is intentional and should not be retried.
+- Business logic lives inside **steps**. When a step is invoked inside a **workflow**, it gets enqueued to run on a separate request while the workflow is suspended, just like `sleep`.
+- If a step throws an error, like in `sendWelcomeEmail`, the step will automatically be retried until it succeeds (or hits the step's max retry count).
+- Steps can throw a `FatalError` if an error is intentional and should not be retried.
 
 <Callout>
-We'll dive deeper into workflows, steps, and other ways to suspend or handle events in [Foundations](/docs/foundations).
+  We'll dive deeper into workflows, steps, and other ways to suspend or handle
+  events in [Foundations](/docs/foundations).
 </Callout>
 
 </Step>
@@ -171,19 +184,19 @@ import { defineEventHandler } from "nitro/h3";
 import { handleUserSignup } from "../workflows/user-signup";
 
 export default defineEventHandler(async ({ req }) => {
-  const { email } = await req.json() as { email: string };
+  const { email } = (await req.json()) as { email: string };
   // Executes asynchronously and doesn't block your app
   await start(handleUserSignup, [email]);
   return {
     message: "User signup workflow started",
-  }
+  };
 });
 ```
 
 This route handler creates a `POST` request endpoint at `/api/signup` that will trigger your workflow.
 
 <Callout>
-Workflows can be triggered from API routes or any server-side code.
+  Workflows can be triggered from API routes or any server-side code.
 </Callout>
 
 </Step>
@@ -227,6 +240,6 @@ Check the [Deploying](/docs/deploying) section to learn how your workflows can b
 
 ## Next Steps
 
-* Learn more about the [Foundations](/docs/foundations).
-* Check [Errors](/docs/errors) if you encounter issues.
-* Explore the [API Reference](/docs/api-reference).
+- Learn more about the [Foundations](/docs/foundations).
+- Check [Errors](/docs/errors) if you encounter issues.
+- Explore the [API Reference](/docs/api-reference).
