@@ -64,6 +64,7 @@ export const WorkflowTraceViewer = ({
     const eventsByHookId = new Map<string, Event[]>();
     const runLevelEvents: Event[] = [];
     const timerEvents = new Map<string, Event[]>();
+    const hookEvents = new Map<string, Event[]>();
 
     for (const event of events) {
       if (
@@ -73,6 +74,17 @@ export const WorkflowTraceViewer = ({
         const existing = timerEvents.get(event.correlationId) || [];
         existing.push(event);
         timerEvents.set(event.correlationId, existing);
+        continue;
+      }
+
+      if (
+        event.eventType === 'hook_received' ||
+        event.eventType === 'hook_created' ||
+        event.eventType === 'hook_disposed'
+      ) {
+        const existing = hookEvents.get(event.correlationId) || [];
+        existing.push(event);
+        hookEvents.set(event.correlationId, existing);
         continue;
       }
       // Try to associate event with a step or hook via correlationId
