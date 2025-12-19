@@ -1,4 +1,5 @@
 import { Args } from '@oclif/core';
+import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import { cliFlags } from '../lib/inspect/flags.js';
@@ -19,8 +20,7 @@ export default class Web extends BaseCommand {
   async catch(error: any) {
     // Check if this is a 403 error from the Vercel backend
     if (error?.status === 403) {
-      const message =
-        'Your current vercel account does not have access to this workflow run. Please use `vercel login` to login, or use `vercel switch` to ensure you can access the correct team.';
+      const message = VERCEL_403_ERROR_MESSAGE;
       logger.error(message);
     } else if (LOGGING_CONFIG.VERBOSE_MODE) {
       logger.error(error);

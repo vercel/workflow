@@ -2,11 +2,17 @@ import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import type { Streamer } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { listJSONFiles, readBuffer, write } from './fs.js';
+import { z } from 'zod';
+import { listJSONFiles, readBuffer, readJSON, write, writeJSON } from './fs.js';
 
 // Create a monotonic ULID factory that ensures ULIDs are always increasing
 // even when generated within the same millisecond
 const monotonicUlid = monotonicFactory(() => Math.random());
+
+// Schema for the run-to-streams mapping file
+const RunStreamsSchema = z.object({
+  streams: z.array(z.string()),
+});
 
 /**
  * A chunk consists of a boolean `eof` indicating if it's the last chunk,
@@ -48,6 +54,39 @@ export function createStreamer(basedir: string): Streamer {
     ];
   }>();
 
+  // Track which streams have already been registered for a run (in-memory cache)
+  const registeredStreams = new Set<string>();
+
+  // Helper to record the runId <> streamId association
+  async function registerStreamForRun(
+    runId: string,
+    streamName: string
+  ): Promise<void> {
+    const cacheKey = `${runId}:${streamName}`;
+    if (registeredStreams.has(cacheKey)) {
+      return; // Already registered in this session
+    }
+
+    const runStreamsPath = path.join(
+      basedir,
+      'streams',
+      'runs',
+      `${runId}.json`
+    );
+
+    // Read existing streams for this run
+    const existing = await readJSON(runStreamsPath, RunStreamsSchema);
+    const streams = existing?.streams ?? [];
+
+    // Add stream if not already present
+    if (!streams.includes(streamName)) {
+      streams.push(streamName);
+      await writeJSON(runStreamsPath, { streams }, { overwrite: true });
+    }
+
+    registeredStreams.add(cacheKey);
+  }
+
   return {
     async writeToStream(
       name: string,
@@ -55,9 +94,12 @@ export function createStreamer(basedir: string): Streamer {
       chunk: string | Uint8Array
     ) {
       // Await runId if it's a promise to ensure proper flushing
-      await _runId;
+      const runId = await _runId;
 
-      const chunkId = `strm_${monotonicUlid()}`;
+      // Register this stream for the run
+      await registerStreamForRun(runId, name);
+
+      const chunkId = `chnk_${monotonicUlid()}`;
 
       // Convert chunk to buffer for serialization
       let chunkBuffer: Buffer;
@@ -95,9 +137,12 @@ export function createStreamer(basedir: string): Streamer {
 
     async closeStream(name: string, _runId: string | Promise<string>) {
       // Await runId if it's a promise to ensure proper flushing
-      await _runId;
+      const runId = await _runId;
 
-      const chunkId = `strm_${monotonicUlid()}`;
+      // Register this stream for the run (in case writeToStream wasn't called)
+      await registerStreamForRun(runId, name);
+
+      const chunkId = `chnk_${monotonicUlid()}`;
       const chunkPath = path.join(
         basedir,
         'streams',
@@ -114,37 +159,15 @@ export function createStreamer(basedir: string): Streamer {
     },
 
     async listStreamsByRunId(runId: string) {
-      const chunksDir = path.join(basedir, 'streams', 'chunks');
-      const files = await listJSONFiles(chunksDir);
+      const runStreamsPath = path.join(
+        basedir,
+        'streams',
+        'runs',
+        `${runId}.json`
+      );
 
-      // Convert runId (wrun_{ULID}) to stream prefix (strm_{ULID}_user)
-      const streamPrefix = runId.replace('wrun_', 'strm_') + '_user';
-
-      // Extract unique stream names that match the run's prefix
-      const streamNames = new Set<string>();
-      for (const file of files) {
-        // Files are named: {streamName}-{chunkId}
-        // Find the last occurrence of '-strm_' to split correctly
-        const lastDashIndex = file.lastIndexOf('-strm_');
-        if (lastDashIndex === -1) {
-          // Try splitting at the last dash for legacy format
-          const parts = file.split('-');
-          if (parts.length >= 2) {
-            parts.pop(); // Remove chunkId
-            const streamName = parts.join('-');
-            if (streamName.startsWith(streamPrefix)) {
-              streamNames.add(streamName);
-            }
-          }
-        } else {
-          const streamName = file.substring(0, lastDashIndex);
-          if (streamName.startsWith(streamPrefix)) {
-            streamNames.add(streamName);
-          }
-        }
-      }
-
-      return Array.from(streamNames);
+      const data = await readJSON(runStreamsPath, RunStreamsSchema);
+      return data?.streams ?? [];
     },
 
     async readFromStream(name: string, startIndex = 0) {

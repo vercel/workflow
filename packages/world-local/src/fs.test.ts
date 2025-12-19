@@ -361,12 +361,14 @@ describe('fs utilities', () => {
         }
       });
 
-      it('should skip files when getCreatedAt returns null', async () => {
-        // Create a file with non-ULID name that will return null from getCreatedAt
+      it('should include files when getCreatedAt returns null and sort by JSON createdAt', async () => {
+        // Create a file with non-ULID name that will return null from getCreatedAt.
+        // This simulates step files which use sequential IDs (step_0, step_1, etc.)
+        // rather than ULIDs, so filename-based timestamp extraction returns null.
         await createFilesystem(testDir, {
           'not-a-ulid': {
             id: 'not-a-ulid',
-            name: 'should-be-skipped',
+            name: 'should-be-included',
             createdAt: new Date('2024-01-01T05:00:00.000Z'),
           },
         });
@@ -378,13 +380,14 @@ describe('fs utilities', () => {
           limit: 20,
         });
 
-        // Should NOT include the non-ULID file - it should be skipped entirely
-        expect(result.data.length).toBe(10); // Only the 10 ULID files
+        // Should include all files including the non-ULID one (sorted by JSON createdAt)
+        expect(result.data.length).toBe(11); // 10 ULID files + 1 non-ULID file
 
-        const skippedItem = result.data.find(
+        const includedItem = result.data.find(
           (item) => item.id === 'not-a-ulid'
         );
-        expect(skippedItem).toBeUndefined(); // Should not be found
+        expect(includedItem).toBeDefined(); // Should be found
+        expect(includedItem?.name).toBe('should-be-included');
       });
 
       it('should handle pagination correctly when items have identical timestamps', async () => {

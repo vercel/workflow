@@ -284,3 +284,6 @@ export class RetryableError extends Error {
     return isError(value) && value.name === 'RetryableError';
   }
 }
+
+export const VERCEL_403_ERROR_MESSAGE =
+  'Your current vercel account does not have access to this resource. Use `vercel login` or `vercel switch` to ensure you are linked to the right account. You might need to run `vercel env pull` to use the latest environment variables.';

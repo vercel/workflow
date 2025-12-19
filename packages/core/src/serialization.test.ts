@@ -13,7 +13,7 @@ import {
   hydrateStepArguments,
   hydrateWorkflowArguments,
 } from './serialization.js';
-import { STREAM_NAME_SYMBOL } from './symbols.js';
+import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
 
 const mockRunId = 'wrun_mockidnumber0001';
@@ -184,7 +184,8 @@ describe('workflow arguments', () => {
   it('should work with WritableStream', () => {
     const stream = new WritableStream();
     const serialized = dehydrateWorkflowArguments(stream, [], mockRunId);
-    const uuid = serialized[2];
+    const streamName = serialized[2] as string;
+    expect(streamName).toMatch(/^strm_[0-9A-Z]{26}$/);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -194,7 +195,7 @@ describe('workflow arguments', () => {
         {
           "name": 2,
         },
-        "${uuid}",
+        "${streamName}",
       ]
     `);
 
@@ -203,13 +204,14 @@ describe('workflow arguments', () => {
       WritableStream: OurWritableStream,
     });
     expect(hydrated).toBeInstanceOf(OurWritableStream);
-    expect(hydrated[STREAM_NAME_SYMBOL]).toEqual(uuid);
+    expect(hydrated[STREAM_NAME_SYMBOL]).toEqual(streamName);
   });
 
   it('should work with ReadableStream', () => {
     const stream = new ReadableStream();
     const serialized = dehydrateWorkflowArguments(stream, [], mockRunId);
-    const uuid = serialized[2];
+    const streamName = serialized[2] as string;
+    expect(streamName).toMatch(/^strm_[0-9A-Z]{26}$/);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -219,7 +221,7 @@ describe('workflow arguments', () => {
         {
           "name": 2,
         },
-        "${uuid}",
+        "${streamName}",
       ]
     `);
 
@@ -228,7 +230,7 @@ describe('workflow arguments', () => {
       ReadableStream: OurReadableStream,
     });
     expect(hydrated).toBeInstanceOf(OurReadableStream);
-    expect(hydrated[STREAM_NAME_SYMBOL]).toEqual(uuid);
+    expect(hydrated[STREAM_NAME_SYMBOL]).toEqual(streamName);
   });
 
   it('should work with Headers', () => {
@@ -285,7 +287,8 @@ describe('workflow arguments', () => {
       ]),
     });
     const serialized = dehydrateWorkflowArguments(response, [], mockRunId);
-    const bodyUuid = serialized[serialized.length - 3];
+    const bodyStreamName = serialized[serialized.length - 3] as string;
+    expect(bodyStreamName).toMatch(/^strm_[0-9A-Z]{26}$/);
     expect(serialized).toMatchInlineSnapshot(`
       [
         [
@@ -346,7 +349,7 @@ describe('workflow arguments', () => {
           "name": 21,
           "type": 22,
         },
-        "${bodyUuid}",
+        "${bodyStreamName}",
         "bytes",
         false,
       ]
@@ -504,10 +507,9 @@ describe('workflow arguments', () => {
   });
 
   it('should work with Request (without responseWritable)', () => {
-    // Mock crypto.randomUUID to return a deterministic value
-    const originalRandomUUID = globalThis.crypto.randomUUID;
-    globalThis.crypto.randomUUID = () =>
-      '00000000-0000-0000-0000-000000000001' as `${string}-${string}-${string}-${string}-${string}`;
+    // Mock STABLE_ULID to return a deterministic value
+    const originalStableUlid = (globalThis as any)[STABLE_ULID];
+    (globalThis as any)[STABLE_ULID] = () => '01ARZ3NDEKTSV4RRFFQ69G5FA1';
 
     try {
       const request = new Request('https://example.com/api', {
@@ -564,7 +566,7 @@ describe('workflow arguments', () => {
           "name": 14,
           "type": 15,
         },
-        "00000000-0000-0000-0000-000000000001",
+        "strm_01ARZ3NDEKTSV4RRFFQ69G5FA1",
         "bytes",
         "half",
       ]
@@ -598,22 +600,20 @@ describe('workflow arguments', () => {
       expect(hydrated.body).toBeInstanceOf(OurReadableStream);
       expect(hydrated.duplex).toBe('half');
     } finally {
-      globalThis.crypto.randomUUID = originalRandomUUID;
+      (globalThis as any)[STABLE_ULID] = originalStableUlid;
     }
   });
 
   it('should work with Request (with responseWritable)', () => {
-    // Mock crypto.randomUUID to return deterministic values
-    const originalRandomUUID = globalThis.crypto.randomUUID;
-    let uuidCounter = 0;
-    globalThis.crypto.randomUUID = () => {
-      const uuids = [
-        '00000000-0000-0000-0000-000000000001',
-        '00000000-0000-0000-0000-000000000002',
+    // Mock STABLE_ULID to return deterministic values
+    const originalStableUlid = (globalThis as any)[STABLE_ULID];
+    let ulidCounter = 0;
+    (globalThis as any)[STABLE_ULID] = () => {
+      const ulids = [
+        '01ARZ3NDEKTSV4RRFFQ69G5FA1',
+        '01ARZ3NDEKTSV4RRFFQ69G5FA2',
       ] as const;
-      return uuids[
-        uuidCounter++
-      ] as `${string}-${string}-${string}-${string}-${string}`;
+      return ulids[ulidCounter++];
     };
 
     try {
@@ -666,7 +666,7 @@ describe('workflow arguments', () => {
           "name": 11,
           "type": 12,
         },
-        "00000000-0000-0000-0000-000000000001",
+        "strm_01ARZ3NDEKTSV4RRFFQ69G5FA1",
         "bytes",
         "half",
         [
@@ -676,7 +676,7 @@ describe('workflow arguments', () => {
         {
           "name": 16,
         },
-        "00000000-0000-0000-0000-000000000002",
+        "strm_01ARZ3NDEKTSV4RRFFQ69G5FA2",
       ]
     `);
 
@@ -722,7 +722,7 @@ describe('workflow arguments', () => {
         '`respondWith()` must be called from within a step function'
       );
     } finally {
-      globalThis.crypto.randomUUID = originalRandomUUID;
+      (globalThis as any)[STABLE_ULID] = originalStableUlid;
     }
   });
 

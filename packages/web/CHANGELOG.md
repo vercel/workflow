@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.17
+
+### Patch Changes
+
+- [#582](https://github.com/vercel/workflow/pull/582) [`05ea678`](https://github.com/vercel/workflow/commit/05ea6789e5773d5b4ee16dce4a800e613261f452) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add buttons to wake up workflow from sleep or scheduling issues
+
 ## 4.0.1-beta.16
 
 ### Patch Changes

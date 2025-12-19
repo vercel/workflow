@@ -555,11 +555,7 @@ export function RunDetailView({
                 {/* Stream viewer */}
                 <div className="flex-1 min-w-0">
                   {selectedStreamId ? (
-                    <StreamViewer
-                      env={env}
-                      runId={runId}
-                      streamId={selectedStreamId}
-                    />
+                    <StreamViewer env={env} streamId={selectedStreamId} />
                   ) : (
                     <div
                       className="h-full flex items-center justify-center rounded-lg border"

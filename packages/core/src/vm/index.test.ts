@@ -121,8 +121,9 @@ describe('createContext', () => {
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     context[symbol] = 'bar';
 
+    // Find the symbol with description 'foo' (not the first one, since STABLE_ULID is also set)
     const fooValue = vm.runInContext(
-      `const s = Object.getOwnPropertySymbols(globalThis)[0]; globalThis[s]`,
+      `const s = Object.getOwnPropertySymbols(globalThis).find(sym => sym.description === 'foo'); globalThis[s]`,
       context
     );
     expect(fooValue).toEqual('bar');
