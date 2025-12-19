@@ -36,6 +36,10 @@ const MessageWrapper = z.object({
  *    It fires immediately, and the handler short-circuits by checking the
  *    persistent state and returning the remaining timeoutSeconds.
  *
+ * TODO: Once Vercel Queue supports NBF (not before) functionality, we can use
+ * that when re-enqueueing to schedule the new message for the remaining delay
+ * instead of having it fire immediately and short-circuit.
+ *
  * These constants can be overridden via environment variables for testing.
  */
 const VERCEL_QUEUE_MESSAGE_LIFETIME = Number(
