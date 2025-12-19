@@ -2,7 +2,6 @@ import { Client } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
-  type QueuePayload,
   QueuePayloadSchema,
   ValidQueueName,
 } from '@workflow/world';
@@ -12,16 +11,15 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
   queueName: ValidQueueName,
-  /**
-   * Timestamp when this message was first enqueued.
-   * Used to track message age and re-enqueue before the 24-hour message lifetime expires.
-   */
-  messageQueuedAt: z.coerce.date().optional(),
 });
 
-const VERCEL_QUEUE_MAX_VISIBILITY = 39600; // 11 hours in seconds
-const VERCEL_QUEUE_MESSAGE_LIFETIME = 86400; // 24 hours in seconds
-const MESSAGE_LIFETIME_BUFFER = 3600; // 1 hour buffer before lifetime expires
+// Queue timing constants - can be overridden via environment variables for testing
+const VERCEL_QUEUE_MESSAGE_LIFETIME = Number(
+  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME ?? 86400 // 24 hours in seconds
+);
+const MESSAGE_LIFETIME_BUFFER = Number(
+  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME_BUFFER ?? 3600 // 1 hour buffer before lifetime expires
+);
 
 export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
@@ -33,16 +31,7 @@ export function createQueue(config?: APIConfig): Queue {
     headers: Object.fromEntries(headers.entries()),
   });
 
-  /**
-   * Internal function to send a message to the queue with optional messageQueuedAt override.
-   * This is used both for initial queue() calls and for re-enqueueing when extending message lifetime.
-   */
-  const sendMessage = async (
-    queueName: ValidQueueName,
-    payload: QueuePayload,
-    messageQueuedAt: Date,
-    opts?: Parameters<Queue['queue']>[2]
-  ) => {
+  const queue: Queue['queue'] = async (queueName, payload, opts) => {
     // zod v3 doesn't have the `encode` method. We only support zod v4 officially,
     // but codebases that pin zod v3 are still common.
     const hasEncoder = typeof MessageWrapper.encode === 'function';
@@ -57,7 +46,6 @@ export function createQueue(config?: APIConfig): Queue {
     const encoded = encoder({
       payload,
       queueName,
-      messageQueuedAt,
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     const { messageId } = await queueClient.send(
@@ -68,16 +56,11 @@ export function createQueue(config?: APIConfig): Queue {
     return { messageId: MessageId.parse(messageId) };
   };
 
-  const queue: Queue['queue'] = async (queueName, x, opts) => {
-    return sendMessage(queueName, x, new Date(), opts);
-  };
-
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return queueClient.handleCallback({
       [`${prefix}*`]: {
         default: async (body, meta) => {
-          const { payload, queueName, messageQueuedAt } =
-            MessageWrapper.parse(body);
+          const { payload, queueName } = MessageWrapper.parse(body);
           const result = await handler(payload, {
             queueName,
             messageId: MessageId.parse(meta.messageId),
@@ -86,43 +69,37 @@ export function createQueue(config?: APIConfig): Queue {
           if (typeof result?.timeoutSeconds === 'number') {
             const now = Date.now();
 
-            // Calculate how old this message is
-            const messageAge = messageQueuedAt
-              ? (now - messageQueuedAt.getTime()) / 1000 // Convert to seconds
-              : 0;
+            // Calculate how old this message is using the queue's createdAt timestamp
+            const messageAge = (now - meta.createdAt.getTime()) / 1000; // Convert to seconds
 
-            // Calculate when the message would next be processed
-            const timeUntilNextProcessing = Math.min(
-              result.timeoutSeconds,
-              VERCEL_QUEUE_MAX_VISIBILITY
-            );
-            const messageAgeAtNextProcessing =
-              messageAge + timeUntilNextProcessing;
+            // Calculate the maximum timeout this message can handle before expiring
+            const maxAllowedTimeout =
+              VERCEL_QUEUE_MESSAGE_LIFETIME -
+              MESSAGE_LIFETIME_BUFFER -
+              messageAge;
 
-            // If the message would exceed its lifetime before next processing,
-            // we need to re-enqueue a fresh message and acknowledge this one
-            if (
-              messageAgeAtNextProcessing >
-              VERCEL_QUEUE_MESSAGE_LIFETIME - MESSAGE_LIFETIME_BUFFER
-            ) {
-              // Re-enqueue with a fresh messageQueuedAt to reset the 24-hour clock.
+            if (maxAllowedTimeout <= 0) {
+              // Message is already at or past its safe limit, re-enqueue immediately
               // The new message will be delivered immediately, and the handler will
               // short-circuit by checking the persistent state (step.retryAfter or
               // wait_created event) and returning the remaining timeoutSeconds.
-              await sendMessage(queueName, payload, new Date());
+              console.log(
+                `[Workflows] Message at lifetime limit (age: ${Math.round(messageAge)}s, ` +
+                  `timeoutSeconds: ${result.timeoutSeconds}s, maxAllowedTimeout: ${Math.round(maxAllowedTimeout)}s, ` +
+                  `lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s). ` +
+                  `Re-enqueueing to reset 24-hour clock.`
+              );
+              await queue(queueName, payload);
 
               // Return undefined to acknowledge the current message
               return undefined;
-            }
-
-            // Otherwise, just clamp the timeout to the max visibility
-            const adjustedTimeoutSeconds = Math.min(
-              result.timeoutSeconds,
-              VERCEL_QUEUE_MAX_VISIBILITY
-            );
-
-            if (adjustedTimeoutSeconds !== result.timeoutSeconds) {
-              result.timeoutSeconds = adjustedTimeoutSeconds;
+            } else if (result.timeoutSeconds > maxAllowedTimeout) {
+              // Timeout would exceed message lifetime, clamp it
+              console.log(
+                `[Workflows] Clamping timeoutSeconds from ${result.timeoutSeconds}s to ${Math.round(maxAllowedTimeout)}s ` +
+                  `(age: ${Math.round(messageAge)}s, lifetime: ${VERCEL_QUEUE_MESSAGE_LIFETIME}s, buffer: ${MESSAGE_LIFETIME_BUFFER}s).`
+              );
+              result.timeoutSeconds = maxAllowedTimeout;
             }
           }
           return result;
