@@ -30,6 +30,10 @@
       "types": "./dist/agent/durable-agent.d.ts",
       "default": "./dist/agent/durable-agent.js"
     },
+    "./experimental-agent": {
+      "types": "./dist/agent/experimental-durable-agent.d.ts",
+      "default": "./dist/agent/experimental-durable-agent.js"
+    },
     "./anthropic": {
       "types": "./dist/providers/anthropic.d.ts",
       "default": "./dist/providers/anthropic.js"
@@ -72,6 +76,6 @@
     "@ai-sdk/openai": "2.0.72",
     "@ai-sdk/provider": "2.0.0",
     "@ai-sdk/xai": "2.0.37",
-    "zod": "catalog:"
+    "zod": "4.1.11"
   }
 }

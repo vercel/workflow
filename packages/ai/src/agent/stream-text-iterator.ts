@@ -1,5 +1,6 @@
 import type {
   LanguageModelV2,
+  LanguageModelV2CallOptions,
   LanguageModelV2Prompt,
   LanguageModelV2ToolCall,
   LanguageModelV2ToolResultPart,
@@ -7,11 +8,19 @@ import type {
 import type {
   StepResult,
   StreamTextOnStepFinishCallback,
+  ToolChoice,
   ToolSet,
   UIMessageChunk,
 } from 'ai';
 import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
-import type { PrepareStepCallback } from './durable-agent.js';
+import type {
+  GenerationSettings,
+  PrepareStepCallback,
+  StreamTextOnChunkCallback,
+  StreamTextOnErrorCallback,
+  StreamTextTransform,
+  TelemetrySettings,
+} from './durable-agent.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
 /**
@@ -23,6 +32,10 @@ export interface StreamTextIteratorYieldValue {
   toolCalls: LanguageModelV2ToolCall[];
   /** The conversation messages up to (and including) the tool call request */
   messages: LanguageModelV2Prompt;
+  /** The step result from the current step */
+  step?: StepResult<ToolSet>;
+  /** The current experimental context */
+  context?: unknown;
 }
 
 // This runs in the workflow context
@@ -32,18 +45,40 @@ export async function* streamTextIterator({
   writable,
   model,
   stopConditions,
+  maxSteps,
   sendStart = true,
   onStepFinish,
+  onChunk,
+  onError,
   prepareStep,
+  generationSettings,
+  toolChoice,
+  experimental_context,
+  experimental_telemetry,
+  includeRawChunks = false,
+  experimental_transform,
+  responseFormat,
 }: {
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
   writable: WritableStream<UIMessageChunk>;
   model: string | (() => Promise<LanguageModelV2>);
   stopConditions?: ModelStopCondition[] | ModelStopCondition;
+  maxSteps?: number;
   sendStart?: boolean;
   onStepFinish?: StreamTextOnStepFinishCallback<any>;
+  onChunk?: StreamTextOnChunkCallback;
+  onError?: StreamTextOnErrorCallback;
   prepareStep?: PrepareStepCallback<any>;
+  generationSettings?: GenerationSettings;
+  toolChoice?: ToolChoice<ToolSet>;
+  experimental_context?: unknown;
+  experimental_telemetry?: TelemetrySettings;
+  includeRawChunks?: boolean;
+  experimental_transform?:
+    | StreamTextTransform<ToolSet>
+    | Array<StreamTextTransform<ToolSet>>;
+  responseFormat?: LanguageModelV2CallOptions['responseFormat'];
 }): AsyncGenerator<
   StreamTextIteratorYieldValue,
   LanguageModelV2Prompt,
@@ -51,13 +86,39 @@ export async function* streamTextIterator({
 > {
   let conversationPrompt = [...prompt]; // Create a mutable copy
   let currentModel = model;
+  let currentGenerationSettings = generationSettings ?? {};
+  let currentToolChoice = toolChoice;
+  let currentContext = experimental_context;
 
   const steps: StepResult<any>[] = [];
   let done = false;
   let isFirstIteration = true;
   let stepNumber = 0;
 
+  // Default maxSteps to Infinity to preserve backwards compatibility
+  // (agent loops until completion unless explicitly limited)
+  const effectiveMaxSteps = maxSteps ?? Infinity;
+
+  // Convert transforms to array
+  const transforms = experimental_transform
+    ? Array.isArray(experimental_transform)
+      ? experimental_transform
+      : [experimental_transform]
+    : [];
+
   while (!done) {
+    // Check if we've exceeded the maximum number of steps
+    if (stepNumber >= effectiveMaxSteps) {
+      done = true;
+      break;
+    }
+
+    // Check for abort signal
+    if (currentGenerationSettings.abortSignal?.aborted) {
+      done = true;
+      break;
+    }
+
     // Call prepareStep callback before each step if provided
     if (prepareStep) {
       const prepareResult = await prepareStep({
@@ -65,81 +126,194 @@ export async function* streamTextIterator({
         stepNumber,
         steps,
         messages: conversationPrompt,
+        experimental_context: currentContext,
       });
 
       // Apply any overrides from prepareStep
       if (prepareResult.model !== undefined) {
         currentModel = prepareResult.model;
       }
+      // system override is handled at the DurableAgent level via prompt conversion
       if (prepareResult.messages !== undefined) {
         conversationPrompt = [...prepareResult.messages];
       }
+      if (prepareResult.experimental_context !== undefined) {
+        currentContext = prepareResult.experimental_context;
+      }
+      // Apply generation settings overrides
+      if (prepareResult.maxOutputTokens !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          maxOutputTokens: prepareResult.maxOutputTokens,
+        };
+      }
+      if (prepareResult.temperature !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          temperature: prepareResult.temperature,
+        };
+      }
+      if (prepareResult.topP !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          topP: prepareResult.topP,
+        };
+      }
+      if (prepareResult.topK !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          topK: prepareResult.topK,
+        };
+      }
+      if (prepareResult.presencePenalty !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          presencePenalty: prepareResult.presencePenalty,
+        };
+      }
+      if (prepareResult.frequencyPenalty !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          frequencyPenalty: prepareResult.frequencyPenalty,
+        };
+      }
+      if (prepareResult.stopSequences !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          stopSequences: prepareResult.stopSequences,
+        };
+      }
+      if (prepareResult.seed !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          seed: prepareResult.seed,
+        };
+      }
+      if (prepareResult.maxRetries !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          maxRetries: prepareResult.maxRetries,
+        };
+      }
+      if (prepareResult.headers !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          headers: prepareResult.headers,
+        };
+      }
+      if (prepareResult.providerOptions !== undefined) {
+        currentGenerationSettings = {
+          ...currentGenerationSettings,
+          providerOptions: prepareResult.providerOptions,
+        };
+      }
+      if (prepareResult.toolChoice !== undefined) {
+        currentToolChoice = prepareResult.toolChoice;
+      }
     }
 
-    const { toolCalls, finish, step } = await doStreamStep(
-      conversationPrompt,
-      currentModel,
-      writable,
-      toolsToModelTools(tools),
-      {
-        sendStart: sendStart && isFirstIteration,
-      }
-    );
-    isFirstIteration = false;
-    stepNumber++;
-    steps.push(step);
-
-    if (finish?.finishReason === 'tool-calls') {
-      // Add assistant message with tool calls to the conversation
-      conversationPrompt.push({
-        role: 'assistant',
-        content: toolCalls.map((toolCall) => ({
-          type: 'tool-call',
-          toolCallId: toolCall.toolCallId,
-          toolName: toolCall.toolName,
-          input: JSON.parse(toolCall.input),
-        })),
-      });
-
-      // Yield the tool calls along with the current conversation messages
-      // This allows executeTool to pass the conversation context to tool execute functions
-      const toolResults = yield { toolCalls, messages: conversationPrompt };
-
-      await writeToolOutputToUI(writable, toolResults);
-
-      conversationPrompt.push({
-        role: 'tool',
-        content: toolResults,
-      });
-
-      if (stopConditions) {
-        const stopConditionList = Array.isArray(stopConditions)
-          ? stopConditions
-          : [stopConditions];
-        if (stopConditionList.some((test) => test({ steps }))) {
-          done = true;
+    try {
+      const { toolCalls, finish, step } = await doStreamStep(
+        conversationPrompt,
+        currentModel,
+        writable,
+        toolsToModelTools(tools),
+        {
+          sendStart: sendStart && isFirstIteration,
+          onChunk,
+          ...currentGenerationSettings,
+          toolChoice: currentToolChoice,
+          includeRawChunks,
+          experimental_telemetry,
+          transforms,
+          responseFormat,
+          toolSet: tools,
         }
-      }
-    } else if (finish?.finishReason === 'stop') {
-      // Add assistant message with text content to the conversation
-      const textContent = step.content.filter(
-        (item) => item.type === 'text'
-      ) as Array<{ type: 'text'; text: string }>;
+      );
+      isFirstIteration = false;
+      stepNumber++;
+      steps.push(step);
 
-      if (textContent.length > 0) {
+      if (finish?.finishReason === 'tool-calls') {
+        // Add assistant message with tool calls to the conversation
         conversationPrompt.push({
           role: 'assistant',
-          content: textContent,
+          content: toolCalls.map((toolCall) => ({
+            type: 'tool-call',
+            toolCallId: toolCall.toolCallId,
+            toolName: toolCall.toolName,
+            input: JSON.parse(toolCall.input),
+          })),
         });
+
+        // Yield the tool calls along with the current conversation messages
+        // This allows executeTool to pass the conversation context to tool execute functions
+        const toolResults = yield {
+          toolCalls,
+          messages: conversationPrompt,
+          step,
+          context: currentContext,
+        };
+
+        await writeToolOutputToUI(writable, toolResults);
+
+        conversationPrompt.push({
+          role: 'tool',
+          content: toolResults,
+        });
+
+        if (stopConditions) {
+          const stopConditionList = Array.isArray(stopConditions)
+            ? stopConditions
+            : [stopConditions];
+          if (stopConditionList.some((test) => test({ steps }))) {
+            done = true;
+          }
+        }
+      } else if (finish?.finishReason === 'stop') {
+        // Add assistant message with text content to the conversation
+        const textContent = step.content.filter(
+          (item) => item.type === 'text'
+        ) as Array<{ type: 'text'; text: string }>;
+
+        if (textContent.length > 0) {
+          conversationPrompt.push({
+            role: 'assistant',
+            content: textContent,
+          });
+        }
+
+        done = true;
+      } else if (finish?.finishReason === 'length') {
+        // Model hit max tokens - stop but don't throw
+        done = true;
+      } else if (finish?.finishReason === 'content-filter') {
+        // Content filter triggered - stop but don't throw
+        done = true;
+      } else if (finish?.finishReason === 'error') {
+        // Model error - stop but don't throw
+        done = true;
+      } else if (finish?.finishReason === 'other') {
+        // Other reason - stop but don't throw
+        done = true;
+      } else if (finish?.finishReason === 'unknown') {
+        // Unknown reason - stop but don't throw
+        done = true;
+      } else if (!finish?.finishReason) {
+        // No finish reason - this might happen on incomplete streams
+        done = true;
+      } else {
+        throw new Error(`Unexpected finish reason: ${finish?.finishReason}`);
       }
 
-      done = true;
-    } else {
-      throw new Error(`Unexpected finish reason: ${finish?.finishReason}`);
-    }
-
-    if (onStepFinish) {
-      await onStepFinish(step);
+      if (onStepFinish) {
+        await onStepFinish(step);
+      }
+    } catch (error) {
+      if (onError) {
+        await onError({ error });
+      }
+      throw error;
     }
   }
 

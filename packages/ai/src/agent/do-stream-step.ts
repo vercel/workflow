@@ -4,27 +4,88 @@ import type {
   LanguageModelV2Prompt,
   LanguageModelV2StreamPart,
   LanguageModelV2ToolCall,
+  LanguageModelV2ToolChoice,
+  SharedV2ProviderOptions,
 } from '@ai-sdk/provider';
 import {
   gateway,
   type StepResult,
   type StopCondition,
+  type ToolChoice,
   type ToolSet,
   type UIMessageChunk,
 } from 'ai';
+import type {
+  ProviderOptions,
+  StreamTextOnChunkCallback,
+  StreamTextTransform,
+  TelemetrySettings,
+} from './durable-agent.js';
 
 export type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 
 export type ModelStopCondition = StopCondition<NoInfer<ToolSet>>;
+
+/**
+ * Options for the doStreamStep function.
+ */
+export interface DoStreamStepOptions {
+  sendStart?: boolean;
+  onChunk?: StreamTextOnChunkCallback;
+  maxOutputTokens?: number;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+  stopSequences?: string[];
+  seed?: number;
+  maxRetries?: number;
+  abortSignal?: AbortSignal;
+  headers?: Record<string, string | undefined>;
+  providerOptions?: ProviderOptions;
+  toolChoice?: ToolChoice<ToolSet>;
+  includeRawChunks?: boolean;
+  experimental_telemetry?: TelemetrySettings;
+  transforms?: Array<StreamTextTransform<ToolSet>>;
+  responseFormat?: LanguageModelV2CallOptions['responseFormat'];
+  /**
+   * The original ToolSet to pass to stream transforms.
+   * This is needed because transforms may need access to tool definitions.
+   */
+  toolSet?: ToolSet;
+}
+
+/**
+ * Convert AI SDK ToolChoice to LanguageModelV2ToolChoice
+ */
+function toLanguageModelToolChoice(
+  toolChoice: ToolChoice<ToolSet> | undefined
+): LanguageModelV2ToolChoice | undefined {
+  if (toolChoice === undefined) {
+    return undefined;
+  }
+  if (toolChoice === 'auto') {
+    return { type: 'auto' };
+  }
+  if (toolChoice === 'none') {
+    return { type: 'none' };
+  }
+  if (toolChoice === 'required') {
+    return { type: 'required' };
+  }
+  if (typeof toolChoice === 'object' && toolChoice.type === 'tool') {
+    return { type: 'tool', toolName: toolChoice.toolName };
+  }
+  return undefined;
+}
 
 export async function doStreamStep(
   conversationPrompt: LanguageModelV2Prompt,
   modelInit: string | (() => Promise<LanguageModelV2>),
   writable: WritableStream<UIMessageChunk>,
   tools?: LanguageModelV2CallOptions['tools'],
-  options?: {
-    sendStart?: boolean;
-  }
+  options?: DoStreamStepOptions
 ) {
   'use step';
 
@@ -39,19 +100,80 @@ export async function doStreamStep(
     );
   }
 
-  const result = await model.doStream({
+  // Build call options with all generation settings
+  const callOptions: LanguageModelV2CallOptions = {
     prompt: conversationPrompt,
     tools,
-  });
+    ...(options?.maxOutputTokens !== undefined && {
+      maxOutputTokens: options.maxOutputTokens,
+    }),
+    ...(options?.temperature !== undefined && {
+      temperature: options.temperature,
+    }),
+    ...(options?.topP !== undefined && { topP: options.topP }),
+    ...(options?.topK !== undefined && { topK: options.topK }),
+    ...(options?.presencePenalty !== undefined && {
+      presencePenalty: options.presencePenalty,
+    }),
+    ...(options?.frequencyPenalty !== undefined && {
+      frequencyPenalty: options.frequencyPenalty,
+    }),
+    ...(options?.stopSequences !== undefined && {
+      stopSequences: options.stopSequences,
+    }),
+    ...(options?.seed !== undefined && { seed: options.seed }),
+    ...(options?.abortSignal !== undefined && {
+      abortSignal: options.abortSignal,
+    }),
+    ...(options?.headers !== undefined && { headers: options.headers }),
+    ...(options?.providerOptions !== undefined && {
+      providerOptions: options.providerOptions as SharedV2ProviderOptions,
+    }),
+    ...(options?.toolChoice !== undefined && {
+      toolChoice: toLanguageModelToolChoice(options.toolChoice),
+    }),
+    ...(options?.includeRawChunks !== undefined && {
+      includeRawChunks: options.includeRawChunks,
+    }),
+    ...(options?.responseFormat !== undefined && {
+      responseFormat: options.responseFormat,
+    }),
+  };
+
+  const result = await model.doStream(callOptions);
 
   let finish: FinishPart | undefined;
   const toolCalls: LanguageModelV2ToolCall[] = [];
   const chunks: LanguageModelV2StreamPart[] = [];
+  const onChunk = options?.onChunk;
+  const includeRawChunks = options?.includeRawChunks ?? false;
 
-  await result.stream
+  // Build the stream pipeline
+  let stream: ReadableStream<LanguageModelV2StreamPart> = result.stream;
+
+  // Apply custom transforms if provided
+  if (options?.transforms && options.transforms.length > 0) {
+    let terminated = false;
+    const stopStream = () => {
+      terminated = true;
+    };
+
+    for (const transform of options.transforms) {
+      if (!terminated) {
+        stream = stream.pipeThrough(
+          transform({
+            tools: options.toolSet ?? ({} as ToolSet),
+            stopStream,
+          })
+        );
+      }
+    }
+  }
+
+  await stream
     .pipeThrough(
       new TransformStream({
-        transform(chunk, controller) {
+        async transform(chunk, controller) {
           if (chunk.type === 'tool-call') {
             toolCalls.push({
               ...chunk,
@@ -61,6 +183,12 @@ export async function doStreamStep(
             finish = chunk;
           }
           chunks.push(chunk);
+
+          // Call onChunk callback if provided
+          if (onChunk) {
+            await onChunk({ chunk });
+          }
+
           controller.enqueue(chunk);
         },
       })
@@ -154,86 +282,70 @@ export async function doStreamStep(
               break;
             }
 
-            // case "file": {
-            //   controller.enqueue({
-            //     type: "file",
-            //     mediaType: part.file.mediaType,
-            //     url: `data:${part.file.mediaType};base64,${part.file.base64}`,
-            //   });
-            //   break;
-            // }
+            case 'file': {
+              controller.enqueue({
+                type: 'file',
+                mediaType: part.mediaType,
+                url: `data:${part.mediaType};base64,${part.data}`,
+              });
+              break;
+            }
 
-            // case "source": {
-            //   if (sendSources && part.sourceType === "url") {
-            //     controller.enqueue({
-            //       type: "source-url",
-            //       sourceId: part.id,
-            //       url: part.url,
-            //       title: part.title,
-            //       ...(part.providerMetadata != null
-            //         ? { providerMetadata: part.providerMetadata }
-            //         : {}),
-            //     });
-            //   }
+            case 'source': {
+              if (part.sourceType === 'url') {
+                controller.enqueue({
+                  type: 'source-url',
+                  sourceId: part.id,
+                  url: part.url,
+                  title: part.title,
+                  ...(part.providerMetadata != null
+                    ? { providerMetadata: part.providerMetadata }
+                    : {}),
+                });
+              }
 
-            //   if (sendSources && part.sourceType === "document") {
-            //     controller.enqueue({
-            //       type: "source-document",
-            //       sourceId: part.id,
-            //       mediaType: part.mediaType,
-            //       title: part.title,
-            //       filename: part.filename,
-            //       ...(part.providerMetadata != null
-            //         ? { providerMetadata: part.providerMetadata }
-            //         : {}),
-            //     });
-            //   }
-            //   break;
-            // }
+              if (part.sourceType === 'document') {
+                controller.enqueue({
+                  type: 'source-document',
+                  sourceId: part.id,
+                  mediaType: part.mediaType,
+                  title: part.title,
+                  filename: part.filename,
+                  ...(part.providerMetadata != null
+                    ? { providerMetadata: part.providerMetadata }
+                    : {}),
+                });
+              }
+              break;
+            }
 
-            // case "tool-input-start": {
-            //   const dynamic = isDynamic(part);
+            case 'tool-input-start': {
+              controller.enqueue({
+                type: 'tool-input-start',
+                toolCallId: part.id,
+                toolName: part.toolName,
+                ...(part.providerExecuted != null
+                  ? { providerExecuted: part.providerExecuted }
+                  : {}),
+              });
+              break;
+            }
 
-            //   controller.enqueue({
-            //     type: "tool-input-start",
-            //     toolCallId: part.id,
-            //     toolName: part.toolName,
-            //     ...(part.providerExecuted != null
-            //       ? { providerExecuted: part.providerExecuted }
-            //       : {}),
-            //     ...(dynamic != null ? { dynamic } : {}),
-            //   });
-            //   break;
-            // }
+            case 'tool-input-delta': {
+              controller.enqueue({
+                type: 'tool-input-delta',
+                toolCallId: part.id,
+                inputTextDelta: part.delta,
+              });
+              break;
+            }
 
-            // case "tool-input-delta": {
-            //   controller.enqueue({
-            //     type: "tool-input-delta",
-            //     toolCallId: part.id,
-            //     inputTextDelta: part.delta,
-            //   });
-            //   break;
-            // }
+            case 'tool-input-end': {
+              // End of tool input streaming - no UI chunk needed
+              break;
+            }
 
             case 'tool-call': {
-              // const dynamic = isDynamic(part);
-
-              // if (part.invalid) {
-              //   controller.enqueue({
-              //     type: "tool-input-error",
-              //     toolCallId: part.toolCallId,
-              //     toolName: part.toolName,
-              //     input: part.input,
-              //     ...(part.providerExecuted != null
-              //       ? { providerExecuted: part.providerExecuted }
-              //       : {}),
-              //     ...(part.providerMetadata != null
-              //       ? { providerMetadata: part.providerMetadata }
-              //       : {}),
-              //     ...(dynamic != null ? { dynamic } : {}),
-              //     errorText: onError(part.error),
-              //   });
-              // } else {
               controller.enqueue({
                 type: 'tool-input-available',
                 toolCallId: part.toolCallId,
@@ -245,61 +357,21 @@ export async function doStreamStep(
                 ...(part.providerMetadata != null
                   ? { providerMetadata: part.providerMetadata }
                   : {}),
-                // ...(dynamic != null ? { dynamic } : {}),
               });
-              // }
               break;
             }
 
-            // case "tool-approval-request": {
-            //   controller.enqueue({
-            //     type: "tool-approval-request",
-            //     approvalId: part.approvalId,
-            //     toolCallId: part.toolCall.toolCallId,
-            //   });
-            //   break;
-            // }
-
-            // case "tool-result": {
-            //   const dynamic = isDynamic(part);
-
-            //   controller.enqueue({
-            //     type: "tool-output-available",
-            //     toolCallId: part.toolCallId,
-            //     output: part.output,
-            //     ...(part.providerExecuted != null
-            //       ? { providerExecuted: part.providerExecuted }
-            //       : {}),
-            //     ...(part.preliminary != null
-            //       ? { preliminary: part.preliminary }
-            //       : {}),
-            //     ...(dynamic != null ? { dynamic } : {}),
-            //   });
-            //   break;
-            // }
-
-            // case "tool-error": {
-            //   const dynamic = isDynamic(part);
-
-            //   controller.enqueue({
-            //     type: "tool-output-error",
-            //     toolCallId: part.toolCallId,
-            //     errorText: onError(part.error),
-            //     ...(part.providerExecuted != null
-            //       ? { providerExecuted: part.providerExecuted }
-            //       : {}),
-            //     ...(dynamic != null ? { dynamic } : {}),
-            //   });
-            //   break;
-            // }
-
-            // case "tool-output-denied": {
-            //   controller.enqueue({
-            //     type: "tool-output-denied",
-            //     toolCallId: part.toolCallId,
-            //   });
-            //   break;
-            // }
+            case 'tool-result': {
+              controller.enqueue({
+                type: 'tool-output-available',
+                toolCallId: part.toolCallId,
+                output: part.result,
+                ...(part.providerExecuted != null
+                  ? { providerExecuted: part.providerExecuted }
+                  : {}),
+              });
+              break;
+            }
 
             case 'error': {
               const error = part.error;
@@ -312,72 +384,41 @@ export async function doStreamStep(
               break;
             }
 
-            // case "start-step": {
-            //   controller.enqueue({ type: "start-step" });
-            //   break;
-            // }
+            case 'stream-start': {
+              // Stream start is internal, no UI chunk needed
+              break;
+            }
 
-            // case "finish-step": {
-            //   controller.enqueue({ type: "finish-step" });
-            //   break;
-            // }
+            case 'response-metadata': {
+              // Response metadata is internal, no UI chunk needed
+              break;
+            }
 
-            // case "start": {
-            //   if (sendStart) {
-            //     controller.enqueue({
-            //       type: "start",
-            //       ...(messageMetadataValue != null
-            //         ? { messageMetadata: messageMetadataValue }
-            //         : {}),
-            //       ...(responseMessageId != null
-            //         ? { messageId: responseMessageId }
-            //         : {}),
-            //     });
-            //   }
-            //   break;
-            // }
+            case 'finish': {
+              // Finish is handled separately
+              break;
+            }
 
-            // case "finish": {
-            //   if (sendFinish) {
-            //     controller.enqueue({
-            //       type: "finish",
-            //       ...(messageMetadataValue != null
-            //         ? { messageMetadata: messageMetadataValue }
-            //         : {}),
-            //     });
-            //   }
-            //   break;
-            // }
+            case 'raw': {
+              // Raw chunks are only included if explicitly requested
+              if (includeRawChunks) {
+                // Raw chunks contain provider-specific data
+                // We don't have a direct mapping to UIMessageChunk
+                // but we can log or handle them if needed
+              }
+              break;
+            }
 
-            // case "abort": {
-            //   controller.enqueue(part);
-            //   break;
-            // }
-
-            // case "tool-input-end": {
-            //   break;
-            // }
-
-            // case "raw": {
-            //   // Raw chunks are not included in UI message streams
-            //   // as they contain provider-specific data for developer use
-            //   break;
-            // }
-
-            // default: {
-            //   const exhaustiveCheck: never = partType;
-            //   throw new Error(`Unknown chunk type: ${exhaustiveCheck}`);
-            // }
+            default: {
+              // Handle any other chunk types gracefully
+              // const exhaustiveCheck: never = partType;
+              // console.warn(`Unknown chunk type: ${partType}`);
+            }
           }
         },
       })
     )
     .pipeTo(writable, { preventClose: true });
-
-  // if (!finish) {
-  //   // This will cause the step to be retried
-  //   throw new Error('LLM stream ended without a "finish" chunk');
-  // }
 
   const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
   return { toolCalls, finish, step };
@@ -419,6 +460,48 @@ function chunksToStep(
       chunk.type === 'response-metadata'
   );
 
+  // Extract files from file chunks
+  // File chunks contain mediaType and data (base64 string or Uint8Array)
+  // GeneratedFile requires both base64 and uint8Array properties
+  const files = chunks
+    .filter(
+      (chunk): chunk is Extract<typeof chunk, { type: 'file' }> =>
+        chunk.type === 'file'
+    )
+    .map((chunk) => {
+      const data = chunk.data;
+      // If data is already a Uint8Array, convert to base64; otherwise use as-is
+      if (data instanceof Uint8Array) {
+        // Convert Uint8Array to base64 string
+        const base64 = btoa(String.fromCharCode(...data));
+        return {
+          mediaType: chunk.mediaType,
+          base64,
+          uint8Array: data,
+        };
+      } else {
+        // Data is base64 string, decode to Uint8Array
+        const binaryString = atob(data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return {
+          mediaType: chunk.mediaType,
+          base64: data,
+          uint8Array: bytes,
+        };
+      }
+    });
+
+  // Extract sources from source chunks
+  const sources = chunks
+    .filter(
+      (chunk): chunk is Extract<typeof chunk, { type: 'source' }> =>
+        chunk.type === 'source'
+    )
+    .map((chunk) => chunk);
+
   const stepResult: StepResult<any> = {
     content: [
       ...(text ? [{ type: 'text' as const, text }] : []),
@@ -436,8 +519,8 @@ function chunksToStep(
       text: chunk.delta,
     })),
     reasoningText: reasoningText || undefined,
-    files: [],
-    sources: [],
+    files,
+    sources,
     toolCalls: toolCalls.map((toolCall) => ({
       type: 'tool-call' as const,
       toolCallId: toolCall.toolCallId,
