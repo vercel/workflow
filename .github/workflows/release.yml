@@ -68,8 +68,9 @@ jobs:
         if: steps.changesets.outputs.published == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
         run: |
-          # Generate release notes
+          # Generate release notes (PUBLISHED_PACKAGES filters to only include packages from this release)
           RELEASE_JSON=$(node scripts/generate-release-notes.mjs)
           TAG=$(echo "$RELEASE_JSON" | jq -r '.tag')
           TITLE=$(echo "$RELEASE_JSON" | jq -r '.title')
