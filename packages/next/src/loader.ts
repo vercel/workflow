@@ -145,9 +145,7 @@ export default async function workflowLoader(
     normalizedSource.trim().startsWith(STUB_CONTENT)
   ) {
     // Wait for build to complete
-    console.log('waiting for build complete', filename);
     await waitForBuildComplete();
-    console.log('build complete', filename);
 
     // Read the actual generated file content
     const actualContent = await readFile(

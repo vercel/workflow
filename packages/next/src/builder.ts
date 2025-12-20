@@ -1,5 +1,6 @@
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import { join, resolve } from 'node:path';
 import type { NextConfig } from 'next';
 
@@ -284,13 +285,6 @@ export async function getNextBuilder() {
 
                 if (message.type === 'file-discovered') {
                   const { filePath, hasWorkflow, hasStep } = message;
-                  console.log(
-                    'file-discovered',
-                    message.filePath,
-                    'pid:',
-                    process.pid,
-                    new Date().toLocaleTimeString()
-                  );
 
                   if (hasWorkflow) {
                     workflowFiles.add(filePath);
@@ -332,10 +326,6 @@ export async function getNextBuilder() {
             // Expose the port via environment variable
             process.env.WORKFLOW_SOCKET_PORT = String(address.port);
           }
-          console.log(
-            'started socket server',
-            process.env.WORKFLOW_SOCKET_PORT
-          );
           resolve();
         });
       });
@@ -355,7 +345,7 @@ export async function getNextBuilder() {
       let debounceTimer: NodeJS.Timeout | null = null;
 
       const BUILD_DEBOUNCE_MS =
-        process.env.NODE_ENV === 'development' ? 500 : 1_000;
+        process.env.NODE_ENV === 'development' ? 500 : 1_500;
 
       // Attempt to load cached workflows/steps from previous build
       const cache = await this.readWorkflowsCache();
@@ -389,25 +379,18 @@ export async function getNextBuilder() {
           const inputFiles = Array.from(allFiles);
 
           if (inputFiles.length > 0) {
-            console.log(
-              `Triggering build with ${inputFiles.length} discovered files`,
-              new Date().toLocaleTimeString(),
-              'pid:',
-              process.pid
-            );
             try {
+              buildTriggered = true;
               await this.build(inputFiles);
               // Write cache after successful build
               await this.writeWorkflowsCache(workflowFiles, stepFiles);
-              buildTriggered = true;
             } catch (error) {
               if (process.env.NODE_ENV !== 'development') {
                 throw error;
               }
-              console.error('Build failed:', error);
+              console.error('Workflows build failed:', error);
             }
           }
-          debounceTimer = null;
         }, BUILD_DEBOUNCE_MS);
       };
     }
@@ -418,6 +401,13 @@ export async function getNextBuilder() {
       // CPU count as that's the number of workers it uses so currently
       // we're fine with > 3 vCPU but <= 3 vCPUs and we won't be able to
       // discover workflows/steps
+      const parallelismCount = os.availableParallelism();
+      if (parallelismCount < 4) {
+        console.warn(
+          `Available parallelism of ${parallelismCount} is less than needed 4. This can cause workflows/steps to fail to discover properly in turbopack`
+        );
+      }
+
       const routeStubContent = "export * from './inner'";
       // this needs to change on each build so can refresh workflows
       const innerStubContent = 'WORKFLOW_INNER_STUB_FILE_' + Date.now();
