@@ -14,11 +14,16 @@ export async function GET(
     notFound();
   }
 
-  return new Response(await getLLMText(page), {
-    headers: {
-      'Content-Type': 'text/markdown',
-    },
-  });
+  return new Response(
+    (await getLLMText(page)) +
+      `\n\n## Sitemap
+[Overview of all docs pages](/sitemap.md)\n`,
+    {
+      headers: {
+        'Content-Type': 'text/markdown',
+      },
+    }
+  );
 }
 
 export function generateStaticParams() {
