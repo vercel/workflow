@@ -6,12 +6,23 @@ export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 
 export * from './api/workflow-api-client';
 export type { EnvMap } from './api/workflow-server-actions';
-
+export type {
+  HookActionCallbacks,
+  HookActionsDropdownItemProps,
+  HookResolveModalProps,
+  UseHookActionsOptions,
+  UseHookActionsReturn,
+} from './hook-actions';
+export {
+  HookResolveModalWrapper,
+  ResolveHookDropdownItem,
+  ResolveHookModal,
+  useHookActions,
+} from './hook-actions';
 export type { EventAnalysis } from './lib/event-analysis';
 export {
   analyzeEvents,
   hasPendingHooksFromEvents,
-  hasPendingSleepsFromEvents,
   hasPendingStepsFromEvents,
   isTerminalStatus,
   shouldShowReenqueueButton,
