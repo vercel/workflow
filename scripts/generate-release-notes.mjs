@@ -10,9 +10,12 @@
  * Output: JSON with { tag, title, body } for the GitHub release
  */
 
+import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const GITHUB_REPO = 'vercel/workflow';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = join(__dirname, '..');
@@ -137,12 +140,60 @@ function parseChangelog(changelogPath) {
   };
 }
 
+// Cache for PR lookups to avoid duplicate API calls
+const prCache = new Map();
+
+/**
+ * Look up PR information for a commit hash using GitHub CLI
+ * Returns { number, user } or null if not found
+ */
+function lookupPRForCommit(commitHash) {
+  if (prCache.has(commitHash)) {
+    return prCache.get(commitHash);
+  }
+
+  try {
+    const result = execSync(
+      `gh api repos/${GITHUB_REPO}/commits/${commitHash}/pulls --jq '.[0] | {number: .number, user: .user.login}'`,
+      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (result && result !== 'null') {
+      const pr = JSON.parse(result);
+      prCache.set(commitHash, pr);
+      return pr;
+    }
+  } catch {
+    // Silently fail - PR lookup is best-effort
+  }
+
+  prCache.set(commitHash, null);
+  return null;
+}
+
 /**
  * Format a single change entry for the release notes
  * Input format: [#541](url) [`hash`](url) Thanks [@user](url)! - description
+ * OR: hash: description (for entries without PR links)
  * Output format: - [#541](url) [`hash`](url) [@user](url) - description
  */
 function formatChange(change) {
+  // Check if this is a commit-only entry (format: "hash: description")
+  const commitOnlyMatch = change.match(/^([a-f0-9]{7,40}):\s*(.+)$/i);
+  if (commitOnlyMatch) {
+    const [, commitHash, description] = commitOnlyMatch;
+    const pr = lookupPRForCommit(commitHash);
+
+    if (pr) {
+      // Format with PR link
+      return `- [#${pr.number}](https://github.com/${GITHUB_REPO}/pull/${pr.number}) [\`${commitHash}\`](https://github.com/${GITHUB_REPO}/commit/${commitHash}) @${pr.user} - ${description}`;
+    } else {
+      // No PR found, just format with commit link
+      return `- [\`${commitHash}\`](https://github.com/${GITHUB_REPO}/commit/${commitHash}) - ${description}`;
+    }
+  }
+
+  // Regular format with PR links already present
   // Remove "Thanks " prefix if present
   let formatted = change.replace(/Thanks\s+/g, '');
   // Remove trailing "!" before the dash
