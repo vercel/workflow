@@ -113,8 +113,8 @@ async function waitForBuildComplete(): Promise<void> {
     socket.on('data', onData);
 
     // Send trigger-build message
-    const message = JSON.stringify({ type: 'trigger-build' }) + '\n';
-    socket.write(message);
+    // const message = JSON.stringify({ type: 'trigger-build' }) + '\n';
+    // socket.write(message);
   });
 }
 
@@ -138,7 +138,6 @@ export default async function workflowLoader(
     normalizedFilename.includes('.well-known/workflow/v1/') &&
     (normalizedFilename.includes('/flow/inner.js') ||
       normalizedFilename.includes('/step/inner.js') ||
-      normalizedFilename.includes('/webhook/inner.js') ||
       normalizedFilename.includes('/webhook/[token]/inner.js'));
 
   if (
@@ -146,7 +145,9 @@ export default async function workflowLoader(
     normalizedSource.trim().startsWith(STUB_CONTENT)
   ) {
     // Wait for build to complete
+    console.log('waiting for build complete', filename);
     await waitForBuildComplete();
+    console.log('build complete', filename);
 
     // Read the actual generated file content
     const actualContent = await readFile(

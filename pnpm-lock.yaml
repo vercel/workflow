@@ -616,16 +616,10 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
-      semver:
-        specifier: 7.7.3
-        version: 7.7.3
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
-      '@types/semver':
-        specifier: 7.7.1
-        version: 7.7.1
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -6499,9 +6493,6 @@ packages:
 
   '@types/seedrandom@3.0.8':
     resolution: {integrity: sha512-TY1eezMU2zH2ozQoAFAQFOPpvP15g+ZgSfTZt31AUUH/Rxtnz3H+A/Sv1Snw2/amp//omibc+AEkTaA8KUeOLQ==}
-
-  '@types/semver@7.7.1':
-    resolution: {integrity: sha512-FmgJfu+MOcQ370SD0ev7EI8TlCAfKYU+B4m5T3yXc1CiRN94g/SZPtsCkk506aUDtlMnFZvasDwHHUcZUEaYuA==}
 
   '@types/send@0.17.6':
     resolution: {integrity: sha512-Uqt8rPBE8SY0RK8JB1EzVOIZ32uqy8HwdxCnoCOsYrvnswqmFZ/k+9Ikidlk/ImhsdvBsloHbAlewb2IEBV/Og==}
@@ -19092,8 +19083,6 @@ snapshots:
   '@types/resolve@1.20.2': {}
 
   '@types/seedrandom@3.0.8': {}
-
-  '@types/semver@7.7.1': {}
 
   '@types/send@0.17.6':
     dependencies:

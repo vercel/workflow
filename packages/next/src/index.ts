@@ -1,5 +1,4 @@
 import type { NextConfig } from 'next';
-import semver from 'semver';
 import { getNextBuilder } from './builder.js';
 
 export function withWorkflow(
@@ -59,8 +58,6 @@ export function withWorkflow(
       nextConfig.turbopack.rules = {};
     }
     const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = require('next/package.json').version;
-    const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
     for (const key of [
       '*.tsx',
@@ -73,22 +70,6 @@ export function withWorkflow(
       '*.cts',
     ]) {
       nextConfig.turbopack.rules[key] = {
-        ...(supportsTurboCondition
-          ? {
-              condition: {
-                ...existingRules[key]?.condition,
-                any: [
-                  ...(existingRules[key]?.condition.any || []),
-                  {
-                    content: /(use workflow|use step)/,
-                  },
-                  {
-                    path: /.*\.well-known[/\\]workflow.*/,
-                  },
-                ],
-              },
-            }
-          : {}),
         loaders: [...(existingRules[key]?.loaders || []), loaderPath],
       };
     }

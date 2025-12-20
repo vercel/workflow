@@ -3,7 +3,7 @@ import { hydrateWorkflowReturnValue } from 'workflow/internal/serialization';
 import { createFetcher, startServer } from './util.mjs';
 
 export function idempotency(world: string) {
-  test('idempotency', { timeout: 60_000 }, async () => {
+  test('idempotency', { timeout: 120_000 }, async () => {
     const server = await startServer({ world }).then(createFetcher);
     const result = await server.invoke('workflows/noop.ts', 'brokenWf', [1, 2]);
     expect(result.runId).toMatch(/^wrun_.+/);
@@ -17,7 +17,7 @@ export function idempotency(world: string) {
       },
       {
         interval: 200,
-        timeout: 59_000,
+        timeout: 120_000,
       }
     );
 

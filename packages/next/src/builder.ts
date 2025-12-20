@@ -255,58 +255,16 @@ export async function getNextBuilder() {
       const workflowFiles = new Set<string>();
       const stepFiles = new Set<string>();
       const clients = new Set<any>();
-      let debounceTimer: NodeJS.Timeout | null = null;
-
-      const BUILD_DEBOUNCE_MS =
-        process.env.NODE_ENV === 'development' ? 500 : 2_500;
-
-      // Attempt to load cached workflows/steps from previous build
-      const cache = await this.readWorkflowsCache();
-      if (cache) {
-        for (const file of cache.workflowFiles) {
-          workflowFiles.add(file);
-        }
-        for (const file of cache.stepFiles) {
-          stepFiles.add(file);
-        }
-      }
-
-      // Debounced build trigger
-
-      const triggerBuild = () => {
-        if (debounceTimer) {
-          clearTimeout(debounceTimer);
-        }
-
-        debounceTimer = setTimeout(async () => {
-          // Combine workflow and step files into single array
-          const allFiles = new Set([...workflowFiles, ...stepFiles]);
-          const inputFiles = Array.from(allFiles);
-
-          if (inputFiles.length > 0) {
-            console.log(
-              `Triggering build with ${inputFiles.length} discovered files`,
-              new Date().toLocaleTimeString()
-            );
-            try {
-              await this.build(inputFiles);
-              // Write cache after successful build
-              await this.writeWorkflowsCache(workflowFiles, stepFiles);
-            } catch (error) {
-              if (process.env.NODE_ENV !== 'development') {
-                throw error;
-              }
-              console.error('Build failed:', error);
-            }
-          }
-          debounceTimer = null;
-        }, BUILD_DEBOUNCE_MS);
-      };
+      let buildTriggered = false;
 
       // Create TCP server
       const server = createServer((socket) => {
         socket.setNoDelay(true);
         clients.add(socket);
+
+        if (buildTriggered && process.env.NODE_ENV === 'production') {
+          socket.write(JSON.stringify({ type: 'build-complete' }) + '\n');
+        }
 
         let buffer = '';
 
@@ -326,6 +284,13 @@ export async function getNextBuilder() {
 
                 if (message.type === 'file-discovered') {
                   const { filePath, hasWorkflow, hasStep } = message;
+                  console.log(
+                    'file-discovered',
+                    message.filePath,
+                    'pid:',
+                    process.pid,
+                    new Date().toLocaleTimeString()
+                  );
 
                   if (hasWorkflow) {
                     workflowFiles.add(filePath);
@@ -367,6 +332,10 @@ export async function getNextBuilder() {
             // Expose the port via environment variable
             process.env.WORKFLOW_SOCKET_PORT = String(address.port);
           }
+          console.log(
+            'started socket server',
+            process.env.WORKFLOW_SOCKET_PORT
+          );
           resolve();
         });
       });
@@ -382,9 +351,73 @@ export async function getNextBuilder() {
           }
         },
       };
+
+      let debounceTimer: NodeJS.Timeout | null = null;
+
+      const BUILD_DEBOUNCE_MS =
+        process.env.NODE_ENV === 'development' ? 500 : 1_000;
+
+      // Attempt to load cached workflows/steps from previous build
+      const cache = await this.readWorkflowsCache();
+      if (cache) {
+        for (const file of cache.workflowFiles) {
+          workflowFiles.add(file);
+        }
+        for (const file of cache.stepFiles) {
+          stepFiles.add(file);
+        }
+      }
+
+      // Debounced build trigger
+
+      const triggerBuild = () => {
+        if (buildTriggered && process.env.NODE_ENV === 'production') {
+          // can't run another build after one has already been done
+          // in production mode as it won't have any affect since after
+          // the first is done we resolve the loaders for the stub entries
+          // and they can't be refreshed/rebuilt after that in production
+          return;
+        }
+
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+
+        debounceTimer = setTimeout(async () => {
+          // Combine workflow and step files into single array
+          const allFiles = new Set([...workflowFiles, ...stepFiles]);
+          const inputFiles = Array.from(allFiles);
+
+          if (inputFiles.length > 0) {
+            console.log(
+              `Triggering build with ${inputFiles.length} discovered files`,
+              new Date().toLocaleTimeString(),
+              'pid:',
+              process.pid
+            );
+            try {
+              await this.build(inputFiles);
+              // Write cache after successful build
+              await this.writeWorkflowsCache(workflowFiles, stepFiles);
+              buildTriggered = true;
+            } catch (error) {
+              if (process.env.NODE_ENV !== 'development') {
+                throw error;
+              }
+              console.error('Build failed:', error);
+            }
+          }
+          debounceTimer = null;
+        }, BUILD_DEBOUNCE_MS);
+      };
     }
 
     private async writeStubFiles(usersAppDir: string): Promise<void> {
+      // NOTE: there is a limitation with turbopack that we can only
+      // have number of virtual entries with pending promise less than
+      // CPU count as that's the number of workers it uses so currently
+      // we're fine with > 3 vCPU but <= 3 vCPUs and we won't be able to
+      // discover workflows/steps
       const routeStubContent = "export * from './inner'";
       // this needs to change on each build so can refresh workflows
       const innerStubContent = 'WORKFLOW_INNER_STUB_FILE_' + Date.now();
@@ -393,13 +426,11 @@ export async function getNextBuilder() {
       // Ensure directories exist
       await mkdir(join(workflowDir, 'flow'), { recursive: true });
       await mkdir(join(workflowDir, 'step'), { recursive: true });
-      await mkdir(join(workflowDir, 'webhook'), { recursive: true });
       await mkdir(join(workflowDir, 'webhook/[token]'), { recursive: true });
 
       // Write route.ts stub files (re-export from inner)
       await writeFile(join(workflowDir, 'flow/route.js'), routeStubContent);
       await writeFile(join(workflowDir, 'step/route.js'), routeStubContent);
-      await writeFile(join(workflowDir, 'webhook/route.js'), routeStubContent);
       await writeFile(
         join(workflowDir, 'webhook/[token]/route.js'),
         routeStubContent
@@ -408,7 +439,6 @@ export async function getNextBuilder() {
       // Write inner.js stub files (actual stub marker)
       await writeFile(join(workflowDir, 'flow/inner.js'), innerStubContent);
       await writeFile(join(workflowDir, 'step/inner.js'), innerStubContent);
-      await writeFile(join(workflowDir, 'webhook/inner.js'), innerStubContent);
       await writeFile(
         join(workflowDir, 'webhook/[token]/inner.js'),
         innerStubContent
