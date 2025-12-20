@@ -108,10 +108,8 @@ export function withWorkflow(
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
       phase !== 'phase-production-server'
     ) {
-      const shouldWatch = process.env.NODE_ENV === 'development';
       const NextBuilder = await getNextBuilder();
       const workflowBuilder = new NextBuilder({
-        watch: shouldWatch,
         // discover workflows from pages/app entries
         dirs: ['pages', 'app', 'src/pages', 'src/app'],
         workingDir: process.cwd(),
@@ -123,7 +121,7 @@ export function withWorkflow(
       });
 
       // Pass the nextConfig to the builder so it can access distDir
-      workflowBuilder.setNextConfig(nextConfig);
+      workflowBuilder.setNextConfig(nextConfig, phase);
 
       await workflowBuilder.init();
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';

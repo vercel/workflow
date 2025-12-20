@@ -22,10 +22,12 @@ export async function getNextBuilder() {
 
   class NextBuilder extends BaseBuilderClass {
     private socketIO?: any;
+    private isDevServer?: boolean;
     private nextConfig?: NextConfig;
 
-    setNextConfig(config: NextConfig) {
+    setNextConfig(config: NextConfig, phase: string) {
       this.nextConfig = config;
+      this.isDevServer = phase === 'phase-development-server';
     }
 
     private getDistDir(): string {
@@ -129,7 +131,7 @@ export async function getNextBuilder() {
 
     private async writeFunctionsConfig(outputDir: string) {
       // we don't run this in development mode as it's not needed
-      if (process.env.NODE_ENV === 'development') {
+      if (this.isDevServer) {
         return;
       }
       const generatedConfig = {
@@ -263,7 +265,7 @@ export async function getNextBuilder() {
         socket.setNoDelay(true);
         clients.add(socket);
 
-        if (buildTriggered && process.env.NODE_ENV === 'production') {
+        if (buildTriggered && !this.isDevServer) {
           socket.write(JSON.stringify({ type: 'build-complete' }) + '\n');
         }
 
@@ -286,16 +288,32 @@ export async function getNextBuilder() {
                 if (message.type === 'file-discovered') {
                   const { filePath, hasWorkflow, hasStep } = message;
 
+                  const knownFile =
+                    workflowFiles.has(filePath) || stepFiles.has(filePath);
+
                   if (hasWorkflow) {
                     workflowFiles.add(filePath);
+                  } else {
+                    workflowFiles.delete(filePath);
                   }
 
                   if (hasStep) {
                     stepFiles.add(filePath);
+                  } else {
+                    stepFiles.delete(filePath);
                   }
 
-                  // Trigger debounced build
-                  triggerBuild();
+                  // Trigger debounced build if the file was previously seen
+                  // or was steps or workflows currently
+                  if (
+                    // in non-dev we always update debounce on activity
+                    !this.isDevServer ||
+                    hasWorkflow ||
+                    hasStep ||
+                    knownFile
+                  ) {
+                    triggerBuild();
+                  }
                 } else if (message.type === 'trigger-build') {
                   // enqueue new build if one isn't already pending
                   triggerBuild();
@@ -344,8 +362,7 @@ export async function getNextBuilder() {
 
       let debounceTimer: NodeJS.Timeout | null = null;
 
-      const BUILD_DEBOUNCE_MS =
-        process.env.NODE_ENV === 'development' ? 500 : 1_500;
+      const BUILD_DEBOUNCE_MS = this.isDevServer ? 500 : 2_000;
 
       // Attempt to load cached workflows/steps from previous build
       const cache = await this.readWorkflowsCache();
@@ -361,35 +378,32 @@ export async function getNextBuilder() {
       // Debounced build trigger
 
       const triggerBuild = () => {
-        if (buildTriggered && process.env.NODE_ENV === 'production') {
-          // can't run another build after one has already been done
-          // in production mode as it won't have any affect since after
-          // the first is done we resolve the loaders for the stub entries
-          // and they can't be refreshed/rebuilt after that in production
-          return;
-        }
-
         if (debounceTimer) {
           clearTimeout(debounceTimer);
         }
 
         debounceTimer = setTimeout(async () => {
+          if (buildTriggered && !this.isDevServer) {
+            // can't run another build after one has already been done
+            // in production mode as it won't have any affect since after
+            // the first is done we resolve the loaders for the stub entries
+            // and they can't be refreshed/rebuilt after that in production
+            return;
+          }
           // Combine workflow and step files into single array
           const allFiles = new Set([...workflowFiles, ...stepFiles]);
           const inputFiles = Array.from(allFiles);
 
-          if (inputFiles.length > 0) {
-            try {
-              buildTriggered = true;
-              await this.build(inputFiles);
-              // Write cache after successful build
-              await this.writeWorkflowsCache(workflowFiles, stepFiles);
-            } catch (error) {
-              if (process.env.NODE_ENV !== 'development') {
-                throw error;
-              }
-              console.error('Workflows build failed:', error);
+          try {
+            buildTriggered = true;
+            await this.build(inputFiles);
+            // Write cache after successful build
+            await this.writeWorkflowsCache(workflowFiles, stepFiles);
+          } catch (error) {
+            if (!this.isDevServer) {
+              throw error;
             }
+            console.error('Workflows build failed:', error);
           }
         }, BUILD_DEBOUNCE_MS);
       };
