@@ -1,4 +1,5 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { getStepFunction } from './private.js';
@@ -175,6 +176,168 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         await world.closeStream(name, _runId);
       },
     });
+  }
+}
+
+/** Polling interval for checking stream lock state (in milliseconds) */
+const LOCK_POLL_INTERVAL_MS = 100;
+
+/**
+ * State tracker for flushable stream operations.
+ * Resolves when either:
+ * 1. Stream completes (close/error), OR
+ * 2. Lock is released AND all pending operations are flushed
+ *
+ * Note: `doneResolved` and `streamEnded` are separate:
+ * - `doneResolved`: The `done` promise has been resolved (step can complete)
+ * - `streamEnded`: The underlying stream has actually closed/errored
+ *
+ * The pump continues running even after `doneResolved=true` to handle
+ * any future writes if the user acquires a new lock.
+ */
+interface FlushableStreamState {
+  /** Number of write operations currently in flight to the server */
+  pendingOps: number;
+  /** Whether the `done` promise has been resolved */
+  doneResolved: boolean;
+  /** Whether the underlying stream has actually closed/errored */
+  streamEnded: boolean;
+  resolve: () => void;
+  reject: (err: any) => void;
+}
+
+function createFlushableState(): {
+  state: FlushableStreamState;
+  done: Promise<void>;
+} {
+  const { promise, resolve, reject } = withResolvers<void>();
+
+  const state: FlushableStreamState = {
+    pendingOps: 0,
+    doneResolved: false,
+    streamEnded: false,
+    resolve,
+    reject,
+  };
+
+  return { state, done: promise };
+}
+
+/**
+ * Polls a WritableStream to check if the user has released their lock.
+ * Resolves the done promise when lock is released and no pending ops remain.
+ * Uses a polling approach - checks lock state every LOCK_POLL_INTERVAL_MS.
+ */
+function pollWritableLock(
+  writable: WritableStream,
+  state: FlushableStreamState
+): void {
+  const intervalId = setInterval(() => {
+    // Stop polling if already resolved or stream ended
+    if (state.doneResolved || state.streamEnded) {
+      clearInterval(intervalId);
+      return;
+    }
+
+    // Check if lock is released and no pending ops
+    if (!writable.locked && state.pendingOps === 0) {
+      state.doneResolved = true;
+      state.resolve();
+      clearInterval(intervalId);
+    }
+  }, LOCK_POLL_INTERVAL_MS);
+}
+
+/**
+ * Polls a ReadableStream to check if the user has released their lock.
+ * Resolves the done promise when lock is released and no pending ops remain.
+ */
+function pollReadableLock(
+  readable: ReadableStream,
+  state: FlushableStreamState
+): void {
+  const intervalId = setInterval(() => {
+    // Stop polling if already resolved or stream ended
+    if (state.doneResolved || state.streamEnded) {
+      clearInterval(intervalId);
+      return;
+    }
+
+    // Check if lock is released and no pending ops
+    if (!readable.locked && state.pendingOps === 0) {
+      state.doneResolved = true;
+      state.resolve();
+      clearInterval(intervalId);
+    }
+  }, LOCK_POLL_INTERVAL_MS);
+}
+
+/**
+ * Creates a flushable pipe from a ReadableStream to a WritableStream.
+ * Unlike pipeTo(), this resolves when:
+ * 1. The source stream completes (close/error), OR
+ * 2. The user releases their lock on userStream AND all pending writes are flushed
+ *
+ * @param source - The readable stream to read from (e.g., transform's readable)
+ * @param sink - The writable stream to write to (e.g., server writable)
+ * @param state - The flushable state tracker
+ * @returns Promise that resolves when stream ends (not when done promise resolves)
+ */
+async function flushablePipe(
+  source: ReadableStream,
+  sink: WritableStream,
+  state: FlushableStreamState
+): Promise<void> {
+  const reader = source.getReader();
+  const writer = sink.getWriter();
+
+  try {
+    while (true) {
+      // Check if stream has ended
+      if (state.streamEnded) {
+        reader.releaseLock();
+        writer.releaseLock();
+        return;
+      }
+
+      // Read from source - don't count as pending op since we're just waiting for data
+      // The important ops are writes to the sink (server)
+      const readResult = await reader.read();
+
+      if (readResult.done) {
+        // Source stream completed - close sink and resolve
+        state.streamEnded = true;
+        await writer.close();
+        // Resolve done promise if not already resolved
+        if (!state.doneResolved) {
+          state.doneResolved = true;
+          state.resolve();
+        }
+        return;
+      }
+
+      // Count write as a pending op - this is what we need to flush
+      state.pendingOps++;
+      try {
+        await writer.write(readResult.value);
+      } finally {
+        state.pendingOps--;
+      }
+
+      // Check if stream has ended (e.g., due to error in another path)
+      if (state.streamEnded) {
+        reader.releaseLock();
+        writer.releaseLock();
+        return;
+      }
+    }
+  } catch (err) {
+    state.streamEnded = true;
+    if (!state.doneResolved) {
+      state.doneResolved = true;
+      state.reject(err);
+    }
+    throw err;
   }
 }
 
@@ -736,12 +899,38 @@ export function getExternalRevivers(
         value.startIndex
       );
       if (value.type === 'bytes') {
-        return readable;
+        // For byte streams, use flushable pipe with lock polling
+        const { state, done } = createFlushableState();
+        ops.push(done);
+
+        // Create an identity transform to give the user a readable
+        const { readable: userReadable, writable } =
+          new global.TransformStream();
+
+        // Start the flushable pipe in the background
+        flushablePipe(readable, writable, state).catch(() => {
+          // Errors are handled via state.reject
+        });
+
+        // Start polling to detect when user releases lock
+        pollReadableLock(userReadable, state);
+
+        return userReadable;
       } else {
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId)
         );
-        ops.push(readable.pipeTo(transform.writable));
+        const { state, done } = createFlushableState();
+        ops.push(done);
+
+        // Start the flushable pipe in the background
+        flushablePipe(readable, transform.writable, state).catch(() => {
+          // Errors are handled via state.reject
+        });
+
+        // Start polling to detect when user releases lock
+        pollReadableLock(transform.readable, state);
+
         return transform.readable;
       }
     },
@@ -749,11 +938,23 @@ export function getExternalRevivers(
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, runId)
       );
-      ops.push(
-        serialize.readable.pipeTo(
-          new WorkflowServerWritableStream(value.name, runId)
-        )
+      const serverWritable = new WorkflowServerWritableStream(
+        value.name,
+        runId
       );
+
+      // Create flushable state for this stream
+      const { state, done } = createFlushableState();
+      ops.push(done);
+
+      // Start the flushable pipe in the background
+      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+        // Errors are handled via state.reject
+      });
+
+      // Start polling to detect when user releases lock
+      pollWritableLock(serialize.writable, state);
+
       return serialize.writable;
     },
   };
@@ -880,12 +1081,38 @@ function getStepRevivers(
 
       const readable = new WorkflowServerReadableStream(value.name);
       if (value.type === 'bytes') {
-        return readable;
+        // For byte streams, use flushable pipe with lock polling
+        const { state, done } = createFlushableState();
+        ops.push(done);
+
+        // Create an identity transform to give the user a readable
+        const { readable: userReadable, writable } =
+          new global.TransformStream();
+
+        // Start the flushable pipe in the background
+        flushablePipe(readable, writable, state).catch(() => {
+          // Errors are handled via state.reject
+        });
+
+        // Start polling to detect when user releases lock
+        pollReadableLock(userReadable, state);
+
+        return userReadable;
       } else {
         const transform = getDeserializeStream(
           getStepRevivers(global, ops, runId)
         );
-        ops.push(readable.pipeTo(transform.writable));
+        const { state, done } = createFlushableState();
+        ops.push(done);
+
+        // Start the flushable pipe in the background
+        flushablePipe(readable, transform.writable, state).catch(() => {
+          // Errors are handled via state.reject
+        });
+
+        // Start polling to detect when user releases lock
+        pollReadableLock(transform.readable, state);
+
         return transform.readable;
       }
     },
@@ -897,11 +1124,23 @@ function getStepRevivers(
       }
 
       const serialize = getSerializeStream(getStepReducers(global, ops, runId));
-      ops.push(
-        serialize.readable.pipeTo(
-          new WorkflowServerWritableStream(value.name, runId)
-        )
+      const serverWritable = new WorkflowServerWritableStream(
+        value.name,
+        runId
       );
+
+      // Create flushable state for this stream
+      const { state, done } = createFlushableState();
+      ops.push(done);
+
+      // Start the flushable pipe in the background
+      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+        // Errors are handled via state.reject
+      });
+
+      // Start polling to detect when user releases lock
+      pollWritableLock(serialize.writable, state);
+
       return serialize.writable;
     },
   };
