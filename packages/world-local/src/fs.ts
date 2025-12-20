@@ -238,7 +238,22 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
 
   for (const fileId of candidateFileIds) {
     const filePath = path.join(directory, `${fileId}.json`);
-    const item = await readJSON(filePath, schema);
+    let item: T | null = null;
+    try {
+      item = await readJSON(filePath, schema);
+    } catch (error: unknown) {
+      // We don't expect zod errors to happen, but if the JSON does get malformed,
+      // we skip the item. Preferably, we'd have a way to mark items as malformed,
+      // so that the UI can display them as such, with richer messaging. In the meantime,
+      // we just log a warning and skip the item.
+      if (error instanceof z.ZodError) {
+        console.warn(
+          `Skipping item ${fileId} due to malformed JSON: ${error.message}`
+        );
+        continue;
+      }
+      throw error;
+    }
 
     if (item) {
       // Apply custom filter early if provided
