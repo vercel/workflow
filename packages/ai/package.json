@@ -30,10 +30,6 @@
       "types": "./dist/agent/durable-agent.d.ts",
       "default": "./dist/agent/durable-agent.js"
     },
-    "./experimental-agent": {
-      "types": "./dist/agent/experimental-durable-agent.d.ts",
-      "default": "./dist/agent/experimental-durable-agent.js"
-    },
     "./anthropic": {
       "types": "./dist/providers/anthropic.d.ts",
       "default": "./dist/providers/anthropic.js"
