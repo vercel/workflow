@@ -278,10 +278,31 @@ export async function doStreamStep(
             }
 
             case 'file': {
+              // Convert data to URL, handling Uint8Array, URL, and string cases
+              let url: string;
+              const fileData = part.data as Uint8Array | string | URL;
+              if (fileData instanceof Uint8Array) {
+                // Convert Uint8Array to base64 and create data URL
+                const base64 = btoa(String.fromCharCode(...fileData));
+                url = `data:${part.mediaType};base64,${base64}`;
+              } else if (fileData instanceof URL) {
+                // Use URL directly (could be a data URL or remote URL)
+                url = fileData.href;
+              } else if (
+                fileData.startsWith('data:') ||
+                fileData.startsWith('http:') ||
+                fileData.startsWith('https:')
+              ) {
+                // Already a URL string
+                url = fileData;
+              } else {
+                // Assume it's base64-encoded data
+                url = `data:${part.mediaType};base64,${fileData}`;
+              }
               controller.enqueue({
                 type: 'file',
                 mediaType: part.mediaType,
-                url: `data:${part.mediaType};base64,${part.data}`,
+                url,
               });
               break;
             }
