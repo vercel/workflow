@@ -76,6 +76,6 @@
     "@ai-sdk/openai": "2.0.72",
     "@ai-sdk/provider": "2.0.0",
     "@ai-sdk/xai": "2.0.37",
-    "zod": "4.1.11"
+    "zod": "catalog:"
   }
 }
