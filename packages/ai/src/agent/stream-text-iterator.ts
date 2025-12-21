@@ -94,6 +94,8 @@ export async function* streamTextIterator({
   let done = false;
   let isFirstIteration = true;
   let stepNumber = 0;
+  let lastStep: StepResult<any> | undefined;
+  let lastStepWasToolCalls = false;
 
   // Default maxSteps to Infinity to preserve backwards compatibility
   // (agent loops until completion unless explicitly limited)
@@ -227,14 +229,16 @@ export async function* streamTextIterator({
           experimental_telemetry,
           transforms,
           responseFormat,
-          toolSet: tools,
         }
       );
       isFirstIteration = false;
       stepNumber++;
       steps.push(step);
+      lastStep = step;
+      lastStepWasToolCalls = false;
 
       if (finish?.finishReason === 'tool-calls') {
+        lastStepWasToolCalls = true;
         // Add assistant message with tool calls to the conversation
         conversationPrompt.push({
           role: 'assistant',
@@ -315,6 +319,16 @@ export async function* streamTextIterator({
       }
       throw error;
     }
+  }
+
+  // Yield the final step if it wasn't already yielded (tool-calls steps are yielded inside the loop)
+  if (lastStep && !lastStepWasToolCalls) {
+    yield {
+      toolCalls: [],
+      messages: conversationPrompt,
+      step: lastStep,
+      context: currentContext,
+    };
   }
 
   return conversationPrompt;

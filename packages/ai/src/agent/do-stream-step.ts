@@ -49,11 +49,6 @@ export interface DoStreamStepOptions {
   experimental_telemetry?: TelemetrySettings;
   transforms?: Array<StreamTextTransform<ToolSet>>;
   responseFormat?: LanguageModelV2CallOptions['responseFormat'];
-  /**
-   * The original ToolSet to pass to stream transforms.
-   * This is needed because transforms may need access to tool definitions.
-   */
-  toolSet?: ToolSet;
 }
 
 /**
@@ -162,7 +157,7 @@ export async function doStreamStep(
       if (!terminated) {
         stream = stream.pipeThrough(
           transform({
-            tools: options.toolSet ?? ({} as ToolSet),
+            tools: {} as ToolSet, // Note: toolSet not available inside step boundary due to serialization
             stopStream,
           })
         );

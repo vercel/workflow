@@ -774,19 +774,25 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
           experimentalContext = context;
         }
 
-        const toolResults = await Promise.all(
-          toolCalls.map(
-            (toolCall): Promise<LanguageModelV2ToolResultPart> =>
-              executeTool(
-                toolCall,
-                effectiveTools as ToolSet,
-                iterMessages,
-                experimentalContext,
-                options.experimental_repairToolCall as ToolCallRepairFunction<ToolSet>
-              )
-          )
-        );
-        result = await iterator.next(toolResults);
+        // Only execute tools if there are tool calls
+        if (toolCalls.length > 0) {
+          const toolResults = await Promise.all(
+            toolCalls.map(
+              (toolCall): Promise<LanguageModelV2ToolResultPart> =>
+                executeTool(
+                  toolCall,
+                  effectiveTools as ToolSet,
+                  iterMessages,
+                  experimentalContext,
+                  options.experimental_repairToolCall as ToolCallRepairFunction<ToolSet>
+                )
+            )
+          );
+          result = await iterator.next(toolResults);
+        } else {
+          // Final step with no tool calls - just advance the iterator
+          result = await iterator.next([]);
+        }
       }
 
       // When the iterator completes normally, result.value contains the final conversation prompt
