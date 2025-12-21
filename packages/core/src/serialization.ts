@@ -227,9 +227,49 @@ function createFlushableState(): {
 const STABLE_POLL_COUNT = 2;
 
 /**
+ * Checks if a WritableStream is unlocked (user released lock) vs closed.
+ * When a stream is closed, .locked is false but getWriter() throws.
+ * We only want to resolve via polling when the stream is unlocked, not closed.
+ * If closed, the pump will handle resolution via the stream ending naturally.
+ */
+function isWritableUnlockedNotClosed(writable: WritableStream): boolean {
+  if (writable.locked) return false;
+
+  try {
+    // Try to acquire writer - if successful, stream is unlocked (not closed)
+    const writer = writable.getWriter();
+    writer.releaseLock();
+    return true;
+  } catch {
+    // getWriter() throws if stream is closed/errored - let pump handle it
+    return false;
+  }
+}
+
+/**
+ * Checks if a ReadableStream is unlocked (user released lock) vs closed.
+ */
+function isReadableUnlockedNotClosed(readable: ReadableStream): boolean {
+  if (readable.locked) return false;
+
+  try {
+    // Try to acquire reader - if successful, stream is unlocked (not closed)
+    const reader = readable.getReader();
+    reader.releaseLock();
+    return true;
+  } catch {
+    // getReader() throws if stream is closed/errored - let pump handle it
+    return false;
+  }
+}
+
+/**
  * Polls a WritableStream to check if the user has released their lock.
  * Resolves the done promise when lock is released and no pending ops remain
  * for multiple consecutive polls (to avoid race conditions with the pump).
+ *
+ * Note: Only resolves if stream is unlocked but NOT closed. If the user closes
+ * the stream, the pump will handle resolution via the stream ending naturally.
  */
 function pollWritableLock(
   writable: WritableStream,
@@ -244,8 +284,8 @@ function pollWritableLock(
       return;
     }
 
-    // Check if lock is released and no pending ops
-    if (!writable.locked && state.pendingOps === 0) {
+    // Check if lock is released (not closed) and no pending ops
+    if (isWritableUnlockedNotClosed(writable) && state.pendingOps === 0) {
       stableCount++;
       // Require multiple consecutive stable polls to avoid race with pump
       if (stableCount >= STABLE_POLL_COUNT) {
@@ -254,7 +294,7 @@ function pollWritableLock(
         clearInterval(intervalId);
       }
     } else {
-      // Reset if conditions not met (pump is processing data)
+      // Reset if conditions not met (pump is processing data or stream closed)
       stableCount = 0;
     }
   }, LOCK_POLL_INTERVAL_MS);
@@ -264,6 +304,9 @@ function pollWritableLock(
  * Polls a ReadableStream to check if the user has released their lock.
  * Resolves the done promise when lock is released and no pending ops remain
  * for multiple consecutive polls (to avoid race conditions with the pump).
+ *
+ * Note: Only resolves if stream is unlocked but NOT closed. If the user closes
+ * the stream, the pump will handle resolution via the stream ending naturally.
  */
 function pollReadableLock(
   readable: ReadableStream,
@@ -278,8 +321,8 @@ function pollReadableLock(
       return;
     }
 
-    // Check if lock is released and no pending ops
-    if (!readable.locked && state.pendingOps === 0) {
+    // Check if lock is released (not closed) and no pending ops
+    if (isReadableUnlockedNotClosed(readable) && state.pendingOps === 0) {
       stableCount++;
       // Require multiple consecutive stable polls to avoid race with pump
       if (stableCount >= STABLE_POLL_COUNT) {
@@ -288,7 +331,7 @@ function pollReadableLock(
         clearInterval(intervalId);
       }
     } else {
-      // Reset if conditions not met (pump is processing data)
+      // Reset if conditions not met (pump is processing data or stream closed)
       stableCount = 0;
     }
   }, LOCK_POLL_INTERVAL_MS);
