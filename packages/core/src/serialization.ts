@@ -223,15 +223,20 @@ function createFlushableState(): {
   return { state, done: promise };
 }
 
+/** Number of consecutive stable polls required before resolving */
+const STABLE_POLL_COUNT = 2;
+
 /**
  * Polls a WritableStream to check if the user has released their lock.
- * Resolves the done promise when lock is released and no pending ops remain.
- * Uses a polling approach - checks lock state every LOCK_POLL_INTERVAL_MS.
+ * Resolves the done promise when lock is released and no pending ops remain
+ * for multiple consecutive polls (to avoid race conditions with the pump).
  */
 function pollWritableLock(
   writable: WritableStream,
   state: FlushableStreamState
 ): void {
+  let stableCount = 0;
+
   const intervalId = setInterval(() => {
     // Stop polling if already resolved or stream ended
     if (state.doneResolved || state.streamEnded) {
@@ -241,21 +246,31 @@ function pollWritableLock(
 
     // Check if lock is released and no pending ops
     if (!writable.locked && state.pendingOps === 0) {
-      state.doneResolved = true;
-      state.resolve();
-      clearInterval(intervalId);
+      stableCount++;
+      // Require multiple consecutive stable polls to avoid race with pump
+      if (stableCount >= STABLE_POLL_COUNT) {
+        state.doneResolved = true;
+        state.resolve();
+        clearInterval(intervalId);
+      }
+    } else {
+      // Reset if conditions not met (pump is processing data)
+      stableCount = 0;
     }
   }, LOCK_POLL_INTERVAL_MS);
 }
 
 /**
  * Polls a ReadableStream to check if the user has released their lock.
- * Resolves the done promise when lock is released and no pending ops remain.
+ * Resolves the done promise when lock is released and no pending ops remain
+ * for multiple consecutive polls (to avoid race conditions with the pump).
  */
 function pollReadableLock(
   readable: ReadableStream,
   state: FlushableStreamState
 ): void {
+  let stableCount = 0;
+
   const intervalId = setInterval(() => {
     // Stop polling if already resolved or stream ended
     if (state.doneResolved || state.streamEnded) {
@@ -265,9 +280,16 @@ function pollReadableLock(
 
     // Check if lock is released and no pending ops
     if (!readable.locked && state.pendingOps === 0) {
-      state.doneResolved = true;
-      state.resolve();
-      clearInterval(intervalId);
+      stableCount++;
+      // Require multiple consecutive stable polls to avoid race with pump
+      if (stableCount >= STABLE_POLL_COUNT) {
+        state.doneResolved = true;
+        state.resolve();
+        clearInterval(intervalId);
+      }
+    } else {
+      // Reset if conditions not met (pump is processing data)
+      stableCount = 0;
     }
   }, LOCK_POLL_INTERVAL_MS);
 }

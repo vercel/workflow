@@ -1000,6 +1000,7 @@ describe('step function serialization', () => {
 
 describe('flushable stream behavior', () => {
   const POLL_INTERVAL = 100; // Match the actual implementation
+  const STABLE_POLL_COUNT = 2; // Match the actual implementation
 
   it('done promise should resolve when writable stream lock is released (polling)', async () => {
     // Test the pattern: user writes, releases lock, polling detects it, done resolves
@@ -1072,6 +1073,7 @@ describe('flushable stream behavior', () => {
     })();
 
     // Start polling (mirrors pollWritableLock implementation)
+    let stableCount = 0;
     const intervalId = setInterval(() => {
       if (state.doneResolved || state.streamEnded) {
         clearInterval(intervalId);
@@ -1080,9 +1082,14 @@ describe('flushable stream behavior', () => {
 
       // Check if lock is released by checking .locked property
       if (!writable.locked && state.pendingOps === 0) {
-        state.doneResolved = true;
-        state.resolve();
-        clearInterval(intervalId);
+        stableCount++;
+        if (stableCount >= STABLE_POLL_COUNT) {
+          state.doneResolved = true;
+          state.resolve();
+          clearInterval(intervalId);
+        }
+      } else {
+        stableCount = 0;
       }
     }, POLL_INTERVAL);
 
@@ -1094,14 +1101,14 @@ describe('flushable stream behavior', () => {
     // Release lock without closing stream
     userWriter.releaseLock();
 
-    // Wait for pipe to process + polling interval
-    await new Promise((r) => setTimeout(r, 150));
+    // Wait for pipe to process + polling intervals (need STABLE_POLL_COUNT consecutive polls)
+    await new Promise((r) => setTimeout(r, 250));
 
     // The done promise should resolve
     await expect(
       Promise.race([
         done,
-        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 200)),
+        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 400)),
       ])
     ).resolves.toBeUndefined();
 
@@ -1179,15 +1186,21 @@ describe('flushable stream behavior', () => {
     })();
 
     // Start polling (won't trigger since stream will close first)
+    let stableCount2 = 0;
     const intervalId = setInterval(() => {
       if (state.doneResolved || state.streamEnded) {
         clearInterval(intervalId);
         return;
       }
       if (!writable.locked && state.pendingOps === 0) {
-        state.doneResolved = true;
-        state.resolve();
-        clearInterval(intervalId);
+        stableCount2++;
+        if (stableCount2 >= STABLE_POLL_COUNT) {
+          state.doneResolved = true;
+          state.resolve();
+          clearInterval(intervalId);
+        }
+      } else {
+        stableCount2 = 0;
       }
     }, POLL_INTERVAL);
 
