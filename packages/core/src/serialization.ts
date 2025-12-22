@@ -227,13 +227,33 @@ function createFlushableState(): {
 const STABLE_POLL_COUNT = 2;
 
 /**
+ * Cache of per-stream "unlocked but not closed" status for WritableStreams.
+ * Once a stream is determined to be closed, we avoid acquiring a writer lock
+ * again during polling, preventing repeated lock acquisition on closed streams.
+ */
+const closedWritableStreams = new WeakSet<WritableStream>();
+
+/**
+ * Cache of per-stream "unlocked but not closed" status for ReadableStreams.
+ * Once a stream is determined to be closed, we avoid acquiring a reader lock
+ * again during polling, preventing repeated lock acquisition on closed streams.
+ */
+const closedReadableStreams = new WeakSet<ReadableStream>();
+
+/**
  * Checks if a WritableStream is unlocked (user released lock) vs closed.
  * When a stream is closed, .locked is false but getWriter() throws.
  * We only want to resolve via polling when the stream is unlocked, not closed.
  * If closed, the pump will handle resolution via the stream ending naturally.
+ *
+ * To avoid repeatedly acquiring and releasing locks on a closed stream, this
+ * function caches the closed status in `closedWritableStreams`.
  */
 function isWritableUnlockedNotClosed(writable: WritableStream): boolean {
   if (writable.locked) return false;
+
+  // If we've already observed this stream as closed/errored, avoid probing again.
+  if (closedWritableStreams.has(writable)) return false;
 
   try {
     // Try to acquire writer - if successful, stream is unlocked (not closed)
@@ -241,16 +261,24 @@ function isWritableUnlockedNotClosed(writable: WritableStream): boolean {
     writer.releaseLock();
     return true;
   } catch {
-    // getWriter() throws if stream is closed/errored - let pump handle it
+    // getWriter() throws if stream is closed/errored - remember this to
+    // avoid repeated lock acquisition on subsequent polls.
+    closedWritableStreams.add(writable);
     return false;
   }
 }
 
 /**
  * Checks if a ReadableStream is unlocked (user released lock) vs closed.
+ *
+ * To avoid repeatedly acquiring and releasing locks on a closed stream, this
+ * function caches the closed status in `closedReadableStreams`.
  */
 function isReadableUnlockedNotClosed(readable: ReadableStream): boolean {
   if (readable.locked) return false;
+
+  // If we've already observed this stream as closed/errored, avoid probing again.
+  if (closedReadableStreams.has(readable)) return false;
 
   try {
     // Try to acquire reader - if successful, stream is unlocked (not closed)
@@ -258,7 +286,9 @@ function isReadableUnlockedNotClosed(readable: ReadableStream): boolean {
     reader.releaseLock();
     return true;
   } catch {
-    // getReader() throws if stream is closed/errored - let pump handle it
+    // getReader() throws if stream is closed/errored - remember this to
+    // avoid repeated lock acquisition on subsequent polls.
+    closedReadableStreams.add(readable);
     return false;
   }
 }
@@ -398,11 +428,23 @@ async function flushablePipe(
     }
   } catch (err) {
     state.streamEnded = true;
+    // Release locks to avoid resource leaks
+    try {
+      reader.releaseLock();
+    } catch {
+      // Ignore errors if lock was already released
+    }
+    try {
+      writer.releaseLock();
+    } catch {
+      // Ignore errors if lock was already released
+    }
     if (!state.doneResolved) {
       state.doneResolved = true;
       state.reject(err);
     }
-    throw err;
+    // Error is already propagated via state.reject() which rejects the 'done'
+    // promise. We don't re-throw here to avoid unhandled promise rejections.
   }
 }
 
@@ -974,7 +1016,9 @@ export function getExternalRevivers(
 
         // Start the flushable pipe in the background
         flushablePipe(readable, writable, state).catch(() => {
-          // Errors are handled via state.reject
+          // flushablePipe calls state.reject(error), which rejects the `done`
+          // promise added to `ops`. This catch exists only to prevent unhandled
+          // promise rejections; all error handling flows through state.done.
         });
 
         // Start polling to detect when user releases lock
@@ -990,7 +1034,9 @@ export function getExternalRevivers(
 
         // Start the flushable pipe in the background
         flushablePipe(readable, transform.writable, state).catch(() => {
-          // Errors are handled via state.reject
+          // flushablePipe calls state.reject(error), which rejects the `done`
+          // promise added to `ops`. This catch exists only to prevent unhandled
+          // promise rejections; all error handling flows through state.done.
         });
 
         // Start polling to detect when user releases lock
@@ -1014,7 +1060,9 @@ export function getExternalRevivers(
 
       // Start the flushable pipe in the background
       flushablePipe(serialize.readable, serverWritable, state).catch(() => {
-        // Errors are handled via state.reject
+        // flushablePipe calls state.reject(error), which rejects the `done`
+        // promise added to `ops`. This catch exists only to prevent unhandled
+        // promise rejections; all error handling flows through state.done.
       });
 
       // Start polling to detect when user releases lock
@@ -1156,7 +1204,9 @@ function getStepRevivers(
 
         // Start the flushable pipe in the background
         flushablePipe(readable, writable, state).catch(() => {
-          // Errors are handled via state.reject
+          // flushablePipe calls state.reject(error), which rejects the `done`
+          // promise added to `ops`. This catch exists only to prevent unhandled
+          // promise rejections; all error handling flows through state.done.
         });
 
         // Start polling to detect when user releases lock
@@ -1172,7 +1222,9 @@ function getStepRevivers(
 
         // Start the flushable pipe in the background
         flushablePipe(readable, transform.writable, state).catch(() => {
-          // Errors are handled via state.reject
+          // flushablePipe calls state.reject(error), which rejects the `done`
+          // promise added to `ops`. This catch exists only to prevent unhandled
+          // promise rejections; all error handling flows through state.done.
         });
 
         // Start polling to detect when user releases lock
@@ -1200,7 +1252,9 @@ function getStepRevivers(
 
       // Start the flushable pipe in the background
       flushablePipe(serialize.readable, serverWritable, state).catch(() => {
-        // Errors are handled via state.reject
+        // flushablePipe calls state.reject(error), which rejects the `done`
+        // promise added to `ops`. This catch exists only to prevent unhandled
+        // promise rejections; all error handling flows through state.done.
       });
 
       // Start polling to detect when user releases lock

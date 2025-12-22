@@ -1065,12 +1065,35 @@ describe('flushable stream behavior', () => {
         }
       } catch (err) {
         state.streamEnded = true;
+        // Release locks to avoid resource leaks
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore errors if lock was already released
+        }
+        try {
+          writer.releaseLock();
+        } catch {
+          // Ignore errors if lock was already released
+        }
         if (!state.doneResolved) {
           state.doneResolved = true;
           state.reject(err as Error);
         }
       }
     })();
+
+    // Helper to check if writable is unlocked but not closed
+    const isWritableUnlockedNotClosed = (w: WritableStream): boolean => {
+      if (w.locked) return false;
+      try {
+        const writer = w.getWriter();
+        writer.releaseLock();
+        return true;
+      } catch {
+        return false;
+      }
+    };
 
     // Start polling (mirrors pollWritableLock implementation)
     let stableCount = 0;
@@ -1080,8 +1103,8 @@ describe('flushable stream behavior', () => {
         return;
       }
 
-      // Check if lock is released by checking .locked property
-      if (!writable.locked && state.pendingOps === 0) {
+      // Check if lock is released using the same logic as production
+      if (isWritableUnlockedNotClosed(writable) && state.pendingOps === 0) {
         stableCount++;
         if (stableCount >= STABLE_POLL_COUNT) {
           state.doneResolved = true;
@@ -1178,6 +1201,17 @@ describe('flushable stream behavior', () => {
         }
       } catch (err) {
         state.streamEnded = true;
+        // Release locks to avoid resource leaks
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore errors if lock was already released
+        }
+        try {
+          writer.releaseLock();
+        } catch {
+          // Ignore errors if lock was already released
+        }
         if (!state.doneResolved) {
           state.doneResolved = true;
           state.reject(err as Error);
@@ -1186,21 +1220,21 @@ describe('flushable stream behavior', () => {
     })();
 
     // Start polling (won't trigger since stream will close first)
-    let stableCount2 = 0;
+    let stableCount = 0;
     const intervalId = setInterval(() => {
       if (state.doneResolved || state.streamEnded) {
         clearInterval(intervalId);
         return;
       }
       if (!writable.locked && state.pendingOps === 0) {
-        stableCount2++;
-        if (stableCount2 >= STABLE_POLL_COUNT) {
+        stableCount++;
+        if (stableCount >= STABLE_POLL_COUNT) {
           state.doneResolved = true;
           state.resolve();
           clearInterval(intervalId);
         }
       } else {
-        stableCount2 = 0;
+        stableCount = 0;
       }
     }, POLL_INTERVAL);
 
@@ -1225,5 +1259,191 @@ describe('flushable stream behavior', () => {
 
     // Stream should be closed (user closed it)
     expect(streamClosed).toBe(true);
+  });
+
+  it('done promise should reject when stream errors during write', async () => {
+    // Test error handling when the sink stream errors during write
+    const mockSink = new WritableStream<string>({
+      write() {
+        throw new Error('Write error');
+      },
+    });
+
+    const { readable, writable } = new TransformStream<string, string>();
+
+    const state = {
+      pendingOps: 0,
+      doneResolved: false,
+      streamEnded: false,
+      resolve: () => {},
+      reject: (_err: Error) => {},
+    };
+
+    const done = new Promise<void>((res, rej) => {
+      state.resolve = res;
+      state.reject = rej;
+    });
+
+    // Start piping in background
+    (async () => {
+      const reader = readable.getReader();
+      const writer = mockSink.getWriter();
+      try {
+        while (!state.streamEnded) {
+          const result = await reader.read();
+
+          if (result.done) {
+            state.streamEnded = true;
+            await writer.close();
+            if (!state.doneResolved) {
+              state.doneResolved = true;
+              state.resolve();
+            }
+            return;
+          }
+
+          state.pendingOps++;
+          try {
+            await writer.write(result.value);
+          } finally {
+            state.pendingOps--;
+          }
+
+          if (state.streamEnded) {
+            reader.releaseLock();
+            writer.releaseLock();
+            return;
+          }
+        }
+      } catch (err) {
+        state.streamEnded = true;
+        // Release locks to avoid resource leaks
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore errors if lock was already released
+        }
+        try {
+          writer.releaseLock();
+        } catch {
+          // Ignore errors if lock was already released
+        }
+        if (!state.doneResolved) {
+          state.doneResolved = true;
+          state.reject(err as Error);
+        }
+      }
+    })();
+
+    // User writes - this will trigger an error
+    const userWriter = writable.getWriter();
+    userWriter.write('data').catch(() => {
+      // Suppress unhandled rejection
+    });
+    userWriter.releaseLock();
+
+    // Wait for the error to propagate
+    await new Promise((r) => setTimeout(r, 100));
+
+    // The done promise should reject
+    await expect(done).rejects.toThrow('Write error');
+  });
+
+  it('done promise should reject when reader stream errors', async () => {
+    // Test error handling when the source stream errors after reading starts
+    const chunks: string[] = [];
+    const mockSink = new WritableStream<string>({
+      write(chunk) {
+        chunks.push(chunk);
+      },
+    });
+
+    // Create a readable that will error after the first chunk
+    let errorController: ReadableStreamDefaultController<string> | null = null;
+    const readable = new ReadableStream<string>({
+      start(controller) {
+        errorController = controller;
+        controller.enqueue('chunk1');
+      },
+    });
+
+    const state = {
+      pendingOps: 0,
+      doneResolved: false,
+      streamEnded: false,
+      resolve: () => {},
+      reject: (_err: Error) => {},
+    };
+
+    const done = new Promise<void>((res, rej) => {
+      state.resolve = res;
+      state.reject = rej;
+    });
+
+    // Start piping in background
+    (async () => {
+      const reader = readable.getReader();
+      const writer = mockSink.getWriter();
+      try {
+        while (!state.streamEnded) {
+          const result = await reader.read();
+
+          if (result.done) {
+            state.streamEnded = true;
+            await writer.close();
+            if (!state.doneResolved) {
+              state.doneResolved = true;
+              state.resolve();
+            }
+            return;
+          }
+
+          state.pendingOps++;
+          try {
+            await writer.write(result.value);
+          } finally {
+            state.pendingOps--;
+          }
+
+          if (state.streamEnded) {
+            reader.releaseLock();
+            writer.releaseLock();
+            return;
+          }
+        }
+      } catch (err) {
+        state.streamEnded = true;
+        // Release locks to avoid resource leaks
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore errors if lock was already released
+        }
+        try {
+          writer.releaseLock();
+        } catch {
+          // Ignore errors if lock was already released
+        }
+        if (!state.doneResolved) {
+          state.doneResolved = true;
+          state.reject(err as Error);
+        }
+      }
+    })();
+
+    // Wait for first chunk to be processed
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should have written the first chunk
+    expect(chunks).toContain('chunk1');
+
+    // Now error the stream
+    errorController?.error(new Error('Reader error'));
+
+    // Wait for the error to propagate
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The done promise should reject
+    await expect(done).rejects.toThrow('Reader error');
   });
 });
