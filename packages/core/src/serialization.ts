@@ -1,5 +1,5 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
-import { withResolvers } from '@workflow/utils';
+import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { getStepFunction } from './private.js';
@@ -196,32 +196,22 @@ export const LOCK_POLL_INTERVAL_MS = 100;
  * The pump continues running even after `doneResolved=true` to handle
  * any future writes if the user acquires a new lock.
  */
-export interface FlushableStreamState {
+export interface FlushableStreamState extends PromiseWithResolvers<void> {
   /** Number of write operations currently in flight to the server */
   pendingOps: number;
   /** Whether the `done` promise has been resolved */
   doneResolved: boolean;
   /** Whether the underlying stream has actually closed/errored */
   streamEnded: boolean;
-  resolve: () => void;
-  reject: (err: any) => void;
 }
 
-export function createFlushableState(): {
-  state: FlushableStreamState;
-  done: Promise<void>;
-} {
-  const { promise, resolve, reject } = withResolvers<void>();
-
-  const state: FlushableStreamState = {
+export function createFlushableState(): FlushableStreamState {
+  return {
+    ...withResolvers<void>(),
     pendingOps: 0,
     doneResolved: false,
     streamEnded: false,
-    resolve,
-    reject,
   };
-
-  return { state, done: promise };
 }
 
 /**
@@ -942,8 +932,8 @@ export function getExternalRevivers(
       );
       if (value.type === 'bytes') {
         // For byte streams, use flushable pipe with lock polling
-        const { state, done } = createFlushableState();
-        ops.push(done);
+        const state = createFlushableState();
+        ops.push(state.promise);
 
         // Create an identity transform to give the user a readable
         const { readable: userReadable, writable } =
@@ -962,8 +952,8 @@ export function getExternalRevivers(
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId)
         );
-        const { state, done } = createFlushableState();
-        ops.push(done);
+        const state = createFlushableState();
+        ops.push(state.promise);
 
         // Start the flushable pipe in the background
         flushablePipe(readable, transform.writable, state).catch(() => {
@@ -986,8 +976,8 @@ export function getExternalRevivers(
       );
 
       // Create flushable state for this stream
-      const { state, done } = createFlushableState();
-      ops.push(done);
+      const state = createFlushableState();
+      ops.push(state.promise);
 
       // Start the flushable pipe in the background
       flushablePipe(serialize.readable, serverWritable, state).catch(() => {
@@ -1124,8 +1114,8 @@ function getStepRevivers(
       const readable = new WorkflowServerReadableStream(value.name);
       if (value.type === 'bytes') {
         // For byte streams, use flushable pipe with lock polling
-        const { state, done } = createFlushableState();
-        ops.push(done);
+        const state = createFlushableState();
+        ops.push(state.promise);
 
         // Create an identity transform to give the user a readable
         const { readable: userReadable, writable } =
@@ -1144,8 +1134,8 @@ function getStepRevivers(
         const transform = getDeserializeStream(
           getStepRevivers(global, ops, runId)
         );
-        const { state, done } = createFlushableState();
-        ops.push(done);
+        const state = createFlushableState();
+        ops.push(state.promise);
 
         // Start the flushable pipe in the background
         flushablePipe(readable, transform.writable, state).catch(() => {
@@ -1172,8 +1162,8 @@ function getStepRevivers(
       );
 
       // Create flushable state for this stream
-      const { state, done } = createFlushableState();
-      ops.push(done);
+      const state = createFlushableState();
+      ops.push(state.promise);
 
       // Start the flushable pipe in the background
       flushablePipe(serialize.readable, serverWritable, state).catch(() => {

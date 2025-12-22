@@ -1020,7 +1020,7 @@ describe('flushable stream behavior', () => {
 
     // Create a TransformStream like we do in getStepRevivers
     const { readable, writable } = new TransformStream<string, string>();
-    const { state, done } = createFlushableState();
+    const state = createFlushableState();
 
     // Start piping in background
     flushablePipe(readable, mockSink, state).catch(() => {
@@ -1041,10 +1041,10 @@ describe('flushable stream behavior', () => {
     // Wait for pipe to process + polling interval
     await new Promise((r) => setTimeout(r, LOCK_POLL_INTERVAL_MS + 50));
 
-    // The done promise should resolve
+    // The promise should resolve
     await expect(
       Promise.race([
-        done,
+        state.promise,
         new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 400)),
       ])
     ).resolves.toBeUndefined();
@@ -1071,7 +1071,7 @@ describe('flushable stream behavior', () => {
     });
 
     const { readable, writable } = new TransformStream<string, string>();
-    const { state, done } = createFlushableState();
+    const state = createFlushableState();
 
     // Start piping in background
     flushablePipe(readable, mockSink, state).catch(() => {
@@ -1089,10 +1089,10 @@ describe('flushable stream behavior', () => {
     // Wait a tick for the pipe to process
     await new Promise((r) => setTimeout(r, 50));
 
-    // The done promise should resolve
+    // The promise should resolve
     await expect(
       Promise.race([
-        done,
+        state.promise,
         new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 200)),
       ])
     ).resolves.toBeUndefined();
