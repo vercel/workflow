@@ -3,6 +3,11 @@ import { connect, type Socket } from 'node:net';
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import { useStepPattern, useWorkflowPattern } from '@workflow/builders';
+import {
+  parseMessage,
+  type SocketMessage,
+  serializeMessage,
+} from './socket-server';
 
 // Stub content written by builder to inner.js files
 const STUB_CONTENT = 'WORKFLOW_INNER_STUB_FILE';
@@ -65,15 +70,21 @@ async function notifySocketServer(
     throw new Error(`Invariant: missing workflow socket connection`);
   }
 
-  // Send single message with both workflow and step information
-  const message =
-    JSON.stringify({
-      type: 'file-discovered',
-      filePath: filename,
-      hasWorkflow,
-      hasStep,
-    }) + '\n';
-  socket.write(message);
+  const authToken = process.env.WORKFLOW_SOCKET_AUTH;
+  if (!authToken) {
+    throw new Error(
+      `Invariant: no socket auth token provided for workflow loader`
+    );
+  }
+
+  // Send authenticated message with workflow and step information
+  const message: SocketMessage = {
+    type: 'file-discovered',
+    filePath: filename,
+    hasWorkflow,
+    hasStep,
+  };
+  socket.write(serializeMessage(message, authToken));
 }
 
 async function waitForBuildComplete(): Promise<void> {
@@ -86,9 +97,36 @@ async function waitForBuildComplete(): Promise<void> {
     }
 
     let buffer = '';
+    let timeout: NodeJS.Timeout | null = null;
+    let settled = false;
+
+    const cleanup = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+      socket.off('data', onData);
+      socket.off('error', onError);
+      socket.off('end', onEnd);
+      socket.off('close', onClose);
+    };
+
+    const settle = (callback: () => void) => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        callback();
+      }
+    };
 
     const onData = (data: Buffer) => {
       buffer += data.toString();
+
+      const authToken = process.env.WORKFLOW_SOCKET_AUTH;
+      if (!authToken) {
+        settle(() => reject(new Error('No socket auth token available')));
+        return;
+      }
 
       let newlineIndex = buffer.indexOf('\n');
       while (newlineIndex !== -1) {
@@ -96,25 +134,52 @@ async function waitForBuildComplete(): Promise<void> {
         buffer = buffer.slice(newlineIndex + 1);
         newlineIndex = buffer.indexOf('\n');
 
-        if (line.trim()) {
-          try {
-            const message = JSON.parse(line);
-            if (message.type === 'build-complete') {
-              socket.off('data', onData);
-              resolve();
-            }
-          } catch {
-            // Ignore parse errors
-          }
+        const message = parseMessage(line, authToken);
+        if (message && message.type === 'build-complete') {
+          settle(() => resolve());
         }
       }
     };
 
-    socket.on('data', onData);
+    const onError = (err: Error) => {
+      settle(() => reject(new Error(`Socket error: ${err.message}`)));
+    };
 
-    // Send trigger-build message
-    // const message = JSON.stringify({ type: 'trigger-build' }) + '\n';
-    // socket.write(message);
+    const onEnd = () => {
+      settle(() =>
+        reject(
+          new Error(
+            'Socket ended unexpectedly before build-complete message received'
+          )
+        )
+      );
+    };
+
+    const onClose = () => {
+      settle(() =>
+        reject(
+          new Error(
+            'Socket closed unexpectedly before build-complete message received'
+          )
+        )
+      );
+    };
+
+    // Set timeout to prevent indefinite hanging
+    timeout = setTimeout(() => {
+      settle(() =>
+        reject(
+          new Error(
+            'Timeout waiting for build-complete message (60 seconds elapsed)'
+          )
+        )
+      );
+    }, 60000); // 60 second timeout
+
+    socket.on('data', onData);
+    socket.on('error', onError);
+    socket.on('end', onEnd);
+    socket.on('close', onClose);
   });
 }
 
@@ -149,7 +214,7 @@ export default async function workflowLoader(
 
     // Read the actual generated file content
     const actualContent = await readFile(
-      filename.replace(/inner\.js/, 'route.js'),
+      filename.replace(/inner\.js$/, 'route.js'),
       'utf-8'
     );
     return actualContent;
@@ -186,7 +251,7 @@ export default async function workflowLoader(
   const lowerPath = normalizedFilepath.toLowerCase();
 
   let relativeFilename: string;
-  if (lowerPath.startsWith(lowerWd + '/')) {
+  if (lowerPath.startsWith(`${lowerWd}/`)) {
     // File is under working directory - manually calculate relative path
     relativeFilename = normalizedFilepath.substring(
       normalizedWorkingDir.length + 1

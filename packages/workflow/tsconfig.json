@@ -3,6 +3,7 @@
   "compilerOptions": {
     "outDir": "dist",
     "sourceMap": false,
+    // See https://github.com/vercel/workflow/pull/352
     "inlineSourceMap": true
   },
   "include": ["src"],

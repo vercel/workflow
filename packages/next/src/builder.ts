@@ -3,6 +3,11 @@ import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { join, resolve } from 'node:path';
 import type { NextConfig } from 'next';
+import {
+  createSocketServer,
+  type SocketIO,
+  type SocketServerConfig,
+} from './socket-server';
 
 let CachedNextBuilder: any;
 
@@ -21,7 +26,7 @@ export async function getNextBuilder() {
   } = await import('@workflow/builders');
 
   class NextBuilder extends BaseBuilderClass {
-    private socketIO?: any;
+    private socketIO?: SocketIO;
     private isDevServer?: boolean;
     private nextConfig?: NextConfig;
 
@@ -253,115 +258,11 @@ export async function getNextBuilder() {
       if (process.env.WORKFLOW_SOCKET_PORT) {
         return;
       }
-      const { createServer } = await import('node:net');
 
       const workflowFiles = new Set<string>();
       const stepFiles = new Set<string>();
-      const clients = new Set<any>();
-      let buildTriggered = false;
-
-      // Create TCP server
-      const server = createServer((socket) => {
-        socket.setNoDelay(true);
-        clients.add(socket);
-
-        if (buildTriggered && !this.isDevServer) {
-          socket.write(JSON.stringify({ type: 'build-complete' }) + '\n');
-        }
-
-        let buffer = '';
-
-        socket.on('data', (data) => {
-          buffer += data.toString();
-
-          // Process complete messages (newline-delimited JSON)
-          let newlineIndex = buffer.indexOf('\n');
-          while (newlineIndex !== -1) {
-            const line = buffer.slice(0, newlineIndex);
-            buffer = buffer.slice(newlineIndex + 1);
-            newlineIndex = buffer.indexOf('\n');
-
-            if (line.trim()) {
-              try {
-                const message = JSON.parse(line);
-
-                if (message.type === 'file-discovered') {
-                  const { filePath, hasWorkflow, hasStep } = message;
-
-                  const knownFile =
-                    workflowFiles.has(filePath) || stepFiles.has(filePath);
-
-                  if (hasWorkflow) {
-                    workflowFiles.add(filePath);
-                  } else {
-                    workflowFiles.delete(filePath);
-                  }
-
-                  if (hasStep) {
-                    stepFiles.add(filePath);
-                  } else {
-                    stepFiles.delete(filePath);
-                  }
-
-                  // Trigger debounced build if the file was previously seen
-                  // or was steps or workflows currently
-                  if (
-                    // in non-dev we always update debounce on activity
-                    !this.isDevServer ||
-                    hasWorkflow ||
-                    hasStep ||
-                    knownFile
-                  ) {
-                    triggerBuild();
-                  }
-                } else if (message.type === 'trigger-build') {
-                  // enqueue new build if one isn't already pending
-                  triggerBuild();
-                }
-              } catch (error) {
-                console.error('Failed to parse socket message:', error);
-              }
-            }
-          }
-        });
-
-        socket.on('end', () => {
-          clients.delete(socket);
-        });
-
-        socket.on('error', (err) => {
-          console.error('Socket error:', err);
-          clients.delete(socket);
-        });
-      });
-
-      // Listen on random available port
-      await new Promise<void>((resolve) => {
-        // Port 0 tells the OS to assign a random available port
-        server.listen(0, '127.0.0.1', () => {
-          const address = server.address();
-          if (address && typeof address === 'object') {
-            // Expose the port via environment variable
-            process.env.WORKFLOW_SOCKET_PORT = String(address.port);
-          }
-          resolve();
-        });
-      });
-
-      // Store the server and broadcast function
-      this.socketIO = {
-        emit: (event: string) => {
-          if (event === 'build-complete') {
-            const message = JSON.stringify({ type: 'build-complete' }) + '\n';
-            for (const client of clients) {
-              client.write(message);
-            }
-          }
-        },
-      };
-
       let debounceTimer: NodeJS.Timeout | null = null;
-
+      let buildTriggered = false;
       const BUILD_DEBOUNCE_MS = this.isDevServer ? 500 : 2_000;
 
       // Attempt to load cached workflows/steps from previous build
@@ -376,7 +277,6 @@ export async function getNextBuilder() {
       }
 
       // Debounced build trigger
-
       const triggerBuild = () => {
         if (debounceTimer) {
           clearTimeout(debounceTimer);
@@ -390,6 +290,7 @@ export async function getNextBuilder() {
             // and they can't be refreshed/rebuilt after that in production
             return;
           }
+
           // Combine workflow and step files into single array
           const allFiles = new Set([...workflowFiles, ...stepFiles]);
           const inputFiles = Array.from(allFiles);
@@ -407,6 +308,46 @@ export async function getNextBuilder() {
           }
         }, BUILD_DEBOUNCE_MS);
       };
+
+      // Configure and create socket server
+      const config: SocketServerConfig = {
+        isDevServer: this.isDevServer || false,
+        onFileDiscovered: (
+          filePath: string,
+          hasWorkflow: boolean,
+          hasStep: boolean
+        ) => {
+          const knownFile =
+            workflowFiles.has(filePath) || stepFiles.has(filePath);
+
+          if (hasWorkflow) {
+            workflowFiles.add(filePath);
+          } else {
+            workflowFiles.delete(filePath);
+          }
+
+          if (hasStep) {
+            stepFiles.add(filePath);
+          } else {
+            stepFiles.delete(filePath);
+          }
+
+          // Trigger debounced build if the file was previously seen
+          // or has workflows/steps currently
+          if (
+            // in non-dev we always update debounce on activity
+            !this.isDevServer ||
+            hasWorkflow ||
+            hasStep ||
+            knownFile
+          ) {
+            triggerBuild();
+          }
+        },
+        onTriggerBuild: triggerBuild,
+      };
+
+      this.socketIO = await createSocketServer(config);
     }
 
     private async writeStubFiles(usersAppDir: string): Promise<void> {
@@ -424,7 +365,7 @@ export async function getNextBuilder() {
 
       const routeStubContent = "export * from './inner'";
       // this needs to change on each build so can refresh workflows
-      const innerStubContent = 'WORKFLOW_INNER_STUB_FILE_' + Date.now();
+      const innerStubContent = `WORKFLOW_INNER_STUB_FILE_${Date.now()}`;
       const workflowDir = join(usersAppDir, '.well-known/workflow/v1');
 
       // Ensure directories exist

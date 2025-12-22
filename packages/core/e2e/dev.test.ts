@@ -1,6 +1,6 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { afterEach, describe, expect, test } from 'vitest';
 import { getWorkbenchAppPath } from './utils';
 
 export interface DevTestConfig {
@@ -45,7 +45,9 @@ export function createDevTests(config?: DevTestConfig) {
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const warmEndpoint = async () => {
-      // ensure Next.js is building route
+      // Warm up the Next.js routes to trigger lazy workflow/step discovery and compilation.
+      // This is only required for tests that respond to file updates (HMR tests).
+      // Without this, the routes won't be built yet and file change detection won't work.
       await fetch(new URL('/api/trigger', process.env.DEPLOYMENT_URL));
       await fetch(new URL('/api/chat', process.env.DEPLOYMENT_URL));
     };
