@@ -184,6 +184,8 @@ export function createStreamer(basedir: string): Streamer {
             chunkData: Uint8Array;
           }> = [];
           let isReadingFromDisk = true;
+          // Buffer close event if it arrives during disk reading
+          let pendingClose = false;
 
           const chunkListener = (event: {
             streamName: string;
@@ -213,6 +215,11 @@ export function createStreamer(basedir: string): Streamer {
           };
 
           const closeListener = () => {
+            // Buffer close event if disk reading is still in progress
+            if (isReadingFromDisk) {
+              pendingClose = true;
+              return;
+            }
             // Remove listeners before closing
             streamEmitter.off(`chunk:${name}` as const, chunkListener);
             streamEmitter.off(`close:${name}` as const, closeListener);
@@ -279,6 +286,17 @@ export function createStreamer(basedir: string): Streamer {
               // Ignore if controller is already closed (e.g., from closeListener event)
             }
             return;
+          }
+
+          // Process any pending close event that arrived during disk reading
+          if (pendingClose) {
+            streamEmitter.off(`chunk:${name}` as const, chunkListener);
+            streamEmitter.off(`close:${name}` as const, closeListener);
+            try {
+              controller.close();
+            } catch {
+              // Ignore if controller is already closed
+            }
           }
         },
 

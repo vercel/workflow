@@ -7,6 +7,11 @@
  *
  * Usage: node scripts/generate-release-notes.mjs
  *
+ * Environment variables:
+ *   PUBLISHED_PACKAGES - JSON array of published packages from changesets action
+ *                        e.g. '[{"name":"@workflow/core","version":"4.0.1-beta.29"}]'
+ *                        If not provided, includes all packages (may include duplicates)
+ *
  * Output: JSON with { tag, title, body } for the GitHub release
  */
 
@@ -18,6 +23,13 @@ import { fileURLToPath } from 'node:url';
 const GITHUB_REPO = 'vercel/workflow';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Parse published packages from environment variable (set by changesets action)
+// Format: [{"name":"@workflow/core","version":"4.0.1-beta.29"}, ...]
+const publishedPackagesEnv = process.env.PUBLISHED_PACKAGES;
+const publishedPackages = publishedPackagesEnv
+  ? new Map(JSON.parse(publishedPackagesEnv).map((p) => [p.name, p.version]))
+  : null;
 const ROOT_DIR = join(__dirname, '..');
 const PACKAGES_DIR = join(ROOT_DIR, 'packages');
 
@@ -250,6 +262,15 @@ function generateReleaseNotes() {
   for (const pkg of packageChanges) {
     // Skip the main workflow package - it usually only has dependency updates
     if (pkg.packageName === 'workflow') continue;
+
+    // If we have published packages info, only include packages that were published
+    // This prevents duplicating changes from packages that weren't updated in this release
+    if (publishedPackages) {
+      const publishedVersion = publishedPackages.get(pkg.packageName);
+      if (!publishedVersion || publishedVersion !== pkg.version) {
+        continue;
+      }
+    }
 
     body += `## ${pkg.packageName}@${pkg.version}\n\n`;
     for (const change of pkg.changes) {

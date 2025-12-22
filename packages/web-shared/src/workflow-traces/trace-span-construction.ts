@@ -73,7 +73,7 @@ export const waitEventsToWaitEntity = (
     waitId: startEvent.correlationId,
     runId: startEvent.runId,
     createdAt: startEvent.createdAt,
-    resumeAt: startEvent.eventData.resumeAt,
+    resumeAt: startEvent.eventData?.resumeAt,
     completedAt: completedEvent?.createdAt,
   };
 };

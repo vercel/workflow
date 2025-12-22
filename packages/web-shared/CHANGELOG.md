@@ -1,5 +1,11 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.32
+
+### Patch Changes
+
+- [#673](https://github.com/vercel/workflow/pull/673) [`616bc67`](https://github.com/vercel/workflow/commit/616bc67be4691830e272b4987c73f1155adc5303) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix null access in event data. This is due to a typing issue in event.eventData in the world interface, which will be resolved separately
+
 ## 4.0.1-beta.31
 
 ### Patch Changes

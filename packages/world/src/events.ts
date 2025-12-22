@@ -18,6 +18,9 @@ export const EventTypeSchema = z.enum([
 ]);
 
 // Base event schema with common properties
+// TODO: Event data on all specific event schemas can actually be undefined,
+// as the world may omit eventData when resolveData is set to 'none'.
+// Changing the type here will mainly improve type safety for o11y consumers.
 export const BaseEventSchema = z.object({
   eventType: EventTypeSchema,
   correlationId: z.string().optional(),
