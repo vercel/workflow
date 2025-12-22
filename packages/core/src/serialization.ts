@@ -338,8 +338,6 @@ export async function flushablePipe(
     while (true) {
       // Check if stream has ended
       if (state.streamEnded) {
-        reader.releaseLock();
-        writer.releaseLock();
         return;
       }
 
@@ -369,8 +367,6 @@ export async function flushablePipe(
 
       // Check if stream has ended (e.g., due to error in another path)
       if (state.streamEnded) {
-        reader.releaseLock();
-        writer.releaseLock();
         return;
       }
     }
@@ -381,6 +377,9 @@ export async function flushablePipe(
       state.reject(err);
     }
     throw err;
+  } finally {
+    reader.releaseLock();
+    writer.releaseLock();
   }
 }
 
