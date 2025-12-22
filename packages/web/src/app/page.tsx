@@ -1,8 +1,8 @@
 'use client';
 
+import { ErrorBoundary } from '@workflow/web-shared';
 import { AlertCircle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { ErrorBoundary } from '@/components/error-boundary';
 import { HooksTable } from '@/components/hooks-table';
 import { RunsTable } from '@/components/runs-table';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';

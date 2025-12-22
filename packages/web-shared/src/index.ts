@@ -40,3 +40,4 @@ export { ConversationView } from './sidebar/conversation-view';
 export { StreamViewer } from './stream-viewer';
 export type { Span, SpanEvent } from './trace-viewer/types';
 export { WorkflowTraceViewer } from './workflow-trace-view';
+export { ErrorBoundary } from './error-boundary';

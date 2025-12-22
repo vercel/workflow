@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import type { EnvMap } from './api/workflow-server-actions';
 import { Skeleton } from './components/ui/skeleton';
+import { ErrorBoundary } from './error-boundary';
 import { WorkflowDetailPanel } from './sidebar/workflow-detail-panel';
 import {
   TraceViewerContextProvider,
@@ -196,11 +197,13 @@ export const WorkflowTraceViewer = ({
         customSpanClassNameFunc={getCustomSpanClassName}
         customSpanEventClassNameFunc={getCustomSpanEventClassName}
         customPanelComponent={
-          <WorkflowDetailPanel
-            env={env}
-            run={run}
-            onStreamClick={onStreamClick}
-          />
+          <ErrorBoundary>
+            <WorkflowDetailPanel
+              env={env}
+              run={run}
+              onStreamClick={onStreamClick}
+            />
+          </ErrorBoundary>
         }
       >
         <TraceViewerTimeline height="100%" trace={trace} withPanel />

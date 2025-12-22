@@ -1,7 +1,7 @@
 'use client';
 
+import { ErrorBoundary } from '@workflow/web-shared';
 import { useParams } from 'next/navigation';
-import { ErrorBoundary } from '@/components/error-boundary';
 import { RunDetailView } from '@/components/run-detail-view';
 import { useQueryParamConfig } from '@/lib/config';
 import {
