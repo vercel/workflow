@@ -3,15 +3,19 @@ import type { WorkflowRuntimeError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import { getStepFunction, registerStepFunction } from './private.js';
 import {
+  createFlushableState,
   dehydrateStepArguments,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
+  flushablePipe,
   getCommonRevivers,
   getStreamType,
   getWorkflowReducers,
   hydrateStepArguments,
   hydrateWorkflowArguments,
+  LOCK_POLL_INTERVAL_MS,
+  pollWritableLock,
 } from './serialization.js';
 import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
@@ -999,9 +1003,6 @@ describe('step function serialization', () => {
 });
 
 describe('flushable stream behavior', () => {
-  const POLL_INTERVAL = 100; // Match the actual implementation
-  const STABLE_POLL_COUNT = 2; // Match the actual implementation
-
   it('done promise should resolve when writable stream lock is released (polling)', async () => {
     // Test the pattern: user writes, releases lock, polling detects it, done resolves
     const chunks: string[] = [];
@@ -1019,79 +1020,15 @@ describe('flushable stream behavior', () => {
 
     // Create a TransformStream like we do in getStepRevivers
     const { readable, writable } = new TransformStream<string, string>();
+    const { state, done } = createFlushableState();
 
-    // Track flushable state - this mirrors the actual implementation
-    const state = {
-      pendingOps: 0, // Only counts writes to server
-      doneResolved: false,
-      streamEnded: false,
-      resolve: () => {},
-      reject: (_err: Error) => {},
-    };
-
-    const done = new Promise<void>((res, rej) => {
-      state.resolve = res;
-      state.reject = rej;
+    // Start piping in background
+    flushablePipe(readable, mockSink, state).catch(() => {
+      // Errors handled via state.reject
     });
 
-    // Start piping in background (mirrors flushablePipe implementation)
-    (async () => {
-      const reader = readable.getReader();
-      const writer = mockSink.getWriter();
-      try {
-        while (!state.streamEnded) {
-          const result = await reader.read();
-
-          if (result.done) {
-            state.streamEnded = true;
-            await writer.close();
-            if (!state.doneResolved) {
-              state.doneResolved = true;
-              state.resolve();
-            }
-            return;
-          }
-
-          // Only writes count as pending ops
-          state.pendingOps++;
-          await writer.write(result.value);
-          state.pendingOps--;
-
-          if (state.streamEnded) {
-            reader.releaseLock();
-            writer.releaseLock();
-            return;
-          }
-        }
-      } catch (err) {
-        state.streamEnded = true;
-        if (!state.doneResolved) {
-          state.doneResolved = true;
-          state.reject(err as Error);
-        }
-      }
-    })();
-
-    // Start polling (mirrors pollWritableLock implementation)
-    let stableCount = 0;
-    const intervalId = setInterval(() => {
-      if (state.doneResolved || state.streamEnded) {
-        clearInterval(intervalId);
-        return;
-      }
-
-      // Check if lock is released by checking .locked property
-      if (!writable.locked && state.pendingOps === 0) {
-        stableCount++;
-        if (stableCount >= STABLE_POLL_COUNT) {
-          state.doneResolved = true;
-          state.resolve();
-          clearInterval(intervalId);
-        }
-      } else {
-        stableCount = 0;
-      }
-    }, POLL_INTERVAL);
+    // Start polling for lock release
+    pollWritableLock(writable, state);
 
     // Simulate user interaction - write and release lock
     const userWriter = writable.getWriter();
@@ -1101,8 +1038,8 @@ describe('flushable stream behavior', () => {
     // Release lock without closing stream
     userWriter.releaseLock();
 
-    // Wait for pipe to process + polling intervals (need STABLE_POLL_COUNT consecutive polls)
-    await new Promise((r) => setTimeout(r, 250));
+    // Wait for pipe to process + polling interval
+    await new Promise((r) => setTimeout(r, LOCK_POLL_INTERVAL_MS + 50));
 
     // The done promise should resolve
     await expect(
@@ -1134,75 +1071,15 @@ describe('flushable stream behavior', () => {
     });
 
     const { readable, writable } = new TransformStream<string, string>();
-
-    const state = {
-      pendingOps: 0,
-      doneResolved: false,
-      streamEnded: false,
-      resolve: () => {},
-      reject: (_err: Error) => {},
-    };
-
-    const done = new Promise<void>((res, rej) => {
-      state.resolve = res;
-      state.reject = rej;
-    });
+    const { state, done } = createFlushableState();
 
     // Start piping in background
-    (async () => {
-      const reader = readable.getReader();
-      const writer = mockSink.getWriter();
-      try {
-        while (!state.streamEnded) {
-          const result = await reader.read();
-
-          if (result.done) {
-            state.streamEnded = true;
-            await writer.close();
-            if (!state.doneResolved) {
-              state.doneResolved = true;
-              state.resolve();
-            }
-            return;
-          }
-
-          state.pendingOps++;
-          await writer.write(result.value);
-          state.pendingOps--;
-
-          if (state.streamEnded) {
-            reader.releaseLock();
-            writer.releaseLock();
-            return;
-          }
-        }
-      } catch (err) {
-        state.streamEnded = true;
-        if (!state.doneResolved) {
-          state.doneResolved = true;
-          state.reject(err as Error);
-        }
-      }
-    })();
+    flushablePipe(readable, mockSink, state).catch(() => {
+      // Errors handled via state.reject
+    });
 
     // Start polling (won't trigger since stream will close first)
-    let stableCount2 = 0;
-    const intervalId = setInterval(() => {
-      if (state.doneResolved || state.streamEnded) {
-        clearInterval(intervalId);
-        return;
-      }
-      if (!writable.locked && state.pendingOps === 0) {
-        stableCount2++;
-        if (stableCount2 >= STABLE_POLL_COUNT) {
-          state.doneResolved = true;
-          state.resolve();
-          clearInterval(intervalId);
-        }
-      } else {
-        stableCount2 = 0;
-      }
-    }, POLL_INTERVAL);
+    pollWritableLock(writable, state);
 
     // User writes and then closes the stream
     const userWriter = writable.getWriter();

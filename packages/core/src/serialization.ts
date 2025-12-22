@@ -180,7 +180,8 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 }
 
 /** Polling interval for checking stream lock state (in milliseconds) */
-const LOCK_POLL_INTERVAL_MS = 100;
+/** Polling interval for lock release detection */
+export const LOCK_POLL_INTERVAL_MS = 100;
 
 /**
  * State tracker for flushable stream operations.
@@ -195,7 +196,7 @@ const LOCK_POLL_INTERVAL_MS = 100;
  * The pump continues running even after `doneResolved=true` to handle
  * any future writes if the user acquires a new lock.
  */
-interface FlushableStreamState {
+export interface FlushableStreamState {
   /** Number of write operations currently in flight to the server */
   pendingOps: number;
   /** Whether the `done` promise has been resolved */
@@ -206,7 +207,7 @@ interface FlushableStreamState {
   reject: (err: any) => void;
 }
 
-function createFlushableState(): {
+export function createFlushableState(): {
   state: FlushableStreamState;
   done: Promise<void>;
 } {
@@ -262,13 +263,12 @@ function isReadableUnlockedNotClosed(readable: ReadableStream): boolean {
 
 /**
  * Polls a WritableStream to check if the user has released their lock.
- * Resolves the done promise when lock is released and no pending ops remain
- * for multiple consecutive polls (to avoid race conditions with the pump).
+ * Resolves the done promise when lock is released and no pending ops remain.
  *
  * Note: Only resolves if stream is unlocked but NOT closed. If the user closes
  * the stream, the pump will handle resolution via the stream ending naturally.
  */
-function pollWritableLock(
+export function pollWritableLock(
   writable: WritableStream,
   state: FlushableStreamState
 ): void {
@@ -295,7 +295,7 @@ function pollWritableLock(
  * Note: Only resolves if stream is unlocked but NOT closed. If the user closes
  * the stream, the pump will handle resolution via the stream ending naturally.
  */
-function pollReadableLock(
+export function pollReadableLock(
   readable: ReadableStream,
   state: FlushableStreamState
 ): void {
@@ -326,7 +326,7 @@ function pollReadableLock(
  * @param state - The flushable state tracker
  * @returns Promise that resolves when stream ends (not when done promise resolves)
  */
-async function flushablePipe(
+export async function flushablePipe(
   source: ReadableStream,
   sink: WritableStream,
   state: FlushableStreamState
