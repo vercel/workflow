@@ -142,6 +142,7 @@ function createHooksStorage(basedir: string): Storage['hooks'] {
     } as Hook;
 
     const hookPath = path.join(basedir, 'hooks', `${data.hookId}.json`);
+    HookSchema.parse(result);
     await writeJSON(hookPath, result);
     return result;
   }
@@ -258,6 +259,7 @@ export function createStorage(basedir: string): Storage {
         };
 
         const runPath = path.join(basedir, 'runs', `${runId}.json`);
+        WorkflowRunSchema.parse(result);
         await writeJSON(runPath, result);
         return result;
       },
@@ -309,6 +311,7 @@ export function createStorage(basedir: string): Storage {
           updatedRun.completedAt = now;
         }
 
+        WorkflowRunSchema.parse(updatedRun);
         await writeJSON(runPath, updatedRun, { overwrite: true });
 
         // If transitioning to a terminal status, clean up all hooks for this run
@@ -399,6 +402,7 @@ export function createStorage(basedir: string): Storage {
 
         const compositeKey = `${runId}-${data.stepId}`;
         const stepPath = path.join(basedir, 'steps', `${compositeKey}.json`);
+        StepSchema.parse(result);
         await writeJSON(stepPath, result);
 
         return result;
@@ -459,6 +463,7 @@ export function createStorage(basedir: string): Storage {
           updatedStep.completedAt = now;
         }
 
+        StepSchema.parse(updatedStep);
         await writeJSON(stepPath, updatedStep, { overwrite: true });
         return updatedStep;
       },
@@ -508,6 +513,7 @@ export function createStorage(basedir: string): Storage {
         // Store event using composite key {runId}-{eventId}
         const compositeKey = `${runId}-${eventId}`;
         const eventPath = path.join(basedir, 'events', `${compositeKey}.json`);
+        EventSchema.parse(result);
         await writeJSON(eventPath, result);
 
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;

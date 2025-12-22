@@ -4,7 +4,15 @@ import path from 'node:path';
 import type { PaginatedResponse } from '@workflow/world';
 import ms from 'ms';
 import { monotonicFactory } from 'ulid';
-import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { z } from 'zod';
 import { paginatedFileSystemQuery, ulidToDate, writeJSON } from './fs.js';
 
@@ -610,22 +618,47 @@ describe('fs utilities', () => {
         ).rejects.toThrow();
       });
 
-      it('should handle schema validation failures', async () => {
-        const id = ulid();
+      it('should skip files with schema validation failures and log warning', async () => {
+        const validId = ulid();
+        const invalidId = ulid();
 
-        // Create a file that doesn't match the schema
+        // Create a valid file
+        await createFilesystem(testDir, {
+          [validId]: {
+            id: validId,
+            name: 'valid-item',
+            createdAt: new Date(),
+          },
+        });
+
+        // Create a file that doesn't match the schema (missing required fields)
         const invalidItem = { wrongField: 'value', createdAt: new Date() };
-        const filePath = path.join(testDir, `${id}.json`);
-        await fs.writeFile(filePath, JSON.stringify(invalidItem));
+        const invalidPath = path.join(testDir, `${invalidId}.json`);
+        await fs.writeFile(invalidPath, JSON.stringify(invalidItem));
 
-        // This should throw during schema validation
-        await expect(
-          paginatedFileSystemQuery({
+        // Spy on console.warn to verify the warning is logged
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        try {
+          const result = await paginatedFileSystemQuery({
             directory: testDir,
             schema: TestItemSchema,
             getCreatedAt: getCreatedAt,
-          })
-        ).rejects.toThrow();
+          });
+
+          // Should return only the valid item, skipping the malformed one
+          expect(result.data).toHaveLength(1);
+          assert(result.data[0], 'expected first result to be defined');
+          expect(result.data[0].name).toBe('valid-item');
+
+          // Verify warning was logged for the skipped item
+          expect(warnSpy).toHaveBeenCalledTimes(1);
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(`Skipping item ${invalidId}`)
+          );
+        } finally {
+          warnSpy.mockRestore();
+        }
       });
 
       it('should handle mixed file types in directory', async () => {

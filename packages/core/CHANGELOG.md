@@ -1,5 +1,21 @@
 # @workflow/core
 
+## 4.0.1-beta.30
+
+### Patch Changes
+
+- Updated dependencies [[`f2d5997`](https://github.com/vercel/workflow/commit/f2d5997b800d6c474bb93d4ddd82cf52489752da)]:
+  - @workflow/world-local@4.0.1-beta.20
+
+## 4.0.1-beta.29
+
+### Patch Changes
+
+- [#649](https://github.com/vercel/workflow/pull/649) [`eaf9aa6`](https://github.com/vercel/workflow/commit/eaf9aa65f354bf1e22e8e148c0fd1936f0ec9358) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Don't shadow `globalThis`
+
+- Updated dependencies [[`75a5060`](https://github.com/vercel/workflow/commit/75a506047304f6dd1ac07d9150e8a9563f69283c), [`6cd1a47`](https://github.com/vercel/workflow/commit/6cd1a47b3146770f5cb9d4c384971331aab6b28a)]:
+  - @workflow/world-vercel@4.0.1-beta.22
+
 ## 4.0.1-beta.28
 
 ### Patch Changes

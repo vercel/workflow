@@ -3,7 +3,7 @@
  */
 
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type { Event, Step, WorkflowRun } from '@workflow/world';
 import type { Span, SpanEvent } from '../trace-viewer/types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
@@ -53,24 +53,52 @@ export function convertEventsToSpanEvents(
     }));
 }
 
+export const waitEventsToWaitEntity = (
+  events: Event[]
+): {
+  waitId: string;
+  runId: string;
+  createdAt: Date;
+  resumeAt: Date;
+  completedAt?: Date;
+} | null => {
+  const startEvent = events.find((event) => event.eventType === 'wait_created');
+  if (!startEvent) {
+    return null;
+  }
+  const completedEvent = events.find(
+    (event) => event.eventType === 'wait_completed'
+  );
+  return {
+    waitId: startEvent.correlationId,
+    runId: startEvent.runId,
+    createdAt: startEvent.createdAt,
+    resumeAt: startEvent.eventData.resumeAt,
+    completedAt: completedEvent?.createdAt,
+  };
+};
+
 /**
  * Converts a workflow Wait to an OpenTelemetry Span
  */
 export function waitToSpan(
-  correlationId: string,
   events: Event[],
-  nowTime?: Date
-): Span {
-  const startEvent = events.find((event) => event.eventType === 'wait_created');
-  const endEvent = events.find((event) => event.eventType === 'wait_completed');
-  const startTime = startEvent?.createdAt ?? nowTime;
-  const endTime = endEvent?.createdAt ?? nowTime;
+  run: WorkflowRun,
+  nowTime: Date
+): Span | null {
+  const wait = waitEventsToWaitEntity(events);
+  if (!wait) {
+    return null;
+  }
+  const viewerEndTime = new Date(run.completedAt || nowTime) ?? nowTime;
+  const startTime = wait?.createdAt ?? nowTime;
+  const endTime = wait?.completedAt ?? viewerEndTime;
   const start = dateToOtelTime(startTime);
   const end = dateToOtelTime(endTime);
   const duration = calculateDuration(startTime, endTime);
   const spanEvents = convertEventsToSpanEvents(events);
   return {
-    spanId: correlationId,
+    spanId: wait.waitId,
     name: 'sleep',
     kind: 1, // INTERNAL span kind
     resource: 'sleep',
@@ -79,9 +107,7 @@ export function waitToSpan(
     traceFlags: 1,
     attributes: {
       resource: 'sleep' as const,
-      data: {
-        correlationId,
-      },
+      data: wait,
     },
     links: [],
     events: spanEvents,
@@ -152,36 +178,59 @@ export function stepToSpan(
   };
 }
 
+export const hookEventsToHookEntity = (
+  events: Event[]
+): {
+  hookId: string;
+  runId: string;
+  createdAt: Date;
+  receivedCount: number;
+  lastReceivedAt?: Date;
+  disposedAt?: Date;
+} | null => {
+  const createdEvent = events.find(
+    (event) => event.eventType === 'hook_created'
+  );
+  if (!createdEvent) {
+    return null;
+  }
+  const receivedEvents = events.filter(
+    (event) => event.eventType === 'hook_received'
+  );
+  const disposedEvents = events.filter(
+    (event) => event.eventType === 'hook_disposed'
+  );
+  const lastReceivedEvent = receivedEvents.at(-1);
+  return {
+    hookId: createdEvent.correlationId,
+    runId: createdEvent.runId,
+    createdAt: createdEvent.createdAt,
+    receivedCount: receivedEvents.length,
+    lastReceivedAt: lastReceivedEvent?.createdAt || undefined,
+    disposedAt: disposedEvents.at(-1)?.createdAt || undefined,
+  };
+};
+
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
 export function hookToSpan(
-  hook: Hook,
   hookEvents: Event[],
+  run: WorkflowRun,
   nowTime: Date
-): Span {
-  // Simplified attributes: only store resource type and full data
-  const attributes = {
-    resource: 'hook' as const,
-    data: hook,
-  };
-
-  const lastHookReceivedEvent = hookEvents
-    .slice()
-    .sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    )
-    .find((event) => event.eventType === 'hook_received');
-
-  const endTime = lastHookReceivedEvent
-    ? lastHookReceivedEvent.createdAt
-    : new Date(
-        Math.max(new Date(hook.createdAt).getTime() + 10_000, nowTime.getTime())
-      );
+): Span | null {
+  const hook = hookEventsToHookEntity(hookEvents);
+  if (!hook) {
+    return null;
+  }
 
   // Convert hook-related events to span events
   const events = convertEventsToSpanEvents(hookEvents);
+
+  // We display hooks as a minimum span size of 10 seconds, just to ensure
+  // it's clickable even if there is no
+  const viewerEndTime = new Date(run.completedAt || nowTime) ?? nowTime;
+  const endTime = hook.disposedAt || viewerEndTime;
 
   return {
     spanId: String(hook.hookId),
@@ -191,7 +240,10 @@ export function hookToSpan(
     library: WORKFLOW_LIBRARY,
     status: { code: 1 },
     traceFlags: 1,
-    attributes,
+    attributes: {
+      resource: 'hook' as const,
+      data: hook,
+    },
     links: [],
     events,
     startTime: dateToOtelTime(hook.createdAt),

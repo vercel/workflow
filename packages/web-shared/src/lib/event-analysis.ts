@@ -213,16 +213,6 @@ export function shouldShowReenqueueButton(
 }
 
 /**
- * Check if there are pending sleeps from an events list.
- * This is a convenience function for backwards compatibility.
- */
-export function hasPendingSleepsFromEvents(
-  events: Event[] | undefined
-): boolean {
-  return analyzeEvents(events).hasPendingSleeps;
-}
-
-/**
  * Check if there are pending steps from an events list.
  */
 export function hasPendingStepsFromEvents(

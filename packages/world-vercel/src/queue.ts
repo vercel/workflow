@@ -11,9 +11,48 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
   queueName: ValidQueueName,
+  /**
+   * The deployment ID to use when re-enqueueing the message.
+   * This ensures the message is processed by the same deployment.
+   */
+  deploymentId: z.string().optional(),
 });
 
-const VERCEL_QUEUE_MAX_VISIBILITY = 39600; // 11 hours in seconds
+/**
+ * Message Lifetime Management
+ *
+ * Vercel Queue messages have a maximum lifetime of 24 hours. After this period,
+ * messages are automatically deleted regardless of their visibility timeout.
+ * This creates a problem for long-running sleep() or retryAfter delays that
+ * exceed 24 hours - the message would be deleted before the handler fires.
+ *
+ * To handle delays longer than the message lifetime, we use a two-part strategy:
+ *
+ * 1. **Timeout Clamping**: If the requested timeoutSeconds would cause the message
+ *    to expire before the next processing, we clamp the timeout to fit within
+ *    the remaining message lifetime. The handler stores the target time in
+ *    persistent state (step.retryAfter or wait_created event), so when the
+ *    clamped timeout fires, it recalculates the remaining time and returns
+ *    another timeout if needed.
+ *
+ * 2. **Message Re-enqueueing**: If the message is already at or past its safe
+ *    lifetime limit (lifetime - buffer), we enqueue a fresh message and
+ *    acknowledge the current one. The new message gets a fresh 24-hour clock.
+ *    It fires immediately, and the handler short-circuits by checking the
+ *    persistent state and returning the remaining timeoutSeconds.
+ *
+ * TODO: Once Vercel Queue supports NBF (not before) functionality, we can use
+ * that when re-enqueueing to schedule the new message for the remaining delay
+ * instead of having it fire immediately and short-circuit.
+ *
+ * These constants can be overridden via environment variables for testing.
+ */
+const VERCEL_QUEUE_MESSAGE_LIFETIME = Number(
+  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME || 86400 // 24 hours in seconds
+);
+const MESSAGE_LIFETIME_BUFFER = Number(
+  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME_BUFFER || 3600 // 1 hour buffer before lifetime expires
+);
 
 export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
@@ -25,7 +64,7 @@ export function createQueue(config?: APIConfig): Queue {
     headers: Object.fromEntries(headers.entries()),
   });
 
-  const queue: Queue['queue'] = async (queueName, x, opts) => {
+  const queue: Queue['queue'] = async (queueName, payload, opts) => {
     // zod v3 doesn't have the `encode` method. We only support zod v4 officially,
     // but codebases that pin zod v3 are still common.
     const hasEncoder = typeof MessageWrapper.encode === 'function';
@@ -38,8 +77,10 @@ export function createQueue(config?: APIConfig): Queue {
       ? MessageWrapper.encode
       : (data: z.infer<typeof MessageWrapper>) => data;
     const encoded = encoder({
-      payload: x,
+      payload,
       queueName,
+      // Store deploymentId in the message so it can be preserved when re-enqueueing
+      deploymentId: opts?.deploymentId,
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     const { messageId } = await queueClient.send(
@@ -54,22 +95,33 @@ export function createQueue(config?: APIConfig): Queue {
     return queueClient.handleCallback({
       [`${prefix}*`]: {
         default: async (body, meta) => {
-          const { payload, queueName } = MessageWrapper.parse(body);
+          const { payload, queueName, deploymentId } =
+            MessageWrapper.parse(body);
           const result = await handler(payload, {
             queueName,
             messageId: MessageId.parse(meta.messageId),
             attempt: meta.deliveryCount,
           });
           if (typeof result?.timeoutSeconds === 'number') {
-            // For Vercel Queue, enforce the max visibility limit:
-            //   - When a step function throws a `RetryableError`, the retryAfter timestamp is updated and stored on the Step document
-            const adjustedTimeoutSeconds = Math.min(
-              result.timeoutSeconds,
-              VERCEL_QUEUE_MAX_VISIBILITY
-            );
+            const now = Date.now();
 
-            if (adjustedTimeoutSeconds !== result.timeoutSeconds) {
-              result.timeoutSeconds = adjustedTimeoutSeconds;
+            // Calculate how old this message is using the queue's createdAt timestamp
+            const messageAge = (now - meta.createdAt.getTime()) / 1000; // Convert to seconds
+
+            // Calculate the maximum timeout this message can handle before expiring
+            const maxAllowedTimeout =
+              VERCEL_QUEUE_MESSAGE_LIFETIME -
+              MESSAGE_LIFETIME_BUFFER -
+              messageAge;
+
+            if (maxAllowedTimeout <= 0) {
+              // Message is at its lifetime limit - re-enqueue to get a fresh 24-hour clock
+              // Preserve the original deploymentId to ensure routing to the same deployment
+              await queue(queueName, payload, { deploymentId });
+              return undefined;
+            } else if (result.timeoutSeconds > maxAllowedTimeout) {
+              // Clamp timeout to fit within remaining message lifetime
+              result.timeoutSeconds = maxAllowedTimeout;
             }
           }
           return result;

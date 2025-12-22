@@ -10,6 +10,10 @@ import type {
 } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getPaginationDisplay } from '../lib/utils';
+import {
+  hookEventsToHookEntity,
+  waitEventsToWaitEntity,
+} from '../workflow-traces/trace-span-construction';
 import type { EnvMap, ServerActionError } from './workflow-server-actions';
 import {
   cancelRun as cancelRunServerAction,
@@ -25,6 +29,8 @@ import {
   readStreamServerAction,
   recreateRun as recreateRunServerAction,
   reenqueueRun as reenqueueRunServerAction,
+  resumeHook as resumeHookServerAction,
+  type ResumeHookResult,
   type StopSleepOptions,
   type StopSleepResult,
   wakeUpRun as wakeUpRunServerAction,
@@ -1001,10 +1007,9 @@ export function useWorkflowResourceData(
   const [error, setError] = useState<Error | null>(null);
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
     setData(null);
     setError(null);
-    if (resource === 'sleep') {
+    if (resource === 'hook' || resource === 'sleep') {
       const { error, result } = await unwrapServerActionResult(
         fetchEventsByCorrelationId(env, resourceId, {
           sortOrder: 'asc',
@@ -1016,20 +1021,23 @@ export function useWorkflowResourceData(
         setError(error);
         return;
       }
-      const eventsData = result;
-      const waitStartEvent = eventsData.data.find(
-        (event) => event.eventType === 'wait_created'
-      );
-      if (waitStartEvent) {
-        setData({
-          waitId: waitStartEvent.correlationId,
-          runId: waitStartEvent.runId,
-          createdAt: waitStartEvent.createdAt,
-          resumeAt: waitStartEvent.eventData.resumeAt,
-        } as unknown as Event);
+      const events = result.data as unknown as Event[];
+      const data =
+        resource === 'hook'
+          ? hookEventsToHookEntity(events)
+          : waitEventsToWaitEntity(events);
+      if (data === null) {
+        setError(
+          new Error(
+            `Failed to load ${resource} details: missing required event data`
+          )
+        );
+        return;
       }
+      setData(data as unknown as Hook | Event);
       return;
     }
+    setLoading(true);
     // Fetch resource with full data
     try {
       const { data: resourceData } = await fetchResourceWithCorrelationId(
@@ -1131,6 +1139,25 @@ export async function wakeUpRun(
 ): Promise<StopSleepResult> {
   const { error, result: resultData } = await unwrapServerActionResult(
     wakeUpRunServerAction(env, runId, options)
+  );
+  if (error) {
+    throw error;
+  }
+  return resultData;
+}
+
+export type { ResumeHookResult };
+
+/**
+ * Resume a hook by sending a JSON payload
+ */
+export async function resumeHook(
+  env: EnvMap,
+  token: string,
+  payload: unknown
+): Promise<ResumeHookResult> {
+  const { error, result: resultData } = await unwrapServerActionResult(
+    resumeHookServerAction(env, token, payload)
   );
   if (error) {
     throw error;
