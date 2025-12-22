@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
 import open from 'open';
 import { logger } from '../config/log.js';
+import { getWorkflowConfig } from '../config/workflow-config.js';
 import { getEnvVars } from './env.js';
 import { getVercelDashboardUrl } from './vercel-api.js';
+import { findRepoRoot } from './vercel-link.js';
 
 export const WEB_PACKAGE_NAME = '@workflow/web';
 export const getHostUrl = (webPort: number) => `http://localhost:${webPort}`;
@@ -296,6 +298,15 @@ export async function launchWebUI(
   // Fall back to local web UI
   // Build URL with query params
   const queryParams = envToQueryParams(resource, id, flags, envVars);
+
+  // Add searchDir for data directory detection (when dataDir is not set)
+  if (!envVars.WORKFLOW_LOCAL_DATA_DIR) {
+    const cwd = getWorkflowConfig().workingDir;
+    const repoRoot = await findRepoRoot(cwd, cwd);
+    const searchDir = repoRoot && repoRoot !== cwd ? `${cwd}:${repoRoot}` : cwd;
+    queryParams.set('searchDir', searchDir);
+  }
+
   const webPort = flags.webPort ?? 3456;
   const hostUrl = getHostUrl(webPort);
   const url = `${hostUrl}?${queryParams.toString()}`;

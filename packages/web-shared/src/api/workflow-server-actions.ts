@@ -1,5 +1,6 @@
 'use server';
 
+import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { hydrateResourceIO } from '@workflow/core/observability';
@@ -820,4 +821,70 @@ export async function fetchWorkflowsManifest(
     steps: {},
     workflows: {},
   });
+}
+
+/**
+ * Possible workflow data directory paths to check, in order of preference.
+ * These match the paths that world-local and the CLI check.
+ */
+const POSSIBLE_DATA_PATHS = [
+  '.next/workflow-data',
+  '.workflow-data',
+  'workflow-data',
+];
+
+/**
+ * Result of detecting a workflow data directory
+ */
+export interface DetectDataDirResult {
+  /** The found data directory path, or null if not found */
+  dataDir: string | null;
+  /** List of paths that were checked */
+  checkedPaths: string[];
+}
+
+/**
+ * Detect if a workflow data directory exists.
+ *
+ * This is called by the web UI on refresh when no dataDir is configured,
+ * allowing the UI to automatically pick up data directories that were created
+ * after the initial startup.
+ *
+ * @param searchDir - Colon-separated list of directories to search (from URL param, set by CLI).
+ *                    Falls back to process.cwd() if not provided.
+ * @returns The detected data directory path, or null if not found
+ */
+export async function detectWorkflowDataDir(
+  searchDir?: string
+): Promise<ServerActionResult<DetectDataDirResult>> {
+  // Parse search directories (colon-separated, from URL param set by CLI)
+  const dirsToSearch = searchDir
+    ? searchDir.split(':').filter(Boolean)
+    : [process.cwd()];
+
+  const checkedPaths: string[] = [];
+
+  for (const baseDir of dirsToSearch) {
+    for (const relativePath of POSSIBLE_DATA_PATHS) {
+      const fullPath = path.join(baseDir, relativePath);
+      checkedPaths.push(fullPath);
+
+      if (existsSync(fullPath)) {
+        // Verify it looks like a valid workflow data directory by checking for 'runs' subdirectory
+        const runsPath = path.join(fullPath, 'runs');
+        if (existsSync(runsPath)) {
+          console.log(
+            `[detectWorkflowDataDir] Found valid data directory: ${fullPath}`
+          );
+          return createResponse({ dataDir: fullPath, checkedPaths });
+        }
+      }
+    }
+  }
+
+  console.log(
+    '[detectWorkflowDataDir] No data directory found, checked:',
+    checkedPaths
+  );
+  return createResponse({ dataDir: null, checkedPaths });
 }

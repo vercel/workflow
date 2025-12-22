@@ -1,30 +1,69 @@
 'use client';
 
+import { detectWorkflowDataDir } from '@workflow/web-shared/server';
 import { AlertCircle } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect } from 'react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { HooksTable } from '@/components/hooks-table';
 import { RunsTable } from '@/components/runs-table';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { WorkflowsList } from '@/components/workflows-list';
-import { buildUrlWithConfig, useQueryParamConfig } from '@/lib/config';
+import {
+  buildUrlWithConfig,
+  useQueryParamConfig,
+  useUpdateConfigQueryParams,
+} from '@/lib/config';
+import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
 import {
   useHookIdState,
   useSidebarState,
   useTabState,
   useWorkflowIdState,
 } from '@/lib/url-state';
-import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
 
 export default function Home() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const config = useQueryParamConfig();
+  const updateConfig = useUpdateConfigQueryParams();
   const [sidebar] = useSidebarState();
   const [hookId] = useHookIdState();
   const [tab, setTab] = useTabState();
 
   const selectedHookId = sidebar === 'hook' && hookId ? hookId : undefined;
+
+  // Check if dataDir was explicitly set via URL params (not using default)
+  const dataDirFromUrl = searchParams.get('dataDir');
+  const isLocalBackend =
+    !config.backend ||
+    config.backend === 'local' ||
+    config.backend === '@workflow/world-local';
+
+  // On initial load, try to detect the data directory if not explicitly set
+  useEffect(() => {
+    if (!isLocalBackend || dataDirFromUrl) {
+      return;
+    }
+
+    const detectDataDir = async () => {
+      try {
+        // Pass searchDir from URL params (set by CLI) to search in the right directories
+        const result = await detectWorkflowDataDir(config.searchDir);
+        if (result.success && result.data.dataDir) {
+          // Found a data directory! Update the config
+          updateConfig({ ...config, dataDir: result.data.dataDir });
+        }
+      } catch (e) {
+        // Ignore detection errors on initial load
+        console.debug('Initial data dir detection failed:', e);
+      }
+    };
+
+    detectDataDir();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLocalBackend, dataDirFromUrl]);
 
   // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged
   // Fetch workflow graph manifest

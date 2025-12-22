@@ -9,7 +9,10 @@ import {
   useHookActions,
   useWorkflowHooks,
 } from '@workflow/web-shared';
-import { fetchEventsByCorrelationId } from '@workflow/web-shared/server';
+import {
+  detectWorkflowDataDir,
+  fetchEventsByCorrelationId,
+} from '@workflow/web-shared/server';
 import type { Event, Hook } from '@workflow/world';
 import {
   AlertCircle,
@@ -20,6 +23,7 @@ import {
   RotateCw,
   XCircle,
 } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -45,7 +49,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { worldConfigToEnvMap } from '@/lib/config';
+import { useUpdateConfigQueryParams, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
@@ -75,10 +79,19 @@ export function HooksTable({
   onHookClick,
   selectedHookId,
 }: HooksTableProps) {
+  const searchParams = useSearchParams();
+  const updateConfig = useUpdateConfigQueryParams();
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
+
+  // Check if dataDir was explicitly set via URL params (not using default)
+  const dataDirFromUrl = searchParams.get('dataDir');
+  const isLocalBackend =
+    !config.backend ||
+    config.backend === 'local' ||
+    config.backend === '@workflow/world-local';
 
   const {
     data,
@@ -105,8 +118,27 @@ export function HooksTable({
   const loading = data.isLoading;
   const hooks = data.data ?? [];
 
-  const onReload = () => {
+  const onReload = async () => {
     setLastRefreshTime(() => new Date());
+
+    // If backend is local and dataDir wasn't explicitly set via URL,
+    // try to detect the data directory (in case user just ran a workflow)
+    if (isLocalBackend && !dataDirFromUrl) {
+      try {
+        // Pass searchDir from URL params (set by CLI) to search in the right directories
+        const result = await detectWorkflowDataDir(config.searchDir);
+        if (result.success && result.data.dataDir) {
+          // Found a data directory! Update the config and reload
+          updateConfig({ ...config, dataDir: result.data.dataDir });
+          // The config update will trigger a re-render and re-fetch
+          return;
+        }
+      } catch (e) {
+        // Ignore detection errors, just proceed with normal reload
+        console.debug('Data dir detection failed:', e);
+      }
+    }
+
     reload();
   };
 

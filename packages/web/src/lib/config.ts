@@ -24,6 +24,7 @@ const configParsers = {
     DEFAULT_CONFIG.dataDir || './.next/workflow-data'
   ),
   manifestPath: parseAsString,
+  searchDir: parseAsString,
 };
 
 // Create a serializer for config params

@@ -19,6 +19,8 @@ export interface WorldConfig {
   manifestPath?: string;
   // Postgres fields
   postgresUrl?: string;
+  // Directory paths to search for workflow data (colon-separated, used when dataDir not set)
+  searchDir?: string;
 }
 
 export interface ValidationError {
