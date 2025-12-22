@@ -3,13 +3,16 @@
 import { parseWorkflowName } from '@workflow/core/parse-name';
 import {
   cancelRun,
+  type Event,
   recreateRun,
+  type Step,
   StreamViewer,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   type WorkflowRun,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
+import type { EnvMap } from '@workflow/web-shared/server';
 import {
   AlertCircle,
   GitBranch,
@@ -58,6 +61,95 @@ import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
 import { Skeleton } from './ui/skeleton';
+
+/**
+ * Graph tab content component that fetches the manifest internally
+ * This ensures the manifest is only fetched when the Graph tab is mounted
+ */
+function GraphTabContent({
+  config,
+  run,
+  allSteps,
+  allEvents,
+  env,
+}: {
+  config: WorldConfig;
+  run: WorkflowRun;
+  allSteps: Step[] | null;
+  allEvents: Event[] | null;
+  env: EnvMap;
+}) {
+  // Fetch workflow graph manifest only when this tab is mounted
+  const {
+    manifest: graphManifest,
+    loading: graphLoading,
+    error: graphError,
+  } = useWorkflowGraphManifest(config);
+
+  // Find the workflow graph for this run
+  const workflowGraph = useMemo(() => {
+    if (!graphManifest || !run.workflowName) return null;
+    return graphManifest.workflows[run.workflowName] ?? null;
+  }, [graphManifest, run.workflowName]);
+
+  // Map run data to execution overlay
+  const execution = useMemo(() => {
+    if (!workflowGraph || !run.runId) return null;
+
+    return mapRunToExecution(
+      run,
+      allSteps || [],
+      allEvents || [],
+      workflowGraph
+    );
+  }, [workflowGraph, run, allSteps, allEvents]);
+
+  if (graphLoading) {
+    return (
+      <div className="flex items-center justify-center w-full h-full">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <span className="ml-4 text-muted-foreground">
+          Loading workflow graph...
+        </span>
+      </div>
+    );
+  }
+
+  if (graphError) {
+    return (
+      <div className="flex items-center justify-center w-full h-full p-4">
+        <Alert variant="destructive" className="max-w-lg">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Error Loading Workflow Graph</AlertTitle>
+          <AlertDescription>{graphError.message}</AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  if (!workflowGraph) {
+    return (
+      <div className="flex items-center justify-center w-full h-full">
+        <Alert className="max-w-lg">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Workflow Graph Not Found</AlertTitle>
+          <AlertDescription>
+            Could not find the workflow graph for this run. The workflow may
+            have been deleted or the graph manifest may need to be regenerated.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  return (
+    <WorkflowGraphExecutionViewer
+      workflow={workflowGraph}
+      execution={execution || undefined}
+      env={env}
+    />
+  );
+}
 
 interface RunDetailViewProps {
   config: WorldConfig;
@@ -128,12 +220,8 @@ export function RunDetailView({
     [updateSearchParams]
   );
 
-  // Fetch workflow graph manifest
-  const {
-    manifest: graphManifest,
-    loading: graphLoading,
-    error: graphError,
-  } = useWorkflowGraphManifest(config);
+  // Only show graph tab for local backend
+  const isLocalBackend = config.backend === 'local';
 
   // Fetch all run data with live updates
   const {
@@ -154,26 +242,6 @@ export function RunDetailView({
     loading: streamsLoading,
     error: streamsError,
   } = useWorkflowStreams(env, runId);
-
-  // Find the workflow graph for this run
-  // The manifest is keyed by workflowId which matches run.workflowName
-  // e.g., "workflow//example/workflows/1_simple.ts//simple"
-  const workflowGraph = useMemo(() => {
-    if (!graphManifest || !run.workflowName) return null;
-    return graphManifest.workflows[run.workflowName] ?? null;
-  }, [graphManifest, run.workflowName]);
-
-  // Map run data to execution overlay
-  const execution = useMemo(() => {
-    if (!workflowGraph || !run.runId) return null;
-
-    return mapRunToExecution(
-      run,
-      allSteps || [],
-      allEvents || [],
-      workflowGraph
-    );
-  }, [workflowGraph, run, allSteps, allEvents]);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);
@@ -469,10 +537,12 @@ export function RunDetailView({
                 <List className="h-4 w-4" />
                 Trace
               </TabsTrigger>
-              <TabsTrigger value="graph" className="gap-2">
-                <GitBranch className="h-4 w-4" />
-                Graph
-              </TabsTrigger>
+              {isLocalBackend && (
+                <TabsTrigger value="graph" className="gap-2">
+                  <GitBranch className="h-4 w-4" />
+                  Graph
+                </TabsTrigger>
+              )}
               <TabsTrigger value="streams" className="gap-2">
                 <List className="h-4 w-4" />
                 Streams
@@ -578,44 +648,19 @@ export function RunDetailView({
               </div>
             </TabsContent>
 
-            <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
-              <div className="h-full min-h-[500px]">
-                {graphLoading ? (
-                  <div className="flex items-center justify-center w-full h-full">
-                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                    <span className="ml-4 text-muted-foreground">
-                      Loading workflow graph...
-                    </span>
-                  </div>
-                ) : graphError ? (
-                  <div className="flex items-center justify-center w-full h-full p-4">
-                    <Alert variant="destructive" className="max-w-lg">
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Error Loading Workflow Graph</AlertTitle>
-                      <AlertDescription>{graphError.message}</AlertDescription>
-                    </Alert>
-                  </div>
-                ) : !workflowGraph ? (
-                  <div className="flex items-center justify-center w-full h-full">
-                    <Alert className="max-w-lg">
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Workflow Graph Not Found</AlertTitle>
-                      <AlertDescription>
-                        Could not find the workflow graph for this run. The
-                        workflow may have been deleted or the graph manifest may
-                        need to be regenerated.
-                      </AlertDescription>
-                    </Alert>
-                  </div>
-                ) : (
-                  <WorkflowGraphExecutionViewer
-                    workflow={workflowGraph}
-                    execution={execution || undefined}
+            {isLocalBackend && (
+              <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
+                <div className="h-full min-h-[500px]">
+                  <GraphTabContent
+                    config={config}
+                    run={run}
+                    allSteps={allSteps}
+                    allEvents={allEvents}
                     env={env}
                   />
-                )}
-              </div>
-            </TabsContent>
+                </div>
+              </TabsContent>
+            )}
           </Tabs>
 
           {auxiliaryDataLoading && (
@@ -629,4 +674,3 @@ export function RunDetailView({
     </>
   );
 }
-// DCO remediation

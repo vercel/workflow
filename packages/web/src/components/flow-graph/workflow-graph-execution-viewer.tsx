@@ -2,11 +2,8 @@
 
 import {
   Background,
-  BaseEdge,
   Controls,
   type Edge,
-  EdgeLabelRenderer,
-  type EdgeProps,
   Handle,
   MarkerType,
   type Node,
@@ -19,7 +16,7 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
-import { GitBranch, Loader2, PlayCircle, StopCircle, X } from 'lucide-react';
+import { GitBranch, Loader2, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
 import {
   type EnvMap,
@@ -34,6 +31,25 @@ import type {
   WorkflowGraph,
   WorkflowRunExecution,
 } from '@/lib/flow-graph/workflow-graph-types';
+import {
+  type ConsolidatedEdge,
+  calculateEnhancedLayout,
+  consolidateEdges,
+  createEdgeTypes,
+  type DiamondNodeData,
+  type EnhancedLayoutResult,
+  executionSelfLoopStyle,
+  // Utilities
+  getNodeBackgroundColor,
+  getNodeIcon,
+  // Constants
+  LAYOUT,
+  // Types
+  type LoopNodeData,
+  // Components
+  ParallelGroupComponent,
+  type ParallelGroupData,
+} from './workflow-graph-viewer';
 
 interface WorkflowGraphExecutionViewerProps {
   workflow: WorkflowGraph;
@@ -65,27 +81,22 @@ function mapToStatusBadgeStatus(
   return status as StatusBadgeStatus;
 }
 
-// Custom Loop Node component with left-side handles for self-loop edge
-function LoopNodeComponent({ data, selected }: NodeProps) {
-  const nodeData = data as {
-    label: React.ReactNode;
-    nodeKind: string;
-    isLoopNode?: boolean;
-    isAwaitLoop?: boolean;
-    nodeStyle?: React.CSSProperties;
-    className?: string;
-  };
+// Custom Loop Node component for execution viewer (uses shared LoopNodeData type)
+function ExecutionLoopNodeComponent({ data, selected }: NodeProps) {
+  const nodeData = data as LoopNodeData;
 
   return (
     <div
       className={`relative ${nodeData.className || ''}`}
       style={{
-        borderWidth: 1,
+        borderWidth: nodeData.nodeStyle?.borderWidth ?? 2,
         borderRadius: 8,
         padding: 12,
         width: 220,
         borderStyle: 'solid',
-        ...nodeData.nodeStyle,
+        backgroundColor: nodeData.nodeStyle?.backgroundColor,
+        borderColor: nodeData.nodeStyle?.borderColor ?? '#9ca3af',
+        opacity: nodeData.nodeStyle?.opacity,
         boxShadow: selected ? '0 0 0 2px rgba(168, 85, 247, 0.5)' : undefined,
       }}
     >
@@ -109,245 +120,197 @@ function LoopNodeComponent({ data, selected }: NodeProps) {
         type="source"
         position={Position.Left}
         id="loop-out"
-        className="!bg-purple-500 !-left-1"
+        className="!bg-purple-500 !-left-1 !w-[6px] !h-[6px] !min-w-0 !min-h-0"
         style={{ top: '30%' }}
       />
       <Handle
         type="target"
         position={Position.Left}
         id="loop-in"
-        className="!bg-purple-500 !-left-1"
+        className="!bg-purple-500 !-left-1 !w-[6px] !h-[6px] !min-w-0 !min-h-0"
         style={{ top: '70%' }}
       />
     </div>
   );
 }
 
-// Custom node components
-const nodeTypes = {
-  loopNode: LoopNodeComponent,
-};
+// Custom node component for all non-loop execution nodes
+function ExecutionNodeComponent({ data, selected }: NodeProps) {
+  const nodeData = data as LoopNodeData; // Reuse LoopNodeData type since it has the same shape
 
-// Custom self-loop edge that curves to the left of the node
-function SelfLoopEdge({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  label,
-  markerEnd,
-}: EdgeProps) {
-  // Calculate the loop path that goes to the left of the node
-  const loopOffset = 50; // How far left the loop extends
-  const verticalGap = targetY - sourceY;
-
-  // Create a path that exits left, curves around, and enters left
-  const path = `
-    M ${sourceX} ${sourceY}
-    C ${sourceX - loopOffset} ${sourceY},
-      ${sourceX - loopOffset} ${targetY},
-      ${targetX} ${targetY}
-  `;
-
-  // Label position (center-left of the loop)
-  const labelX = sourceX - loopOffset - 10;
-  const labelY = sourceY + verticalGap / 2;
+  const isStart = nodeData.nodeKind === 'workflow_start';
+  const isEnd = nodeData.nodeKind === 'workflow_end';
 
   return (
-    <>
-      <BaseEdge
-        id={id}
-        path={path}
-        markerEnd={markerEnd}
-        style={{
-          stroke: '#a855f7',
-          strokeWidth: 2,
-        }}
-      />
-      {label && (
-        <EdgeLabelRenderer>
-          <div
-            style={{
-              position: 'absolute',
-              transform: `translate(-100%, -50%) translate(${labelX}px, ${labelY}px)`,
-              pointerEvents: 'all',
-            }}
-            className="nodrag nopan"
-          >
-            <span className="px-1.5 py-0.5 text-[9px] font-bold bg-purple-200 dark:bg-purple-900/50 text-purple-700 dark:text-purple-200 rounded border border-purple-400 dark:border-purple-600 whitespace-nowrap">
-              {label}
-            </span>
-          </div>
-        </EdgeLabelRenderer>
+    <div
+      className={`relative ${nodeData.className || ''}`}
+      style={{
+        borderWidth: nodeData.nodeStyle?.borderWidth ?? 2,
+        borderRadius: 8,
+        padding: 12,
+        width: 220,
+        borderStyle: 'solid',
+        backgroundColor: nodeData.nodeStyle?.backgroundColor,
+        borderColor: nodeData.nodeStyle?.borderColor ?? '#9ca3af',
+        opacity: nodeData.nodeStyle?.opacity,
+        boxShadow: selected ? '0 0 0 2px rgba(59, 130, 246, 0.35)' : undefined,
+      }}
+    >
+      {nodeData.label}
+
+      {/* Handles */}
+      {!isStart && (
+        <Handle type="target" position={Position.Top} className="!bg-muted" />
       )}
-    </>
+      {!isEnd && (
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          className="!bg-muted"
+        />
+      )}
+    </div>
   );
 }
 
-// Custom edge types
-const edgeTypes = {
-  selfLoop: SelfLoopEdge,
+// Custom Diamond Node component for execution viewer conditional nodes
+function ExecutionDiamondNodeComponent({ data, selected }: NodeProps) {
+  const nodeData = data as DiamondNodeData;
+
+  // Diamond size
+  const size = 160;
+
+  return (
+    <div
+      className={`relative flex items-center justify-center ${nodeData.className || ''}`}
+      style={{
+        width: size,
+        height: size,
+      }}
+    >
+      {/* Diamond shape */}
+      <div
+        style={{
+          width: size * 0.7,
+          height: size * 0.7,
+          transform: 'rotate(45deg)',
+          borderWidth: 2,
+          borderStyle: 'solid',
+          borderRadius: 4,
+          backgroundColor: nodeData.nodeStyle?.backgroundColor,
+          borderColor: nodeData.nodeStyle?.borderColor ?? '#ef4444',
+          opacity: nodeData.nodeStyle?.opacity,
+          boxShadow: selected ? '0 0 0 2px rgba(239, 68, 68, 0.5)' : undefined,
+        }}
+      />
+      {/* Label overlay (not rotated) */}
+      <div
+        className="absolute inset-0 flex items-center justify-center pointer-events-auto"
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          padding: size * 0.25, // Keep text within the diamond's inscribed area
+        }}
+        title={typeof nodeData.label === 'string' ? nodeData.label : undefined}
+      >
+        <span className="text-center line-clamp-3 overflow-hidden">
+          {nodeData.label}
+        </span>
+      </div>
+
+      {/* Main flow handles (top/bottom) */}
+      <Handle type="target" position={Position.Top} className="!bg-red-500" />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="bottom"
+        className="!bg-red-500"
+      />
+      {/* Additional handles for true/false branches */}
+      <Handle
+        type="source"
+        position={Position.Left}
+        id="left"
+        className="!bg-red-500"
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right"
+        className="!bg-red-500"
+      />
+    </div>
+  );
+}
+
+// Custom node components for execution viewer
+const nodeTypes = {
+  loopNode: ExecutionLoopNodeComponent,
+  parallelGroup: ParallelGroupComponent, // Imported from shared
+  executionNode: ExecutionNodeComponent,
+  diamondNode: ExecutionDiamondNodeComponent,
 };
 
-// Get node styling based on node kind and execution state
-function getNodeStyle(nodeKind: string, executions?: StepExecution[]) {
-  const baseStyle = {
-    color: 'hsl(var(--card-foreground))',
-  };
+// Custom edge types using purple styling for execution view
+const edgeTypes = createEdgeTypes(executionSelfLoopStyle);
 
-  // Base colors for node types
-  let baseColors = {
-    background: 'rgba(96, 165, 250, 0.15)', // blue
-    border: '#60a5fa',
-  };
+// Get node styling based on node kind and execution status (border color indicates status)
+function getExecutionNodeStyle(nodeKind: string, executions?: StepExecution[]) {
+  const backgroundColor = getNodeBackgroundColor(nodeKind);
 
-  if (nodeKind === 'workflow_start') {
-    baseColors = {
-      background: 'rgba(34, 197, 94, 0.15)', // green
-      border: '#22c55e',
-    };
-  } else if (nodeKind === 'workflow_end') {
-    baseColors = {
-      background: 'rgba(148, 163, 184, 0.15)', // slate
-      border: '#94a3b8',
-    };
-  } else if (nodeKind === 'primitive') {
-    baseColors = {
-      background: 'rgba(168, 85, 247, 0.15)', // purple
-      border: '#a855f7',
-    };
-  } else if (nodeKind === 'agent') {
-    baseColors = {
-      background: 'rgba(236, 72, 153, 0.15)', // pink
-      border: '#ec4899',
-    };
-  } else if (nodeKind === 'tool') {
-    baseColors = {
-      background: 'rgba(249, 115, 22, 0.15)', // orange
-      border: '#f97316',
-    };
-  }
-
-  // If no execution data, show faded state
+  // If no execution data, show faded state with gray border
   if (!executions || executions.length === 0) {
     return {
-      ...baseStyle,
-      backgroundColor: baseColors.background,
-      borderColor: baseColors.border,
+      color: 'hsl(var(--card-foreground))',
+      backgroundColor,
+      borderColor: '#9ca3af', // gray-400
       opacity: 0.4,
     };
   }
 
   const latestExecution = executions[executions.length - 1];
 
-  // Override colors based on execution status (matching status-badge colors)
+  // Border color based on execution status
+  let borderColor = '#9ca3af'; // gray-400 (default)
+  let borderWidth = 2;
+
   switch (latestExecution.status) {
-    case 'running':
-      return {
-        ...baseStyle,
-        backgroundColor: 'rgba(59, 130, 246, 0.25)', // blue-500
-        borderColor: '#3b82f6',
-        borderWidth: 1.5,
-        boxShadow: '0 0 0 2px rgba(59, 130, 246, 0.2)',
-      };
     case 'completed':
-      return {
-        ...baseStyle,
-        backgroundColor: 'rgba(16, 185, 129, 0.25)', // emerald-500
-        borderColor: '#10b981',
-      };
+      borderColor = '#22c55e'; // green-500
+      break;
     case 'failed':
-      return {
-        ...baseStyle,
-        backgroundColor: 'rgba(239, 68, 68, 0.25)', // red-500
-        borderColor: '#ef4444',
-        borderWidth: 1.5,
-      };
+      borderColor = '#ef4444'; // red-500
+      borderWidth = 3;
+      break;
+    case 'running':
+      borderColor = '#3b82f6'; // blue-500
+      borderWidth = 2;
+      break;
     case 'retrying':
-      return {
-        ...baseStyle,
-        backgroundColor: 'rgba(249, 115, 22, 0.25)', // orange-500
-        borderColor: '#f97316',
-        borderStyle: 'dashed',
-      };
+      borderColor = '#f97316'; // orange-500
+      break;
     case 'cancelled':
-      return {
-        ...baseStyle,
-        backgroundColor: 'rgba(234, 179, 8, 0.25)', // yellow-500
-        borderColor: '#eab308',
-      };
+      borderColor = '#eab308'; // yellow-500
+      break;
     case 'pending':
-      return {
-        ...baseStyle,
-        backgroundColor: baseColors.background,
-        borderColor: baseColors.border,
-        opacity: 0.6,
-      };
-    default:
-      return {
-        ...baseStyle,
-        backgroundColor: baseColors.background,
-        borderColor: baseColors.border,
-      };
+      borderColor = '#9ca3af'; // gray-400
+      break;
   }
+
+  return {
+    color: 'hsl(var(--card-foreground))',
+    backgroundColor,
+    borderColor,
+    borderWidth,
+  };
 }
 
-// Get node icon based on node kind
-function getNodeIcon(nodeKind: string, label?: string) {
-  if (nodeKind === 'workflow_start') {
-    return (
-      <PlayCircle className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
-    );
-  }
-  if (nodeKind === 'workflow_end') {
-    return (
-      <StopCircle className="h-3.5 w-3.5 text-gray-600 dark:text-gray-400" />
-    );
-  }
-  if (nodeKind === 'primitive') {
-    // Different icons for different primitives
-    if (label === 'sleep') {
-      return (
-        <span className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 text-xs">
-          ⏱
-        </span>
-      );
-    }
-    if (label === 'createHook' || label === 'createWebhook') {
-      return (
-        <span className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 text-xs">
-          🔗
-        </span>
-      );
-    }
-    return (
-      <span className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 text-xs">
-        ⚙
-      </span>
-    );
-  }
-  if (nodeKind === 'agent') {
-    return (
-      <span className="h-3.5 w-3.5 text-pink-600 dark:text-pink-400 text-xs">
-        🤖
-      </span>
-    );
-  }
-  if (nodeKind === 'tool') {
-    return (
-      <span className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400 text-xs">
-        🔧
-      </span>
-    );
-  }
-  return <GitBranch className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />;
-}
+// getNodeIcon is imported from workflow-graph-viewer
 
 // Enhanced node label with execution info
 function renderNodeLabel(
   nodeData: { label: string; nodeKind: string },
-  metadata?: {
+  _metadata?: {
     loopId?: string;
     loopIsAwait?: boolean;
     conditionalId?: string;
@@ -357,52 +320,14 @@ function renderNodeLabel(
   },
   executions?: StepExecution[]
 ) {
-  // Add CFG metadata badges
-  const badges: React.ReactNode[] = [];
-
-  if (metadata?.conditionalId) {
-    badges.push(
-      <span
-        key="cond"
-        className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-200 dark:bg-amber-900/30 !text-gray-950 dark:!text-white rounded border border-amber-400 dark:border-amber-700"
-      >
-        {metadata.conditionalBranch === 'Then' ? '✓ if' : '✗ else'}
-      </span>
-    );
-  }
-
-  if (metadata?.parallelGroupId) {
-    const parallelLabel =
-      metadata.parallelMethod === 'all'
-        ? 'Promise.all'
-        : metadata.parallelMethod === 'race'
-          ? 'Promise.race'
-          : metadata.parallelMethod === 'allSettled'
-            ? 'Promise.allSettled'
-            : `parallel: ${metadata.parallelMethod}`;
-    badges.push(
-      <span
-        key="parallel"
-        className="px-1.5 py-0.5 text-[10px] font-bold bg-blue-200 dark:bg-blue-900/30 !text-gray-950 dark:!text-white rounded border border-blue-400 dark:border-blue-700"
-      >
-        {parallelLabel}
-      </span>
-    );
-  }
-
   const baseLabel = (
-    <div className="flex flex-col gap-1.5 w-full overflow-hidden">
-      <div className="flex items-start gap-2 w-full overflow-hidden">
-        <div className="flex-shrink-0">
-          {getNodeIcon(nodeData.nodeKind, nodeData.label)}
-        </div>
-        <span className="text-sm font-medium break-words whitespace-normal leading-tight flex-1 min-w-0">
-          {nodeData.label}
-        </span>
+    <div className="flex items-start gap-2 w-full overflow-hidden">
+      <div className="flex-shrink-0">
+        {getNodeIcon(nodeData.nodeKind, nodeData.label)}
       </div>
-      {badges.length > 0 && (
-        <div className="flex flex-wrap gap-1">{badges}</div>
-      )}
+      <span className="text-sm font-medium break-words whitespace-normal leading-tight flex-1 min-w-0">
+        {nodeData.label}
+      </span>
     </div>
   );
 
@@ -414,30 +339,18 @@ function renderNodeLabel(
   const totalAttempts = executions.length;
   const hasRetries = totalAttempts > 1;
 
+  // Only show metadata if there's something to show
+  const hasMetadata =
+    hasRetries || (latestExecution.duration && latestExecution.duration > 0);
+
+  if (!hasMetadata) return baseLabel;
+
   return (
     <div className="flex flex-col gap-1.5 w-full">
       {baseLabel}
 
-      {/* Execution metadata */}
+      {/* Execution metadata - only show duration and retries */}
       <div className="flex flex-wrap gap-1 text-xs">
-        {/* Status badge */}
-        <Badge
-          variant={
-            latestExecution.status === 'completed'
-              ? 'default'
-              : latestExecution.status === 'failed'
-                ? 'destructive'
-                : latestExecution.status === 'running'
-                  ? 'secondary'
-                  : latestExecution.status === 'cancelled'
-                    ? 'outline'
-                    : 'outline'
-          }
-          className="text-xs px-1.5 py-0"
-        >
-          {latestExecution.status}
-        </Badge>
-
         {/* Retry indicator */}
         {hasRetries && (
           <Badge
@@ -450,7 +363,10 @@ function renderNodeLabel(
 
         {/* Duration */}
         {latestExecution.duration && latestExecution.duration > 0 && (
-          <Badge variant="outline" className="text-xs px-1.5 py-0">
+          <Badge
+            variant="secondary"
+            className="text-xs px-1.5 py-0 bg-black/10 dark:bg-white/15 border-0"
+          >
             ⏱ {formatDuration(latestExecution.duration, true)}
           </Badge>
         )}
@@ -459,347 +375,58 @@ function renderNodeLabel(
   );
 }
 
-// Layout constants - increased spacing for clarity
-const LAYOUT = {
-  NODE_WIDTH: 220,
-  NODE_HEIGHT: 100,
-  HORIZONTAL_SPACING: 280,
-  VERTICAL_SPACING: 320, // Increased to prevent loop container overlap
-  START_X: 250,
-  PARALLEL_GROUP_PADDING: 25,
-  LOOP_GROUP_PADDING: 50,
+// LAYOUT and calculateEnhancedLayout are imported from workflow-graph-viewer
+// Execution viewer uses VERTICAL_SPACING: 320 instead of default 220
+const EXECUTION_LAYOUT = {
+  ...LAYOUT,
+  VERTICAL_SPACING: 320,
 };
-
-// Convert nodes with execution overlay
-// Helper to calculate enhanced layout with control flow
-function calculateEnhancedLayout(workflow: WorkflowGraph): {
-  nodes: GraphNode[];
-  groupNodes: Array<{
-    id: string;
-    type: 'group';
-    position: { x: number; y: number };
-    style: React.CSSProperties;
-    data: { label: string };
-  }>;
-  additionalEdges: Array<{
-    id: string;
-    source: string;
-    target: string;
-    type: string;
-    label?: string;
-    sourceHandle?: string;
-    targetHandle?: string;
-  }>;
-} {
-  // Clone nodes (positions are always provided by the manifest adapter)
-  const nodes: GraphNode[] = workflow.nodes.map((node) => ({ ...node }));
-  const additionalEdges: Array<{
-    id: string;
-    source: string;
-    target: string;
-    type: string;
-    label?: string;
-    sourceHandle?: string;
-    targetHandle?: string;
-  }> = [];
-  const groupNodes: Array<{
-    id: string;
-    type: 'group';
-    position: { x: number; y: number };
-    style: React.CSSProperties;
-    data: { label: string };
-  }> = [];
-
-  // Group nodes by their control flow context
-  const parallelGroups = new Map<
-    string,
-    { nodes: GraphNode[]; method?: string }
-  >();
-  const loopNodes = new Map<string, GraphNode[]>();
-  const conditionalGroups = new Map<
-    string,
-    { thenBranch: GraphNode[]; elseBranch: GraphNode[] }
-  >();
-
-  for (const node of nodes) {
-    if (node.metadata?.parallelGroupId) {
-      const group = parallelGroups.get(node.metadata.parallelGroupId) || {
-        nodes: [],
-        method: node.metadata.parallelMethod,
-      };
-      group.nodes.push(node);
-      parallelGroups.set(node.metadata.parallelGroupId, group);
-    }
-    if (node.metadata?.loopId) {
-      const group = loopNodes.get(node.metadata.loopId) || [];
-      group.push(node);
-      loopNodes.set(node.metadata.loopId, group);
-    }
-    if (node.metadata?.conditionalId) {
-      const groups = conditionalGroups.get(node.metadata.conditionalId) || {
-        thenBranch: [],
-        elseBranch: [],
-      };
-      if (node.metadata.conditionalBranch === 'Then') {
-        groups.thenBranch.push(node);
-      } else {
-        groups.elseBranch.push(node);
-      }
-      conditionalGroups.set(node.metadata.conditionalId, groups);
-    }
-  }
-
-  // Layout parallel nodes side-by-side and create visual group containers
-  for (const [groupId, group] of parallelGroups) {
-    const groupNodes_ = group.nodes;
-    if (groupNodes_.length <= 1) continue;
-
-    const baseY = groupNodes_[0].position.y;
-    const spacing = LAYOUT.HORIZONTAL_SPACING;
-    const totalWidth = (groupNodes_.length - 1) * spacing;
-    const startX = LAYOUT.START_X - totalWidth / 2;
-
-    groupNodes_.forEach((node, idx) => {
-      node.position = {
-        x: startX + idx * spacing,
-        y: baseY,
-      };
-    });
-
-    // Always create visual group container for Promise.all/race groups
-    const minX = Math.min(...groupNodes_.map((n) => n.position.x));
-    const maxX = Math.max(...groupNodes_.map((n) => n.position.x));
-    const methodLabel =
-      group.method === 'all'
-        ? 'Promise.all'
-        : group.method === 'race'
-          ? 'Promise.race'
-          : group.method === 'allSettled'
-            ? 'Promise.allSettled'
-            : 'Parallel';
-
-    groupNodes.push({
-      id: `group_${groupId}`,
-      type: 'group',
-      position: {
-        x: minX - LAYOUT.PARALLEL_GROUP_PADDING,
-        y: baseY - LAYOUT.PARALLEL_GROUP_PADDING,
-      },
-      style: {
-        width:
-          maxX - minX + LAYOUT.NODE_WIDTH + LAYOUT.PARALLEL_GROUP_PADDING * 2,
-        height: LAYOUT.NODE_HEIGHT + LAYOUT.PARALLEL_GROUP_PADDING * 2,
-        backgroundColor: 'rgba(59, 130, 246, 0.08)',
-        border: '2px dashed rgba(59, 130, 246, 0.4)',
-        borderRadius: 12,
-      },
-      data: { label: methodLabel },
-    });
-  }
-
-  // Layout conditional branches side-by-side
-  for (const [, branches] of conditionalGroups) {
-    const allNodes = [...branches.thenBranch, ...branches.elseBranch];
-    if (allNodes.length <= 1) continue;
-
-    const thenNodes = branches.thenBranch;
-    const elseNodes = branches.elseBranch;
-
-    if (thenNodes.length > 0 && elseNodes.length > 0) {
-      // Position then branch on the left, else on the right
-      const baseY = Math.min(
-        thenNodes[0]?.position.y || 0,
-        elseNodes[0]?.position.y || 0
-      );
-
-      thenNodes.forEach((node, idx) => {
-        node.position = {
-          x: 100,
-          y: baseY + idx * LAYOUT.VERTICAL_SPACING,
-        };
-      });
-
-      elseNodes.forEach((node, idx) => {
-        node.position = {
-          x: 400,
-          y: baseY + idx * LAYOUT.VERTICAL_SPACING,
-        };
-      });
-    }
-  }
-
-  // Create visual containers for loops
-  for (const [loopId, loopNodeList] of loopNodes) {
-    if (loopNodeList.length > 0) {
-      // Calculate bounding box for all loop nodes (include padding for nested Promise.all boxes)
-      const minX = Math.min(...loopNodeList.map((n) => n.position.x));
-      const maxX = Math.max(...loopNodeList.map((n) => n.position.x));
-      const minY = Math.min(...loopNodeList.map((n) => n.position.y));
-      const maxY = Math.max(...loopNodeList.map((n) => n.position.y));
-
-      // Determine if this is an await loop
-      const isAwaitLoop = loopNodeList.some((n) => n.metadata?.loopIsAwait);
-      const loopLabel = isAwaitLoop ? '⟳ for await loop' : '⟳ loop';
-
-      // Check if this loop has nested parallel groups
-      const hasNestedParallel = loopNodeList.some(
-        (n) => n.metadata?.parallelGroupId
-      );
-
-      // Add extra padding for loop-back arrow and nested boxes (if any)
-      const loopBackPadding = 40;
-      const nestedBoxPadding = hasNestedParallel
-        ? LAYOUT.PARALLEL_GROUP_PADDING + 10
-        : 10;
-
-      // Create a visual group container for the loop
-      groupNodes.push({
-        id: `loop_group_${loopId}`,
-        type: 'group',
-        position: {
-          x:
-            minX -
-            LAYOUT.LOOP_GROUP_PADDING -
-            loopBackPadding -
-            nestedBoxPadding,
-          y: minY - LAYOUT.LOOP_GROUP_PADDING - nestedBoxPadding - 25, // Space for label
-        },
-        style: {
-          width:
-            maxX -
-            minX +
-            LAYOUT.NODE_WIDTH +
-            LAYOUT.LOOP_GROUP_PADDING * 2 +
-            loopBackPadding +
-            nestedBoxPadding * 2,
-          height:
-            maxY -
-            minY +
-            LAYOUT.NODE_HEIGHT +
-            LAYOUT.LOOP_GROUP_PADDING * 2 +
-            nestedBoxPadding * 2 +
-            25,
-          backgroundColor: 'rgba(168, 85, 247, 0.06)', // Lighter purple for loops
-          border: '3px dashed rgba(168, 85, 247, 0.4)',
-          borderRadius: 24,
-        },
-        data: { label: loopLabel },
-      });
-
-      // Add self-loop edges for each node in the loop (using left-side handles)
-      for (const loopNode of loopNodeList) {
-        additionalEdges.push({
-          id: `self_loop_${loopNode.id}`,
-          source: loopNode.id,
-          target: loopNode.id,
-          sourceHandle: 'loop-out',
-          targetHandle: 'loop-in',
-          type: 'selfLoop',
-          label: isAwaitLoop ? '⟳ await' : '⟳ loop',
-        });
-      }
-    }
-  }
-
-  return { nodes, groupNodes, additionalEdges };
-}
 
 function convertToReactFlowNodes(
   workflow: WorkflowGraph,
   execution?: WorkflowRunExecution
 ): Node[] {
-  const { nodes, groupNodes } = calculateEnhancedLayout(workflow);
+  const { nodes, groupNodes } = calculateEnhancedLayout(
+    workflow,
+    EXECUTION_LAYOUT
+  );
 
-  // Build a map of node id -> parent group id for quick lookup
+  // Build a map of node id -> parent group id for parallel groups only
   const nodeToParent = new Map<string, string>();
   const groupPositions = new Map<string, { x: number; y: number }>();
 
-  // Store group positions for relative position calculation
+  // Store group positions for relative position calculation (parallel groups only)
   for (const group of groupNodes) {
-    groupPositions.set(group.id, group.position);
-  }
-
-  // Determine which parallel groups are inside loop groups
-  const parallelGroupToLoop = new Map<string, string>();
-  for (const node of nodes) {
-    if (node.metadata?.parallelGroupId && node.metadata?.loopId) {
-      const parallelGroupId = `group_${node.metadata.parallelGroupId}`;
-      const loopGroupId = `loop_group_${node.metadata.loopId}`;
-      if (groupPositions.has(loopGroupId)) {
-        parallelGroupToLoop.set(parallelGroupId, loopGroupId);
-      }
+    if (group.id.startsWith('group_')) {
+      groupPositions.set(group.id, group.position);
     }
   }
 
-  // Determine parent for each node
-  // If node is in a parallel group inside a loop, parent to the parallel group (which is itself in the loop)
-  // If node is only in a loop (not parallel), parent directly to the loop
-  // If node is only in a parallel group (not in loop), parent to the parallel group
+  // Determine parent for each node (parallel groups only, no loop groups)
   for (const node of nodes) {
     const parallelGroupId = node.metadata?.parallelGroupId
       ? `group_${node.metadata.parallelGroupId}`
       : null;
-    const loopGroupId = node.metadata?.loopId
-      ? `loop_group_${node.metadata.loopId}`
-      : null;
 
     if (parallelGroupId && groupPositions.has(parallelGroupId)) {
-      // If in a parallel group, always parent to it (parallel group handles its own loop parent)
       nodeToParent.set(node.id, parallelGroupId);
-    } else if (loopGroupId && groupPositions.has(loopGroupId)) {
-      // Only in loop (no parallel group), parent directly to loop
-      nodeToParent.set(node.id, loopGroupId);
     }
   }
 
-  // Start with group nodes (they render behind regular nodes)
-  // Process loop groups first, then parallel groups (so parallel groups can be children of loops)
-  const loopGroups = groupNodes.filter((g) => g.id.startsWith('loop_group_'));
-  const parallelGroups = groupNodes.filter((g) => g.id.startsWith('group_'));
-
   const reactFlowNodes: Node[] = [];
 
-  // Add loop groups first (they are top-level)
-  for (const group of loopGroups) {
+  // Add parallel groups only (no loop groups)
+  const parallelGroups = groupNodes.filter((g) => g.id.startsWith('group_'));
+
+  for (const group of parallelGroups) {
     reactFlowNodes.push({
       id: group.id,
-      type: 'group',
+      type: 'parallelGroup',
       position: group.position,
       style: {
         ...group.style,
         cursor: 'grab',
-      },
-      data: group.data,
-      selectable: true,
-      draggable: true,
-    });
-  }
-
-  // Add parallel groups (may be children of loop groups)
-  for (const group of parallelGroups) {
-    const parentLoopId = parallelGroupToLoop.get(group.id);
-    let position = group.position;
-
-    if (parentLoopId) {
-      const parentPos = groupPositions.get(parentLoopId);
-      if (parentPos) {
-        // Convert to relative position within parent loop
-        position = {
-          x: group.position.x - parentPos.x,
-          y: group.position.y - parentPos.y,
-        };
-      }
-    }
-
-    reactFlowNodes.push({
-      id: group.id,
-      type: 'group',
-      position,
-      parentId: parentLoopId,
-      extent: parentLoopId ? 'parent' : undefined,
-      style: {
-        ...group.style,
-        cursor: 'grab',
+        zIndex: -1,
       },
       data: group.data,
       selectable: true,
@@ -810,20 +437,19 @@ function convertToReactFlowNodes(
   // Add regular nodes
   for (const node of nodes) {
     const executions = execution?.nodeExecutions.get(node.id);
-    const styles = getNodeStyle(node.data.nodeKind, executions);
+    const styles = getExecutionNodeStyle(node.data.nodeKind, executions);
     const isCurrentNode = execution?.currentNode === node.id;
     const isLoopNode = !!node.metadata?.loopId;
     const isAwaitLoop = !!node.metadata?.loopIsAwait;
+    const isConditionalNode = node.data.nodeKind === 'conditional';
 
-    // Determine node type - use custom loopNode for nodes in loops
-    let nodeType: 'input' | 'output' | 'default' | 'loopNode' = isLoopNode
-      ? 'loopNode'
-      : 'default';
-    if (node.type === 'workflowStart') {
-      nodeType = 'input';
-    } else if (node.type === 'workflowEnd') {
-      nodeType = 'output';
-    }
+    // Determine node type - custom components for consistent styling/animation
+    const nodeType: 'loopNode' | 'executionNode' | 'diamondNode' =
+      isConditionalNode
+        ? 'diamondNode'
+        : isLoopNode
+          ? 'loopNode'
+          : 'executionNode';
 
     // Determine parent group and calculate relative position
     const parentId = nodeToParent.get(node.id);
@@ -839,6 +465,9 @@ function convertToReactFlowNodes(
         };
       }
     }
+
+    // Build className for current node highlight
+    const nodeClassName = isCurrentNode ? 'animate-pulse-subtle' : '';
 
     // For loop nodes, pass style through data for custom component
     if (isLoopNode) {
@@ -856,7 +485,24 @@ function convertToReactFlowNodes(
           isLoopNode: true,
           isAwaitLoop,
           nodeStyle: styles,
-          className: isCurrentNode ? 'animate-pulse-subtle' : '',
+          className: nodeClassName,
+        },
+      });
+    } else if (isConditionalNode) {
+      // For conditional nodes (diamond shape), pass style through data
+      reactFlowNodes.push({
+        id: node.id,
+        type: nodeType,
+        position,
+        parentId: parentId,
+        extent: parentId ? 'parent' : undefined,
+        expandParent: true,
+        data: {
+          ...node.data,
+          label: node.data.label, // Show the conditional expression
+          executions,
+          nodeStyle: styles,
+          className: nodeClassName,
         },
       });
     } else {
@@ -870,16 +516,12 @@ function convertToReactFlowNodes(
         data: {
           ...node.data,
           label: renderNodeLabel(node.data, node.metadata, executions),
-          executions, // Store for onClick handler
+          executions,
+          nodeStyle: styles,
+          className: nodeClassName,
         },
-        style: {
-          borderWidth: 1,
-          borderRadius: 8,
-          padding: 12,
-          width: 220,
-          ...styles,
-        },
-        className: isCurrentNode ? 'animate-pulse-subtle' : '',
+        // Styling is handled by ExecutionNodeComponent (keeps running animation behind background)
+        style: { width: 220 },
       });
     }
   }
@@ -887,110 +529,17 @@ function convertToReactFlowNodes(
   return reactFlowNodes;
 }
 
-// Edge type with optional consolidation flag
-type ConsolidatedEdge = {
-  id: string;
-  source: string;
-  target: string;
-  type?: string;
-  label?: string;
-  sourceHandle?: string;
-  targetHandle?: string;
-  isConsolidated?: boolean;
-  isOriginal?: boolean;
-};
-
-// Consolidate edges between parallel groups to reduce visual clutter
-function consolidateEdges(
-  edges: ConsolidatedEdge[],
-  nodes: GraphNode[]
-): ConsolidatedEdge[] {
-  // Build a map of node -> parallel group
-  const nodeToGroup = new Map<string, string>();
-  const groupNodes = new Map<string, GraphNode[]>();
-
-  for (const node of nodes) {
-    const groupId = node.metadata?.parallelGroupId;
-    if (groupId) {
-      nodeToGroup.set(node.id, groupId);
-      const group = groupNodes.get(groupId) || [];
-      group.push(node);
-      groupNodes.set(groupId, group);
-    }
-  }
-
-  // Find edges that connect different parallel groups (N×M pattern)
-  // Group edges by source-group → target-group
-  const groupToGroupEdges = new Map<string, ConsolidatedEdge[]>();
-  const otherEdges: ConsolidatedEdge[] = [];
-
-  for (const edge of edges) {
-    const sourceGroup = nodeToGroup.get(edge.source);
-    const targetGroup = nodeToGroup.get(edge.target);
-
-    // If both nodes are in parallel groups AND they're different groups
-    if (sourceGroup && targetGroup && sourceGroup !== targetGroup) {
-      const key = `${sourceGroup}→${targetGroup}`;
-      const existing = groupToGroupEdges.get(key) || [];
-      existing.push(edge);
-      groupToGroupEdges.set(key, existing);
-    } else {
-      otherEdges.push(edge);
-    }
-  }
-
-  // For each group-to-group connection, consolidate N×M edges to 1×M
-  // (one source to all targets, so each target has an incoming edge)
-  const consolidatedEdges: ConsolidatedEdge[] = [...otherEdges];
-
-  for (const [, groupEdges] of groupToGroupEdges) {
-    if (groupEdges.length > 1) {
-      // Find unique sources and targets
-      const sources = new Set(groupEdges.map((e) => e.source));
-      const targets = new Set(groupEdges.map((e) => e.target));
-
-      // Pick the first source as representative
-      const representativeSource = [...sources][0];
-
-      // Keep one edge from the representative source to EACH target
-      // This ensures all target nodes have incoming edges
-      for (const target of targets) {
-        const edgeToTarget = groupEdges.find(
-          (e) => e.source === representativeSource && e.target === target
-        );
-        if (edgeToTarget) {
-          consolidatedEdges.push({
-            ...edgeToTarget,
-            isConsolidated: true,
-          });
-        } else {
-          // If no direct edge exists, create one from the representative source
-          const anyEdgeToTarget = groupEdges.find((e) => e.target === target);
-          if (anyEdgeToTarget) {
-            consolidatedEdges.push({
-              ...anyEdgeToTarget,
-              source: representativeSource,
-              id: `consolidated_${representativeSource}_${target}`,
-              isConsolidated: true,
-            });
-          }
-        }
-      }
-    } else {
-      // Only one edge, keep as-is
-      consolidatedEdges.push(...groupEdges);
-    }
-  }
-
-  return consolidatedEdges;
-}
+// ConsolidatedEdge type and consolidateEdges are imported from workflow-graph-viewer
 
 // Convert edges with execution overlay
 function convertToReactFlowEdges(
   workflow: WorkflowGraph,
   execution?: WorkflowRunExecution
 ): Edge[] {
-  const { additionalEdges } = calculateEnhancedLayout(workflow);
+  const { additionalEdges } = calculateEnhancedLayout(
+    workflow,
+    EXECUTION_LAYOUT
+  );
 
   // Transform original loop edges into loop_back_ edges (they go from exit nodes back to entry nodes)
   // and keep all other edges as-is
@@ -1046,64 +595,45 @@ function convertToReactFlowEdges(
     // Determine edge type based on control flow
     // Use bezier for main flow (cleaner curves), step for loops (clear back-flow)
     let edgeType: 'bezier' | 'smoothstep' | 'step' = 'bezier';
-    let baseStrokeColor = '#94a3b8';
     let strokeDasharray: string | undefined;
     let cfgLabel: string | undefined = edge.label;
 
-    // Check if this is a loop-back edge (always show prominently)
-    const isLoopBackEdge = edge.id.startsWith('loop_back_');
+    // Track if this is a conditional edge for special label styling
+    let isConditional = false;
 
     switch (edge.type) {
       case 'parallel':
-        // Parallel edges use straight paths for cleaner appearance
         edgeType = 'smoothstep';
-        baseStrokeColor = hasExecution ? '#cbd5e1' : '#3b82f6';
-        strokeDasharray = hasExecution ? undefined : '4,4';
+        strokeDasharray = '4,4';
         cfgLabel = undefined;
         break;
       case 'loop':
-        // Loop-back edges route around nodes - always visible in purple
         edgeType = 'step';
-        baseStrokeColor = '#a855f7'; // Always purple for loop-back
         strokeDasharray = '8,4';
         break;
       case 'conditional':
         edgeType = 'smoothstep';
-        baseStrokeColor = hasExecution ? '#cbd5e1' : '#f59e0b';
-        strokeDasharray = hasExecution ? undefined : '8,4';
-        cfgLabel = undefined;
+        strokeDasharray = '8,4';
+        isConditional = true;
+        // Keep the edge label (e.g., "true" or "false") for conditional edges
         break;
       default:
         edgeType = 'bezier';
-        baseStrokeColor = hasExecution ? '#cbd5e1' : '#94a3b8';
     }
 
-    // Execution state overrides (but loop-back edges stay purple)
-    const finalStrokeColor = isLoopBackEdge
-      ? '#a855f7'
-      : isTraversed
-        ? '#22c55e'
-        : baseStrokeColor;
-    const finalDasharray = isTraversed
-      ? traversal && traversal.traversalCount > 1
-        ? '5,5'
-        : undefined
-      : strokeDasharray;
+    // Simple color scheme: gray for non-executed, dark green for executed
+    const baseStrokeColor = '#6b7280'; // gray-500
+    const finalStrokeColor = isTraversed ? '#22c55e' : baseStrokeColor;
+    const finalDasharray = isTraversed ? undefined : strokeDasharray;
 
-    // Make non-traversed edges very subtle when there's execution data
-    // But loop-back edges are always visible
-    const opacity = isLoopBackEdge
-      ? 0.9
-      : hasExecution && !isTraversed
-        ? 0.15
-        : 1;
-    const strokeWidth = isLoopBackEdge
-      ? 2
-      : isTraversed
-        ? 2.5
-        : hasExecution
-          ? 0.5
-          : 1;
+    // Make non-traversed edges subtle when there's execution data
+    const opacity = hasExecution && !isTraversed ? 0.35 : 1;
+    const strokeWidth = isTraversed ? 2.5 : 1;
+
+    // Label styling - conditional edges get dark bg with white text
+    const labelTextColor = isConditional ? '#ffffff' : '#6b7280';
+    const labelBgColor = isConditional ? '#374151' : '#f3f4f6'; // gray-700 : gray-100
+    const labelBorderColor = isConditional ? '#4b5563' : '#d1d5db'; // gray-600 : gray-300
 
     return {
       id: edge.id,
@@ -1127,18 +657,18 @@ function convertToReactFlowEdges(
           cfgLabel
         ),
       labelStyle: {
-        fill: isLoopBackEdge ? '#a855f7' : 'hsl(var(--foreground))',
-        fontWeight: isLoopBackEdge ? 600 : 500,
-        fontSize: isLoopBackEdge ? '12px' : undefined,
+        fill: labelTextColor,
+        fontWeight: 500,
+        fontSize: '11px',
       },
       labelBgStyle: {
-        fill: 'hsl(var(--background))',
-        fillOpacity: 0.9,
+        fill: labelBgColor,
+        fillOpacity: 0.95,
+        stroke: labelBorderColor,
+        strokeWidth: 1,
       },
-      labelBgPadding: isLoopBackEdge
-        ? ([6, 10] as [number, number])
-        : ([4, 6] as [number, number]),
-      labelBgBorderRadius: isLoopBackEdge ? 6 : 4,
+      labelBgPadding: [4, 6] as [number, number],
+      labelBgBorderRadius: 4,
       markerEnd: {
         type: MarkerType.ArrowClosed,
         width: isTraversed ? 14 : 10,
@@ -1193,11 +723,12 @@ function GraphNodeDetailPanel({
           {node.data.label}
         </span>
         <div className="flex items-center gap-2 flex-none">
-          {latestExecution?.duration !== undefined && (
-            <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-              {formatDuration(latestExecution.duration)}
-            </span>
-          )}
+          {latestExecution?.duration !== undefined &&
+            latestExecution.duration > 0 && (
+              <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                {formatDuration(latestExecution.duration)}
+              </span>
+            )}
           <div className="w-px h-4 bg-border" />
           <button
             type="button"
@@ -1230,16 +761,17 @@ function GraphNodeDetailPanel({
                   status={mapToStatusBadgeStatus(latestExecution.status)}
                 />
               </div>
-              {latestExecution.duration !== undefined && (
-                <div className="flex items-center justify-between px-2.5 py-1.5">
-                  <span className="text-[11px] font-medium text-muted-foreground">
-                    duration
-                  </span>
-                  <span className="text-[11px] font-mono">
-                    {formatDuration(latestExecution.duration)}
-                  </span>
-                </div>
-              )}
+              {latestExecution.duration !== undefined &&
+                latestExecution.duration > 0 && (
+                  <div className="flex items-center justify-between px-2.5 py-1.5">
+                    <span className="text-[11px] font-medium text-muted-foreground">
+                      duration
+                    </span>
+                    <span className="text-[11px] font-mono">
+                      {formatDuration(latestExecution.duration)}
+                    </span>
+                  </div>
+                )}
               {hasMultipleAttempts && (
                 <div className="flex items-center justify-between px-2.5 py-1.5">
                   <span className="text-[11px] font-medium text-muted-foreground">
@@ -1364,7 +896,7 @@ function GraphNodeDetailPanel({
                       <StatusBadge
                         status={mapToStatusBadgeStatus(exec.status)}
                       />
-                      {exec.duration !== undefined && (
+                      {exec.duration !== undefined && exec.duration > 0 && (
                         <span className="font-mono text-muted-foreground">
                           {formatDuration(exec.duration)}
                         </span>
@@ -1474,34 +1006,33 @@ export function WorkflowGraphExecutionViewer({
           <Background />
           <Controls />
 
-          {/* Legend with execution states (matching status-badge colors) */}
+          {/* Legend with border status colors */}
           <Panel
             position="top-left"
             className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border rounded-lg p-2 text-xs"
           >
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-blue-500" />
-                <span>Running</span>
+            <div className="space-y-1.5">
+              <div className="font-semibold text-[10px] text-muted-foreground mb-1">
+                Status
               </div>
               <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                <div className="w-6 h-4 rounded border-2 border-green-500 bg-background" />
                 <span>Completed</span>
               </div>
               <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-red-500" />
+                <div className="w-6 h-4 rounded border-2 border-red-500 bg-background" />
                 <span>Failed</span>
               </div>
               <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-yellow-500" />
-                <span>Canceled</span>
+                <div className="w-6 h-4 rounded border-2 border-blue-500 bg-background" />
+                <span>Running</span>
               </div>
               <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-orange-500" />
-                <span>Paused</span>
+                <div className="w-6 h-4 rounded border-2 border-yellow-500 bg-background" />
+                <span>Cancelled</span>
               </div>
               <div className="flex items-center gap-2 opacity-50">
-                <div className="w-3 h-3 rounded-full bg-gray-400" />
+                <div className="w-6 h-4 rounded border-2 border-gray-400 bg-background" />
                 <span>Pending</span>
               </div>
             </div>

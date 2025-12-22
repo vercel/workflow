@@ -25,6 +25,81 @@ import { parseSync } from '@swc/core';
  */
 const WORKFLOW_PRIMITIVES = new Set(['sleep', 'createHook', 'createWebhook']);
 
+/**
+ * Extract the original function name from a stepId.
+ * stepId format: "step//path/to/file.ts//functionName"
+ * The bundler may rename functions to avoid collisions (e.g. add -> add2),
+ * but the stepId contains the original TypeScript function name.
+ */
+function getOriginalStepName(stepId: string, fallbackName: string): string {
+  const parts = stepId.split('//');
+  return parts.length > 2 ? parts[2] : fallbackName;
+}
+
+/**
+ * Extract a readable condition text from an Expression AST node.
+ * Recursively builds a string representation of the condition.
+ */
+function getConditionText(expr: Expression): string {
+  switch (expr.type) {
+    case 'Identifier':
+      return (expr as Identifier).value;
+
+    case 'BooleanLiteral':
+      return String((expr as any).value);
+
+    case 'NumericLiteral':
+      return String((expr as any).value);
+
+    case 'StringLiteral':
+      return `"${(expr as any).value}"`;
+
+    case 'BinaryExpression': {
+      const bin = expr as any;
+      const left = getConditionText(bin.left);
+      const right = getConditionText(bin.right);
+      return `${left} ${bin.operator} ${right}`;
+    }
+
+    case 'UnaryExpression': {
+      const unary = expr as any;
+      const arg = getConditionText(unary.argument);
+      return `${unary.operator}${arg}`;
+    }
+
+    case 'MemberExpression': {
+      const member = expr as MemberExpression;
+      const obj = getConditionText(member.object);
+      if (member.property.type === 'Identifier') {
+        return `${obj}.${(member.property as Identifier).value}`;
+      }
+      if (member.property.type === 'Computed') {
+        const computed = (member.property as any).expression;
+        return `${obj}[${getConditionText(computed)}]`;
+      }
+      return obj;
+    }
+
+    case 'CallExpression': {
+      const call = expr as CallExpression;
+      const callee = call.callee;
+      // Handle callee which could be Expression, Super, or Import
+      if (callee.type === 'Super' || callee.type === 'Import') {
+        return `${callee.type.toLowerCase()}()`;
+      }
+      return `${getConditionText(callee as Expression)}()`;
+    }
+
+    case 'ParenthesisExpression': {
+      const paren = expr as any;
+      return `(${getConditionText(paren.expression)})`;
+    }
+
+    default:
+      return 'condition';
+  }
+}
+
 // ============================================================================
 // Internal Types (used during extraction only)
 // ============================================================================
@@ -45,6 +120,8 @@ interface AnalysisContext {
   inConditional: string | null;
   /** Tracks variables assigned from createWebhook() or createHook() */
   webhookVariables: Set<string>;
+  /** Tracks array variables that have step calls pushed into them (for Promise.all pattern) */
+  promiseArrays: Map<string, ManifestNode[]>; // arrayName -> list of nodes
 }
 
 interface AnalysisResult {
@@ -505,6 +582,7 @@ function analyzeWorkflowFunction(
     inLoop: null,
     inConditional: null,
     webhookVariables: new Set(),
+    promiseArrays: new Map(),
   };
 
   let prevExitIds = ['start'];
@@ -581,6 +659,69 @@ function analyzeWorkflowFunction(
 }
 
 /**
+ * Check if a statement or block contains await expressions (recursively)
+ * Used to determine if a for/while loop is truly a looping execution pattern
+ * vs just collecting promises for parallel execution
+ */
+function containsAwaitExpression(node: any): boolean {
+  if (!node) return false;
+
+  // Direct await expression
+  if (node.type === 'AwaitExpression') return true;
+
+  // Check block statements
+  if (node.type === 'BlockStatement' && node.stmts) {
+    return node.stmts.some((stmt: any) => containsAwaitExpression(stmt));
+  }
+
+  // Check expression statements
+  if (node.type === 'ExpressionStatement' && node.expression) {
+    return containsAwaitExpression(node.expression);
+  }
+
+  // Check variable declarations
+  if (node.type === 'VariableDeclaration' && node.declarations) {
+    return node.declarations.some(
+      (decl: any) => decl.init && containsAwaitExpression(decl.init)
+    );
+  }
+
+  // Check if statements
+  if (node.type === 'IfStatement') {
+    return (
+      containsAwaitExpression(node.consequent) ||
+      containsAwaitExpression(node.alternate)
+    );
+  }
+
+  // Check for statements
+  if (
+    node.type === 'ForStatement' ||
+    node.type === 'WhileStatement' ||
+    node.type === 'ForOfStatement' ||
+    node.type === 'ForInStatement'
+  ) {
+    return containsAwaitExpression(node.body);
+  }
+
+  // Check assignment expressions (e.g., result = await doWork())
+  if (node.type === 'AssignmentExpression') {
+    return containsAwaitExpression(node.right);
+  }
+
+  // Check call expressions (for await in arguments)
+  if (node.type === 'CallExpression') {
+    if (node.arguments) {
+      return node.arguments.some((arg: any) =>
+        containsAwaitExpression(arg.expression || arg)
+      );
+    }
+  }
+
+  return false;
+}
+
+/**
  * Analyze a statement and extract step calls with proper CFG structure
  */
 function analyzeStatement(
@@ -609,6 +750,19 @@ function analyzeStatement(
             .value;
           if (funcName === 'createWebhook' || funcName === 'createHook') {
             context.webhookVariables.add((decl.id as Identifier).value);
+          }
+        }
+
+        // Track empty array assignments for Promise.all pattern: const promises = []
+        if (
+          decl.id.type === 'Identifier' &&
+          decl.init.type === 'ArrayExpression'
+        ) {
+          const elements = (decl.init as any).elements;
+          // Empty array: elements is undefined, null, or empty array
+          if (!elements || elements.length === 0) {
+            const varName = (decl.id as Identifier).value;
+            context.promiseArrays.set(varName, []);
           }
         }
 
@@ -659,110 +813,148 @@ function analyzeStatement(
     const conditionalId = `cond_${context.conditionalCounter++}`;
     context.inConditional = conditionalId;
 
+    // Analyze the "then" branch first to check if it has any workflow-relevant nodes
+    let thenResult: AnalysisResult;
     if (stmt.consequent.type === 'BlockStatement') {
-      const branchResult = analyzeBlock(
+      thenResult = analyzeBlock(
         stmt.consequent.stmts,
         stepDeclarations,
         context,
         functionMap,
         variableMap
       );
-
-      for (const node of branchResult.nodes) {
-        if (!node.metadata) node.metadata = {};
-        node.metadata.conditionalId = conditionalId;
-        node.metadata.conditionalBranch = 'Then';
-      }
-
-      nodes.push(...branchResult.nodes);
-      edges.push(...branchResult.edges);
-      if (entryNodeIds.length === 0) {
-        entryNodeIds = branchResult.entryNodeIds;
-      }
-      exitNodeIds.push(...branchResult.exitNodeIds);
     } else {
       // Handle single-statement consequent (no braces)
-      const branchResult = analyzeStatement(
+      thenResult = analyzeStatement(
         stmt.consequent,
         stepDeclarations,
         context,
         functionMap,
         variableMap
       );
+    }
 
-      for (const node of branchResult.nodes) {
+    // Analyze the "else" branch if it exists
+    let elseResult: AnalysisResult | null = null;
+    if (stmt.alternate) {
+      if (stmt.alternate.type === 'BlockStatement') {
+        elseResult = analyzeBlock(
+          stmt.alternate.stmts,
+          stepDeclarations,
+          context,
+          functionMap,
+          variableMap
+        );
+      } else {
+        // Handle single-statement alternate (no braces) or else-if
+        elseResult = analyzeStatement(
+          stmt.alternate,
+          stepDeclarations,
+          context,
+          functionMap,
+          variableMap
+        );
+      }
+    }
+
+    // Only create conditional node if at least one branch has workflow-relevant nodes.
+    // This avoids creating nodes for runtime assertions like `if (!ctx) { throw ... }`
+    const thenHasNodes = thenResult.nodes.length > 0;
+    const elseHasNodes = elseResult ? elseResult.nodes.length > 0 : false;
+
+    if (thenHasNodes || elseHasNodes) {
+      // Create the conditional decision node
+      const conditionText = getConditionText(stmt.test);
+      const condNodeId = `${conditionalId}_node`;
+      const condMetadata: NodeMetadata = {};
+      if (context.inLoop) {
+        condMetadata.loopId = context.inLoop;
+      }
+
+      const condNode: ManifestNode = {
+        id: condNodeId,
+        type: 'conditional',
+        data: {
+          label: conditionText,
+          nodeKind: 'conditional',
+        },
+        metadata:
+          Object.keys(condMetadata).length > 0 ? condMetadata : undefined,
+      };
+      nodes.push(condNode);
+
+      // The conditional node is the entry point
+      entryNodeIds.push(condNodeId);
+
+      for (const node of thenResult.nodes) {
         if (!node.metadata) node.metadata = {};
         node.metadata.conditionalId = conditionalId;
         node.metadata.conditionalBranch = 'Then';
       }
 
-      nodes.push(...branchResult.nodes);
-      edges.push(...branchResult.edges);
-      if (entryNodeIds.length === 0) {
-        entryNodeIds = branchResult.entryNodeIds;
+      nodes.push(...thenResult.nodes);
+      edges.push(...thenResult.edges);
+
+      // Create edge from conditional node to "then" branch with "true" label
+      for (const thenEntryId of thenResult.entryNodeIds) {
+        edges.push({
+          id: `e_${condNodeId}_${thenEntryId}_true`,
+          source: condNodeId,
+          target: thenEntryId,
+          type: 'conditional',
+          label: 'true',
+        });
       }
-      exitNodeIds.push(...branchResult.exitNodeIds);
+      exitNodeIds.push(...thenResult.exitNodeIds);
+
+      if (elseResult) {
+        for (const node of elseResult.nodes) {
+          if (!node.metadata) node.metadata = {};
+          node.metadata.conditionalId = conditionalId;
+          node.metadata.conditionalBranch = 'Else';
+        }
+
+        nodes.push(...elseResult.nodes);
+        edges.push(...elseResult.edges);
+
+        // Create edge from conditional node to "else" branch with "false" label
+        for (const elseEntryId of elseResult.entryNodeIds) {
+          edges.push({
+            id: `e_${condNodeId}_${elseEntryId}_false`,
+            source: condNodeId,
+            target: elseEntryId,
+            type: 'conditional',
+            label: 'false',
+          });
+        }
+        exitNodeIds.push(...elseResult.exitNodeIds);
+      }
     }
-
-    if (stmt.alternate?.type === 'BlockStatement') {
-      const branchResult = analyzeBlock(
-        stmt.alternate.stmts,
-        stepDeclarations,
-        context,
-        functionMap,
-        variableMap
-      );
-
-      for (const node of branchResult.nodes) {
-        if (!node.metadata) node.metadata = {};
-        node.metadata.conditionalId = conditionalId;
-        node.metadata.conditionalBranch = 'Else';
-      }
-
-      nodes.push(...branchResult.nodes);
-      edges.push(...branchResult.edges);
-      if (entryNodeIds.length === 0) {
-        entryNodeIds = branchResult.entryNodeIds;
-      } else {
-        entryNodeIds.push(...branchResult.entryNodeIds);
-      }
-      exitNodeIds.push(...branchResult.exitNodeIds);
-    } else if (stmt.alternate) {
-      // Handle single-statement alternate (no braces) or else-if
-      const branchResult = analyzeStatement(
-        stmt.alternate,
-        stepDeclarations,
-        context,
-        functionMap,
-        variableMap
-      );
-
-      for (const node of branchResult.nodes) {
-        if (!node.metadata) node.metadata = {};
-        node.metadata.conditionalId = conditionalId;
-        node.metadata.conditionalBranch = 'Else';
-      }
-
-      nodes.push(...branchResult.nodes);
-      edges.push(...branchResult.edges);
-      if (entryNodeIds.length === 0) {
-        entryNodeIds = branchResult.entryNodeIds;
-      } else {
-        entryNodeIds.push(...branchResult.entryNodeIds);
-      }
-      exitNodeIds.push(...branchResult.exitNodeIds);
-    }
+    // Note: When there's no else branch, we don't add the conditional node as an exit.
+    // The then-branch exits are the only exits. This means the graph shows the "true" path;
+    // the "false" case (when condition is false and there's no else) implicitly means
+    // execution continues with no steps from this if statement.
+    //
+    // When both branches have no workflow-relevant nodes (e.g., runtime assertions like
+    // `if (!ctx) { throw ... }`), we skip creating the conditional node entirely.
 
     context.inConditional = savedConditional;
   }
 
   if (stmt.type === 'WhileStatement' || stmt.type === 'ForStatement') {
-    const loopId = `loop_${context.loopCounter++}`;
-    const savedLoop = context.inLoop;
-    context.inLoop = loopId;
-
     const body =
       stmt.type === 'WhileStatement' ? stmt.body : (stmt as any).body;
+
+    // Only treat as a loop if the body contains await expressions
+    // Otherwise it's likely a "collect promises" pattern (for parallel execution)
+    const hasAwait = containsAwaitExpression(body);
+
+    const loopId = hasAwait ? `loop_${context.loopCounter++}` : undefined;
+    const savedLoop = context.inLoop;
+    if (loopId) {
+      context.inLoop = loopId;
+    }
+
     if (body.type === 'BlockStatement') {
       const loopResult = analyzeBlock(
         body.stmts,
@@ -772,9 +964,12 @@ function analyzeStatement(
         variableMap
       );
 
-      for (const node of loopResult.nodes) {
-        if (!node.metadata) node.metadata = {};
-        node.metadata.loopId = loopId;
+      // Only add loop metadata if this is truly a looping pattern
+      if (loopId) {
+        for (const node of loopResult.nodes) {
+          if (!node.metadata) node.metadata = {};
+          node.metadata.loopId = loopId;
+        }
       }
 
       nodes.push(...loopResult.nodes);
@@ -782,14 +977,17 @@ function analyzeStatement(
       entryNodeIds = loopResult.entryNodeIds;
       exitNodeIds = loopResult.exitNodeIds;
 
-      for (const exitId of loopResult.exitNodeIds) {
-        for (const entryId of loopResult.entryNodeIds) {
-          edges.push({
-            id: `e_${exitId}_back_${entryId}`,
-            source: exitId,
-            target: entryId,
-            type: 'loop',
-          });
+      // Only create loop-back edges if this is truly a looping pattern
+      if (loopId) {
+        for (const exitId of loopResult.exitNodeIds) {
+          for (const entryId of loopResult.entryNodeIds) {
+            edges.push({
+              id: `e_${exitId}_back_${entryId}`,
+              source: exitId,
+              target: entryId,
+              type: 'loop',
+            });
+          }
         }
       }
     } else {
@@ -802,9 +1000,12 @@ function analyzeStatement(
         variableMap
       );
 
-      for (const node of loopResult.nodes) {
-        if (!node.metadata) node.metadata = {};
-        node.metadata.loopId = loopId;
+      // Only add loop metadata if this is truly a looping pattern
+      if (loopId) {
+        for (const node of loopResult.nodes) {
+          if (!node.metadata) node.metadata = {};
+          node.metadata.loopId = loopId;
+        }
       }
 
       nodes.push(...loopResult.nodes);
@@ -812,14 +1013,17 @@ function analyzeStatement(
       entryNodeIds = loopResult.entryNodeIds;
       exitNodeIds = loopResult.exitNodeIds;
 
-      for (const exitId of loopResult.exitNodeIds) {
-        for (const entryId of loopResult.entryNodeIds) {
-          edges.push({
-            id: `e_${exitId}_back_${entryId}`,
-            source: exitId,
-            target: entryId,
-            type: 'loop',
-          });
+      // Only create loop-back edges if this is truly a looping pattern
+      if (loopId) {
+        for (const exitId of loopResult.exitNodeIds) {
+          for (const entryId of loopResult.entryNodeIds) {
+            edges.push({
+              id: `e_${exitId}_back_${entryId}`,
+              source: exitId,
+              target: entryId,
+              type: 'loop',
+            });
+          }
         }
       }
     }
@@ -1053,6 +1257,27 @@ function analyzeExpression(
                     exitNodeIds.push(...elemResult.exitNodeIds);
                   }
                 }
+              } else if (
+                arg.type === 'Identifier' &&
+                context.promiseArrays.has((arg as Identifier).value)
+              ) {
+                // Handle Promise.all(variableName) where variable was built via push()
+                const arrayName = (arg as Identifier).value;
+                const trackedNodes = context.promiseArrays.get(arrayName);
+                // Apply parallelGroupId to all nodes that were pushed to this array
+                if (trackedNodes && trackedNodes.length > 0) {
+                  for (const trackedNode of trackedNodes) {
+                    if (!trackedNode.metadata) trackedNode.metadata = {};
+                    trackedNode.metadata.parallelGroupId = parallelId;
+                    trackedNode.metadata.parallelMethod = method;
+                    if (context.inLoop) {
+                      trackedNode.metadata.loopId = context.inLoop;
+                    }
+                    // Return tracked node IDs for proper edge connections
+                    entryNodeIds.push(trackedNode.id);
+                    exitNodeIds.push(trackedNode.id);
+                  }
+                }
               } else {
                 // Handle non-array arguments like array.map(stepFn)
                 const argResult = analyzeExpression(
@@ -1105,7 +1330,7 @@ function analyzeExpression(
             id: nodeId,
             type: 'step',
             data: {
-              label: funcName,
+              label: getOriginalStepName(stepInfo.stepId, funcName),
               nodeKind: 'step',
               stepId: stepInfo.stepId,
             },
@@ -1226,7 +1451,7 @@ function analyzeExpression(
           id: nodeId,
           type: 'step',
           data: {
-            label: funcName,
+            label: getOriginalStepName(stepInfo.stepId, funcName),
             nodeKind: 'step',
             stepId: stepInfo.stepId,
           },
@@ -1293,11 +1518,42 @@ function analyzeExpression(
   }
 
   // Check for step references and step calls in function call arguments
+  // Skip for array methods (map, forEach, etc.) which have a specialized handler below
   if (expr.type === 'CallExpression') {
     const callExpr = expr as CallExpression;
+
+    // Check if this is an array method call - if so, skip the generic handler
+    // and let the specialized handler at the end of this function handle it
+    const isArrayMethodCall =
+      callExpr.callee.type === 'MemberExpression' &&
+      (callExpr.callee as MemberExpression).property.type === 'Identifier' &&
+      ['map', 'forEach', 'filter', 'find', 'some', 'every', 'flatMap'].includes(
+        ((callExpr.callee as MemberExpression).property as Identifier).value
+      );
+
+    // Check if this is a .push() call on a tracked promise array
+    // Pattern: promises.push(stepCall())
+    let pushArrayName: string | null = null;
+    if (
+      callExpr.callee.type === 'MemberExpression' &&
+      (callExpr.callee as MemberExpression).object.type === 'Identifier' &&
+      (callExpr.callee as MemberExpression).property.type === 'Identifier' &&
+      ((callExpr.callee as MemberExpression).property as Identifier).value ===
+        'push'
+    ) {
+      const objName = (
+        (callExpr.callee as MemberExpression).object as Identifier
+      ).value;
+      if (context.promiseArrays.has(objName)) {
+        pushArrayName = objName;
+      }
+    }
+
     for (const arg of callExpr.arguments) {
       if (arg.expression) {
-        if (arg.expression.type === 'Identifier') {
+        // For array method calls, skip step identifier detection here
+        // since we have a specialized handler for those
+        if (arg.expression.type === 'Identifier' && !isArrayMethodCall) {
           const argName = (arg.expression as Identifier).value;
           const stepInfo = stepDeclarations.get(argName);
           if (stepInfo) {
@@ -1306,7 +1562,7 @@ function analyzeExpression(
               id: nodeId,
               type: 'step',
               data: {
-                label: `${argName} (ref)`,
+                label: `${getOriginalStepName(stepInfo.stepId, argName)} (ref)`,
                 nodeKind: 'step',
                 stepId: stepInfo.stepId,
               },
@@ -1320,7 +1576,9 @@ function analyzeExpression(
             exitNodeIds.push(nodeId);
           }
         }
-        // Handle step calls passed as arguments (e.g., map.set(key, stepCall()))
+        // Handle step calls passed as arguments (e.g., promises.push(stepCall()))
+        // Note: Don't add loopId here - these are non-awaited calls being collected
+        // for parallel execution (like Promise.all), not truly looping calls
         if (arg.expression.type === 'CallExpression') {
           const argCallExpr = arg.expression as CallExpression;
           if (argCallExpr.callee.type === 'Identifier') {
@@ -1329,9 +1587,8 @@ function analyzeExpression(
             if (stepInfo) {
               const nodeId = `node_${context.nodeCounter++}`;
               const metadata: NodeMetadata = {};
-              if (context.inLoop) {
-                metadata.loopId = context.inLoop;
-              }
+              // Don't add loopId - this is a non-awaited call, likely being
+              // collected for parallel execution (Promise.all pattern)
               if (context.inConditional) {
                 metadata.conditionalId = context.inConditional;
               }
@@ -1339,13 +1596,21 @@ function analyzeExpression(
                 id: nodeId,
                 type: 'step',
                 data: {
-                  label: funcName,
+                  label: getOriginalStepName(stepInfo.stepId, funcName),
                   nodeKind: 'step',
                   stepId: stepInfo.stepId,
                 },
                 metadata:
                   Object.keys(metadata).length > 0 ? metadata : undefined,
               };
+              // If this is being pushed to a tracked promise array, store the node
+              // so we can apply parallelGroupId when Promise.all is reached
+              if (pushArrayName) {
+                const trackedNodes = context.promiseArrays.get(pushArrayName);
+                if (trackedNodes) {
+                  trackedNodes.push(node);
+                }
+              }
               nodes.push(node);
               entryNodeIds.push(nodeId);
               exitNodeIds.push(nodeId);
@@ -1491,7 +1756,7 @@ function analyzeExpression(
                   id: nodeId,
                   type: 'step',
                   data: {
-                    label: argName,
+                    label: getOriginalStepName(stepInfo.stepId, argName),
                     nodeKind: 'step',
                     stepId: stepInfo.stepId,
                   },
@@ -1683,7 +1948,7 @@ function analyzeObjectForStepReferences(
           id: nodeId,
           type: 'step',
           data: {
-            label: `${valueName} (tool)`,
+            label: `${getOriginalStepName(stepInfo.stepId, valueName)} (tool)`,
             nodeKind: 'step',
             stepId: stepInfo.stepId,
           },

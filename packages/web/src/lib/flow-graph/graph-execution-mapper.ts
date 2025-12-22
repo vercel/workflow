@@ -258,6 +258,18 @@ function calculateEdgeTraversals(
     // If neither node was executed, skip
     if (!sourceExecuted && !targetExecuted) continue;
 
+    // Handle conditional edges specially
+    if (edge.type === 'conditional') {
+      // Conditional edges should be marked as traversed if:
+      // - The source (conditional node) was executed AND
+      // - The target (branch node) was executed
+      // The label ("true" or "false") indicates which branch
+      if (sourceExecuted && targetExecuted) {
+        markEdgeTraversed(edge);
+      }
+      continue;
+    }
+
     // Check if source is part of a Promise.race group
     const sourceGroupId = sourceNode.metadata?.parallelGroupId;
     const sourceMethod = sourceNode.metadata?.parallelMethod;
@@ -309,7 +321,7 @@ function initializeStartNode(
         completedAt: run.startedAt
           ? new Date(run.startedAt).toISOString()
           : undefined,
-        duration: 0,
+        // No duration for control flow nodes (start/end/conditional)
       },
     ]);
   }
@@ -367,7 +379,7 @@ function addEndNodeExecution(
       completedAt: run.completedAt
         ? new Date(run.completedAt).toISOString()
         : undefined,
-      duration: 0,
+      // No duration for control flow nodes (start/end/conditional)
     },
   ]);
 }
@@ -848,6 +860,119 @@ function processAgentAndToolNodes(
 }
 
 /**
+ * Process conditional nodes - mark them as executed based on branch execution
+ * If any node in a conditional branch was executed, the conditional node must have been evaluated
+ */
+function processConditionalNodes(
+  graph: WorkflowGraph,
+  nodeExecutions: Map<string, StepExecution[]>,
+  executionPath: string[],
+  run: WorkflowRun
+): void {
+  // Find all conditional nodes (decision points)
+  const conditionalNodes = graph.nodes.filter(
+    (n) => n.data.nodeKind === 'conditional'
+  );
+
+  // Group nodes by their conditionalId to find which branches were executed
+  const nodesByConditionalId = new Map<
+    string,
+    { thenNodes: GraphNode[]; elseNodes: GraphNode[] }
+  >();
+
+  for (const node of graph.nodes) {
+    const condId = node.metadata?.conditionalId;
+    if (condId) {
+      const group = nodesByConditionalId.get(condId) || {
+        thenNodes: [],
+        elseNodes: [],
+      };
+      if (node.metadata?.conditionalBranch === 'Then') {
+        group.thenNodes.push(node);
+      } else if (node.metadata?.conditionalBranch === 'Else') {
+        group.elseNodes.push(node);
+      }
+      nodesByConditionalId.set(condId, group);
+    }
+  }
+
+  // For each conditional node, check if any of its branch nodes were executed
+  for (const condNode of conditionalNodes) {
+    // Extract the conditionalId from the node id (e.g., "cond_0_node" -> "cond_0")
+    const condIdMatch = condNode.id.match(/^(cond_\d+)_node$/);
+    if (!condIdMatch) continue;
+
+    const condId = condIdMatch[1];
+    const branches = nodesByConditionalId.get(condId);
+    if (!branches) continue;
+
+    // Check if any node in either branch was executed
+    const thenExecuted = branches.thenNodes.some((n) =>
+      nodeExecutions.has(n.id)
+    );
+    const elseExecuted = branches.elseNodes.some((n) =>
+      nodeExecutions.has(n.id)
+    );
+
+    // If either branch was executed, mark the conditional node as executed
+    if (thenExecuted || elseExecuted) {
+      const allBranchNodes = [...branches.thenNodes, ...branches.elseNodes];
+
+      if (!nodeExecutions.has(condNode.id)) {
+        // Find the earliest execution time from the branch nodes
+        let earliestTime: string | undefined;
+        for (const branchNode of allBranchNodes) {
+          const execs = nodeExecutions.get(branchNode.id);
+          if (execs && execs.length > 0) {
+            const firstExec = execs[0];
+            if (
+              firstExec.startedAt &&
+              (!earliestTime || firstExec.startedAt < earliestTime)
+            ) {
+              earliestTime = firstExec.startedAt;
+            }
+          }
+        }
+
+        const fallbackTime = run.startedAt
+          ? new Date(run.startedAt).toISOString()
+          : undefined;
+        const execution: StepExecution = {
+          nodeId: condNode.id,
+          attemptNumber: 1,
+          status: 'completed',
+          startedAt: earliestTime || fallbackTime,
+          completedAt: earliestTime || fallbackTime,
+          // No duration for control flow nodes (start/end/conditional)
+        };
+
+        nodeExecutions.set(condNode.id, [execution]);
+      }
+
+      if (!executionPath.includes(condNode.id)) {
+        // Insert conditional node before its branch nodes in the execution path
+        const branchIndices = allBranchNodes
+          .map((n) => executionPath.indexOf(n.id))
+          .filter((i) => i >= 0);
+        if (branchIndices.length > 0) {
+          const firstBranchIndex = Math.min(...branchIndices);
+          if (
+            firstBranchIndex >= 0 &&
+            firstBranchIndex < executionPath.length
+          ) {
+            executionPath.splice(firstBranchIndex, 0, condNode.id);
+          } else {
+            executionPath.push(condNode.id);
+          }
+        } else {
+          executionPath.push(condNode.id);
+        }
+      }
+    }
+  }
+}
+
+/**
  * Maps a workflow run and its steps/events to an execution overlay for the graph
  */
 export function mapRunToExecution(
@@ -979,6 +1104,9 @@ export function mapRunToExecution(
     executionPath,
     graph.nodes
   );
+
+  // Process conditional nodes - mark them as executed if their branch nodes were executed
+  processConditionalNodes(graph, nodeExecutions, executionPath, run);
 
   // Add end node based on workflow status
   addEndNodeExecution(run, graph, executionPath, nodeExecutions);

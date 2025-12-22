@@ -25,6 +25,7 @@ export interface NodeData {
     | 'workflow_end'
     | 'step'
     | 'primitive'
+    | 'conditional'
     | 'agent'
     | 'tool';
   stepId?: string;

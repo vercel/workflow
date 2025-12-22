@@ -15,13 +15,12 @@ import type {
 
 /**
  * Layout constants for auto-positioning nodes
- * Increased spacing for better readability and reduced edge crossings
  */
 const LAYOUT = {
   NODE_WIDTH: 220,
   NODE_HEIGHT: 100,
   HORIZONTAL_SPACING: 280,
-  VERTICAL_SPACING: 320, // Increased to prevent loop container overlap
+  VERTICAL_SPACING: 320,
   START_X: 250,
   START_Y: 50,
 };

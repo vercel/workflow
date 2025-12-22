@@ -19,10 +19,11 @@ if (!process.env.WORKFLOW_TARGET_WORLD) {
 
 type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
+type NonEmptyArray<T> = [T, ...T[]];
 
 const Invoke = z
   .object({
-    file: z.enum(Object.keys(manifest.workflows) as [Files, ...Files[]]),
+    file: z.enum(Object.keys(manifest.workflows) as NonEmptyArray<Files>),
     workflow: z.string(),
     args: z.unknown().array().default([]),
   })
@@ -30,10 +31,9 @@ const Invoke = z
     const file = obj.file as keyof typeof manifest.workflows;
     const workflow = z
       .enum(
-        Object.keys(manifest.workflows[file]) as [
-          Workflows<typeof file>,
-          ...Workflows<typeof file>[],
-        ]
+        Object.keys(manifest.workflows[file]) as NonEmptyArray<
+          Workflows<typeof file>
+        >
       )
       .parse(obj.workflow);
     return {
