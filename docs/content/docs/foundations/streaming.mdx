@@ -469,25 +469,49 @@ async function uploadResult(stream: ReadableStream<Uint8Array>) {
 }
 ```
 
-## Best Practices
+## Stream Lock Contract
 
-**Release locks properly:**
+When writing to a stream in a step function, there is an important contract to understand:
+
+<Callout type="warn">
+**Once a lock is released, no further writes to that stream from that step are allowed.** The framework uses lock release as the signal that the step is done interacting with the stream. Make sure all writes are complete before releasing the lock.
+</Callout>
+
+<Callout type="warn">
+**The lock MUST be released to prevent the function from hanging.** If you acquire a lock but never release it, the serverless function will remain active until it times out, even after the step returns and the workflow continues.
+</Callout>
+
+**Correct pattern - complete all writes before releasing:**
+
+```typescript lineNumbers
+async function writeData(items: string[]) {
+  "use step";
+
+  const writable = getWritable<string>();
+  const writer = writable.getWriter();
+
+  // Complete ALL writes before releasing the lock
+  for (const item of items) {
+    await writer.write(item);
+  }
+
+  writer.releaseLock(); // Now safe to release
+}
+```
+
+**Use try/finally to ensure the lock is always released:**
 
 ```typescript lineNumbers
 const writer = writable.getWriter();
 try {
   await writer.write(data);
 } finally {
-  writer.releaseLock(); // Always release
+  writer.releaseLock(); // Always release, even on error
 }
 ```
 
 <Callout type="info">
 Stream locks acquired in a step only apply within that step, not across other steps. This enables multiple writers to write to the same stream concurrently.
-</Callout>
-
-<Callout type="info">
-If a lock is not released, the step process cannot terminate. Even though the step returns and the workflow continues, the underlying process will remain active until it times out.
 </Callout>
 
 **Close streams when done:**
