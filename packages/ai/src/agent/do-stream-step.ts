@@ -27,6 +27,18 @@ export type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 export type ModelStopCondition = StopCondition<NoInfer<ToolSet>>;
 
 /**
+ * Convert a Uint8Array to a base64 string safely.
+ * Uses a loop instead of spread operator to avoid stack overflow on large arrays.
+ */
+function uint8ArrayToBase64(data: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < data.length; i++) {
+    binary += String.fromCharCode(data[i]);
+  }
+  return btoa(binary);
+}
+
+/**
  * Options for the doStreamStep function.
  */
 export interface DoStreamStepOptions {
@@ -283,7 +295,7 @@ export async function doStreamStep(
               const fileData = part.data as Uint8Array | string | URL;
               if (fileData instanceof Uint8Array) {
                 // Convert Uint8Array to base64 and create data URL
-                const base64 = btoa(String.fromCharCode(...fileData));
+                const base64 = uint8ArrayToBase64(fileData);
                 url = `data:${part.mediaType};base64,${base64}`;
               } else if (fileData instanceof URL) {
                 // Use URL directly (could be a data URL or remote URL)
@@ -489,7 +501,7 @@ function chunksToStep(
       // If data is already a Uint8Array, convert to base64; otherwise use as-is
       if (data instanceof Uint8Array) {
         // Convert Uint8Array to base64 string
-        const base64 = btoa(String.fromCharCode(...data));
+        const base64 = uint8ArrayToBase64(data);
         return {
           mediaType: chunk.mediaType,
           base64,
