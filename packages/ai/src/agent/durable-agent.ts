@@ -793,6 +793,9 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         if (options.onAbort) {
           await options.onAbort({ steps });
         }
+      } else if (options.onError) {
+        // Call onError for non-abort errors (including tool execution errors)
+        await options.onError({ error });
       }
       // Don't throw yet - we want to call onFinish first
     }
