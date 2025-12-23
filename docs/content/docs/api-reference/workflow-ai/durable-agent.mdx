@@ -719,7 +719,7 @@ async function agentWithToolChoice() {
       calculator: {
         description: "Perform calculations",
         inputSchema: z.object({ expression: z.string() }),
-        execute: async ({ expression }) => eval(expression),
+        execute: async ({ expression }) => `Calculated: ${expression}`,
       },
       search: {
         description: "Search for information",
