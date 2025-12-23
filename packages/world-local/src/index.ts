@@ -33,10 +33,12 @@ export function createLocalWorld(args?: Partial<Config>): World {
       )
     : {};
   const mergedConfig = { ...config.value, ...definedArgs };
-  initDataDir(mergedConfig.dataDir);
   return {
     ...createQueue(mergedConfig),
     ...createStorage(mergedConfig.dataDir),
     ...createStreamer(mergedConfig.dataDir),
+    async start() {
+      await initDataDir(mergedConfig.dataDir);
+    },
   };
 }
