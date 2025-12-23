@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Streamer } from '@workflow/world';
-import { and, eq, like } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
@@ -94,12 +94,13 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
       chunk: string | Uint8Array
     ) {
       // Await runId if it's a promise to ensure proper flushing
-      await _runId;
+      const runId = await _runId;
 
       const chunkId = genChunkId();
       await drizzle.insert(streams).values({
         chunkId,
         streamId: name,
+        runId,
         chunkData: !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk,
         eof: false,
       });
@@ -118,12 +119,13 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
       _runId: string | Promise<string>
     ): Promise<void> {
       // Await runId if it's a promise to ensure proper flushing
-      await _runId;
+      const runId = await _runId;
 
       const chunkId = genChunkId();
       await drizzle.insert(streams).values({
         chunkId,
         streamId: name,
+        runId,
         chunkData: Buffer.from([]),
         eof: true,
       });
@@ -209,14 +211,11 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
     },
 
     async listStreamsByRunId(runId: string): Promise<string[]> {
-      // Convert runId (wrun_{ULID}) to stream prefix (strm_{ULID}_user)
-      const streamPrefix = runId.replace('wrun_', 'strm_') + '_user';
-
-      // Query distinct stream IDs that match the prefix
+      // Query distinct stream IDs associated with the runId
       const results = await drizzle
         .selectDistinct({ streamId: streams.streamId })
         .from(streams)
-        .where(like(streams.streamId, `${streamPrefix}%`));
+        .where(eq(streams.runId, runId));
 
       return results.map((r) => r.streamId);
     },

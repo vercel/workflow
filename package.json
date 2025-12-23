@@ -40,7 +40,8 @@
     "format": "biome format --write",
     "changeset": "changeset",
     "ci:version": "changeset version",
-    "ci:publish": "pnpm build && changeset publish"
+    "ci:publish": "pnpm build && changeset publish",
+    "release:notes": "node scripts/generate-release-notes.mjs"
   },
   "lint-staged": {
     "**/*": "biome format --write --no-errors-on-unmatched"

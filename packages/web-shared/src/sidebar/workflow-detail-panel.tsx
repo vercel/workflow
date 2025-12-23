@@ -2,14 +2,19 @@
 
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
-import { Zap } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { Send, Zap } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { useWorkflowResourceData, wakeUpRun } from '../api/workflow-api-client';
+import {
+  resumeHook,
+  useWorkflowResourceData,
+  wakeUpRun,
+} from '../api/workflow-api-client';
 import type { EnvMap } from '../api/workflow-server-actions';
 import { EventsList } from '../sidebar/events-list';
 import { useTraceViewer } from '../trace-viewer';
 import { AttributePanel } from './attribute-panel';
+import { ResolveHookModal } from './resolve-hook-modal';
 
 /**
  * Custom panel component for workflow traces that displays entity details
@@ -27,6 +32,8 @@ export function WorkflowDetailPanel({
   const { state } = useTraceViewer();
   const { selected } = state;
   const [stoppingSleep, setStoppingSleep] = useState(false);
+  const [showResolveHookModal, setShowResolveHookModal] = useState(false);
+  const [resolvingHook, setResolvingHook] = useState(false);
 
   const data = selected?.span.attributes?.data as
     | Step
@@ -56,19 +63,59 @@ export function WorkflowDetailPanel({
     return { resource: undefined, resourceId: undefined, runId: undefined };
   }, [selected, data]);
 
-  // Check if this sleep is still pending (no wait_completed event)
-  // We include events length to ensure recomputation when new events are added
-  // (the array reference might not change when events are pushed to it)
+  // Check if this sleep is still pending and can be woken up
+  // Requirements: no wait_completed event, resumeAt is in the future, run is not terminal
   const spanEvents = selected?.span.events;
   const spanEventsLength = spanEvents?.length ?? 0;
-  const isSleepPending = useMemo(() => {
+  const canWakeUp = useMemo(() => {
     void spanEventsLength; // Force dependency on length for reactivity
     if (resource !== 'sleep' || !spanEvents) return false;
+
+    // Check run is not in a terminal state
+    const terminalStates = ['completed', 'failed', 'cancelled'];
+    if (terminalStates.includes(run.status)) return false;
+
+    // Check if wait has already completed
     const hasWaitCompleted = spanEvents.some(
       (e) => e.name === 'wait_completed'
     );
-    return !hasWaitCompleted;
-  }, [resource, spanEvents, spanEventsLength]);
+    if (hasWaitCompleted) return false;
+
+    // Check if resumeAt is in the future
+    const waitCreatedEvent = spanEvents.find((e) => e.name === 'wait_created');
+    const eventData = waitCreatedEvent?.attributes?.eventData as
+      | { resumeAt?: string | Date }
+      | undefined;
+    const resumeAt = eventData?.resumeAt;
+    if (!resumeAt) return false;
+
+    const resumeAtDate = new Date(resumeAt);
+    return resumeAtDate.getTime() > Date.now();
+  }, [resource, spanEvents, spanEventsLength, run.status]);
+
+  // Check if this hook can be resolved (not yet resolved, run is not terminal)
+  const canResolveHook = useMemo(() => {
+    void spanEventsLength; // Force dependency on length for reactivity
+    if (resource !== 'hook' || !spanEvents) return false;
+
+    // Check run is not in a terminal state
+    const terminalStates = ['completed', 'failed', 'cancelled'];
+    if (terminalStates.includes(run.status)) return false;
+
+    // Check if hook has already been disposed
+    const hasHookDisposed = spanEvents.some((e) => e.name === 'hook_disposed');
+    if (hasHookDisposed) return false;
+
+    // Hook can be resolved
+    return true;
+  }, [resource, spanEvents, spanEventsLength, run.status]);
+
+  // Get the hook token for resolving
+  const hookToken = useMemo(() => {
+    if (resource !== 'hook') return undefined;
+    const hook = data as Hook;
+    return hook?.token;
+  }, [resource, data]);
 
   // Fetch full resource data with events
   const {
@@ -77,7 +124,7 @@ export function WorkflowDetailPanel({
     loading,
   } = useWorkflowResourceData(
     env,
-    resource as 'run' | 'step' | 'hook',
+    resource as 'run' | 'step' | 'hook' | 'sleep',
     resourceId ?? '',
     { runId }
   );
@@ -119,6 +166,30 @@ export function WorkflowDetailPanel({
     }
   };
 
+  const handleResolveHook = useCallback(
+    async (payload: unknown) => {
+      if (resolvingHook || !hookToken) return;
+
+      try {
+        setResolvingHook(true);
+        await resumeHook(env, hookToken, payload);
+        toast.success('Hook resolved', {
+          description: 'The payload has been sent and the hook resolved.',
+        });
+        setShowResolveHookModal(false);
+      } catch (err) {
+        console.error('Failed to resolve hook:', err);
+        toast.error('Failed to resolve hook', {
+          description:
+            err instanceof Error ? err.message : 'An unknown error occurred',
+        });
+      } finally {
+        setResolvingHook(false);
+      }
+    },
+    [env, hookToken, resolvingHook]
+  );
+
   if (!selected || !resource || !resourceId) {
     return null;
   }
@@ -128,7 +199,7 @@ export function WorkflowDetailPanel({
   return (
     <div className={clsx('flex flex-col px-2')}>
       {/* Wake up button for pending sleep calls */}
-      {resource === 'sleep' && isSleepPending && (
+      {resource === 'sleep' && canWakeUp && (
         <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
           <button
             type="button"
@@ -151,6 +222,39 @@ export function WorkflowDetailPanel({
           </p>
         </div>
       )}
+
+      {/* Resolve hook button for pending hooks */}
+      {resource === 'hook' && canResolveHook && (
+        <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
+          <button
+            type="button"
+            onClick={() => setShowResolveHookModal(true)}
+            disabled={resolvingHook}
+            className={clsx(
+              'flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md w-full',
+              'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200',
+              'hover:bg-blue-200 dark:hover:bg-blue-900/50',
+              'disabled:opacity-50 disabled:cursor-not-allowed',
+              'transition-colors',
+              resolvingHook ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+            )}
+          >
+            <Send className="h-4 w-4" />
+            Resolve Hook
+          </button>
+          <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            Send a JSON payload to resolve this hook.
+          </p>
+        </div>
+      )}
+
+      {/* Resolve Hook Modal */}
+      <ResolveHookModal
+        isOpen={showResolveHookModal}
+        onClose={() => setShowResolveHookModal(false)}
+        onSubmit={handleResolveHook}
+        isSubmitting={resolvingHook}
+      />
 
       {/* Content display */}
       <AttributePanel

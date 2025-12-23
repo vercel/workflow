@@ -127,4 +127,12 @@ export const cliFlags = {
     helpLabel: '--limit',
     helpValue: 'NUMBER',
   }),
+  interactive: Flags.boolean({
+    description: 'Enable interactive pagination with keyboard controls',
+    required: false,
+    char: 'i',
+    default: false,
+    helpGroup: 'Output',
+    helpLabel: '-i, --interactive',
+  }),
 };

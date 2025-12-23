@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import type { EnvMap } from './api/workflow-server-actions';
 import { Skeleton } from './components/ui/skeleton';
+import { ErrorBoundary } from './error-boundary';
 import { WorkflowDetailPanel } from './sidebar/workflow-detail-panel';
 import {
   TraceViewerContextProvider,
@@ -64,6 +65,7 @@ export const WorkflowTraceViewer = ({
     const eventsByHookId = new Map<string, Event[]>();
     const runLevelEvents: Event[] = [];
     const timerEvents = new Map<string, Event[]>();
+    const hookEvents = new Map<string, Event[]>();
 
     for (const event of events) {
       if (
@@ -73,6 +75,17 @@ export const WorkflowTraceViewer = ({
         const existing = timerEvents.get(event.correlationId) || [];
         existing.push(event);
         timerEvents.set(event.correlationId, existing);
+        continue;
+      }
+
+      if (
+        event.eventType === 'hook_received' ||
+        event.eventType === 'hook_created' ||
+        event.eventType === 'hook_disposed'
+      ) {
+        const existing = hookEvents.get(event.correlationId) || [];
+        existing.push(event);
+        hookEvents.set(event.correlationId, existing);
         continue;
       }
       // Try to associate event with a step or hook via correlationId
@@ -106,16 +119,17 @@ export const WorkflowTraceViewer = ({
       return stepToSpan(step, stepEvents, now);
     });
 
-    const hookSpans = hooks.map((hook) => {
-      const hookEvents = eventsByHookId.get(hook.hookId) || [];
-      return hookToSpan(hook, hookEvents, now);
-    });
+    const hookSpans = Array.from(hookEvents.entries())
+      .map(([_, events]) => {
+        return hookToSpan(events, run, now);
+      })
+      .filter((span) => span !== null);
 
-    const waitSpans = Array.from(timerEvents.entries()).map(
-      ([correlationId, events]) => {
-        return waitToSpan(correlationId, events, now);
-      }
-    );
+    const waitSpans = Array.from(timerEvents.entries())
+      .map(([_, events]) => {
+        return waitToSpan(events, run, now);
+      })
+      .filter((span) => span !== null);
 
     const runSpan = runToSpan(run, runLevelEvents, now);
     const spans = [...stepSpans, ...hookSpans, ...waitSpans];
@@ -183,11 +197,13 @@ export const WorkflowTraceViewer = ({
         customSpanClassNameFunc={getCustomSpanClassName}
         customSpanEventClassNameFunc={getCustomSpanEventClassName}
         customPanelComponent={
-          <WorkflowDetailPanel
-            env={env}
-            run={run}
-            onStreamClick={onStreamClick}
-          />
+          <ErrorBoundary>
+            <WorkflowDetailPanel
+              env={env}
+              run={run}
+              onStreamClick={onStreamClick}
+            />
+          </ErrorBoundary>
         }
       >
         <TraceViewerTimeline height="100%" trace={trace} withPanel />

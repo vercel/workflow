@@ -13,21 +13,21 @@ export async function brokenWf() {
 
   {
     const promises: Promise<number>[] = [];
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 5; i++) {
       promises.push(noop(i));
     }
 
-    console.log('await 10');
+    console.log('await 5');
     numbers.push(...(await Promise.all(promises)));
   }
 
   {
     const promises: Promise<number>[] = [];
-    for (let i = 0; i < 100; i++) {
-      promises.push(noop(1000 + i));
+    for (let i = 0; i < 15; i++) {
+      promises.push(noop(100 + i));
     }
 
-    console.log('await 100');
+    console.log('await 15');
     numbers.push(...(await Promise.all(promises)));
   }
 

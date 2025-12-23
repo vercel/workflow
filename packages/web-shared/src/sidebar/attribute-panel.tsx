@@ -322,6 +322,30 @@ const sortByAttributeOrder = (a: string, b: string): number => {
   return aIndex - bIndex;
 };
 
+export const localMillisecondTime = (value: unknown): string => {
+  let date: Date;
+  if (value instanceof Date) {
+    date = value;
+  } else if (typeof value === 'number') {
+    date = new Date(value);
+  } else if (typeof value === 'string') {
+    date = new Date(value);
+  } else {
+    date = new Date(String(value));
+  }
+
+  // e.g. 12/17/2025, 9:08:55.182 AM
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    fractionalSecondDigits: 3,
+  });
+};
+
 interface DisplayContext {
   stepName?: string;
 }
@@ -356,13 +380,13 @@ const attributeToDisplayFn: Record<
   executionContext: (_value: unknown) => null,
   // Dates
   // TODO: relative time with tooltips for ISO times
-  createdAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  startedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  updatedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  completedAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  expiredAt: (value: unknown) => new Date(String(value)).toLocaleString(),
-  retryAfter: (value: unknown) => new Date(String(value)).toLocaleString(),
-  resumeAt: (value: unknown) => new Date(String(value)).toLocaleString(),
+  createdAt: localMillisecondTime,
+  startedAt: localMillisecondTime,
+  updatedAt: localMillisecondTime,
+  completedAt: localMillisecondTime,
+  expiredAt: localMillisecondTime,
+  retryAfter: localMillisecondTime,
+  resumeAt: localMillisecondTime,
   // Resolved attributes, won't actually use this function
   metadata: JsonBlock,
   input: (value: unknown, context?: DisplayContext) => {

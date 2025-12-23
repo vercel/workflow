@@ -1,5 +1,4 @@
 import type { NextConfig } from 'next';
-import semver from 'semver';
 import { getNextBuilder } from './builder.js';
 
 export function withWorkflow(
@@ -59,8 +58,6 @@ export function withWorkflow(
       nextConfig.turbopack.rules = {};
     }
     const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = require('next/package.json').version;
-    const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
     for (const key of [
       '*.tsx',
@@ -73,21 +70,15 @@ export function withWorkflow(
       '*.cts',
     ]) {
       nextConfig.turbopack.rules[key] = {
-        ...(supportsTurboCondition
-          ? {
-              condition: {
-                ...existingRules[key]?.condition,
-                any: [
-                  ...(existingRules[key]?.condition.any || []),
-                  {
-                    content: /(use workflow|use step)/,
-                  },
-                ],
-              },
-            }
-          : {}),
         loaders: [...(existingRules[key]?.loaders || []), loaderPath],
       };
+    }
+
+    if (process.env.TURBOPACK) {
+      if (!nextConfig.experimental) {
+        nextConfig.experimental = {};
+      }
+      nextConfig.experimental.turbopackScopeHoisting = false;
     }
 
     // configure the loader for webpack
@@ -117,10 +108,8 @@ export function withWorkflow(
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
       phase !== 'phase-production-server'
     ) {
-      const shouldWatch = process.env.NODE_ENV === 'development';
       const NextBuilder = await getNextBuilder();
       const workflowBuilder = new NextBuilder({
-        watch: shouldWatch,
         // discover workflows from pages/app entries
         dirs: ['pages', 'app', 'src/pages', 'src/app'],
         workingDir: process.cwd(),
@@ -131,7 +120,7 @@ export function withWorkflow(
         externalPackages: [...(nextConfig.serverExternalPackages || [])],
       });
 
-      await workflowBuilder.build();
+      await workflowBuilder.init(nextConfig, phase);
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';
     }
 

@@ -75,6 +75,12 @@ export const generatePageMetadata = (slug: PageProps['slug']) => {
   const metadata: Metadata = {
     title: page.data.title,
     description: page.data.description,
+    alternates: {
+      canonical: page.url,
+      media: {
+        'text/markdown': `${page.url}.md`,
+      },
+    },
   };
 
   return metadata;

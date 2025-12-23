@@ -43,7 +43,7 @@ export const setupCliWorld = async (
     WORKFLOW_VERCEL_AUTH_TOKEN: flags.authToken,
     WORKFLOW_VERCEL_PROJECT: flags.project,
     WORKFLOW_VERCEL_TEAM: flags.team,
-    WORKFLOW_VERCEL_PROXY_URL: 'https://api.vercel.com/v1/workflow',
+    WORKFLOW_VERCEL_BACKEND_URL: 'https://api.vercel.com/v1/workflow',
   });
 
   if (

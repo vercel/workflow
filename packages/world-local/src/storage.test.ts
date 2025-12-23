@@ -3,7 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Storage } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  EventSchema,
+  HookSchema,
+  StepSchema,
+  WorkflowRunSchema,
+} from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStorage } from './storage.js';
 
 describe('Storage', () => {
@@ -70,6 +76,27 @@ describe('Storage', () => {
 
         expect(run.executionContext).toBeUndefined();
         expect(run.input).toEqual([]);
+      });
+
+      it('should validate run against schema before writing', async () => {
+        const parseSpy = vi.spyOn(WorkflowRunSchema, 'parse');
+
+        await storage.runs.create({
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: [],
+        });
+
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(parseSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            status: 'pending',
+          })
+        );
+
+        parseSpy.mockRestore();
       });
     });
 
@@ -326,6 +353,28 @@ describe('Storage', () => {
           .then(() => true)
           .catch(() => false);
         expect(fileExists).toBe(true);
+      });
+
+      it('should validate step against schema before writing', async () => {
+        const parseSpy = vi.spyOn(StepSchema, 'parse');
+
+        await storage.steps.create(testRunId, {
+          stepId: 'step_validated',
+          stepName: 'validated-step',
+          input: ['arg1'],
+        });
+
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(parseSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            runId: testRunId,
+            stepId: 'step_validated',
+            stepName: 'validated-step',
+            status: 'pending',
+          })
+        );
+
+        parseSpy.mockRestore();
       });
     });
 
@@ -738,6 +787,26 @@ describe('Storage', () => {
 
         expect(event.eventType).toBe('workflow_completed');
         expect(event.correlationId).toBeUndefined();
+      });
+
+      it('should validate event against schema before writing', async () => {
+        const parseSpy = vi.spyOn(EventSchema, 'parse');
+
+        await storage.events.create(testRunId, {
+          eventType: 'step_started' as const,
+          correlationId: 'corr_validated',
+        });
+
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(parseSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            runId: testRunId,
+            eventType: 'step_started',
+            correlationId: 'corr_validated',
+          })
+        );
+
+        parseSpy.mockRestore();
       });
     });
 
@@ -1234,6 +1303,26 @@ describe('Storage', () => {
         ).rejects.toThrow(
           `Hook with token ${token} already exists for this project`
         );
+      });
+
+      it('should validate hook against schema before writing', async () => {
+        const parseSpy = vi.spyOn(HookSchema, 'parse');
+
+        await storage.hooks.create(testRunId, {
+          hookId: 'hook_validated',
+          token: 'validated-token',
+        });
+
+        expect(parseSpy).toHaveBeenCalledTimes(1);
+        expect(parseSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            runId: testRunId,
+            hookId: 'hook_validated',
+            token: 'validated-token',
+          })
+        );
+
+        parseSpy.mockRestore();
       });
     });
 

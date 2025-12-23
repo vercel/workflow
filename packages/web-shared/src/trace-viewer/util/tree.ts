@@ -73,6 +73,10 @@ export const parseTrace = (
       isVercel,
       children: [],
       resourceIndex,
+      // Pass through activeStartTime if present (for showing queued period)
+      activeStartTime: span.activeStartTime
+        ? getHighResInMs(span.activeStartTime)
+        : undefined,
     };
   }
 

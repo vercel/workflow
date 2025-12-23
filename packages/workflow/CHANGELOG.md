@@ -1,5 +1,63 @@
 # workflow
 
+## 4.0.1-beta.35
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.0.1-beta.35
+  - @workflow/core@4.0.1-beta.30
+  - @workflow/next@4.0.1-beta.34
+  - @workflow/nitro@4.0.1-beta.33
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.12
+  - @workflow/sveltekit@4.0.0-beta.27
+  - @workflow/nuxt@4.0.1-beta.22
+
+## 4.0.1-beta.34
+
+### Patch Changes
+
+- Updated dependencies [[`eaf9aa6`](https://github.com/vercel/workflow/commit/eaf9aa65f354bf1e22e8e148c0fd1936f0ec9358)]:
+  - @workflow/core@4.0.1-beta.29
+  - @workflow/cli@4.0.1-beta.34
+  - @workflow/next@4.0.1-beta.33
+  - @workflow/nitro@4.0.1-beta.32
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.11
+  - @workflow/sveltekit@4.0.0-beta.26
+  - @workflow/nuxt@4.0.1-beta.21
+
+## 4.0.1-beta.33
+
+### Patch Changes
+
+- Updated dependencies [[`ea2a67e`](https://github.com/vercel/workflow/commit/ea2a67e19c5d224b4b4fd1c1a417810562df0807), [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005), [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3)]:
+  - @workflow/core@4.0.1-beta.28
+  - @workflow/errors@4.0.1-beta.10
+  - @workflow/cli@4.0.1-beta.33
+  - @workflow/next@4.0.1-beta.32
+  - @workflow/nitro@4.0.1-beta.31
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.10
+  - @workflow/sveltekit@4.0.0-beta.25
+  - @workflow/nuxt@4.0.1-beta.20
+
+## 4.0.1-beta.32
+
+### Patch Changes
+
+- Updated dependencies [[`deaf019`](https://github.com/vercel/workflow/commit/deaf0193e91ea7a24d2423a813b64f51faa681e3), [`29967bf`](https://github.com/vercel/workflow/commit/29967bff9098f6c1bce90d2ab7ef40484c3b9242), [`b56aae3`](https://github.com/vercel/workflow/commit/b56aae3fe9b5568d7bdda592ed025b3499149240), [`4d7a393`](https://github.com/vercel/workflow/commit/4d7a393906846be751e798c943594bec3c9b0ff3)]:
+  - @workflow/core@4.0.1-beta.27
+  - @workflow/cli@4.0.1-beta.32
+  - @workflow/nitro@4.0.1-beta.30
+  - @workflow/errors@4.0.1-beta.9
+  - @workflow/next@4.0.1-beta.31
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.19
+  - @workflow/astro@4.0.0-beta.9
+  - @workflow/sveltekit@4.0.0-beta.24
+
 ## 4.0.1-beta.31
 
 ### Patch Changes

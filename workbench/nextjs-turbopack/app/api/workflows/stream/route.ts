@@ -21,27 +21,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get the stream if the run has a stream method
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const runObj = run as any;
-    let stream: ReadableStream | null = null;
-    if (typeof runObj.stream === 'function') {
-      try {
-        stream = runObj.stream();
-      } catch (error) {
-        console.error('Error calling run.stream():', error);
-      }
-    }
-
-    if (!stream) {
-      return NextResponse.json(
-        { error: 'Stream not available for this run' },
-        { status: 404 }
-      );
-    }
-
-    // Create a response with the stream
-    return new Response(stream, {
+    const readable = run.getReadable();
+    return new Response(readable, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',

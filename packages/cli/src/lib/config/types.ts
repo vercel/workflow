@@ -21,4 +21,5 @@ export type InspectCLIOptions = {
   withData?: boolean;
   backend?: string;
   disableRelativeDates?: boolean;
+  interactive?: boolean;
 };

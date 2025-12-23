@@ -1,5 +1,5 @@
-import fs from 'fs/promises';
-import path from 'path';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import { getWorkbenchAppPath } from './utils';
 
@@ -44,6 +44,14 @@ export function createDevTests(config?: DevTestConfig) {
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
+    const warmEndpoint = async () => {
+      // Warm up the Next.js routes to trigger lazy workflow/step discovery and compilation.
+      // This is only required for tests that respond to file updates (HMR tests).
+      // Without this, the routes won't be built yet and file change detection won't work.
+      await fetch(new URL('/api/trigger', process.env.DEPLOYMENT_URL));
+      await fetch(new URL('/api/chat', process.env.DEPLOYMENT_URL));
+    };
+
     afterEach(async () => {
       await Promise.all(
         restoreFiles.map(async (item) => {
@@ -54,38 +62,11 @@ export function createDevTests(config?: DevTestConfig) {
           }
         })
       );
+      await warmEndpoint();
       restoreFiles.length = 0;
     });
 
-    test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
-      const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
-
-      const content = await fs.readFile(workflowFile, 'utf8');
-
-      await fs.writeFile(
-        workflowFile,
-        `${content}
-
-export async function myNewWorkflow() {
-  'use workflow'
-  return 'hello world'
-}
-`
-      );
-      restoreFiles.push({ path: workflowFile, content });
-
-      while (true) {
-        try {
-          const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
-          expect(workflowContent).toContain('myNewWorkflow');
-          break;
-        } catch (_) {
-          await new Promise((res) => setTimeout(res, 1_000));
-        }
-      }
-    });
-
-    test('should rebuild on step change', { timeout: 30_000 }, async () => {
+    test('should rebuild on step change', { timeout: 15_000 }, async () => {
       const stepFile = path.join(appPath, workflowsDir, testWorkflowFile);
 
       const content = await fs.readFile(stepFile, 'utf8');
@@ -104,6 +85,7 @@ export async function myNewStep() {
 
       while (true) {
         try {
+          await warmEndpoint();
           const workflowContent = await fs.readFile(generatedStep, 'utf8');
           expect(workflowContent).toContain('myNewStep');
           break;
@@ -113,9 +95,38 @@ export async function myNewStep() {
       }
     });
 
+    test('should rebuild on workflow change', { timeout: 15_000 }, async () => {
+      const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
+
+      const content = await fs.readFile(workflowFile, 'utf8');
+
+      await fs.writeFile(
+        workflowFile,
+        `${content}
+
+export async function myNewWorkflow() {
+  'use workflow'
+  return 'hello world'
+}
+`
+      );
+      restoreFiles.push({ path: workflowFile, content });
+
+      while (true) {
+        try {
+          await warmEndpoint();
+          const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
+          expect(workflowContent).toContain('myNewWorkflow');
+          break;
+        } catch (_) {
+          await new Promise((res) => setTimeout(res, 1_000));
+        }
+      }
+    });
+
     test(
       'should rebuild on adding workflow file',
-      { timeout: 30_000 },
+      { timeout: 15_000 },
       async () => {
         const workflowFile = path.join(
           appPath,
@@ -131,11 +142,11 @@ export async function myNewStep() {
 }
 `
         );
-        restoreFiles.push({ path: workflowFile, content: '' });
         const apiFile = path.join(appPath, finalConfig.apiFilePath);
-
         const apiFileContent = await fs.readFile(apiFile, 'utf8');
+
         restoreFiles.push({ path: apiFile, content: apiFileContent });
+        restoreFiles.push({ path: workflowFile, content: '' });
 
         await fs.writeFile(
           apiFile,
@@ -145,6 +156,7 @@ ${apiFileContent}`
 
         while (true) {
           try {
+            await warmEndpoint();
             const workflowContent = await fs.readFile(
               generatedWorkflow,
               'utf8'
