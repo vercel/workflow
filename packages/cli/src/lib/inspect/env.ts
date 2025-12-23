@@ -1,7 +1,4 @@
-import {
-  findWorkflowDataDir,
-  possibleWorkflowDataPaths,
-} from '@workflow/utils/check-data-dir';
+import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import { logger } from '../config/log.js';
 import { getWorkflowConfig } from '../config/workflow-config.js';
 import { getAuth } from './auth.js';
