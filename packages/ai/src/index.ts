@@ -20,7 +20,6 @@ export type {
   PrepareStepResult,
   ProviderOptions,
   StreamTextOnAbortCallback,
-  StreamTextOnChunkCallback,
   StreamTextOnErrorCallback,
   StreamTextOnFinishCallback,
   StreamTextTransform,

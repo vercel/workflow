@@ -130,16 +130,6 @@ export default TelemetrySettings;`}
 
 ### Callbacks
 
-#### StreamTextOnChunkCallback
-
-Called for each chunk in the stream:
-
-<TSDoc
-definition={`
-import type { StreamTextOnChunkCallback } from "@workflow/ai/agent";
-export default StreamTextOnChunkCallback;`}
-/>
-
 #### StreamTextOnFinishCallback
 
 Called when streaming completes:
@@ -637,13 +627,6 @@ async function agentWithCallbacks() {
     messages: [{ role: "user", content: "Hello!" }],
     writable: getWritable<UIMessageChunk>(),
     maxSteps: 5,
-
-    // Called for each chunk in the stream
-    onChunk: async ({ chunk }) => {
-      if (chunk.type === "text-delta") {
-        console.log("Text:", chunk.textDelta);
-      }
-    },
 
     // Called after each step completes
     onStepFinish: async (step) => {

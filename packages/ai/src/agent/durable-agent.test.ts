@@ -993,42 +993,6 @@ describe('DurableAgent', () => {
   });
 
   describe('callbacks', () => {
-    it('should pass onChunk callback to streamTextIterator', async () => {
-      const mockModel = createMockModel();
-
-      const agent = new DurableAgent({
-        model: async () => mockModel,
-        tools: {},
-      });
-
-      const mockWritable = new WritableStream({
-        write: vi.fn(),
-        close: vi.fn(),
-      });
-
-      const { streamTextIterator } = await import('./stream-text-iterator.js');
-      const mockIterator = {
-        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
-      };
-      vi.mocked(streamTextIterator).mockReturnValue(
-        mockIterator as unknown as MockIterator
-      );
-
-      const onChunk = vi.fn();
-
-      await agent.stream({
-        messages: [{ role: 'user', content: 'test' }],
-        writable: mockWritable,
-        onChunk,
-      });
-
-      expect(streamTextIterator).toHaveBeenCalledWith(
-        expect.objectContaining({
-          onChunk,
-        })
-      );
-    });
-
     it('should pass onError callback to streamTextIterator', async () => {
       const mockModel = createMockModel();
 

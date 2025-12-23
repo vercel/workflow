@@ -16,7 +16,6 @@ import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
 import type {
   GenerationSettings,
   PrepareStepCallback,
-  StreamTextOnChunkCallback,
   StreamTextOnErrorCallback,
   StreamTextTransform,
   TelemetrySettings,
@@ -48,7 +47,6 @@ export async function* streamTextIterator({
   maxSteps,
   sendStart = true,
   onStepFinish,
-  onChunk,
   onError,
   prepareStep,
   generationSettings,
@@ -67,7 +65,6 @@ export async function* streamTextIterator({
   maxSteps?: number;
   sendStart?: boolean;
   onStepFinish?: StreamTextOnStepFinishCallback<any>;
-  onChunk?: StreamTextOnChunkCallback;
   onError?: StreamTextOnErrorCallback;
   prepareStep?: PrepareStepCallback<any>;
   generationSettings?: GenerationSettings;
@@ -248,7 +245,6 @@ export async function* streamTextIterator({
         toolsToModelTools(effectiveTools),
         {
           sendStart: sendStart && isFirstIteration,
-          onChunk,
           ...currentGenerationSettings,
           toolChoice: currentToolChoice,
           includeRawChunks,

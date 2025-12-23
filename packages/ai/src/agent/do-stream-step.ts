@@ -17,7 +17,6 @@ import {
 } from 'ai';
 import type {
   ProviderOptions,
-  StreamTextOnChunkCallback,
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
@@ -43,7 +42,6 @@ function uint8ArrayToBase64(data: Uint8Array): string {
  */
 export interface DoStreamStepOptions {
   sendStart?: boolean;
-  onChunk?: StreamTextOnChunkCallback;
   maxOutputTokens?: number;
   temperature?: number;
   topP?: number;
@@ -152,7 +150,6 @@ export async function doStreamStep(
   let finish: FinishPart | undefined;
   const toolCalls: LanguageModelV2ToolCall[] = [];
   const chunks: LanguageModelV2StreamPart[] = [];
-  const onChunk = options?.onChunk;
   const includeRawChunks = options?.includeRawChunks ?? false;
 
   // Build the stream pipeline
@@ -190,12 +187,6 @@ export async function doStreamStep(
             finish = chunk;
           }
           chunks.push(chunk);
-
-          // Call onChunk callback if provided
-          if (onChunk) {
-            await onChunk({ chunk });
-          }
-
           controller.enqueue(chunk);
         },
       })

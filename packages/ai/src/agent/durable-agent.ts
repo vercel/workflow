@@ -319,13 +319,6 @@ export interface DurableAgentOptions extends GenerationSettings {
 }
 
 /**
- * Callback that is called for each chunk of the stream.
- */
-export type StreamTextOnChunkCallback = (event: {
-  chunk: LanguageModelV2StreamPart;
-}) => PromiseLike<void> | void;
-
-/**
  * Callback that is called when the LLM response and all request tool executions are finished.
  */
 export type StreamTextOnFinishCallback<
@@ -509,12 +502,6 @@ export interface DurableAgentStreamOptions<
    * Callback function to be called after each step completes.
    */
   onStepFinish?: StreamTextOnStepFinishCallback<TTools>;
-
-  /**
-   * Callback that is called for each chunk of the stream.
-   * The stream processing will pause until the callback promise is resolved.
-   */
-  onChunk?: StreamTextOnChunkCallback;
 
   /**
    * Callback that is invoked when an error occurs during streaming.
@@ -728,7 +715,6 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       maxSteps: options.maxSteps,
       sendStart: options.sendStart ?? true,
       onStepFinish: options.onStepFinish,
-      onChunk: options.onChunk,
       onError: options.onError,
       prepareStep: options.prepareStep,
       generationSettings: mergedGenerationSettings,
