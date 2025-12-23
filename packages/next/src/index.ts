@@ -120,10 +120,7 @@ export function withWorkflow(
         externalPackages: [...(nextConfig.serverExternalPackages || [])],
       });
 
-      // Pass the nextConfig to the builder so it can access distDir
-      workflowBuilder.setNextConfig(nextConfig, phase);
-
-      await workflowBuilder.init();
+      await workflowBuilder.init(nextConfig, phase);
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';
     }
 

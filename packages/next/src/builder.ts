@@ -30,11 +30,6 @@ export async function getNextBuilder() {
     private isDevServer?: boolean;
     private nextConfig?: NextConfig;
 
-    setNextConfig(config: NextConfig, phase: string) {
-      this.nextConfig = config;
-      this.isDevServer = phase === 'phase-development-server';
-    }
-
     private getDistDir(): string {
       return this.nextConfig?.distDir || '.next';
     }
@@ -82,7 +77,10 @@ export async function getNextBuilder() {
       }
     }
 
-    async init() {
+    async init(nextConfig: NextConfig, phase: string) {
+      this.nextConfig = nextConfig;
+      this.isDevServer = phase === 'phase-development-server';
+
       const outputDir = await this.findAppDirectory();
 
       // Write stub files
@@ -357,7 +355,7 @@ export async function getNextBuilder() {
       // we're fine with > 3 vCPU but <= 3 vCPUs and we won't be able to
       // discover workflows/steps
       const parallelismCount = os.availableParallelism();
-      if (parallelismCount < 4) {
+      if (process.env.TURBOPACK && parallelismCount < 4) {
         console.warn(
           `Available parallelism of ${parallelismCount} is less than needed 4. This can cause workflows/steps to fail to discover properly in turbopack`
         );
