@@ -89,6 +89,7 @@ export async function* streamTextIterator({
   let currentGenerationSettings = generationSettings ?? {};
   let currentToolChoice = toolChoice;
   let currentContext = experimental_context;
+  let currentActiveTools: string[] | undefined = undefined;
 
   const steps: StepResult<any>[] = [];
   let done = false;
@@ -111,13 +112,11 @@ export async function* streamTextIterator({
   while (!done) {
     // Check if we've exceeded the maximum number of steps
     if (stepNumber >= effectiveMaxSteps) {
-      done = true;
       break;
     }
 
     // Check for abort signal
     if (currentGenerationSettings.abortSignal?.aborted) {
-      done = true;
       break;
     }
 
@@ -135,12 +134,33 @@ export async function* streamTextIterator({
       if (prepareResult.model !== undefined) {
         currentModel = prepareResult.model;
       }
-      // system override is handled at the DurableAgent level via prompt conversion
+      if (prepareResult.system !== undefined) {
+        // Update or prepend system message in the conversation prompt
+        if (
+          conversationPrompt.length > 0 &&
+          conversationPrompt[0].role === 'system'
+        ) {
+          // Replace existing system message
+          conversationPrompt[0] = {
+            role: 'system',
+            content: prepareResult.system,
+          };
+        } else {
+          // Prepend new system message
+          conversationPrompt.unshift({
+            role: 'system',
+            content: prepareResult.system,
+          });
+        }
+      }
       if (prepareResult.messages !== undefined) {
         conversationPrompt = [...prepareResult.messages];
       }
       if (prepareResult.experimental_context !== undefined) {
         currentContext = prepareResult.experimental_context;
+      }
+      if (prepareResult.activeTools !== undefined) {
+        currentActiveTools = prepareResult.activeTools;
       }
       // Apply generation settings overrides
       if (prepareResult.maxOutputTokens !== undefined) {
@@ -215,11 +235,17 @@ export async function* streamTextIterator({
     }
 
     try {
+      // Filter tools if activeTools is specified
+      const effectiveTools =
+        currentActiveTools && currentActiveTools.length > 0
+          ? filterToolSet(tools, currentActiveTools)
+          : tools;
+
       const { toolCalls, finish, step } = await doStreamStep(
         conversationPrompt,
         currentModel,
         writable,
-        toolsToModelTools(tools),
+        toolsToModelTools(effectiveTools),
         {
           sendStart: sendStart && isFirstIteration,
           onChunk,
@@ -352,4 +378,17 @@ async function writeToolOutputToUI(
   } finally {
     writer.releaseLock();
   }
+}
+
+/**
+ * Filter a tool set to only include the specified active tools.
+ */
+function filterToolSet(tools: ToolSet, activeTools: string[]): ToolSet {
+  const filtered: ToolSet = {};
+  for (const toolName of activeTools) {
+    if (toolName in tools) {
+      filtered[toolName] = tools[toolName];
+    }
+  }
+  return filtered;
 }
