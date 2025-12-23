@@ -2,4 +2,4 @@
 "@workflow/ai": patch
 ---
 
-improved ai sdk parity for DurableAgent
+Improved AI SDK parity for `DurableAgent`
