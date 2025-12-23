@@ -583,7 +583,19 @@ function convertToReactFlowEdges(
       };
     }
 
-    const traversal = execution?.edgeTraversals.get(edge.id);
+    // For consolidated edges, check traversals of original edges
+    let traversal = execution?.edgeTraversals.get(edge.id);
+    if (!traversal && edge.isConsolidated && edge.originalEdgeIds) {
+      // Check if any of the original edges were traversed
+      for (const originalId of edge.originalEdgeIds) {
+        const originalTraversal = execution?.edgeTraversals.get(originalId);
+        if (originalTraversal && originalTraversal.traversalCount > 0) {
+          // Use the first traversed original edge's data
+          traversal = originalTraversal;
+          break;
+        }
+      }
+    }
     const isTraversed = traversal && traversal.traversalCount > 0;
     const hasExecution = !!execution;
 

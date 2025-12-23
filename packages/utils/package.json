@@ -24,6 +24,10 @@
     "./get-port": {
       "types": "./dist/get-port.d.ts",
       "default": "./dist/get-port.js"
+    },
+    "./check-data-dir": {
+      "types": "./dist/check-data-dir.d.ts",
+      "default": "./dist/check-data-dir.js"
     }
   },
   "scripts": {

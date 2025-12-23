@@ -6,6 +6,7 @@ export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 
 export * from './api/workflow-api-client';
 export type { EnvMap } from './api/workflow-server-actions';
+export { ErrorBoundary } from './error-boundary';
 export type {
   HookActionCallbacks,
   HookActionsDropdownItemProps,
@@ -34,7 +35,6 @@ export {
   identifyStreamSteps,
   isDoStreamStep,
 } from './lib/utils';
-
 export { RunTraceView } from './run-trace-view';
 export { ConversationView } from './sidebar/conversation-view';
 export { StreamViewer } from './stream-viewer';

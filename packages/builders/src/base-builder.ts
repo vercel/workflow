@@ -138,6 +138,12 @@ export abstract class BaseBuilder {
     discoveredSteps: string[];
     discoveredWorkflows: string[];
   }> {
+    if (this.config.buildTarget === 'next') {
+      return {
+        discoveredWorkflows: inputs,
+        discoveredSteps: inputs,
+      };
+    }
     const previousResult = this.discoveredEntries.get(inputs);
 
     if (previousResult) {
@@ -253,7 +259,11 @@ export abstract class BaseBuilder {
       }
     }
 
-    if (result.warnings && result.warnings.length > 0) {
+    if (
+      this.config.buildTarget !== 'next' &&
+      result.warnings &&
+      result.warnings.length > 0
+    ) {
       console.warn(`!  esbuild warnings in ${phase}:`);
       for (const warning of result.warnings) {
         console.warn(`  ${warning.text}`);
@@ -317,12 +327,23 @@ export abstract class BaseBuilder {
       );
     });
 
+    const combinedStepFiles: string[] = [
+      ...stepFiles,
+      ...workflowFiles,
+      ...(resolvedBuiltInSteps
+        ? [
+            resolvedBuiltInSteps,
+            // TODO: expose this in workflow/package.json and use resolve?
+            join(dirname(resolvedBuiltInSteps), '../stdlib.js'),
+          ]
+        : []),
+    ];
+
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
     // We also import workflow files so their metadata is collected by the SWC plugin,
     // even though they'll be externalized from the final bundle.
-    const filesToProcess = [...stepFiles, ...workflowFiles];
-    const imports = filesToProcess
+    const imports = combinedStepFiles
       .map((file) => {
         // Normalize both paths to forward slashes before calling relative()
         // This is critical on Windows where relative() can produce unexpected results with mixed path formats
@@ -372,6 +393,7 @@ export abstract class BaseBuilder {
       keepNames: true,
       minify: false,
       jsx: 'preserve',
+      logLevel: 'error',
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -387,17 +409,7 @@ export abstract class BaseBuilder {
       plugins: [
         createSwcPlugin({
           mode: 'step',
-          // Include both step and workflow files so the SWC plugin processes them
-          // and collects metadata. Workflow files need to be included so their
-          // workflow metadata is collected, even though the workflow function
-          // bodies are left untouched in step mode.
-          entriesToBundle: externalizeNonSteps
-            ? [
-                ...stepFiles,
-                ...workflowFiles,
-                ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
-              ]
-            : undefined,
+          entriesToBundle: externalizeNonSteps ? combinedStepFiles : undefined,
           outdir: outfile ? dirname(outfile) : undefined,
           tsBaseUrl,
           tsPaths,

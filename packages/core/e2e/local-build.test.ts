@@ -25,7 +25,11 @@ describe.each([
 
     const result = await exec('pnpm build', {
       cwd: getWorkbenchAppPath(project),
+      timeout: 120_000,
     });
+
+    console.log(result.stdout);
+    console.log(result.stderr);
 
     expect(result.stderr).not.toContain('Error:');
   });

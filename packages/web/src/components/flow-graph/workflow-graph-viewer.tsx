@@ -74,6 +74,7 @@ export type ConsolidatedEdge = {
   targetHandle?: string;
   isConsolidated?: boolean;
   isOriginal?: boolean;
+  originalEdgeIds?: string[]; // Track original edge IDs when consolidated
 };
 
 // ============================================================================
@@ -698,12 +699,17 @@ export function consolidateEdges(
       // Create one edge from representative source to each unique target
       for (const target of uniqueTargets) {
         const originalEdge = groupEdges.find((e) => e.target === target);
+        // Collect all original edge IDs that are being consolidated to this target
+        const originalEdgeIds = groupEdges
+          .filter((e) => e.target === target)
+          .map((e) => e.id);
         consolidatedEdges.push({
           ...originalEdge!,
           id: `consolidated_${representativeSource}_${target}`,
           source: representativeSource,
           target,
           isConsolidated: true,
+          originalEdgeIds,
         });
       }
     } else {

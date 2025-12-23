@@ -543,6 +543,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
 
   await setupListPagination<WorkflowRun>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       try {
         const runs = await world.runs.list({
@@ -680,6 +681,7 @@ export const listSteps = async (
 
   await setupListPagination<Step>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       logger.debug(`Fetching steps for run ${runId}`);
       try {
@@ -888,6 +890,7 @@ export const listEvents = async (
 
   await setupListPagination<Event>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       logger.debug(`Fetching events for run ${filterId}`);
       try {
@@ -957,6 +960,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
   // Setup pagination with new mechanism
   await setupListPagination<Hook>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       if (!runId) {
         logger.debug('Fetching all hooks');

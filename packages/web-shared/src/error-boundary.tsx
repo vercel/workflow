@@ -1,10 +1,9 @@
 'use client';
 
-import { AlertCircle, RefreshCw } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import React, { type ReactNode } from 'react';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from './components/ui/alert';
+import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -12,8 +11,6 @@ interface ErrorBoundaryProps {
   title?: string;
   /** Optional description for the error message */
   description?: string;
-  /** Whether to show a reset button (default: true) */
-  showReset?: boolean;
   /** Optional fallback component to render on error */
   fallback?: (error: Error, reset: () => void) => ReactNode;
 }
@@ -98,18 +95,6 @@ export class ErrorBoundary extends React.Component<
                 </div>
               )}
             </div>
-
-            {this.props.showReset !== false && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={this.handleReset}
-                className="gap-2"
-              >
-                <RefreshCw className="h-4 w-4" />
-                Try again
-              </Button>
-            )}
           </CardContent>
         </Card>
       );

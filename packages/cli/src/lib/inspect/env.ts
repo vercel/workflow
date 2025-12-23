@@ -1,5 +1,9 @@
 import { access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import {
+  findWorkflowDataDir,
+  possibleWorkflowDataPaths,
+} from '@workflow/utils/check-data-dir';
 import { logger } from '../config/log.js';
 import { getWorkflowConfig } from '../config/workflow-config.js';
 import { getAuth } from './auth.js';
@@ -48,32 +52,11 @@ export const getEnvVars = (): Record<string, string> => {
   };
 };
 
-const possibleWorkflowDataPaths = [
-  '.next/workflow-data',
-  '.workflow-data',
-  'workflow-data',
-];
-
 const possibleManifestPaths = [
   'app/.well-known/workflow/v1/manifest.json',
   'src/app/.well-known/workflow/v1/manifest.json',
   '.well-known/workflow/v1/manifest.json',
 ];
-
-async function findWorkflowDataDir(cwd: string) {
-  for (const path of possibleWorkflowDataPaths) {
-    const fullPath = join(cwd, path);
-    if (
-      await access(fullPath)
-        .then(() => true)
-        .catch(() => false)
-    ) {
-      const absolutePath = resolve(fullPath);
-      logger.debug('Found workflow data directory:', absolutePath);
-      return absolutePath;
-    }
-  }
-}
 
 async function findManifestPath(cwd: string) {
   for (const path of possibleManifestPaths) {
@@ -109,27 +92,29 @@ export const inferLocalWorldEnvVars = async () => {
 
   // Infer workflow data directory
   if (!envVars.WORKFLOW_LOCAL_DATA_DIR) {
-    const localPath = await findWorkflowDataDir(cwd);
-    if (localPath) {
-      envVars.WORKFLOW_LOCAL_DATA_DIR = localPath;
+    const localResult = await findWorkflowDataDir(cwd);
+    if (localResult) {
+      logger.debug('Found workflow data directory:', localResult.dataDir);
+      envVars.WORKFLOW_LOCAL_DATA_DIR = localResult.dataDir;
       writeEnvVars(envVars);
     } else {
       // As a fallback, find the repo root, and try to infer the data dir from there
       repoRoot = await findRepoRoot(cwd, cwd);
       if (repoRoot) {
-        const repoPath = await findWorkflowDataDir(repoRoot);
-        if (repoPath) {
-          envVars.WORKFLOW_LOCAL_DATA_DIR = repoPath;
+        const repoResult = await findWorkflowDataDir(repoRoot);
+        if (repoResult) {
+          logger.debug('Found workflow data directory:', repoResult.dataDir);
+          envVars.WORKFLOW_LOCAL_DATA_DIR = repoResult.dataDir;
           writeEnvVars(envVars);
         }
       }
 
       if (!envVars.WORKFLOW_LOCAL_DATA_DIR) {
         logger.error(
-          'No workflow data directory found. Have you run any workflows yet?'
+          `No workflow data directory found in "${cwd}". Have you run any workflows yet?`
         );
         logger.warn(
-          `\nCheck whether your data is in any of:\n${possibleWorkflowDataPaths.map((p) => `  ${cwd}/${p}${repoRoot && repoRoot !== cwd ? `\n  ${repoRoot}/${p}` : ''}`).join('\n')}\n`
+          `\nCheck whether your data is in any of:\n${possibleWorkflowDataPaths.map((p: string) => `  ${cwd}/${p}${repoRoot && repoRoot !== cwd ? `\n  ${repoRoot}/${p}` : ''}`).join('\n')}\n`
         );
         throw new Error('No workflow data directory found');
       }

@@ -8,6 +8,9 @@ on:
       - "!*"
   pull_request:
 
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+
 concurrency:
   # Unique group for this workflow and branch
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -534,12 +537,22 @@ jobs:
       - name: Run E2E Tests (Next.js)
         run: |
           cd workbench/nextjs-turbopack
-          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev *>&1 | Tee-Object -FilePath "$using:PWD\dev.log" }
           Start-Sleep -Seconds 15
           cd ../..
-          pnpm vitest run packages/core/e2e/dev.test.ts
-          pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-windows-nextjs-turbopack.json
-          Stop-Job $job
+          
+          try {
+            pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-windows-nextjs-turbopack.json
+            pnpm vitest run packages/core/e2e/dev.test.ts
+          } finally {
+            Stop-Job $job
+            Write-Host "`n=== Dev Server Logs ===`n"
+            if (Test-Path "workbench/nextjs-turbopack/dev.log") {
+              Get-Content "workbench/nextjs-turbopack/dev.log"
+            } else {
+              Write-Host "No dev.log file found"
+            }
+          }
         shell: powershell
         env:
           APP_NAME: "nextjs-turbopack"
