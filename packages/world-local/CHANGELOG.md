@@ -1,5 +1,17 @@
 # @workflow/world-local
 
+## 4.0.1-beta.21
+
+### Patch Changes
+
+- [#681](https://github.com/vercel/workflow/pull/681) [`d9f6a49`](https://github.com/vercel/workflow/commit/d9f6a4939760be94dfc9eaf77dcaa48c602c18ef) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Create dataDir on app start, and record package version to enable future migrations
+
+- [#672](https://github.com/vercel/workflow/pull/672) [`c3464bf`](https://github.com/vercel/workflow/commit/c3464bfd978a073f6d8fca95208bd053aa5c78dd) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix race condition in streamer where close events arriving during disk reads would close the controller before data was enqueued. Close events are now buffered and processed after disk reads complete.
+
+- Updated dependencies [[`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1)]:
+  - @workflow/utils@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.11
+
 ## 4.0.1-beta.20
 
 ### Patch Changes

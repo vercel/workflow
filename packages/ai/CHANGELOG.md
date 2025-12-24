@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.36
+
+### Patch Changes
+
+- [#668](https://github.com/vercel/workflow/pull/668) [`26d9769`](https://github.com/vercel/workflow/commit/26d9769335707985bddbb521d8f8e31bef7fe5ec) Thanks [@ctate](https://github.com/ctate)! - Improved AI SDK parity for `DurableAgent`
+
+- Updated dependencies [[`8ba8b6b`](https://github.com/vercel/workflow/commit/8ba8b6be6b62c549bd6743a1e5eb96feee93b4d5)]:
+  - workflow@4.0.1-beta.36
+
 ## 4.0.1-beta.35
 
 ### Patch Changes

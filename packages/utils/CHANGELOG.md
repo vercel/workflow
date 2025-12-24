@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 4.0.1-beta.8
+
+### Patch Changes
+
+- [#682](https://github.com/vercel/workflow/pull/682) [`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Extract helper to find local world dataDir across CLI/web projects
+
 ## 4.0.1-beta.7
 
 ### Patch Changes

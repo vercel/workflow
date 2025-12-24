@@ -1,5 +1,22 @@
 # workflow
 
+## 4.0.1-beta.36
+
+### Patch Changes
+
+- [#683](https://github.com/vercel/workflow/pull/683) [`8ba8b6b`](https://github.com/vercel/workflow/commit/8ba8b6be6b62c549bd6743a1e5eb96feee93b4d5) Thanks [@ijjk](https://github.com/ijjk)! - Revert extra stdlib re-export
+
+- Updated dependencies [[`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1), [`ea3afce`](https://github.com/vercel/workflow/commit/ea3afce222ff9c2f90d99414fae275ef5f54b431), [`25b02b0`](https://github.com/vercel/workflow/commit/25b02b0bfdefa499e13fb974b1832fbe47dbde86), [`c059cf6`](https://github.com/vercel/workflow/commit/c059cf6fcd0988b380f66dfa0f2bb85a19cc4063)]:
+  - @workflow/cli@4.0.1-beta.36
+  - @workflow/next@4.0.1-beta.35
+  - @workflow/core@4.0.1-beta.31
+  - @workflow/errors@4.0.1-beta.11
+  - @workflow/astro@4.0.0-beta.13
+  - @workflow/nitro@4.0.1-beta.34
+  - @workflow/sveltekit@4.0.0-beta.28
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.23
+
 ## 4.0.1-beta.35
 
 ### Patch Changes

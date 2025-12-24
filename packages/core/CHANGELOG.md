@@ -1,5 +1,17 @@
 # @workflow/core
 
+## 4.0.1-beta.31
+
+### Patch Changes
+
+- [#624](https://github.com/vercel/workflow/pull/624) [`25b02b0`](https://github.com/vercel/workflow/commit/25b02b0bfdefa499e13fb974b1832fbe47dbde86) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add CORS headers to endpoints health check response
+
+- Updated dependencies [[`d9f6a49`](https://github.com/vercel/workflow/commit/d9f6a4939760be94dfc9eaf77dcaa48c602c18ef), [`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1), [`c3464bf`](https://github.com/vercel/workflow/commit/c3464bfd978a073f6d8fca95208bd053aa5c78dd)]:
+  - @workflow/world-local@4.0.1-beta.21
+  - @workflow/utils@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.11
+  - @workflow/world-vercel@4.0.1-beta.23
+
 ## 4.0.1-beta.30
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @workflow/builders
 
+## 4.0.1-beta.30
+
+### Patch Changes
+
+- [#640](https://github.com/vercel/workflow/pull/640) [`ea3afce`](https://github.com/vercel/workflow/commit/ea3afce222ff9c2f90d99414fae275ef5f54b431) Thanks [@ijjk](https://github.com/ijjk)! - Add lazy workflow and step discovery in Next.js
+
+- Updated dependencies [[`25b02b0`](https://github.com/vercel/workflow/commit/25b02b0bfdefa499e13fb974b1832fbe47dbde86)]:
+  - @workflow/core@4.0.1-beta.31
+  - @workflow/errors@4.0.1-beta.11
+
 ## 4.0.1-beta.29
 
 ### Patch Changes

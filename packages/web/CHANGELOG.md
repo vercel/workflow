@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.20
+
+### Patch Changes
+
+- [#674](https://github.com/vercel/workflow/pull/674) [`4bc98ff`](https://github.com/vercel/workflow/commit/4bc98ff4a15a090e2233c18b75e0a1b5dd2e9ff1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Move ErrorBoundary component from web to web-shared and use in sidebar detail view.
+
 ## 4.0.1-beta.19
 
 ### Patch Changes
