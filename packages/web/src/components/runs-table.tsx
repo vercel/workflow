@@ -51,6 +51,7 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
+import { useDataDirInfo } from '@/lib/hooks';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
@@ -377,6 +378,8 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     () => new Date()
   );
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
+  const isLocal = config.backend === 'local' || !config.backend;
+  const { data: dataDirInfo } = useDataDirInfo(config.dataDir);
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
@@ -454,7 +457,18 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
         <TableSkeleton />
       ) : !loading && (!data.data || data.data.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">
-          No workflow runs found. <br />
+          No workflow runs found.
+          {isLocal && dataDirInfo?.shortName && (
+            <>
+              <br />
+              <span className="text-sm">
+                Monitoring{' '}
+                <code className="font-mono">{dataDirInfo.shortName}</code> for
+                changes...
+              </span>
+            </>
+          )}
+          <br />
           <DocsLink href="https://useworkflow.dev/docs/foundations/workflows-and-steps">
             Learn how to create a workflow
           </DocsLink>

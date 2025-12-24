@@ -20,7 +20,7 @@ import {
   validateWorldConfig,
   type WorldConfig,
 } from '@/lib/config-world';
-import { useWorldsAvailability } from '@/lib/hooks';
+import { useDataDirInfo, useWorldsAvailability } from '@/lib/hooks';
 
 interface SettingsSidebarProps {
   open?: boolean;
@@ -43,6 +43,7 @@ export function SettingsSidebar({
 
   const { data: worldsAvailability = [], isLoading: isLoadingWorlds } =
     useWorldsAvailability();
+  const { data: dataDirInfo } = useDataDirInfo(localConfig.dataDir);
 
   const backend = localConfig.backend || 'local';
   const isLocal = backend === 'local';
@@ -213,15 +214,23 @@ export function SettingsSidebar({
                         onChange={(e) =>
                           handleInputChange('dataDir', e.target.value)
                         }
-                        placeholder=".workflow-data or .next/workflow-data"
+                        placeholder="Path to your project directory"
                         className={
                           getFieldError('dataDir') ? 'border-destructive' : ''
                         }
                       />
-                      <p className="text-xs text-muted-foreground">
-                        Path to the workflow data directory. Can be relative or
-                        absolute.
-                      </p>
+                      {dataDirInfo ? (
+                        <p className="text-xs text-muted-foreground">
+                          Monitoring{' '}
+                          <code className="bg-muted px-1 py-0.5 rounded">
+                            {dataDirInfo.shortName}
+                          </code>
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Path to your project or its workflow data directory.
+                        </p>
+                      )}
                     </div>
 
                     {/* TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged */}

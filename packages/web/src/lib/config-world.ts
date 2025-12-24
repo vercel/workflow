@@ -3,7 +3,13 @@
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import {
+  findWorkflowDataDir,
+  type WorkflowDataDirInfo,
+} from '@workflow/utils/check-data-dir';
 import { KNOWN_WORLDS, type KnownWorld } from './known-worlds';
+
+export type { WorkflowDataDirInfo };
 
 const require = createRequire(join(process.cwd(), 'index.js'));
 
@@ -131,4 +137,21 @@ export async function validateWorldConfig(
   }
 
   return errors;
+}
+
+/**
+ * Resolves a dataDir path to full WorkflowDataDirInfo.
+ *
+ * This function takes a dataDir path (which may be relative, absolute, or use ~)
+ * and resolves it to get the projectDir and shortName for display purposes.
+ *
+ * @param dataDir - The data directory path to resolve
+ * @returns WorkflowDataDirInfo if found, null otherwise
+ */
+export async function resolveDataDirInfo(
+  dataDir?: string
+): Promise<WorkflowDataDirInfo | null> {
+  // If no dataDir provided, try to find one from cwd
+  const searchPath = dataDir || process.cwd();
+  return findWorkflowDataDir(searchPath);
 }

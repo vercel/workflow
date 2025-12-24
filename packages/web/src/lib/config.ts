@@ -5,9 +5,11 @@ import { createSerializer, parseAsString, useQueryStates } from 'nuqs';
 import type { WorldConfig } from '@/lib/config-world';
 
 // Default configuration
+// Note: dataDir is intentionally undefined - the server will auto-discover
+// the workflow data directory from the current working directory using
+// findWorkflowDataDir() from @workflow/utils/check-data-dir
 const DEFAULT_CONFIG: WorldConfig = {
   backend: 'local',
-  dataDir: './.next/workflow-data',
   port: '3000',
   env: 'production',
 };
@@ -20,9 +22,7 @@ const configParsers = {
   project: parseAsString,
   team: parseAsString,
   port: parseAsString.withDefault(DEFAULT_CONFIG.port || '3000'),
-  dataDir: parseAsString.withDefault(
-    DEFAULT_CONFIG.dataDir || './.next/workflow-data'
-  ),
+  dataDir: parseAsString,
   manifestPath: parseAsString,
 };
 

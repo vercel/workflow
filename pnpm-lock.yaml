@@ -877,6 +877,9 @@ importers:
       '@workflow/core':
         specifier: workspace:*
         version: link:../core
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       '@workflow/web-shared':
         specifier: workspace:*
         version: link:../web-shared
