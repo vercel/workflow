@@ -8,6 +8,16 @@ import {
   writeEnvVars,
 } from './env.js';
 
+export interface SetupResult {
+  world: Awaited<ReturnType<typeof createWorld>> | null;
+  configError: string | null;
+}
+
+/**
+ * Setup CLI world configuration.
+ * If throwOnConfigError is false, will return null world with the error message
+ * instead of throwing, allowing the web UI to open for configuration.
+ */
 export const setupCliWorld = async (
   flags: {
     json: boolean;
@@ -18,8 +28,9 @@ export const setupCliWorld = async (
     project: string;
     team: string;
   },
-  version: string
-) => {
+  version: string,
+  throwOnConfigError = true
+): Promise<SetupResult> => {
   setJsonMode(Boolean(flags.json));
   setVerboseMode(Boolean(flags.verbose));
 
@@ -46,18 +57,32 @@ export const setupCliWorld = async (
     WORKFLOW_VERCEL_BACKEND_URL: 'https://api.vercel.com/v1/workflow',
   });
 
-  if (
-    flags.backend === 'vercel' ||
-    flags.backend === '@workflow/world-vercel'
-  ) {
-    await inferVercelEnvVars();
-  } else if (
-    flags.backend === 'local' ||
-    flags.backend === '@workflow/world-local'
-  ) {
-    await inferLocalWorldEnvVars();
-  }
+  try {
+    if (
+      flags.backend === 'vercel' ||
+      flags.backend === '@workflow/world-vercel'
+    ) {
+      await inferVercelEnvVars();
+    } else if (
+      flags.backend === 'local' ||
+      flags.backend === '@workflow/world-local'
+    ) {
+      await inferLocalWorldEnvVars();
+    }
 
-  logger.debug('Initializing world');
-  return createWorld();
+    logger.debug('Initializing world');
+    const world = await createWorld();
+    return { world, configError: null };
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown configuration error';
+
+    if (throwOnConfigError) {
+      throw error;
+    }
+
+    logger.warn(`Configuration incomplete: ${errorMessage}`);
+    logger.info('Web UI will open for configuration.');
+    return { world: null, configError: errorMessage };
+  }
 };

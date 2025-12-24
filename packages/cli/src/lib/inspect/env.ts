@@ -49,6 +49,8 @@ export const getEnvVars = (): Record<string, string> => {
 /**
  * Overwrites process.env variables related to local world configuration,
  * if relevant environment variables aren't set already.
+ *
+ * Throws if the workflow data directory can not be found.
  */
 export const inferLocalWorldEnvVars = async () => {
   const envVars = getEnvVars();
@@ -84,10 +86,10 @@ export const inferLocalWorldEnvVars = async () => {
       }
     }
 
-    logger.error(
+    logger.warn(
       `No workflow data directory found in "${cwd}". Have you run any workflows yet?`
     );
-    throw new Error('No workflow data directory found');
+    throw new Error('No workflow data found');
   }
 };
 

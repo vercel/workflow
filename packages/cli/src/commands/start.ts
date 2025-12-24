@@ -46,7 +46,12 @@ export default class Start extends BaseCommand {
     const restArgs = fixedArgIndex !== -1 ? argv.slice(fixedArgIndex + 1) : [];
     const stringArgs = restArgs.map((arg) => String(arg));
 
-    const world = await setupCliWorld(flags, this.config.version);
+    const { world } = await setupCliWorld(flags, this.config.version);
+    if (!world) {
+      throw new Error(
+        'Failed to connect to backend. Check your configuration.'
+      );
+    }
 
     await startRun(world, args.workflowName, flags, stringArgs);
   }

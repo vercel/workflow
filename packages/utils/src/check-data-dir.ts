@@ -47,12 +47,12 @@ function toAbsolutePath(path: string, basePath?: string): string {
  * Examples:
  * - `/Users/peter/code/myproject` → `code/myproject`
  * - `/myproject` → `myproject`
- * - `/` → ``
+ * - `/` → `/`
  */
 function getShortName(projectDir: string): string {
   const parts = projectDir.split(sep).filter(Boolean);
   if (parts.length === 0) {
-    return '';
+    return '/';
   }
   if (parts.length === 1) {
     return parts[0];

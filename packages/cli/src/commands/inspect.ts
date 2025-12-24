@@ -141,13 +141,32 @@ export default class Inspect extends BaseCommand {
 
       const id = args.id;
 
-      const world = await setupCliWorld(flags, this.config.version);
+      // For web mode, allow config errors so we can open the web UI for configuration
+      const throwOnConfigError = !(flags.web || resource === 'web');
+      const { world, configError } = await setupCliWorld(
+        flags,
+        this.config.version,
+        throwOnConfigError
+      );
 
       // Handle web UI mode
       if (flags.web || resource === 'web') {
         const actualResource = resource === 'web' ? 'run' : resource;
-        await launchWebUI(actualResource, id, flags, this.config.version);
+        await launchWebUI(
+          actualResource,
+          id,
+          flags,
+          this.config.version,
+          configError
+        );
         process.exit(0);
+      }
+
+      // For non-web commands, we need a valid world
+      if (!world) {
+        throw new Error(
+          'Failed to connect to backend. Check your configuration.'
+        );
       }
 
       // Convert flags to InspectCLIOptions with proper typing
