@@ -790,38 +790,6 @@ async function agentWithContext(userId: string) {
 }
 ```
 
-### Abort Signal for Cancellation
-
-Use an abort signal to cancel long-running agent operations:
-
-```typescript
-import { DurableAgent } from "@workflow/ai/agent";
-import { getWritable } from "workflow";
-import type { UIMessageChunk } from "ai";
-
-async function agentWithAbort() {
-  "use workflow";
-
-  const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
-  });
-
-  const controller = new AbortController();
-
-  // Set a timeout to abort after 30 seconds
-  setTimeout(() => controller.abort(), 30000);
-
-  await agent.stream({
-    messages: [{ role: "user", content: "Write a very long essay" }],
-    writable: getWritable<UIMessageChunk>(),
-    abortSignal: controller.signal,
-    onAbort: async ({ steps }) => {
-      console.log(`Aborted after ${steps.length} steps`);
-    },
-  });
-}
-```
-
 ## See Also
 
 - [Building Durable AI Agents](/docs/ai) - Complete guide to creating durable agents
