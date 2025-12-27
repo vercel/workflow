@@ -1,5 +1,4 @@
 import type {
-  LanguageModelV2,
   LanguageModelV2CallOptions,
   LanguageModelV2Prompt,
   LanguageModelV2StreamPart,
@@ -24,6 +23,10 @@ import {
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
+import type { CompatibleLanguageModel } from './types.js';
+
+// Re-export for consumers
+export type { CompatibleLanguageModel } from './types.js';
 
 /**
  * Re-export the Output helper for structured output specifications.
@@ -211,8 +214,9 @@ export interface GenerationSettings {
 export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
   /**
    * The current model configuration (string or function).
+   * The function should return a LanguageModel instance (V2 or V3 depending on AI SDK version).
    */
-  model: string | (() => Promise<LanguageModelV2>);
+  model: string | (() => Promise<CompatibleLanguageModel>);
 
   /**
    * The current step number (0-indexed).
@@ -243,8 +247,9 @@ export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
 export interface PrepareStepResult extends Partial<GenerationSettings> {
   /**
    * Override the model for this step.
+   * The function should return a LanguageModel instance (V2 or V3 depending on AI SDK version).
    */
-  model?: string | (() => Promise<LanguageModelV2>);
+  model?: string | (() => Promise<CompatibleLanguageModel>);
 
   /**
    * Override the system message for this step.
@@ -291,9 +296,9 @@ export interface DurableAgentOptions extends GenerationSettings {
    * The model provider to use for the agent.
    *
    * This should be a string compatible with the Vercel AI Gateway (e.g., 'anthropic/claude-opus'),
-   * or a step function that returns a `LanguageModelV2` instance.
+   * or a step function that returns a LanguageModel instance (V2 or V3 depending on AI SDK version).
    */
-  model: string | (() => Promise<LanguageModelV2>);
+  model: string | (() => Promise<CompatibleLanguageModel>);
 
   /**
    * A set of tools available to the agent.
@@ -594,7 +599,7 @@ export interface DurableAgentStreamResult<
  * ```
  */
 export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
-  private model: string | (() => Promise<LanguageModelV2>);
+  private model: string | (() => Promise<CompatibleLanguageModel>);
   private tools: TBaseTools;
   private system?: string;
   private generationSettings: GenerationSettings;

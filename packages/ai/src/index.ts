@@ -9,6 +9,7 @@ export * from './workflow-chat-transport.js';
  */
 export { DurableAgent, Output } from './agent/durable-agent.js';
 export type {
+  CompatibleLanguageModel,
   DurableAgentOptions,
   DurableAgentStreamOptions,
   DurableAgentStreamResult,

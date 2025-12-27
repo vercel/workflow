@@ -1,5 +1,4 @@
 import type {
-  LanguageModelV2,
   LanguageModelV2CallOptions,
   LanguageModelV2Prompt,
   LanguageModelV2StreamPart,
@@ -20,6 +19,7 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
+import type { CompatibleLanguageModel } from './types.js';
 
 export type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 
@@ -87,21 +87,26 @@ function toLanguageModelToolChoice(
 
 export async function doStreamStep(
   conversationPrompt: LanguageModelV2Prompt,
-  modelInit: string | (() => Promise<LanguageModelV2>),
+  modelInit: string | (() => Promise<CompatibleLanguageModel>),
   writable: WritableStream<UIMessageChunk>,
   tools?: LanguageModelV2CallOptions['tools'],
   options?: DoStreamStepOptions
 ) {
   'use step';
 
-  let model: LanguageModelV2 | undefined;
+  // Model can be LanguageModelV2 (AI SDK v5) or LanguageModelV3 (AI SDK v6)
+  // Both have compatible doStream interfaces for our use case
+  let model: CompatibleLanguageModel | undefined;
   if (typeof modelInit === 'string') {
-    model = gateway(modelInit);
+    // gateway() returns LanguageModelV2 in AI SDK v5 and LanguageModelV3 in AI SDK v6
+    // Both are compatible at runtime for doStream operations
+    model = gateway(modelInit) as CompatibleLanguageModel;
   } else if (typeof modelInit === 'function') {
+    // User-provided model factory - could return V2 or V3
     model = await modelInit();
   } else {
     throw new Error(
-      'Invalid "model initialization" argument. Must be a string or a function that returns a LanguageModelV2 instance.'
+      'Invalid "model initialization" argument. Must be a string or a function that returns a LanguageModel instance.'
     );
   }
 

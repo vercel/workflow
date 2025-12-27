@@ -1,5 +1,4 @@
 import type {
-  LanguageModelV2,
   LanguageModelV2CallOptions,
   LanguageModelV2Prompt,
   LanguageModelV2ToolCall,
@@ -21,6 +20,7 @@ import type {
   TelemetrySettings,
 } from './durable-agent.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
+import type { CompatibleLanguageModel } from './types.js';
 
 /**
  * The value yielded by the stream text iterator when tool calls are requested.
@@ -60,7 +60,7 @@ export async function* streamTextIterator({
   prompt: LanguageModelV2Prompt;
   tools: ToolSet;
   writable: WritableStream<UIMessageChunk>;
-  model: string | (() => Promise<LanguageModelV2>);
+  model: string | (() => Promise<CompatibleLanguageModel>);
   stopConditions?: ModelStopCondition[] | ModelStopCondition;
   maxSteps?: number;
   sendStart?: boolean;
@@ -82,7 +82,7 @@ export async function* streamTextIterator({
   LanguageModelV2ToolResultPart[]
 > {
   let conversationPrompt = [...prompt]; // Create a mutable copy
-  let currentModel = model;
+  let currentModel: string | (() => Promise<CompatibleLanguageModel>) = model;
   let currentGenerationSettings = generationSettings ?? {};
   let currentToolChoice = toolChoice;
   let currentContext = experimental_context;
