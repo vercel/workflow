@@ -3,6 +3,7 @@
 import { parseWorkflowName } from '@workflow/core/parse-name';
 import {
   cancelRun,
+  ErrorBoundary,
   type Event,
   recreateRun,
   type Step,
@@ -550,115 +551,130 @@ export function RunDetailView({
             </TabsList>
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
-              <div className="h-full">
-                <WorkflowTraceViewer
-                  error={error}
-                  steps={allSteps}
-                  events={allEvents}
-                  hooks={allHooks}
-                  env={env}
-                  run={run}
-                  isLoading={loading}
-                  onStreamClick={handleStreamClick}
-                />
-              </div>
+              <ErrorBoundary
+                title="Trace Viewer Error"
+                description="Failed to load trace viewer. Please try refreshing the page."
+              >
+                <div className="h-full">
+                  <WorkflowTraceViewer
+                    error={error}
+                    steps={allSteps}
+                    events={allEvents}
+                    hooks={allHooks}
+                    env={env}
+                    run={run}
+                    isLoading={loading}
+                    onStreamClick={handleStreamClick}
+                  />
+                </div>
+              </ErrorBoundary>
             </TabsContent>
 
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
-              <div className="h-full flex gap-4">
-                {/* Stream list sidebar */}
-                <div
-                  className="w-64 flex-shrink-0 border rounded-lg overflow-hidden"
-                  style={{
-                    borderColor: 'var(--ds-gray-300)',
-                    backgroundColor: 'var(--ds-background-100)',
-                  }}
-                >
+              <ErrorBoundary
+                title="Streams Error"
+                description="Failed to load streams. Please try refreshing the page."
+              >
+                <div className="h-full flex gap-4">
+                  {/* Stream list sidebar */}
                   <div
-                    className="px-3 py-2 border-b text-xs font-medium"
+                    className="w-64 flex-shrink-0 border rounded-lg overflow-hidden"
                     style={{
                       borderColor: 'var(--ds-gray-300)',
-                      color: 'var(--ds-gray-900)',
+                      backgroundColor: 'var(--ds-background-100)',
                     }}
                   >
-                    Streams ({streams.length})
-                  </div>
-                  <div className="overflow-auto max-h-[calc(100vh-400px)]">
-                    {streamsLoading ? (
-                      <div className="p-4 flex items-center justify-center">
-                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                      </div>
-                    ) : streamsError ? (
-                      <div className="p-4 text-xs text-destructive">
-                        {streamsError.message}
-                      </div>
-                    ) : streams.length === 0 ? (
-                      <div
-                        className="p-4 text-xs"
-                        style={{ color: 'var(--ds-gray-600)' }}
-                      >
-                        No streams found for this run
-                      </div>
-                    ) : (
-                      streams.map((streamId) => (
-                        <button
-                          key={streamId}
-                          type="button"
-                          onClick={() => setSelectedStreamId(streamId)}
-                          className="w-full text-left px-3 py-2 text-xs font-mono truncate hover:bg-accent transition-colors"
-                          style={{
-                            backgroundColor:
-                              selectedStreamId === streamId
-                                ? 'var(--ds-gray-200)'
-                                : 'transparent',
-                            color: 'var(--ds-gray-1000)',
-                          }}
-                          title={streamId}
+                    <div
+                      className="px-3 py-2 border-b text-xs font-medium"
+                      style={{
+                        borderColor: 'var(--ds-gray-300)',
+                        color: 'var(--ds-gray-900)',
+                      }}
+                    >
+                      Streams ({streams.length})
+                    </div>
+                    <div className="overflow-auto max-h-[calc(100vh-400px)]">
+                      {streamsLoading ? (
+                        <div className="p-4 flex items-center justify-center">
+                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        </div>
+                      ) : streamsError ? (
+                        <div className="p-4 text-xs text-destructive">
+                          {streamsError.message}
+                        </div>
+                      ) : streams.length === 0 ? (
+                        <div
+                          className="p-4 text-xs"
+                          style={{ color: 'var(--ds-gray-600)' }}
                         >
-                          {streamId}
-                        </button>
-                      ))
+                          No streams found for this run
+                        </div>
+                      ) : (
+                        streams.map((streamId) => (
+                          <button
+                            key={streamId}
+                            type="button"
+                            onClick={() => setSelectedStreamId(streamId)}
+                            className="w-full text-left px-3 py-2 text-xs font-mono truncate hover:bg-accent transition-colors"
+                            style={{
+                              backgroundColor:
+                                selectedStreamId === streamId
+                                  ? 'var(--ds-gray-200)'
+                                  : 'transparent',
+                              color: 'var(--ds-gray-1000)',
+                            }}
+                            title={streamId}
+                          >
+                            {streamId}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Stream viewer */}
+                  <div className="flex-1 min-w-0">
+                    {selectedStreamId ? (
+                      <StreamViewer env={env} streamId={selectedStreamId} />
+                    ) : (
+                      <div
+                        className="h-full flex items-center justify-center rounded-lg border"
+                        style={{
+                          borderColor: 'var(--ds-gray-300)',
+                          backgroundColor: 'var(--ds-gray-100)',
+                        }}
+                      >
+                        <div
+                          className="text-sm"
+                          style={{ color: 'var(--ds-gray-600)' }}
+                        >
+                          {streams.length > 0
+                            ? 'Select a stream to view its data'
+                            : 'No streams available'}
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
-
-                {/* Stream viewer */}
-                <div className="flex-1 min-w-0">
-                  {selectedStreamId ? (
-                    <StreamViewer env={env} streamId={selectedStreamId} />
-                  ) : (
-                    <div
-                      className="h-full flex items-center justify-center rounded-lg border"
-                      style={{
-                        borderColor: 'var(--ds-gray-300)',
-                        backgroundColor: 'var(--ds-gray-100)',
-                      }}
-                    >
-                      <div
-                        className="text-sm"
-                        style={{ color: 'var(--ds-gray-600)' }}
-                      >
-                        {streams.length > 0
-                          ? 'Select a stream to view its data'
-                          : 'No streams available'}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+              </ErrorBoundary>
             </TabsContent>
 
             {isLocalBackend && (
               <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
-                <div className="h-full min-h-[500px]">
-                  <GraphTabContent
-                    config={config}
-                    run={run}
-                    allSteps={allSteps}
-                    allEvents={allEvents}
-                    env={env}
-                  />
-                </div>
+                <ErrorBoundary
+                  title="Graph Viewer Error"
+                  description="Failed to load execution graph. Please try refreshing the page."
+                >
+                  <div className="h-full min-h-[500px]">
+                    <GraphTabContent
+                      config={config}
+                      run={run}
+                      allSteps={allSteps}
+                      allEvents={allEvents}
+                      env={env}
+                    />
+                  </div>
+                </ErrorBoundary>
               </TabsContent>
             )}
           </Tabs>
