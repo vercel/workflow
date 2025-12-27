@@ -41,21 +41,6 @@ npm install ai @ai-sdk/anthropic
 npm install ai@5 @ai-sdk/openai@2
 ```
 
-## Usage
+## Documentation
 
-```typescript
-import { DurableAgent } from '@workflow/ai/agent';
-
-const agent = new DurableAgent({
-  model: 'anthropic/claude-sonnet-4.5',
-  system: 'You are a helpful assistant.',
-  tools: {
-    // your tools here
-  },
-});
-
-await agent.stream({
-  messages: [{ role: 'user', content: 'Hello!' }],
-  writable: getWritable(),
-});
-```
+For usage examples and full documentation, see the [API reference](https://useworkflow.dev/docs/api-reference/workflow-ai/).
