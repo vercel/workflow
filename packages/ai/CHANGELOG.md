@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- [#692](https://github.com/vercel/workflow/pull/692) [`b97b87b`](https://github.com/vercel/workflow/commit/b97b87b4fe4e6577ce65621de59878bb6bc2befb) Thanks [@ctate](https://github.com/ctate)! - Add support for AI SDK v6
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.37
+
 ## 4.0.1-beta.36
 
 ### Patch Changes

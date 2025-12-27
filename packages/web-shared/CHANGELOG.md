@@ -1,5 +1,14 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.34
+
+### Patch Changes
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/world@4.0.1-beta.11
+  - @workflow/core@4.0.1-beta.32
+  - @workflow/errors@4.0.1-beta.12
+
 ## 4.0.1-beta.33
 
 ### Patch Changes

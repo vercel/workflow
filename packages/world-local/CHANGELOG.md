@@ -1,5 +1,16 @@
 # @workflow/world-local
 
+## 4.0.1-beta.22
+
+### Patch Changes
+
+- [#455](https://github.com/vercel/workflow/pull/455) [`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added Control Flow Graph extraction from Workflows and extended manifest.json's schema to incorporate the graph structure into it. Refactored manifest generation to pass manifest as a parameter instead of using instance state. Add e2e tests for manifest validation across all builders.
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/utils@4.0.1-beta.9
+  - @workflow/world@4.0.1-beta.11
+  - @workflow/errors@4.0.1-beta.12
+
 ## 4.0.1-beta.21
 
 ### Patch Changes
