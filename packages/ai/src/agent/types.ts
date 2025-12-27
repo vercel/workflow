@@ -3,6 +3,7 @@
  */
 import type {
   LanguageModelV2,
+  LanguageModelV2CallOptions,
   LanguageModelV2StreamPart,
 } from '@ai-sdk/provider';
 
@@ -15,9 +16,8 @@ import type {
  * This type represents the union of both model versions, allowing code
  * to work seamlessly with either AI SDK version.
  *
- * Note: The `doStream` method accepts `any` for the options parameter to
- * handle the minor type differences between V2 and V3 call options.
- * At runtime, the prompt and options structures are compatible.
+ * Note: V3 models accept LanguageModelV2CallOptions at runtime due to
+ * structural compatibility between V2 and V3 prompt/options formats.
  */
 export type CompatibleLanguageModel =
   | LanguageModelV2
@@ -25,10 +25,12 @@ export type CompatibleLanguageModel =
       readonly specificationVersion: 'v3';
       readonly provider: string;
       readonly modelId: string;
-      // Using 'any' for options since V2 and V3 call options are structurally
-      // compatible at runtime but have different type names
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      doStream(options: any): PromiseLike<{
+      /**
+       * Stream method compatible with both V2 and V3 models.
+       * V3 models accept V2-style call options due to structural compatibility
+       * at runtime - the prompt and options structures are essentially identical.
+       */
+      doStream(options: LanguageModelV2CallOptions): PromiseLike<{
         stream: ReadableStream<LanguageModelV2StreamPart>;
       }>;
     };
