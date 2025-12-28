@@ -260,16 +260,12 @@ export async function* streamTextIterator({
       lastStep = step;
       lastStepWasToolCalls = false;
 
-      // Normalize finishReason - AI SDK v6 may return an object with a 'type' property
-      // while AI SDK v5 returns a plain string
-      const rawFinishReason = finish?.finishReason;
-      const finishReason: FinishReason | undefined =
-        typeof rawFinishReason === 'object' && rawFinishReason !== null
-          ? ((rawFinishReason as { type?: FinishReason }).type ?? 'unknown')
-          : (rawFinishReason as FinishReason | undefined);
+      // Normalize finishReason - AI SDK v6 returns { unified, raw }, v5 returns a string
+      const finishReason = normalizeFinishReason(finish?.finishReason);
 
       if (finishReason === 'tool-calls') {
         lastStepWasToolCalls = true;
+
         // Add assistant message with tool calls to the conversation
         conversationPrompt.push({
           role: 'assistant',
@@ -372,12 +368,11 @@ async function writeToolOutputToUI(
   toolResults: LanguageModelV2ToolResultPart[]
 ) {
   'use step';
-
   const writer = writable.getWriter();
   try {
     for (const result of toolResults) {
       await writer.write({
-        type: 'tool-output-available',
+        type: 'tool-output-available' as const,
         toolCallId: result.toolCallId,
         output: JSON.stringify(result) ?? '',
       });
@@ -398,4 +393,19 @@ function filterToolSet(tools: ToolSet, activeTools: string[]): ToolSet {
     }
   }
   return filtered;
+}
+
+/**
+ * Normalize finishReason from different AI SDK versions.
+ * - AI SDK v6: returns { unified: 'tool-calls', raw: 'tool_use' }
+ * - AI SDK v5: returns 'tool-calls' string directly
+ */
+function normalizeFinishReason(raw: unknown): FinishReason | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw === 'string') return raw as FinishReason;
+  if (typeof raw === 'object') {
+    const obj = raw as { unified?: FinishReason; type?: FinishReason };
+    return obj.unified ?? obj.type ?? 'unknown';
+  }
+  return undefined;
 }

@@ -980,11 +980,11 @@ async function executeTool(
     });
 
     return {
-      type: 'tool-result',
+      type: 'tool-result' as const,
       toolCallId: toolCall.toolCallId,
       toolName: toolCall.toolName,
       output: {
-        type: 'text',
+        type: 'text' as const,
         value: JSON.stringify(toolResult) ?? '',
       },
     };
