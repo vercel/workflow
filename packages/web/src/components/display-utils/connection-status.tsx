@@ -6,7 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import type { WorldConfig, WorkflowDataDirInfo } from '@/lib/config-world';
+import type { WorkflowDataDirInfo, WorldConfig } from '@/lib/config-world';
 import { useDataDirInfo } from '@/lib/hooks';
 
 interface ConnectionStatusProps {
@@ -43,12 +43,21 @@ const getConnectionInfo = (
 
 export function ConnectionStatus({ config }: ConnectionStatusProps) {
   const backend = config.backend || 'local';
+  console.log('config', config);
   const { data: dataDirInfo } = useDataDirInfo(config.dataDir);
+  console.log('dataDirInfo', dataDirInfo);
   const { provider, parts } = getConnectionInfo(backend, config, dataDirInfo);
-
+  const subString =
+    backend === 'local'
+      ? dataDirInfo?.shortName
+      : backend === 'vercel'
+        ? config.env
+        : undefined;
   return (
     <div className="text-sm text-muted-foreground flex items-center gap-2">
-      <span className="font-medium">Connected to: {provider}</span>
+      <span className="font-medium">
+        Connected to: {provider} {subString ? `(${subString})` : ''}
+      </span>
       <Tooltip>
         <TooltipTrigger asChild>
           <InfoIcon className="w-4 h-4" />

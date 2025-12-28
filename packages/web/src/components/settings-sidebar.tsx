@@ -219,18 +219,11 @@ export function SettingsSidebar({
                           getFieldError('dataDir') ? 'border-destructive' : ''
                         }
                       />
-                      {dataDirInfo ? (
-                        <p className="text-xs text-muted-foreground">
-                          Monitoring{' '}
-                          <code className="bg-muted px-1 py-0.5 rounded">
-                            {dataDirInfo.shortName}
-                          </code>
-                        </p>
-                      ) : (
-                        <p className="text-xs text-muted-foreground">
-                          Path to your project or its workflow data directory.
-                        </p>
-                      )}
+                      <p className="text-xs text-muted-foreground">
+                        Path to your project or its workflow data directory.
+                        Relative paths allowed. Leave empty to search current
+                        directory.
+                      </p>
                     </div>
 
                     <div className="space-y-2">

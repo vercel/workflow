@@ -8,11 +8,6 @@ import {
   writeEnvVars,
 } from './env.js';
 
-export interface SetupResult {
-  world: Awaited<ReturnType<typeof createWorld>> | null;
-  configError: string | null;
-}
-
 /**
  * Setup CLI world configuration.
  * If throwOnConfigError is false, will return null world with the error message
@@ -30,7 +25,7 @@ export const setupCliWorld = async (
   },
   version: string,
   ignoreLocalWorldConfigError = false
-): Promise<SetupResult> => {
+): Promise<Awaited<ReturnType<typeof createWorld>> | null> => {
   setJsonMode(Boolean(flags.json));
   setVerboseMode(Boolean(flags.verbose));
 
@@ -78,7 +73,7 @@ export const setupCliWorld = async (
           'Failed to find valid local world configuration:',
           configError
         );
-        return { world: null, configError };
+        return null;
       }
       throw error;
     }
@@ -86,5 +81,5 @@ export const setupCliWorld = async (
 
   logger.debug('Initializing world');
   const world = await createWorld();
-  return { world, configError: null };
+  return world;
 };

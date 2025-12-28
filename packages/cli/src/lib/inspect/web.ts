@@ -218,15 +218,12 @@ async function startWebServer(webPort: number): Promise<boolean> {
 /**
  * Launch the web UI with the specified configuration
  * This starts the server (if not running), opens the browser, then keeps the server running
- *
- * @param configError - If provided, the web UI will show the config screen on load
  */
 export async function launchWebUI(
   resource: string,
   id: string | undefined,
   flags: Record<string, any>,
-  _cliVersion: string,
-  configError?: string | null
+  _cliVersion: string
 ): Promise<void> {
   const envVars = getEnvVars();
 
@@ -298,13 +295,7 @@ export async function launchWebUI(
 
   // Fall back to local web UI
   // Build URL with query params
-  const queryParams = envToQueryParams(
-    resource,
-    id,
-    flags,
-    envVars,
-    configError
-  );
+  const queryParams = envToQueryParams(resource, id, flags, envVars);
   const webPort = flags.webPort ?? 3456;
   const hostUrl = getHostUrl(webPort);
   const url = `${hostUrl}?${queryParams.toString()}`;
@@ -363,18 +354,12 @@ function envToQueryParams(
   resource: string,
   id: string | undefined,
   flags: Record<string, any>,
-  envVars: Record<string, string>,
-  configError?: string | null
+  envVars: Record<string, string>
 ): URLSearchParams {
   const params = new URLSearchParams();
   params.set('resource', resource);
   if (id) {
     params.set('id', id);
-  }
-
-  // If there's a config error, set a flag so web UI shows config screen
-  if (configError) {
-    params.set('needsConfig', '1');
   }
 
   // Map relevant flags to query params

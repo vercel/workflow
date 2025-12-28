@@ -92,7 +92,7 @@ export const inferLocalWorldEnvVars = async () => {
   // Infer workflow data directory
   if (!envVars.WORKFLOW_LOCAL_DATA_DIR) {
     const localResult = await findWorkflowDataDir(cwd);
-    if (localResult) {
+    if (localResult.dataDir) {
       logger.debug('Found workflow data directory:', localResult.dataDir);
       envVars.WORKFLOW_LOCAL_DATA_DIR = localResult.dataDir;
       writeEnvVars(envVars);
@@ -101,7 +101,7 @@ export const inferLocalWorldEnvVars = async () => {
       repoRoot = await findRepoRoot(cwd, cwd);
       if (repoRoot) {
         const repoResult = await findWorkflowDataDir(repoRoot);
-        if (repoResult) {
+        if (repoResult.dataDir) {
           logger.debug('Found workflow data directory:', repoResult.dataDir);
           envVars.WORKFLOW_LOCAL_DATA_DIR = repoResult.dataDir;
           writeEnvVars(envVars);

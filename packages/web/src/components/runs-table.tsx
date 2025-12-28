@@ -15,6 +15,7 @@ import {
   ArrowUpAZ,
   ChevronLeft,
   ChevronRight,
+  Loader2Icon,
   MoreHorizontal,
   RefreshCw,
 } from 'lucide-react';
@@ -379,13 +380,15 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   );
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
   const isLocal = config.backend === 'local' || !config.backend;
-  const { data: dataDirInfo } = useDataDirInfo(config.dataDir);
+  const { data: dataDirInfo, isLoading: dataDirInfoLoading } = useDataDirInfo(
+    config.dataDir
+  );
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
     config.backend?.includes('vercel') || false;
   // TODO: This is a workaround. We should be getting a list of valid workflow names
-  // from the manifest, which we need to put on the World interface.
+  // from the manifest.
   const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
     new Set()
   );
@@ -404,6 +407,11 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     workflowName: workflowNameFilter === 'all' ? undefined : workflowNameFilter,
     status: status === 'all' ? undefined : status,
   });
+
+  const isLocalAndHasMissingData =
+    isLocal &&
+    (!dataDirInfo?.dataDir || !data?.data?.length) &&
+    !dataDirInfoLoading;
 
   // Track seen workflow names from loaded data
   useEffect(() => {
@@ -429,6 +437,26 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   const toggleSortOrder = () => {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
   };
+
+  // Only for local env and while we don't already have data,
+  // we periodically refresh the data to check for new runs.
+  // This is both to improve UX slightly, while also ensuring that
+  // we react to a workflow data directory being created after the first run.
+  useEffect(() => {
+    if (isLocalAndHasMissingData) {
+      const interval = setInterval(() => {
+        console.log('Refreshing runs data...');
+        reload();
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [isLocalAndHasMissingData, reload]);
+
+  const localDirText = (
+    <code className="font-mono">
+      {dataDirInfo?.shortName || 'current directory'}
+    </code>
+  );
 
   return (
     <div>
@@ -456,22 +484,16 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ) : loading && !data?.data ? (
         <TableSkeleton />
       ) : !loading && (!data.data || data.data.length === 0) ? (
-        <div className="text-center py-8 text-muted-foreground">
-          No workflow runs found.
-          {isLocal && dataDirInfo?.shortName && (
-            <>
-              <br />
-              <span className="text-sm">
-                Monitoring{' '}
-                <code className="font-mono">{dataDirInfo.shortName}</code> for
-                changes...
-              </span>
-            </>
+        <div className="text-sm text-center py-8 text-muted-foreground flex flex-col items-center justify-center gap-3">
+          <span className="text-sm">
+            No workflow runs found
+            {isLocalAndHasMissingData ? <> in {localDirText}</> : ''}.
+          </span>
+          {isLocalAndHasMissingData && (
+            <span className="text-sm flex items-center gap-2">
+              This view will update once you run a workflow.
+            </span>
           )}
-          <br />
-          <DocsLink href="https://useworkflow.dev/docs/foundations/workflows-and-steps">
-            Learn how to create a workflow
-          </DocsLink>
         </div>
       ) : (
         <>

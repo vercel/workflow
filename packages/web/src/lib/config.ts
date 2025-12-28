@@ -8,7 +8,7 @@ import type { WorldConfig } from '@/lib/config-world';
 // Note: dataDir is intentionally undefined - the server will auto-discover
 // the workflow data directory from the current working directory using
 // findWorkflowDataDir() from @workflow/utils/check-data-dir
-const DEFAULT_CONFIG: WorldConfig = {
+const DEFAULT_CONFIG: Partial<WorldConfig> = {
   backend: 'local',
   port: '3000',
   env: 'production',
@@ -16,13 +16,13 @@ const DEFAULT_CONFIG: WorldConfig = {
 
 // nuqs parsers for config params
 const configParsers = {
-  backend: parseAsString.withDefault(DEFAULT_CONFIG.backend || 'embedded'),
+  backend: parseAsString.withDefault(DEFAULT_CONFIG.backend || 'local'),
   env: parseAsString.withDefault(DEFAULT_CONFIG.env || 'production'),
   authToken: parseAsString,
   project: parseAsString,
   team: parseAsString,
   port: parseAsString.withDefault(DEFAULT_CONFIG.port || '3000'),
-  dataDir: parseAsString,
+  dataDir: parseAsString.withDefault('./'),
   manifestPath: parseAsString,
 };
 

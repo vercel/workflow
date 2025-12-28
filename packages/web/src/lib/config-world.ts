@@ -20,7 +20,8 @@ export interface WorldConfig {
   project?: string;
   team?: string;
   port?: string;
-  dataDir?: string;
+  // Will always be defined (""./"" if not set by user), but only used for local world
+  dataDir: string;
   // Path to the workflow manifest file (defaults to app/.well-known/workflow/v1/manifest.json)
   manifestPath?: string;
   // Postgres fields
@@ -93,14 +94,12 @@ export async function validateWorldConfig(
 
   if (backend === 'local') {
     // Check if data directory exists
-    if (config.dataDir) {
-      const resolvedPath = resolve(config.dataDir);
-      if (!existsSync(resolvedPath)) {
-        errors.push({
-          field: 'dataDir',
-          message: `Data directory does not exist: ${resolvedPath}`,
-        });
-      }
+    const resolvedPath = resolve(config.dataDir);
+    if (!existsSync(resolvedPath)) {
+      errors.push({
+        field: 'dataDir',
+        message: `Data directory does not exist: ${resolvedPath}`,
+      });
     }
 
     // Validate port if provided
@@ -113,8 +112,6 @@ export async function validateWorldConfig(
         });
       }
     }
-    // Note: dataDir and manifestPath are optional and don't require validation
-    // The server action will try multiple paths and gracefully handle missing files
   }
 
   if (backend === 'postgres') {
@@ -149,9 +146,9 @@ export async function validateWorldConfig(
  * @returns WorkflowDataDirInfo if found, null otherwise
  */
 export async function resolveDataDirInfo(
-  dataDir?: string
-): Promise<WorkflowDataDirInfo | null> {
+  dataDir: string
+): Promise<WorkflowDataDirInfo> {
   // If no dataDir provided, try to find one from cwd
-  const searchPath = dataDir || process.cwd();
+  const searchPath = dataDir;
   return findWorkflowDataDir(searchPath);
 }
