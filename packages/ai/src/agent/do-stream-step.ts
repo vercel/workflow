@@ -453,8 +453,10 @@ export async function doStreamStep(
  * Normalize the finish reason to the AI SDK FinishReason type.
  * AI SDK v6 may return an object with a 'type' property,
  * while AI SDK v5 returns a plain string. This function handles both.
+ *
+ * @internal Exported for testing
  */
-function normalizeFinishReason(rawFinishReason: unknown): FinishReason {
+export function normalizeFinishReason(rawFinishReason: unknown): FinishReason {
   // Handle object-style finish reason (possible in some AI SDK versions/providers)
   if (typeof rawFinishReason === 'object' && rawFinishReason !== null) {
     const objReason = rawFinishReason as { type?: string };
