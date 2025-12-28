@@ -335,7 +335,7 @@ export async function* streamTextIterator({
         done = true;
       } else {
         throw new Error(
-          `Unexpected finish reason: ${typeof rawFinishReason === 'object' ? JSON.stringify(rawFinishReason) : rawFinishReason}`
+          `Unexpected finish reason: ${typeof finish?.finishReason === 'object' ? JSON.stringify(finish?.finishReason) : finish?.finishReason}`
         );
       }
 
