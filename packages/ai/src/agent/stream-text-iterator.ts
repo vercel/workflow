@@ -5,6 +5,7 @@ import type {
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
 import type {
+  FinishReason,
   StepResult,
   StreamTextOnStepFinishCallback,
   ToolChoice,
@@ -262,10 +263,10 @@ export async function* streamTextIterator({
       // Normalize finishReason - AI SDK v6 may return an object with a 'type' property
       // while AI SDK v5 returns a plain string
       const rawFinishReason = finish?.finishReason;
-      const finishReason =
+      const finishReason: FinishReason | undefined =
         typeof rawFinishReason === 'object' && rawFinishReason !== null
-          ? ((rawFinishReason as { type?: string }).type ?? 'unknown')
-          : rawFinishReason;
+          ? ((rawFinishReason as { type?: FinishReason }).type ?? 'unknown')
+          : (rawFinishReason as FinishReason | undefined);
 
       if (finishReason === 'tool-calls') {
         lastStepWasToolCalls = true;

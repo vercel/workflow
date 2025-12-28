@@ -8,6 +8,7 @@ import type {
 } from '@ai-sdk/provider';
 import {
   gateway,
+  type FinishReason,
   type StepResult,
   type StopCondition,
   type ToolChoice,
@@ -448,44 +449,22 @@ export async function doStreamStep(
   return { toolCalls, finish, step };
 }
 
-// Valid AI SDK finish reasons
-type FinishReasonType =
-  | 'stop'
-  | 'length'
-  | 'content-filter'
-  | 'tool-calls'
-  | 'error'
-  | 'other'
-  | 'unknown';
-
 /**
- * Normalize the finish reason.
+ * Normalize the finish reason to the AI SDK FinishReason type.
  * AI SDK v6 may return an object with a 'type' property,
- * while AI SDK v5 returns a plain string.
+ * while AI SDK v5 returns a plain string. This function handles both.
  */
-function normalizeFinishReason(rawFinishReason: unknown): FinishReasonType {
-  let reason: string;
+function normalizeFinishReason(rawFinishReason: unknown): FinishReason {
+  // Handle object-style finish reason (possible in some AI SDK versions/providers)
   if (typeof rawFinishReason === 'object' && rawFinishReason !== null) {
-    reason = (rawFinishReason as { type?: string }).type ?? 'unknown';
-  } else if (typeof rawFinishReason === 'string') {
-    reason = rawFinishReason;
-  } else {
-    reason = 'unknown';
+    const objReason = rawFinishReason as { type?: string };
+    return (objReason.type as FinishReason) ?? 'unknown';
   }
-
-  // Validate and return as proper finish reason type
-  const validReasons: FinishReasonType[] = [
-    'stop',
-    'length',
-    'content-filter',
-    'tool-calls',
-    'error',
-    'other',
-    'unknown',
-  ];
-  return validReasons.includes(reason as FinishReasonType)
-    ? (reason as FinishReasonType)
-    : 'unknown';
+  // Handle string finish reason (standard format)
+  if (typeof rawFinishReason === 'string') {
+    return rawFinishReason as FinishReason;
+  }
+  return 'unknown';
 }
 
 // This is a stand-in for logic in the AI-SDK streamText code which aggregates
