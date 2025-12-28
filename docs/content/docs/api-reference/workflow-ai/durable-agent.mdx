@@ -28,6 +28,7 @@ async function myAgent() {
   const agent = new DurableAgent({
     model: "anthropic/claude-haiku-4.5",
     system: "You are a helpful weather assistant.",
+    temperature: 0.7,
     tools: {
       getWeather: {
         description: "Get weather for a city",
@@ -41,10 +42,13 @@ async function myAgent() {
   // run's default output stream
   const writable = getWritable<UIMessageChunk>();
 
-  await agent.stream({
+  const result = await agent.stream({
     messages: [{ role: "user", content: "How is the weather in San Francisco?" }],
     writable,
   });
+
+  // result contains messages, steps, and optional structured output
+  console.log(result.messages);
 }
 ```
 
@@ -74,6 +78,26 @@ import type { DurableAgentStreamOptions } from "@workflow/ai/agent";
 export default DurableAgentStreamOptions;`}
 />
 
+### DurableAgentStreamResult
+
+The result returned from the `stream()` method:
+
+<TSDoc
+definition={`
+import type { DurableAgentStreamResult } from "@workflow/ai/agent";
+export default DurableAgentStreamResult;`}
+/>
+
+### GenerationSettings
+
+Settings that control model generation behavior. These can be set on the constructor or overridden per-stream call:
+
+<TSDoc
+definition={`
+import type { GenerationSettings } from "@workflow/ai/agent";
+export default GenerationSettings;`}
+/>
+
 ### PrepareStepInfo
 
 Information passed to the `prepareStep` callback:
@@ -94,20 +118,99 @@ import type { PrepareStepResult } from "@workflow/ai/agent";
 export default PrepareStepResult;`}
 />
 
+### TelemetrySettings
+
+Configuration for observability and telemetry:
+
+<TSDoc
+definition={`
+import type { TelemetrySettings } from "@workflow/ai/agent";
+export default TelemetrySettings;`}
+/>
+
+### Callbacks
+
+#### StreamTextOnFinishCallback
+
+Called when streaming completes:
+
+<TSDoc
+definition={`
+import type { StreamTextOnFinishCallback } from "@workflow/ai/agent";
+export default StreamTextOnFinishCallback;`}
+/>
+
+#### StreamTextOnErrorCallback
+
+Called when an error occurs:
+
+<TSDoc
+definition={`
+import type { StreamTextOnErrorCallback } from "@workflow/ai/agent";
+export default StreamTextOnErrorCallback;`}
+/>
+
+#### StreamTextOnAbortCallback
+
+Called when the operation is aborted:
+
+<TSDoc
+definition={`
+import type { StreamTextOnAbortCallback } from "@workflow/ai/agent";
+export default StreamTextOnAbortCallback;`}
+/>
+
+### Advanced Types
+
+#### ToolCallRepairFunction
+
+Function to repair malformed tool calls:
+
+<TSDoc
+definition={`
+import type { ToolCallRepairFunction } from "@workflow/ai/agent";
+export default ToolCallRepairFunction;`}
+/>
+
+#### StreamTextTransform
+
+Transform applied to the stream:
+
+<TSDoc
+definition={`
+import type { StreamTextTransform } from "@workflow/ai/agent";
+export default StreamTextTransform;`}
+/>
+
+#### OutputSpecification
+
+Specification for structured output parsing:
+
+<TSDoc
+definition={`
+import type { OutputSpecification } from "@workflow/ai/agent";
+export default OutputSpecification;`}
+/>
+
 ## Key Features
 
 - **Durable Execution**: Agents can be interrupted and resumed without losing state
 - **Flexible Tool Implementation**: Tools can be implemented as workflow steps for automatic retries, or as regular workflow-level logic
 - **Stream Processing**: Handles streaming responses and tool calls in a structured way
 - **Workflow Native**: Fully integrated with Workflow DevKit for production-grade reliability
+- **AI SDK Parity**: Supports the same options as AI SDK's `streamText` including generation settings, callbacks, and structured output
 
 ## Good to Know
 
 - Tools can be implemented as workflow steps (using `"use step"` for automatic retries), or as regular workflow-level logic
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
-- The agent processes tool calls iteratively until completion
-- The `stream()` method returns `{ messages }` containing the full conversation history, including initial messages, assistant responses, and tool results
-- The `prepareStep` callback runs before each step and can modify the model or messages dynamically
+- The agent processes tool calls iteratively until completion or `maxSteps` is reached
+- **Default `maxSteps` is unlimited** - set a value to limit the number of LLM calls
+- The `stream()` method returns `{ messages, steps, experimental_output }` containing the full conversation history, step details, and optional structured output
+- The `prepareStep` callback runs before each step and can modify model, messages, generation settings, tool choice, and context
+- Generation settings (temperature, maxOutputTokens, etc.) can be set on the constructor and overridden per-stream call
+- Use `activeTools` to limit which tools are available for a specific stream call
+- The `onFinish` callback is called when all steps complete; `onAbort` is called if aborted
 
 ## Examples
 
@@ -411,6 +514,278 @@ async function agentWithMessageQueue(initialMessage: string) {
       }
       return {};
     },
+  });
+}
+```
+
+### Generation Settings
+
+Configure model generation parameters at the constructor or stream level:
+
+```typescript
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessageChunk } from "ai";
+
+async function agentWithGenerationSettings() {
+  "use workflow";
+
+  // Set default generation settings in constructor
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    temperature: 0.7,
+    maxOutputTokens: 2000,
+    topP: 0.9,
+  });
+
+  // Override settings per-stream call
+  await agent.stream({
+    messages: [{ role: "user", content: "Write a creative story" }],
+    writable: getWritable<UIMessageChunk>(),
+    temperature: 0.9, // More creative for this call
+    maxSteps: 1,
+  });
+
+  // Use different settings for a different task
+  await agent.stream({
+    messages: [{ role: "user", content: "Summarize this document precisely" }],
+    writable: getWritable<UIMessageChunk>(),
+    temperature: 0.1, // More deterministic
+    maxSteps: 1,
+  });
+}
+```
+
+### Limiting Steps with maxSteps
+
+By default, the agent loops until completion. Use `maxSteps` to limit the number of LLM calls:
+
+```typescript
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
+
+async function searchWeb({ query }: { query: string }) {
+  "use step";
+  return `Results for "${query}": ...`;
+}
+
+async function analyzeResults({ data }: { data: string }) {
+  "use step";
+  return `Analysis: ${data}`;
+}
+
+async function multiStepAgent() {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    tools: {
+      searchWeb: {
+        description: "Search the web for information",
+        inputSchema: z.object({ query: z.string() }),
+        execute: searchWeb,
+      },
+      analyzeResults: {
+        description: "Analyze search results",
+        inputSchema: z.object({ data: z.string() }),
+        execute: analyzeResults,
+      },
+    },
+  });
+
+  // Limit to 10 steps for safety on complex research tasks
+  const result = await agent.stream({
+    messages: [{ role: "user", content: "Research the latest AI trends and provide an analysis" }],
+    writable: getWritable<UIMessageChunk>(),
+    maxSteps: 10,
+  });
+
+  // Access step-by-step details
+  console.log(`Completed in ${result.steps.length} steps`);
+}
+```
+
+### Callbacks for Monitoring
+
+Use callbacks to monitor streaming progress, handle errors, and react to completion:
+
+```typescript
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessageChunk } from "ai";
+
+async function agentWithCallbacks() {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+  });
+
+  await agent.stream({
+    messages: [{ role: "user", content: "Hello!" }],
+    writable: getWritable<UIMessageChunk>(),
+    maxSteps: 5,
+
+    // Called after each step completes
+    onStepFinish: async (step) => {
+      console.log(`Step finished: ${step.finishReason}`);
+      console.log(`Tokens used: ${step.usage.totalTokens}`);
+    },
+
+    // Called when streaming completes
+    onFinish: async ({ steps, messages }) => {
+      console.log(`Completed with ${steps.length} steps`);
+      console.log(`Final message count: ${messages.length}`);
+    },
+
+    // Called on errors
+    onError: async ({ error }) => {
+      console.error("Stream error:", error);
+    },
+  });
+}
+```
+
+### Structured Output
+
+Parse structured data from the LLM response using `Output.object`:
+
+```typescript
+import { DurableAgent, Output } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
+
+async function agentWithStructuredOutput() {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+  });
+
+  const result = await agent.stream({
+    messages: [{ role: "user", content: "Analyze the sentiment of: 'I love this product!'" }],
+    writable: getWritable<UIMessageChunk>(),
+    experimental_output: Output.object({
+      schema: z.object({
+        sentiment: z.enum(["positive", "negative", "neutral"]),
+        confidence: z.number().min(0).max(1),
+        reasoning: z.string(),
+      }),
+    }),
+  });
+
+  // Access the parsed structured output
+  console.log(result.experimental_output);
+  // { sentiment: "positive", confidence: 0.95, reasoning: "..." }
+}
+```
+
+### Tool Choice Control
+
+Control when and which tools the model can use:
+
+```typescript
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
+
+async function agentWithToolChoice() {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    tools: {
+      calculator: {
+        description: "Perform calculations",
+        inputSchema: z.object({ expression: z.string() }),
+        execute: async ({ expression }) => `Calculated: ${expression}`,
+      },
+      search: {
+        description: "Search for information",
+        inputSchema: z.object({ query: z.string() }),
+        execute: async ({ query }) => `Results for: ${query}`,
+      },
+    },
+    toolChoice: "auto", // Default: model decides
+  });
+
+  // Force the model to use a tool
+  await agent.stream({
+    messages: [{ role: "user", content: "What is 2 + 2?" }],
+    writable: getWritable<UIMessageChunk>(),
+    toolChoice: "required",
+    maxSteps: 2,
+  });
+
+  // Prevent tool usage
+  await agent.stream({
+    messages: [{ role: "user", content: "Just chat with me" }],
+    writable: getWritable<UIMessageChunk>(),
+    toolChoice: "none",
+  });
+
+  // Force a specific tool
+  await agent.stream({
+    messages: [{ role: "user", content: "Calculate something" }],
+    writable: getWritable<UIMessageChunk>(),
+    toolChoice: { type: "tool", toolName: "calculator" },
+    maxSteps: 2,
+  });
+
+  // Limit available tools for this call
+  await agent.stream({
+    messages: [{ role: "user", content: "Just search, don't calculate" }],
+    writable: getWritable<UIMessageChunk>(),
+    activeTools: ["search"],
+    maxSteps: 2,
+  });
+}
+```
+
+### Passing Context to Tools
+
+Use `experimental_context` to pass shared context to tool executions:
+
+```typescript
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
+
+interface UserContext {
+  userId: string;
+  permissions: string[];
+}
+
+async function agentWithContext(userId: string) {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    tools: {
+      getUserData: {
+        description: "Get user data",
+        inputSchema: z.object({}),
+        execute: async (_, { experimental_context }) => {
+          const ctx = experimental_context as UserContext;
+          return { userId: ctx.userId, permissions: ctx.permissions };
+        },
+      },
+    },
+  });
+
+  await agent.stream({
+    messages: [{ role: "user", content: "What are my permissions?" }],
+    writable: getWritable<UIMessageChunk>(),
+    maxSteps: 2,
+    experimental_context: {
+      userId,
+      permissions: ["read", "write"],
+    } as UserContext,
   });
 }
 ```

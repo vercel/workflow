@@ -1,5 +1,19 @@
 # @workflow/errors
 
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/utils@4.0.1-beta.9
+
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- Updated dependencies [[`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1)]:
+  - @workflow/utils@4.0.1-beta.8
+
 ## 4.0.1-beta.10
 
 ### Patch Changes

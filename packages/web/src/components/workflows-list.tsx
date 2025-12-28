@@ -1,7 +1,9 @@
 'use client';
 
-import { GitBranch, Workflow } from 'lucide-react';
-import { useState } from 'react';
+import { AlertCircle, GitBranch, Workflow } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { WorkflowGraphViewer } from '@/components/flow-graph/workflow-graph-viewer';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -19,33 +21,60 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { WorkflowGraphViewer } from '@/components/flow-graph/workflow-graph-viewer';
+import type { WorldConfig } from '@/lib/config-world';
+import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
 import type { WorkflowGraph } from '@/lib/flow-graph/workflow-graph-types';
 import { TableSkeleton } from './display-utils/table-skeleton';
 
 interface WorkflowsListProps {
-  workflows: WorkflowGraph[];
-  onWorkflowSelect: (workflowName: string) => void;
-  loading?: boolean;
+  config: WorldConfig;
+  onWorkflowSelect?: (workflowName: string) => void;
 }
 
 export function WorkflowsList({
-  workflows,
+  config,
   onWorkflowSelect,
-  loading,
 }: WorkflowsListProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [selectedWorkflow, setSelectedWorkflow] =
     useState<WorkflowGraph | null>(null);
 
+  // Fetch workflow graph manifest
+  const {
+    manifest: graphManifest,
+    loading,
+    error: graphError,
+  } = useWorkflowGraphManifest(config);
+
+  const workflows = graphManifest ? Object.values(graphManifest.workflows) : [];
+
+  // Sort workflows alphabetically by name
+  const sortedWorkflows = useMemo(
+    () =>
+      [...workflows].sort((a, b) =>
+        a.workflowName.localeCompare(b.workflowName)
+      ),
+    [workflows]
+  );
+
   const handleViewWorkflow = (workflow: WorkflowGraph) => {
     setSelectedWorkflow(workflow);
     setSheetOpen(true);
-    onWorkflowSelect(workflow.workflowName);
+    onWorkflowSelect?.(workflow.workflowName);
   };
 
   if (loading) {
     return <TableSkeleton variant="workflows" rows={6} />;
+  }
+
+  if (graphError) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle className="h-4 w-4" />
+        <AlertTitle>Error Loading Workflows</AlertTitle>
+        <AlertDescription>{graphError.message}</AlertDescription>
+      </Alert>
+    );
   }
 
   if (workflows.length === 0) {
@@ -81,7 +110,7 @@ export function WorkflowsList({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {workflows.map((workflow) => {
+              {sortedWorkflows.map((workflow) => {
                 const stepCount = workflow.nodes.filter(
                   (node) => node.data.nodeKind === 'step'
                 ).length;

@@ -18,6 +18,11 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   agent: ['What is the weather in Muscat?'],
   // 7_full.ts
   handleUserSignup: ['user@example.com'],
+  // 97_bench.ts
+  noStepsWorkflow: [42],
+  oneStepWorkflow: [10],
+  promiseAllStressTestWorkflow: [5],
+  promiseRaceStressTestLargeWorkflow: [5],
   // 98_duplicate_case.ts
   addTenWorkflow: [123],
   // 99_e2e.ts

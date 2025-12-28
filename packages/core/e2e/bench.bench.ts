@@ -1,9 +1,9 @@
 import { withResolvers } from '@workflow/utils';
+import fs from 'fs';
+import path from 'path';
 import { bench, describe } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
 import { getProtectionBypassHeaders } from './utils';
-import fs from 'fs';
-import path from 'path';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {

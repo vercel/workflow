@@ -1,5 +1,36 @@
 # @workflow/cli
 
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/world-local@4.0.1-beta.22
+  - @workflow/builders@4.0.1-beta.31
+  - @workflow/utils@4.0.1-beta.9
+  - @workflow/world@4.0.1-beta.11
+  - @workflow/core@4.0.1-beta.32
+  - @workflow/web@4.0.1-beta.21
+  - @workflow/errors@4.0.1-beta.12
+  - @workflow/world-vercel@4.0.1-beta.24
+
+## 4.0.1-beta.36
+
+### Patch Changes
+
+- [#682](https://github.com/vercel/workflow/pull/682) [`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Extract helper to find local world dataDir across CLI/web projects
+
+- [#669](https://github.com/vercel/workflow/pull/669) [`c059cf6`](https://github.com/vercel/workflow/commit/c059cf6fcd0988b380f66dfa0f2bb85a19cc4063) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add -i / --interactive flag for enabling pagination bindings, new default being off
+
+- Updated dependencies [[`d9f6a49`](https://github.com/vercel/workflow/commit/d9f6a4939760be94dfc9eaf77dcaa48c602c18ef), [`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1), [`4bc98ff`](https://github.com/vercel/workflow/commit/4bc98ff4a15a090e2233c18b75e0a1b5dd2e9ff1), [`ea3afce`](https://github.com/vercel/workflow/commit/ea3afce222ff9c2f90d99414fae275ef5f54b431), [`25b02b0`](https://github.com/vercel/workflow/commit/25b02b0bfdefa499e13fb974b1832fbe47dbde86), [`c3464bf`](https://github.com/vercel/workflow/commit/c3464bfd978a073f6d8fca95208bd053aa5c78dd)]:
+  - @workflow/world-local@4.0.1-beta.21
+  - @workflow/utils@4.0.1-beta.8
+  - @workflow/web@4.0.1-beta.20
+  - @workflow/builders@4.0.1-beta.30
+  - @workflow/core@4.0.1-beta.31
+  - @workflow/errors@4.0.1-beta.11
+  - @workflow/world-vercel@4.0.1-beta.23
+
 ## 4.0.1-beta.35
 
 ### Patch Changes

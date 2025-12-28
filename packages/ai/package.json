@@ -1,6 +1,6 @@
 {
   "name": "@workflow/ai",
-  "version": "4.0.1-beta.35",
+  "version": "4.0.1-beta.37",
   "description": "Workflow DevKit compatible helper library for the AI SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -62,16 +62,18 @@
     "workflow": "workspace:*"
   },
   "peerDependencies": {
-    "ai": "^5",
-    "workflow": "4.0.1-beta.35"
+    "ai": "^5 || ^6",
+    "workflow": "4.0.1-beta.37"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "2.0.49",
-    "@ai-sdk/gateway": "2.0.15",
-    "@ai-sdk/google": "2.0.43",
-    "@ai-sdk/openai": "2.0.72",
-    "@ai-sdk/provider": "2.0.0",
-    "@ai-sdk/xai": "2.0.37",
+    "@ai-sdk/provider": "^2.0.0 || ^3.0.0",
     "zod": "catalog:"
+  },
+  "optionalDependencies": {
+    "@ai-sdk/anthropic": "^2.0.0 || ^3.0.0",
+    "@ai-sdk/gateway": "^2.0.0 || ^3.0.0",
+    "@ai-sdk/google": "^2.0.0 || ^3.0.0",
+    "@ai-sdk/openai": "^2.0.0 || ^3.0.0",
+    "@ai-sdk/xai": "^2.0.0 || ^3.0.0"
   }
 }

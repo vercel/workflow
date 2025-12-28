@@ -385,6 +385,7 @@ function envToQueryParams(
     WORKFLOW_VERCEL_TEAM: 'team',
     PORT: 'port',
     WORKFLOW_LOCAL_DATA_DIR: 'dataDir',
+    WORKFLOW_MANIFEST_PATH: 'manifestPath',
   };
 
   for (const [envName, paramName] of Object.entries(envToQueryParamMappings)) {

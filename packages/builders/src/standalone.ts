@@ -18,9 +18,20 @@ export class StandaloneBuilder extends BaseBuilder {
       tsBaseUrl: tsConfig.baseUrl,
       tsPaths: tsConfig.paths,
     };
-    await this.buildStepsBundle(options);
+    const manifest = await this.buildStepsBundle(options);
     await this.buildWorkflowsBundle(options);
     await this.buildWebhookFunction();
+
+    // Build unified manifest from workflow bundle
+    const workflowBundlePath = this.resolvePath(
+      this.config.workflowsBundlePath
+    );
+    const manifestDir = this.resolvePath('.well-known/workflow/v1');
+    await this.createManifest({
+      workflowBundlePath,
+      manifestDir,
+      manifest,
+    });
 
     await this.createClientLibrary();
   }
@@ -33,18 +44,20 @@ export class StandaloneBuilder extends BaseBuilder {
     inputFiles: string[];
     tsBaseUrl?: string;
     tsPaths?: Record<string, string[]>;
-  }): Promise<void> {
+  }) {
     console.log('Creating steps bundle at', this.config.stepsBundlePath);
 
     const stepsBundlePath = this.resolvePath(this.config.stepsBundlePath);
     await this.ensureDirectory(stepsBundlePath);
 
-    await this.createStepsBundle({
+    const { manifest } = await this.createStepsBundle({
       outfile: stepsBundlePath,
       inputFiles,
       tsBaseUrl,
       tsPaths,
     });
+
+    return manifest;
   }
 
   private async buildWorkflowsBundle({

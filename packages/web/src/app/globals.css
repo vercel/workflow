@@ -26,6 +26,7 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -61,6 +62,7 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -77,6 +79,14 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Workflow node background colors - Light Mode */
+  --node-bg-step: #dcfce7;
+  --node-bg-start: #dbeafe;
+  --node-bg-primitive: #ffedd5;
+  --node-bg-agent: #fce7f3;
+  --node-bg-tool: #f3e8ff;
+  --node-bg-conditional: #fee2e2;
 
   /* Geist Design System Colors - Light Mode */
   /* Backgrounds */
@@ -189,6 +199,7 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
@@ -205,6 +216,14 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Workflow node background colors - Dark Mode */
+  --node-bg-step: #14532d;
+  --node-bg-start: #1e3a5f;
+  --node-bg-primitive: #7c2d12;
+  --node-bg-agent: #831843;
+  --node-bg-tool: #581c87;
+  --node-bg-conditional: #7f1d1d;
 
   /* Geist Design System Colors - Dark Mode */
   /* Backgrounds */
@@ -319,6 +338,7 @@
     --accent: oklch(0.269 0 0);
     --accent-foreground: oklch(0.985 0 0);
     --destructive: oklch(0.704 0.191 22.216);
+    --destructive-foreground: oklch(0.985 0 0);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
@@ -335,6 +355,14 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
+
+    /* Workflow node background colors - Dark Mode */
+    --node-bg-step: #14532d;
+    --node-bg-start: #1e3a5f;
+    --node-bg-primitive: #7c2d12;
+    --node-bg-agent: #831843;
+    --node-bg-tool: #581c87;
+    --node-bg-conditional: #7f1d1d;
 
     /* Geist Design System Colors - Dark Mode (same as .dark) */
     --ds-background-100: rgb(0 0 0);

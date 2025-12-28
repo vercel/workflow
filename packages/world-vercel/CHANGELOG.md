@@ -1,5 +1,20 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.24
+
+### Patch Changes
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/world@4.0.1-beta.11
+  - @workflow/errors@4.0.1-beta.12
+
+## 4.0.1-beta.23
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/errors@4.0.1-beta.11
+
 ## 4.0.1-beta.22
 
 ### Patch Changes

@@ -111,9 +111,18 @@ export async function getNextBuilder() {
         tsPaths: tsConfig.paths,
       };
 
-      await this.buildStepsFunction(options);
+      const { manifest } = await this.buildStepsFunction(options);
       await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
+
+      // Write unified manifest to workflow generated directory
+      const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
+      await this.createManifest({
+        workflowBundlePath,
+        manifestDir: workflowGeneratedDir,
+        manifest,
+      });
+
       await this.writeFunctionsConfig(outputDir);
 
       // Signal build complete to connected clients

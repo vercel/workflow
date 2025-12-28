@@ -3,14 +3,24 @@
 import { parseWorkflowName } from '@workflow/core/parse-name';
 import {
   cancelRun,
+  ErrorBoundary,
+  type Event,
   recreateRun,
+  type Step,
   StreamViewer,
   useWorkflowStreams,
   useWorkflowTraceViewerData,
   type WorkflowRun,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
-import { AlertCircle, HelpCircle, List, Loader2 } from 'lucide-react';
+import type { EnvMap } from '@workflow/web-shared/server';
+import {
+  AlertCircle,
+  GitBranch,
+  HelpCircle,
+  List,
+  Loader2,
+} from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useMemo, useState } from 'react';
@@ -42,12 +52,105 @@ import {
 } from '@/components/ui/tooltip';
 import { buildUrlWithConfig, worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
+import { mapRunToExecution } from '@/lib/flow-graph/graph-execution-mapper';
+import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
+
 import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
+import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
 import { Skeleton } from './ui/skeleton';
+
+/**
+ * Graph tab content component that fetches the manifest internally
+ * This ensures the manifest is only fetched when the Graph tab is mounted
+ */
+function GraphTabContent({
+  config,
+  run,
+  allSteps,
+  allEvents,
+  env,
+}: {
+  config: WorldConfig;
+  run: WorkflowRun;
+  allSteps: Step[] | null;
+  allEvents: Event[] | null;
+  env: EnvMap;
+}) {
+  // Fetch workflow graph manifest only when this tab is mounted
+  const {
+    manifest: graphManifest,
+    loading: graphLoading,
+    error: graphError,
+  } = useWorkflowGraphManifest(config);
+
+  // Find the workflow graph for this run
+  const workflowGraph = useMemo(() => {
+    if (!graphManifest || !run.workflowName) return null;
+    return graphManifest.workflows[run.workflowName] ?? null;
+  }, [graphManifest, run.workflowName]);
+
+  // Map run data to execution overlay
+  const execution = useMemo(() => {
+    if (!workflowGraph || !run.runId) return null;
+
+    return mapRunToExecution(
+      run,
+      allSteps || [],
+      allEvents || [],
+      workflowGraph
+    );
+  }, [workflowGraph, run, allSteps, allEvents]);
+
+  if (graphLoading) {
+    return (
+      <div className="flex items-center justify-center w-full h-full">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <span className="ml-4 text-muted-foreground">
+          Loading workflow graph...
+        </span>
+      </div>
+    );
+  }
+
+  if (graphError) {
+    return (
+      <div className="flex items-center justify-center w-full h-full p-4">
+        <Alert variant="destructive" className="max-w-lg">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Error Loading Workflow Graph</AlertTitle>
+          <AlertDescription>{graphError.message}</AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  if (!workflowGraph) {
+    return (
+      <div className="flex items-center justify-center w-full h-full">
+        <Alert className="max-w-lg">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Workflow Graph Not Found</AlertTitle>
+          <AlertDescription>
+            Could not find the workflow graph for this run. The workflow may
+            have been deleted or the graph manifest may need to be regenerated.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  return (
+    <WorkflowGraphExecutionViewer
+      workflow={workflowGraph}
+      execution={execution || undefined}
+      env={env}
+    />
+  );
+}
 
 interface RunDetailViewProps {
   config: WorldConfig;
@@ -70,7 +173,8 @@ export function RunDetailView({
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
 
   // Read tab and streamId from URL search params
-  const activeTab = (searchParams.get('tab') as 'trace' | 'streams') || 'trace';
+  const activeTab =
+    (searchParams.get('tab') as 'trace' | 'graph' | 'streams') || 'trace';
   const selectedStreamId = searchParams.get('streamId');
   const showDebugActions = searchParams.get('debug') === '1';
 
@@ -91,9 +195,9 @@ export function RunDetailView({
   );
 
   const setActiveTab = useCallback(
-    (tab: 'trace' | 'streams') => {
-      // When switching to trace tab, clear streamId
-      if (tab === 'trace') {
+    (tab: 'trace' | 'graph' | 'streams') => {
+      // When switching to trace or graph tab, clear streamId
+      if (tab === 'trace' || tab === 'graph') {
         updateSearchParams({ tab, streamId: null });
       } else {
         updateSearchParams({ tab });
@@ -117,12 +221,8 @@ export function RunDetailView({
     [updateSearchParams]
   );
 
-  // Fetch workflow graph manifest
-  // const {
-  //   manifest: graphManifest,
-  //   loading: graphLoading,
-  //   error: graphError,
-  // } = useWorkflowGraphManifest(config);
+  // Only show graph tab for local backend
+  const isLocalBackend = config.backend === 'local';
 
   // Fetch all run data with live updates
   const {
@@ -143,28 +243,6 @@ export function RunDetailView({
     loading: streamsLoading,
     error: streamsError,
   } = useWorkflowStreams(env, runId);
-
-  // Find the workflow graph for this run
-  // The manifest is keyed by workflowId which matches run.workflowName
-  // e.g., "workflow//example/workflows/1_simple.ts//simple"
-  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged
-  // const workflowGraph = useMemo(() => {
-  //   if (!graphManifest || !run.workflowName) return null;
-  //   return graphManifest.workflows[run.workflowName] ?? null;
-  // }, [graphManifest, run.workflowName]);
-
-  // Map run data to execution overlay
-  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged
-  // const execution = useMemo(() => {
-  //   if (!workflowGraph || !run.runId) return null;
-
-  //   return mapRunToExecution(
-  //     run,
-  //     allSteps || [],
-  //     allEvents || [],
-  //     workflowGraph
-  //   );
-  // }, [workflowGraph, run, allSteps, allEvents]);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);
@@ -450,7 +528,9 @@ export function RunDetailView({
         <div className="mt-4 flex-1 flex flex-col min-h-0">
           <Tabs
             value={activeTab}
-            onValueChange={(v) => setActiveTab(v as 'trace' | 'streams')}
+            onValueChange={(v) =>
+              setActiveTab(v as 'trace' | 'graph' | 'streams')
+            }
             className="flex-1 flex flex-col min-h-0"
           >
             <TabsList className="mb-4 flex-none">
@@ -458,153 +538,145 @@ export function RunDetailView({
                 <List className="h-4 w-4" />
                 Trace
               </TabsTrigger>
+              {isLocalBackend && (
+                <TabsTrigger value="graph" className="gap-2">
+                  <GitBranch className="h-4 w-4" />
+                  Graph
+                </TabsTrigger>
+              )}
               <TabsTrigger value="streams" className="gap-2">
                 <List className="h-4 w-4" />
                 Streams
               </TabsTrigger>
-              {/* <TabsTrigger value="graph" className="gap-2">
-                <Network className="h-4 w-4" />
-                Graph
-              </TabsTrigger> */}
             </TabsList>
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
-              <div className="h-full">
-                <WorkflowTraceViewer
-                  error={error}
-                  steps={allSteps}
-                  events={allEvents}
-                  hooks={allHooks}
-                  env={env}
-                  run={run}
-                  isLoading={loading}
-                  onStreamClick={handleStreamClick}
-                />
-              </div>
+              <ErrorBoundary
+                title="Trace Viewer Error"
+                description="Failed to load trace viewer. Please try refreshing the page."
+              >
+                <div className="h-full">
+                  <WorkflowTraceViewer
+                    error={error}
+                    steps={allSteps}
+                    events={allEvents}
+                    hooks={allHooks}
+                    env={env}
+                    run={run}
+                    isLoading={loading}
+                    onStreamClick={handleStreamClick}
+                  />
+                </div>
+              </ErrorBoundary>
             </TabsContent>
 
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
-              <div className="h-full flex gap-4">
-                {/* Stream list sidebar */}
-                <div
-                  className="w-64 flex-shrink-0 border rounded-lg overflow-hidden"
-                  style={{
-                    borderColor: 'var(--ds-gray-300)',
-                    backgroundColor: 'var(--ds-background-100)',
-                  }}
-                >
+              <ErrorBoundary
+                title="Streams Error"
+                description="Failed to load streams. Please try refreshing the page."
+              >
+                <div className="h-full flex gap-4">
+                  {/* Stream list sidebar */}
                   <div
-                    className="px-3 py-2 border-b text-xs font-medium"
+                    className="w-64 flex-shrink-0 border rounded-lg overflow-hidden"
                     style={{
                       borderColor: 'var(--ds-gray-300)',
-                      color: 'var(--ds-gray-900)',
+                      backgroundColor: 'var(--ds-background-100)',
                     }}
                   >
-                    Streams ({streams.length})
-                  </div>
-                  <div className="overflow-auto max-h-[calc(100vh-400px)]">
-                    {streamsLoading ? (
-                      <div className="p-4 flex items-center justify-center">
-                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                      </div>
-                    ) : streamsError ? (
-                      <div className="p-4 text-xs text-destructive">
-                        {streamsError.message}
-                      </div>
-                    ) : streams.length === 0 ? (
-                      <div
-                        className="p-4 text-xs"
-                        style={{ color: 'var(--ds-gray-600)' }}
-                      >
-                        No streams found for this run
-                      </div>
-                    ) : (
-                      streams.map((streamId) => (
-                        <button
-                          key={streamId}
-                          type="button"
-                          onClick={() => setSelectedStreamId(streamId)}
-                          className="w-full text-left px-3 py-2 text-xs font-mono truncate hover:bg-accent transition-colors"
-                          style={{
-                            backgroundColor:
-                              selectedStreamId === streamId
-                                ? 'var(--ds-gray-200)'
-                                : 'transparent',
-                            color: 'var(--ds-gray-1000)',
-                          }}
-                          title={streamId}
+                    <div
+                      className="px-3 py-2 border-b text-xs font-medium"
+                      style={{
+                        borderColor: 'var(--ds-gray-300)',
+                        color: 'var(--ds-gray-900)',
+                      }}
+                    >
+                      Streams ({streams.length})
+                    </div>
+                    <div className="overflow-auto max-h-[calc(100vh-400px)]">
+                      {streamsLoading ? (
+                        <div className="p-4 flex items-center justify-center">
+                          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        </div>
+                      ) : streamsError ? (
+                        <div className="p-4 text-xs text-destructive">
+                          {streamsError.message}
+                        </div>
+                      ) : streams.length === 0 ? (
+                        <div
+                          className="p-4 text-xs"
+                          style={{ color: 'var(--ds-gray-600)' }}
                         >
-                          {streamId}
-                        </button>
-                      ))
+                          No streams found for this run
+                        </div>
+                      ) : (
+                        streams.map((streamId) => (
+                          <button
+                            key={streamId}
+                            type="button"
+                            onClick={() => setSelectedStreamId(streamId)}
+                            className="w-full text-left px-3 py-2 text-xs font-mono truncate hover:bg-accent transition-colors"
+                            style={{
+                              backgroundColor:
+                                selectedStreamId === streamId
+                                  ? 'var(--ds-gray-200)'
+                                  : 'transparent',
+                              color: 'var(--ds-gray-1000)',
+                            }}
+                            title={streamId}
+                          >
+                            {streamId}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Stream viewer */}
+                  <div className="flex-1 min-w-0">
+                    {selectedStreamId ? (
+                      <StreamViewer env={env} streamId={selectedStreamId} />
+                    ) : (
+                      <div
+                        className="h-full flex items-center justify-center rounded-lg border"
+                        style={{
+                          borderColor: 'var(--ds-gray-300)',
+                          backgroundColor: 'var(--ds-gray-100)',
+                        }}
+                      >
+                        <div
+                          className="text-sm"
+                          style={{ color: 'var(--ds-gray-600)' }}
+                        >
+                          {streams.length > 0
+                            ? 'Select a stream to view its data'
+                            : 'No streams available'}
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
-
-                {/* Stream viewer */}
-                <div className="flex-1 min-w-0">
-                  {selectedStreamId ? (
-                    <StreamViewer env={env} streamId={selectedStreamId} />
-                  ) : (
-                    <div
-                      className="h-full flex items-center justify-center rounded-lg border"
-                      style={{
-                        borderColor: 'var(--ds-gray-300)',
-                        backgroundColor: 'var(--ds-gray-100)',
-                      }}
-                    >
-                      <div
-                        className="text-sm"
-                        style={{ color: 'var(--ds-gray-600)' }}
-                      >
-                        {streams.length > 0
-                          ? 'Select a stream to view its data'
-                          : 'No streams available'}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+              </ErrorBoundary>
             </TabsContent>
 
-            {/* <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
-              <div className="h-full min-h-[500px]">
-                {graphLoading ? (
-                  <div className="flex items-center justify-center w-full h-full">
-                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                    <span className="ml-4 text-muted-foreground">
-                      Loading workflow graph...
-                    </span>
+            {isLocalBackend && (
+              <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
+                <ErrorBoundary
+                  title="Graph Viewer Error"
+                  description="Failed to load execution graph. Please try refreshing the page."
+                >
+                  <div className="h-full min-h-[500px]">
+                    <GraphTabContent
+                      config={config}
+                      run={run}
+                      allSteps={allSteps}
+                      allEvents={allEvents}
+                      env={env}
+                    />
                   </div>
-                ) : graphError ? (
-                  <div className="flex items-center justify-center w-full h-full p-4">
-                    <Alert variant="destructive" className="max-w-lg">
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Error Loading Workflow Graph</AlertTitle>
-                      <AlertDescription>{graphError.message}</AlertDescription>
-                    </Alert>
-                  </div>
-                ) : !workflowGraph ? (
-                  <div className="flex items-center justify-center w-full h-full">
-                    <Alert className="max-w-lg">
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Workflow Graph Not Found</AlertTitle>
-                      <AlertDescription>
-                        Could not find the workflow graph for this run. The
-                        workflow may have been deleted or the graph manifest may
-                        need to be regenerated.
-                      </AlertDescription>
-                    </Alert>
-                  </div>
-                ) : (
-                  <WorkflowGraphExecutionViewer
-                    workflow={workflowGraph}
-                    execution={execution || undefined}
-                    env={env}
-                  />
-                )}
-              </div>
-            </TabsContent> */}
+                </ErrorBoundary>
+              </TabsContent>
+            )}
           </Tabs>
 
           {auxiliaryDataLoading && (
