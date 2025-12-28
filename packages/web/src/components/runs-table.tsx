@@ -429,10 +429,10 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
 
   const loading = data.isLoading;
 
-  const onReload = () => {
+  const onReload = useCallback(() => {
     setLastRefreshTime(() => new Date());
     reload();
-  };
+  }, [reload]);
 
   const toggleSortOrder = () => {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
@@ -445,12 +445,11 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   useEffect(() => {
     if (isLocalAndHasMissingData) {
       const interval = setInterval(() => {
-        console.log('Refreshing runs data...');
-        reload();
+        onReload();
       }, 3000);
       return () => clearInterval(interval);
     }
-  }, [isLocalAndHasMissingData, reload]);
+  }, [isLocalAndHasMissingData, onReload]);
 
   const localDirText = (
     <code className="font-mono">
@@ -571,7 +570,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                           env={env}
                           runId={run.runId}
                           runStatus={run.status}
-                          onSuccess={reload}
+                          onSuccess={onReload}
                           showDebugActions={showDebugActions}
                         />
                       </TableCell>
