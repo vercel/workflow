@@ -15,6 +15,7 @@ import {
   ArrowUpAZ,
   ChevronLeft,
   ChevronRight,
+  Loader2Icon,
   MoreHorizontal,
   RefreshCw,
 } from 'lucide-react';
@@ -51,6 +52,7 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
+import { useDataDirInfo } from '@/lib/hooks';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
@@ -377,12 +379,16 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     () => new Date()
   );
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
+  const isLocal = config.backend === 'local' || !config.backend;
+  const { data: dataDirInfo, isLoading: dataDirInfoLoading } = useDataDirInfo(
+    config.dataDir
+  );
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
     config.backend?.includes('vercel') || false;
   // TODO: This is a workaround. We should be getting a list of valid workflow names
-  // from the manifest, which we need to put on the World interface.
+  // from the manifest.
   const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
     new Set()
   );
@@ -402,6 +408,11 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     status: status === 'all' ? undefined : status,
   });
 
+  const isLocalAndHasMissingData =
+    isLocal &&
+    (!dataDirInfo?.dataDir || !data?.data?.length) &&
+    !dataDirInfoLoading;
+
   // Track seen workflow names from loaded data
   useEffect(() => {
     if (data.data && data.data.length > 0) {
@@ -418,14 +429,33 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
 
   const loading = data.isLoading;
 
-  const onReload = () => {
+  const onReload = useCallback(() => {
     setLastRefreshTime(() => new Date());
     reload();
-  };
+  }, [reload]);
 
   const toggleSortOrder = () => {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
   };
+
+  // Only for local env and while we don't already have data,
+  // we periodically refresh the data to check for new runs.
+  // This is both to improve UX slightly, while also ensuring that
+  // we react to a workflow data directory being created after the first run.
+  useEffect(() => {
+    if (isLocalAndHasMissingData) {
+      const interval = setInterval(() => {
+        onReload();
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [isLocalAndHasMissingData, onReload]);
+
+  const localDirText = (
+    <code className="font-mono">
+      {dataDirInfo?.shortName || 'current directory'}
+    </code>
+  );
 
   return (
     <div>
@@ -453,11 +483,16 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ) : loading && !data?.data ? (
         <TableSkeleton />
       ) : !loading && (!data.data || data.data.length === 0) ? (
-        <div className="text-center py-8 text-muted-foreground">
-          No workflow runs found. <br />
-          <DocsLink href="https://useworkflow.dev/docs/foundations/workflows-and-steps">
-            Learn how to create a workflow
-          </DocsLink>
+        <div className="text-sm text-center py-8 text-muted-foreground flex flex-col items-center justify-center gap-3">
+          <span className="text-sm">
+            No workflow runs found
+            {isLocalAndHasMissingData ? <> in {localDirText}</> : ''}.
+          </span>
+          {isLocalAndHasMissingData && (
+            <span className="text-sm flex items-center gap-2">
+              This view will update once you run a workflow.
+            </span>
+          )}
         </div>
       ) : (
         <>
@@ -535,7 +570,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                           env={env}
                           runId={run.runId}
                           runStatus={run.status}
-                          onSuccess={reload}
+                          onSuccess={onReload}
                           showDebugActions={showDebugActions}
                         />
                       </TableCell>

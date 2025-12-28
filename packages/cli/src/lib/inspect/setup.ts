@@ -8,6 +8,11 @@ import {
   writeEnvVars,
 } from './env.js';
 
+/**
+ * Setup CLI world configuration.
+ * If throwOnConfigError is false, will return null world with the error message
+ * instead of throwing, allowing the web UI to open for configuration.
+ */
 export const setupCliWorld = async (
   flags: {
     json: boolean;
@@ -18,8 +23,9 @@ export const setupCliWorld = async (
     project: string;
     team: string;
   },
-  version: string
-) => {
+  version: string,
+  ignoreLocalWorldConfigError = false
+): Promise<Awaited<ReturnType<typeof createWorld>> | null> => {
   setJsonMode(Boolean(flags.json));
   setVerboseMode(Boolean(flags.verbose));
 
@@ -30,9 +36,9 @@ export const setupCliWorld = async (
 
   logger.showBox(
     'green',
-    `        Workflow CLI v${version}        `,
-    `        Docs at ${docsUrl}          `,
-    chalk.yellow('This is a beta release - commands might change')
+    `Workflow CLI v${version}`,
+    `Docs at ${docsUrl}`,
+    chalk.yellow('This is a beta release')
   );
 
   logger.debug('Inferring env vars, backend:', flags.backend);
@@ -55,9 +61,25 @@ export const setupCliWorld = async (
     flags.backend === 'local' ||
     flags.backend === '@workflow/world-local'
   ) {
-    await inferLocalWorldEnvVars();
+    try {
+      await inferLocalWorldEnvVars();
+    } catch (error) {
+      if (ignoreLocalWorldConfigError) {
+        const configError =
+          error instanceof Error
+            ? error.message
+            : 'Unknown configuration error';
+        logger.warn(
+          'Failed to find valid local world configuration:',
+          configError
+        );
+        return null;
+      }
+      throw error;
+    }
   }
 
   logger.debug('Initializing world');
-  return createWorld();
+  const world = await createWorld();
+  return world;
 };

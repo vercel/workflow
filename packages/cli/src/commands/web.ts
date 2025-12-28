@@ -49,7 +49,8 @@ export default class Web extends BaseCommand {
 
       // Setup the CLI world to write env vars from flags
       // This ensures backend, authToken, team, project, etc. are properly set
-      await setupCliWorld(flags, this.config.version);
+      // Don't throw on config errors - let the web UI handle them
+      await setupCliWorld(flags, this.config.version, true);
 
       // Launch web UI with 'run' as the default resource
       await launchWebUI('run', id, flags, this.config.version);

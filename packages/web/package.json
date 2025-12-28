@@ -47,6 +47,7 @@
     "@types/react": "19",
     "@types/react-dom": "19",
     "@workflow/core": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/web-shared": "workspace:*",
     "class-variance-authority": "0.7.1",

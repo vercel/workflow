@@ -12,12 +12,14 @@ export const possibleWorkflowDataPaths = [
 ] as const;
 
 export interface WorkflowDataDirInfo {
+  /** Absolute path to the workflow data directory, if found. Absence indicates that the folder does not point to a project or folder within a valid local world. */
+  dataDir?: string;
   /** Absolute path to the project root (parent of the workflow data folder) */
   projectDir: string;
-  /** Absolute path to the workflow data directory */
-  dataDir: string;
   /** Short name for display: up to last two folder names of projectDir */
   shortName: string;
+  /** Error message if the given path couldn't be accessed (doesn't exist or is not readable) */
+  error?: string;
 }
 
 /**
@@ -47,12 +49,12 @@ function toAbsolutePath(path: string, basePath?: string): string {
  * Examples:
  * - `/Users/peter/code/myproject` → `code/myproject`
  * - `/myproject` → `myproject`
- * - `/` → ``
+ * - `/` → `/`
  */
-function getShortName(projectDir: string): string {
+export function getDirShortName(projectDir: string): string {
   const parts = projectDir.split(sep).filter(Boolean);
   if (parts.length === 0) {
-    return '';
+    return '/';
   }
   if (parts.length === 1) {
     return parts[0];
@@ -110,8 +112,18 @@ function checkIfPathIsWorkflowDataDir(
  */
 export async function findWorkflowDataDir(
   cwd: string
-): Promise<WorkflowDataDirInfo | null> {
+): Promise<WorkflowDataDirInfo> {
   const absoluteCwd = toAbsolutePath(cwd);
+
+  // Pre-check if the passed path is valid at all
+  if (!(await directoryExists(absoluteCwd))) {
+    return {
+      projectDir: absoluteCwd,
+      dataDir: undefined,
+      shortName: getDirShortName(absoluteCwd),
+      error: 'Folder does not exist',
+    };
+  }
 
   // Case 1: Check if the path itself is already a workflow data directory
   const isDataDir = checkIfPathIsWorkflowDataDir(absoluteCwd);
@@ -119,7 +131,7 @@ export async function findWorkflowDataDir(
     return {
       projectDir: isDataDir.projectDir,
       dataDir: absoluteCwd,
-      shortName: getShortName(isDataDir.projectDir),
+      shortName: getDirShortName(isDataDir.projectDir),
     };
   }
 
@@ -130,7 +142,7 @@ export async function findWorkflowDataDir(
       return {
         projectDir: absoluteCwd,
         dataDir: resolve(fullPath),
-        shortName: getShortName(absoluteCwd),
+        shortName: getDirShortName(absoluteCwd),
       };
     }
   }
@@ -147,7 +159,7 @@ export async function findWorkflowDataDir(
         return {
           projectDir: currentDir,
           dataDir: resolve(fullPath),
-          shortName: getShortName(currentDir),
+          shortName: getDirShortName(currentDir),
         };
       }
     }
@@ -159,5 +171,11 @@ export async function findWorkflowDataDir(
     currentDir = parentDir;
   }
 
-  return null;
+  // If we get here, we didn't find a workflow data directory
+
+  return {
+    projectDir: absoluteCwd,
+    dataDir: undefined,
+    shortName: getDirShortName(absoluteCwd),
+  };
 }

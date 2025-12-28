@@ -304,8 +304,9 @@ export async function launchWebUI(
   const alreadyRunning = await isServerRunning(hostUrl);
 
   if (alreadyRunning) {
-    logger.info(chalk.cyan('Web UI server is already running'));
-    logger.info(chalk.cyan(`Access at: ${hostUrl}`));
+    logger.info(
+      chalk.cyan(`Web UI server is already running on port ${webPort}.`)
+    );
   } else {
     // Start the server
     const started = await startWebServer(webPort);

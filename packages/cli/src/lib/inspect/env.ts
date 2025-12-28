@@ -1,9 +1,6 @@
 import { access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import {
-  findWorkflowDataDir,
-  possibleWorkflowDataPaths,
-} from '@workflow/utils/check-data-dir';
+import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import { logger } from '../config/log.js';
 import { getWorkflowConfig } from '../config/workflow-config.js';
 import { getAuth } from './auth.js';
@@ -76,6 +73,8 @@ async function findManifestPath(cwd: string) {
 /**
  * Overwrites process.env variables related to local world configuration,
  * if relevant environment variables aren't set already.
+ *
+ * Throws if the workflow data directory can not be found.
  */
 export const inferLocalWorldEnvVars = async () => {
   const envVars = getEnvVars();
@@ -93,7 +92,7 @@ export const inferLocalWorldEnvVars = async () => {
   // Infer workflow data directory
   if (!envVars.WORKFLOW_LOCAL_DATA_DIR) {
     const localResult = await findWorkflowDataDir(cwd);
-    if (localResult) {
+    if (localResult.dataDir) {
       logger.debug('Found workflow data directory:', localResult.dataDir);
       envVars.WORKFLOW_LOCAL_DATA_DIR = localResult.dataDir;
       writeEnvVars(envVars);
@@ -102,21 +101,15 @@ export const inferLocalWorldEnvVars = async () => {
       repoRoot = await findRepoRoot(cwd, cwd);
       if (repoRoot) {
         const repoResult = await findWorkflowDataDir(repoRoot);
-        if (repoResult) {
+        if (repoResult.dataDir) {
           logger.debug('Found workflow data directory:', repoResult.dataDir);
           envVars.WORKFLOW_LOCAL_DATA_DIR = repoResult.dataDir;
           writeEnvVars(envVars);
         }
       }
-
       if (!envVars.WORKFLOW_LOCAL_DATA_DIR) {
-        logger.error(
-          `No workflow data directory found in "${cwd}". Have you run any workflows yet?`
-        );
-        logger.warn(
-          `\nCheck whether your data is in any of:\n${possibleWorkflowDataPaths.map((p: string) => `  ${cwd}/${p}${repoRoot && repoRoot !== cwd ? `\n  ${repoRoot}/${p}` : ''}`).join('\n')}\n`
-        );
-        throw new Error('No workflow data directory found');
+        const message = `No workflow data directory found in "${cwd}". Have you run any workflows yet?`;
+        throw new Error(message);
       }
     }
   }

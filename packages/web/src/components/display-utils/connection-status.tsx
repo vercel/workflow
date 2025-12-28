@@ -6,7 +6,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import type { WorldConfig } from '@/lib/config-world';
+import type { WorkflowDataDirInfo, WorldConfig } from '@/lib/config-world';
+import { useDataDirInfo } from '@/lib/hooks';
 
 interface ConnectionStatusProps {
   config: WorldConfig;
@@ -14,7 +15,8 @@ interface ConnectionStatusProps {
 
 const getConnectionInfo = (
   backend: string,
-  config: WorldConfig
+  config: WorldConfig,
+  dataDirInfo: WorkflowDataDirInfo | null | undefined
 ): { provider: string; parts: string[] } => {
   if (backend === 'vercel') {
     const parts: string[] = [];
@@ -26,10 +28,10 @@ const getConnectionInfo = (
   }
 
   if (backend === 'local') {
-    // Local backend
+    // Local backend - show projectDir instead of raw dataDir
     const parts: string[] = [];
-    if (config.dataDir) {
-      parts.push(`dir: ${config.dataDir}`);
+    if (dataDirInfo?.projectDir) {
+      parts.push(`project: ${dataDirInfo.projectDir}`);
     }
     if (config.port) parts.push(`port: ${config.port}`);
 
@@ -41,11 +43,19 @@ const getConnectionInfo = (
 
 export function ConnectionStatus({ config }: ConnectionStatusProps) {
   const backend = config.backend || 'local';
-  const { provider, parts } = getConnectionInfo(backend, config);
-
+  const { data: dataDirInfo } = useDataDirInfo(config.dataDir);
+  const { provider, parts } = getConnectionInfo(backend, config, dataDirInfo);
+  const subString =
+    backend === 'local'
+      ? dataDirInfo?.shortName
+      : backend === 'vercel'
+        ? config.env
+        : undefined;
   return (
     <div className="text-sm text-muted-foreground flex items-center gap-2">
-      <span className="font-medium">Connected to: {provider}</span>
+      <span className="font-medium">
+        Connected to: {provider} {subString ? `(${subString})` : ''}
+      </span>
       <Tooltip>
         <TooltipTrigger asChild>
           <InfoIcon className="w-4 h-4" />
