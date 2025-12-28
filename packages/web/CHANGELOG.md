@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.22
+
+### Patch Changes
+
+- [#694](https://github.com/vercel/workflow/pull/694) [`f989613`](https://github.com/vercel/workflow/commit/f989613d7020f987fba2c74f2e49c8d47ff74a29) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add error boundaries around tabs in run detail view
+
 ## 4.0.1-beta.21
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @workflow/cli
 
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- [#684](https://github.com/vercel/workflow/pull/684) [`80955e7`](https://github.com/vercel/workflow/commit/80955e7212b38237710249f7ac3c17fb55cae49b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow opening UI without a valid local config detected, UI will show warning and watch folder
+
+- Updated dependencies [[`f989613`](https://github.com/vercel/workflow/commit/f989613d7020f987fba2c74f2e49c8d47ff74a29)]:
+  - @workflow/web@4.0.1-beta.22
+
 ## 4.0.1-beta.37
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- [#695](https://github.com/vercel/workflow/pull/695) [`25bfa52`](https://github.com/vercel/workflow/commit/25bfa52d02d8c5bb677a7effcb993d107f6ad130) Thanks [@ctate](https://github.com/ctate)! - Fix: Handle object-style finishReason for AI SDK v5/v6 compatibility
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.38
+
 ## 4.0.1-beta.37
 
 ### Patch Changes

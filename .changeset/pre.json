@@ -43,6 +43,7 @@
   "changesets": [
     "add-documentation",
     "add-type-safety",
+    "afraid-paws-rescue",
     "all-guests-change",
     "all-years-glow",
     "angry-owls-beg",
@@ -61,6 +62,7 @@
     "chatty-goats-fall",
     "chilly-yaks-sneeze",
     "chubby-kids-jog",
+    "clean-parrots-search",
     "common-singers-hide",
     "consolidate-config",
     "cool-lands-buy",
@@ -288,6 +290,7 @@
     "two-nights-join",
     "two-rabbits-burn",
     "two-snails-cross",
+    "vast-files-judge",
     "violet-bats-crash",
     "violet-ideas-like",
     "violet-mails-send",
