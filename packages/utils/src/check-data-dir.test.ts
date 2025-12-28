@@ -28,10 +28,10 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(testDir);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(testDir);
-      expect(result!.dataDir).toBe(dataPath);
-      expect(result!.shortName).toBeTruthy();
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(testDir);
+      expect(result.dataDir).toBe(dataPath);
+      expect(result.shortName).toBeTruthy();
     });
 
     it('should find .workflow-data in cwd', async () => {
@@ -40,9 +40,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(testDir);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(testDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(testDir);
+      expect(result.dataDir).toBe(dataPath);
     });
 
     it('should find workflow-data in cwd', async () => {
@@ -51,9 +51,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(testDir);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(testDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(testDir);
+      expect(result.dataDir).toBe(dataPath);
     });
 
     it('should prefer .next/workflow-data over others', async () => {
@@ -64,9 +64,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(testDir);
 
-      expect(result).not.toBeNull();
+      expect(result.dataDir).toBeDefined();
       // .next/workflow-data should be found first as it's first in the list
-      expect(result!.dataDir).toBe(join(testDir, '.next', 'workflow-data'));
+      expect(result.dataDir).toBe(join(testDir, '.next', 'workflow-data'));
     });
   });
 
@@ -78,9 +78,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(dataPath);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(projectDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(projectDir);
+      expect(result.dataDir).toBe(dataPath);
     });
 
     it('should detect .workflow-data path and return parent', async () => {
@@ -90,9 +90,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(dataPath);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(projectDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(projectDir);
+      expect(result.dataDir).toBe(dataPath);
     });
 
     it('should detect workflow-data path and return parent', async () => {
@@ -102,9 +102,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(dataPath);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(projectDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(projectDir);
+      expect(result.dataDir).toBe(dataPath);
     });
   });
 
@@ -118,9 +118,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(subDir);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(projectDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(projectDir);
+      expect(result.dataDir).toBe(dataPath);
     });
 
     it('should find workflow data several levels up', async () => {
@@ -132,24 +132,27 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(deepDir);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(projectDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(projectDir);
+      expect(result.dataDir).toBe(dataPath);
     });
   });
 
   describe('when no workflow data is found', () => {
-    it('should return null when directory is empty', async () => {
+    it('should return undefined dataDir when directory is empty', async () => {
       const result = await findWorkflowDataDir(testDir);
-      expect(result).toBeNull();
+      expect(result.dataDir).toBeUndefined();
+      expect(result.projectDir).toBe(testDir);
+      expect(result.shortName).toBeTruthy();
     });
 
-    it('should return null when only unrelated directories exist', async () => {
+    it('should return undefined dataDir when only unrelated directories exist', async () => {
       await mkdir(join(testDir, 'src'), { recursive: true });
       await mkdir(join(testDir, 'node_modules'), { recursive: true });
 
       const result = await findWorkflowDataDir(testDir);
-      expect(result).toBeNull();
+      expect(result.dataDir).toBeUndefined();
+      expect(result.projectDir).toBe(testDir);
     });
   });
 
@@ -165,9 +168,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(relativePath);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(projectDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(projectDir);
+      expect(result.dataDir).toBe(dataPath);
     });
 
     it('should handle absolute paths', async () => {
@@ -177,9 +180,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(projectDir);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(resolve(projectDir));
-      expect(result!.dataDir).toBe(resolve(dataPath));
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(resolve(projectDir));
+      expect(result.dataDir).toBe(resolve(dataPath));
     });
 
     it('should expand tilde paths', async () => {
@@ -193,9 +196,9 @@ describe('findWorkflowDataDir', () => {
         const tildePath = '~/.workflow-test-' + homeTestDir.split('-').pop();
         const result = await findWorkflowDataDir(tildePath);
 
-        expect(result).not.toBeNull();
-        expect(result!.projectDir).toBe(homeTestDir);
-        expect(result!.dataDir).toBe(dataPath);
+        expect(result.dataDir).toBeDefined();
+        expect(result.projectDir).toBe(homeTestDir);
+        expect(result.dataDir).toBe(dataPath);
       } finally {
         await rm(homeTestDir, { recursive: true, force: true });
       }
@@ -208,10 +211,10 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(projectDir);
 
-      expect(result).not.toBeNull();
+      expect(result.dataDir).toBeDefined();
       // Ensure paths are absolute
-      expect(result!.projectDir).toMatch(/^[/\\]|^[A-Z]:/i);
-      expect(result!.dataDir).toMatch(/^[/\\]|^[A-Z]:/i);
+      expect(result.projectDir).toMatch(/^[/\\]|^[A-Z]:/i);
+      expect(result.dataDir).toMatch(/^[/\\]|^[A-Z]:/i);
     });
 
     it('should normalize paths with .. and .', async () => {
@@ -224,9 +227,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(weirdPath);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(projectDir);
-      expect(result!.dataDir).toBe(dataPath);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(projectDir);
+      expect(result.dataDir).toBe(dataPath);
     });
   });
 
@@ -238,8 +241,8 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(projectDir);
 
-      expect(result).not.toBeNull();
-      expect(result!.shortName).toBe('code/myproject');
+      expect(result.dataDir).toBeDefined();
+      expect(result.shortName).toBe('code/myproject');
     });
 
     it('should return single folder name for shallow path', async () => {
@@ -249,9 +252,9 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(projectDir);
 
-      expect(result).not.toBeNull();
+      expect(result.dataDir).toBeDefined();
       // The shortName should include the last two parts, which includes testDir name and 'myproject'
-      const parts = result!.shortName.split('/');
+      const parts = result.shortName.split('/');
       expect(parts.length).toBeLessThanOrEqual(2);
       expect(parts[parts.length - 1]).toBe('myproject');
     });
@@ -263,22 +266,25 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(projectDir);
 
-      expect(result).not.toBeNull();
-      expect(result!.shortName).toBe('d/project');
+      expect(result.dataDir).toBeDefined();
+      expect(result.shortName).toBe('d/project');
     });
   });
 
   describe('edge cases', () => {
     it('should handle non-existent directories gracefully', async () => {
       const result = await findWorkflowDataDir('/this/path/does/not/exist');
-      expect(result).toBeNull();
+      expect(result.dataDir).toBeUndefined();
+      expect(result.error).toBe('Folder does not exist');
     });
 
     it('should handle empty string path', async () => {
       // Empty string should default to cwd
       const result = await findWorkflowDataDir('');
-      // Result depends on whether cwd has workflow data
-      expect(result === null || typeof result === 'object').toBe(true);
+      // Result is always an object, dataDir may or may not be defined depending on cwd
+      expect(typeof result).toBe('object');
+      expect(result.projectDir).toBeTruthy();
+      expect(result.shortName).toBeTruthy();
     });
 
     it('should handle path with trailing slashes', async () => {
@@ -288,8 +294,8 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(projectDir + sep);
 
-      expect(result).not.toBeNull();
-      expect(result!.projectDir).toBe(projectDir);
+      expect(result.dataDir).toBeDefined();
+      expect(result.projectDir).toBe(projectDir);
     });
 
     it('should handle workflow data dir that does not exist when passed directly', async () => {
@@ -298,7 +304,8 @@ describe('findWorkflowDataDir', () => {
 
       const result = await findWorkflowDataDir(fakePath);
 
-      expect(result).toBeNull();
+      expect(result.dataDir).toBeUndefined();
+      expect(result.error).toBe('Folder does not exist');
     });
   });
 });
