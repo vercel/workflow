@@ -259,7 +259,15 @@ export async function* streamTextIterator({
       lastStep = step;
       lastStepWasToolCalls = false;
 
-      if (finish?.finishReason === 'tool-calls') {
+      // Normalize finishReason - AI SDK v6 may return an object with a 'type' property
+      // while AI SDK v5 returns a plain string
+      const rawFinishReason = finish?.finishReason;
+      const finishReason =
+        typeof rawFinishReason === 'object' && rawFinishReason !== null
+          ? ((rawFinishReason as { type?: string }).type ?? 'unknown')
+          : rawFinishReason;
+
+      if (finishReason === 'tool-calls') {
         lastStepWasToolCalls = true;
         // Add assistant message with tool calls to the conversation
         conversationPrompt.push({
@@ -296,7 +304,7 @@ export async function* streamTextIterator({
             done = true;
           }
         }
-      } else if (finish?.finishReason === 'stop') {
+      } else if (finishReason === 'stop') {
         // Add assistant message with text content to the conversation
         const textContent = step.content.filter(
           (item) => item.type === 'text'
@@ -310,26 +318,28 @@ export async function* streamTextIterator({
         }
 
         done = true;
-      } else if (finish?.finishReason === 'length') {
+      } else if (finishReason === 'length') {
         // Model hit max tokens - stop but don't throw
         done = true;
-      } else if (finish?.finishReason === 'content-filter') {
+      } else if (finishReason === 'content-filter') {
         // Content filter triggered - stop but don't throw
         done = true;
-      } else if (finish?.finishReason === 'error') {
+      } else if (finishReason === 'error') {
         // Model error - stop but don't throw
         done = true;
-      } else if (finish?.finishReason === 'other') {
+      } else if (finishReason === 'other') {
         // Other reason - stop but don't throw
         done = true;
-      } else if (finish?.finishReason === 'unknown') {
+      } else if (finishReason === 'unknown') {
         // Unknown reason - stop but don't throw
         done = true;
-      } else if (!finish?.finishReason) {
+      } else if (!finishReason) {
         // No finish reason - this might happen on incomplete streams
         done = true;
       } else {
-        throw new Error(`Unexpected finish reason: ${finish?.finishReason}`);
+        throw new Error(
+          `Unexpected finish reason: ${typeof rawFinishReason === 'object' ? JSON.stringify(rawFinishReason) : rawFinishReason}`
+        );
       }
 
       if (onStepFinish) {
