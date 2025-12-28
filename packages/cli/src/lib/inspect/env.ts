@@ -1,9 +1,6 @@
 import { access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import {
-  findWorkflowDataDir,
-  possibleWorkflowDataPaths,
-} from '@workflow/utils/check-data-dir';
+import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import { logger } from '../config/log.js';
 import { getWorkflowConfig } from '../config/workflow-config.js';
 import { getAuth } from './auth.js';
@@ -110,15 +107,9 @@ export const inferLocalWorldEnvVars = async () => {
           writeEnvVars(envVars);
         }
       }
-
       if (!envVars.WORKFLOW_LOCAL_DATA_DIR) {
-        logger.error(
-          `No workflow data directory found in "${cwd}". Have you run any workflows yet?`
-        );
-        logger.warn(
-          `\nCheck whether your data is in any of:\n${possibleWorkflowDataPaths.map((p: string) => `  ${cwd}/${p}${repoRoot && repoRoot !== cwd ? `\n  ${repoRoot}/${p}` : ''}`).join('\n')}\n`
-        );
-        throw new Error('No workflow data directory found');
+        const message = `No workflow data directory found in "${cwd}". Have you run any workflows yet?`;
+        throw new Error(message);
       }
     }
   }

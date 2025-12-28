@@ -53,7 +53,7 @@ export default class Web extends BaseCommand {
       const { configError } = await setupCliWorld(
         flags,
         this.config.version,
-        false
+        true
       );
 
       // Launch web UI with 'run' as the default resource

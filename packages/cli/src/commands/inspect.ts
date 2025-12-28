@@ -142,15 +142,15 @@ export default class Inspect extends BaseCommand {
       const id = args.id;
 
       // For web mode, allow config errors so we can open the web UI for configuration
-      const throwOnConfigError = !(flags.web || resource === 'web');
+      const isWebMode = flags.web || resource === 'web';
       const { world, configError } = await setupCliWorld(
         flags,
         this.config.version,
-        throwOnConfigError
+        isWebMode
       );
 
       // Handle web UI mode
-      if (flags.web || resource === 'web') {
+      if (isWebMode) {
         const actualResource = resource === 'web' ? 'run' : resource;
         await launchWebUI(
           actualResource,

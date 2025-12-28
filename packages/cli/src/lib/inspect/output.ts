@@ -347,7 +347,11 @@ const showTable = (
   TABLE_TRUNCATE_IO_LENGTH = displaySettings.dataFieldWidth;
 
   // Show status legend if using abbreviated status
-  if (displaySettings.abbreviateStatus && visibleProps.includes('status')) {
+  if (
+    data.length > 0 &&
+    displaySettings.abbreviateStatus &&
+    visibleProps.includes('status')
+  ) {
     showStatusLegend();
   }
 

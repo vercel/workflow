@@ -29,7 +29,7 @@ export const setupCliWorld = async (
     team: string;
   },
   version: string,
-  throwOnConfigError = true
+  ignoreLocalWorldConfigError = false
 ): Promise<SetupResult> => {
   setJsonMode(Boolean(flags.json));
   setVerboseMode(Boolean(flags.verbose));
@@ -41,9 +41,9 @@ export const setupCliWorld = async (
 
   logger.showBox(
     'green',
-    `        Workflow CLI v${version}        `,
-    `        Docs at ${docsUrl}          `,
-    chalk.yellow('This is a beta release - commands might change')
+    `Workflow CLI v${version}`,
+    `Docs at ${docsUrl}`,
+    chalk.yellow('This is a beta release')
   );
 
   logger.debug('Inferring env vars, backend:', flags.backend);
@@ -57,32 +57,34 @@ export const setupCliWorld = async (
     WORKFLOW_VERCEL_BACKEND_URL: 'https://api.vercel.com/v1/workflow',
   });
 
-  try {
-    if (
-      flags.backend === 'vercel' ||
-      flags.backend === '@workflow/world-vercel'
-    ) {
-      await inferVercelEnvVars();
-    } else if (
-      flags.backend === 'local' ||
-      flags.backend === '@workflow/world-local'
-    ) {
+  if (
+    flags.backend === 'vercel' ||
+    flags.backend === '@workflow/world-vercel'
+  ) {
+    await inferVercelEnvVars();
+  } else if (
+    flags.backend === 'local' ||
+    flags.backend === '@workflow/world-local'
+  ) {
+    try {
       await inferLocalWorldEnvVars();
-    }
-
-    logger.debug('Initializing world');
-    const world = await createWorld();
-    return { world, configError: null };
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : 'Unknown configuration error';
-
-    if (throwOnConfigError) {
+    } catch (error) {
+      if (ignoreLocalWorldConfigError) {
+        const configError =
+          error instanceof Error
+            ? error.message
+            : 'Unknown configuration error';
+        logger.warn(
+          'Failed to find valid local world configuration:',
+          configError
+        );
+        return { world: null, configError };
+      }
       throw error;
     }
-
-    logger.warn(`Configuration incomplete: ${errorMessage}`);
-    logger.info('Web UI will open for configuration.');
-    return { world: null, configError: errorMessage };
   }
+
+  logger.debug('Initializing world');
+  const world = await createWorld();
+  return { world, configError: null };
 };
