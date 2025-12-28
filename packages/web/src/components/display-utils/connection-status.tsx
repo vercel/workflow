@@ -43,9 +43,7 @@ const getConnectionInfo = (
 
 export function ConnectionStatus({ config }: ConnectionStatusProps) {
   const backend = config.backend || 'local';
-  console.log('config', config);
   const { data: dataDirInfo } = useDataDirInfo(config.dataDir);
-  console.log('dataDirInfo', dataDirInfo);
   const { provider, parts } = getConnectionInfo(backend, config, dataDirInfo);
   const subString =
     backend === 'local'
