@@ -102,12 +102,12 @@ export async function getNextBuilder() {
 
       // Use provided inputFiles or discover them
       const files = inputFiles || (await this.getInputFiles());
-      const tsConfig = await this.getTsConfigOptions();
+      const tsconfigPath = await this.findTsConfigPath();
 
       const options = {
         inputFiles: files,
         workflowGeneratedDir,
-        tsconfigPath: tsConfig.tsconfigPath,
+        tsconfigPath,
       };
 
       const { manifest } = await this.buildStepsFunction(options);

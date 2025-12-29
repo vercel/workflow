@@ -1,3 +1,5 @@
+// Test path alias resolution - imports a helper from outside the workbench directory
+import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
@@ -608,4 +610,27 @@ export async function spawnWorkflowFromStepWorkflow(inputValue: number) {
     childRunId,
     childResult,
   };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Step that calls a helper function imported via path alias.
+ */
+async function callPathsAliasHelper() {
+  'use step';
+  // Call the helper function imported via @repo/* path alias
+  return pathsAliasHelper();
+}
+
+/**
+ * Test that TypeScript path aliases work correctly.
+ * This workflow uses a step that calls a helper function imported via the @repo/* path alias,
+ * which resolves to a file outside the workbench directory.
+ */
+export async function pathsAliasWorkflow() {
+  'use workflow';
+  // Call the step that uses the path alias helper
+  const result = await callPathsAliasHelper();
+  return result;
 }

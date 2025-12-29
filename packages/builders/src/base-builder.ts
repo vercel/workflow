@@ -42,16 +42,9 @@ export abstract class BaseBuilder {
    * Finds tsconfig.json/jsconfig.json for the project.
    * Used by esbuild to properly resolve module imports during bundling.
    */
-  protected async getTsConfigOptions(): Promise<{
-    tsconfigPath?: string;
-  }> {
+  protected async findTsConfigPath(): Promise<string | undefined> {
     const cwd = this.config.workingDir || process.cwd();
-
-    const tsconfigPath = await findUp(['tsconfig.json', 'jsconfig.json'], {
-      cwd,
-    });
-
-    return { tsconfigPath };
+    return findUp(['tsconfig.json', 'jsconfig.json'], { cwd });
   }
 
   /**

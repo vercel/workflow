@@ -11,11 +11,11 @@ export class StandaloneBuilder extends BaseBuilder {
 
   async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
 
     const options = {
       inputFiles,
-      tsconfigPath: tsConfig.tsconfigPath,
+      tsconfigPath,
     };
     const manifest = await this.buildStepsBundle(options);
     await this.buildWorkflowsBundle(options);

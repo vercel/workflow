@@ -13,11 +13,11 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await mkdir(workflowGeneratedDir, { recursive: true });
 
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
     const options = {
       inputFiles,
       workflowGeneratedDir,
-      tsconfigPath: tsConfig.tsconfigPath,
+      tsconfigPath,
     };
     const manifest = await this.buildStepsFunction(options);
     await this.buildWorkflowsFunction(options);

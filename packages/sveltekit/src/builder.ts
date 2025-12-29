@@ -45,12 +45,12 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
 
     const options = {
       inputFiles,
       workflowGeneratedDir,
-      tsconfigPath: tsConfig.tsconfigPath,
+      tsconfigPath,
     };
 
     // Generate the three SvelteKit route handlers
