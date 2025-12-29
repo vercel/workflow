@@ -204,14 +204,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           }
 
           const { code: transformedCode, workflowManifest } =
-            await applySwcTransform(
-              relativeFilepath,
-              source,
-              options.mode
-              // Note: We don't pass paths/baseUrl to SWC because:
-              // 1. SWC's path resolution produces relative paths that esbuild can't resolve
-              // 2. We handle TypeScript path aliases in our onResolve handler instead
-            );
+            await applySwcTransform(relativeFilepath, source, options.mode);
 
           if (!options.workflowManifest) {
             options.workflowManifest = {};
