@@ -1,3 +1,4 @@
+import { pluralize } from '@workflow/utils';
 import type { Serializable } from './schemas.js';
 
 export interface StepInvocationQueueItem {
@@ -57,18 +58,18 @@ export class WorkflowSuspension extends Error {
     // Build description parts
     const parts: string[] = [];
     if (stepCount > 0) {
-      parts.push(`${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`);
+      parts.push(`${stepCount} ${pluralize('step', 'steps', stepCount)}`);
     }
     if (hookCount > 0) {
-      parts.push(`${hookCount} ${hookCount === 1 ? 'hook' : 'hooks'}`);
+      parts.push(`${hookCount} ${pluralize('hook', 'hooks', hookCount)}`);
     }
     if (waitCount > 0) {
-      parts.push(`${waitCount} ${waitCount === 1 ? 'wait' : 'waits'}`);
+      parts.push(`${waitCount} ${pluralize('wait', 'waits', waitCount)}`);
     }
 
     // Determine verb (has/have) and action (run/created/received)
     const totalCount = stepCount + hookCount + waitCount;
-    const hasOrHave = totalCount === 1 ? 'has' : 'have';
+    const hasOrHave = pluralize('has', 'have', totalCount);
     let action: string;
     if (stepCount > 0) {
       action = 'run';
