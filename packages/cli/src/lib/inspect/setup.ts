@@ -67,6 +67,9 @@ export const setupCliWorld = async (
       chalk.cyan(
         `Update available: ${updateCheck.currentVersion} → ${updateCheck.latestVersion}`
       ),
+      // Note that we're suggesting install "latest" instead of the release tag that the user is
+      // on, because we currently tag beta releases as "latest". After GA, we need to adjust
+      // this to install the release tag that the user is on.
       chalk.gray('Run: `[npm|yarn|pnpm] i workflow@latest`')
     );
   }
