@@ -10,12 +10,6 @@ export type StepFunction<
   Args extends Serializable[] = any[],
   Result extends Serializable | unknown = unknown,
 > = ((...args: Args) => Promise<Result>) & {
-  /**
-   * Maximum number of retries on failure. Default is 3.
-   * This is the number of retry attempts after the initial attempt fails.
-   * - `maxRetries = 0` means the step runs once with no retries (1 total attempt)
-   * - `maxRetries = 3` (default) means up to 3 retries (4 total attempts)
-   */
   maxRetries?: number;
 };
 
