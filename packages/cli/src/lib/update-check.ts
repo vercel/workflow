@@ -5,7 +5,7 @@ import { logger } from './config/log.js';
 // Constants
 const PACKAGE_NAME = '@workflow/cli';
 const NPM_REGISTRY = 'https://registry.npmjs.org';
-const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const CACHE_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 const REQUEST_TIMEOUT_MS = 5000;
 
 interface VersionCheckResult {
