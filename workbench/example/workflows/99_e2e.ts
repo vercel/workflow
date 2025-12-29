@@ -470,6 +470,59 @@ export async function retryableAndFatalErrorWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+// Test that maxRetries = 0 means the step runs once but does not retry on failure
+async function stepWithNoRetries() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetries - attempt: ${attempt}`);
+  // Always fail - with maxRetries = 0, this should only run once
+  throw new Error(`Failed on attempt ${attempt}`);
+}
+stepWithNoRetries.maxRetries = 0;
+
+// Test that maxRetries = 0 works when the step succeeds
+async function stepWithNoRetriesThatSucceeds() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetriesThatSucceeds - attempt: ${attempt}`);
+  return { attempt };
+}
+stepWithNoRetriesThatSucceeds.maxRetries = 0;
+
+export async function maxRetriesZeroWorkflow() {
+  'use workflow';
+  console.log('Starting maxRetries = 0 workflow');
+
+  // First, verify that a step with maxRetries = 0 can still succeed
+  const successResult = await stepWithNoRetriesThatSucceeds();
+
+  // Now test that a failing step with maxRetries = 0 does NOT retry
+  let failedAttempt: number | null = null;
+  let gotError = false;
+  try {
+    await stepWithNoRetries();
+  } catch (error: any) {
+    gotError = true;
+    // Extract the attempt number from the error message
+    const match = error.message?.match(/attempt (\d+)/);
+    if (match) {
+      failedAttempt = parseInt(match[1], 10);
+    }
+  }
+
+  console.log(
+    `Workflow completed: successResult=${JSON.stringify(successResult)}, gotError=${gotError}, failedAttempt=${failedAttempt}`
+  );
+
+  return {
+    successResult,
+    gotError,
+    failedAttempt,
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function hookCleanupTestWorkflow(
   token: string,
   customData: string

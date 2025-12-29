@@ -629,6 +629,24 @@ describe('e2e', () => {
   });
 
   test(
+    'maxRetriesZeroWorkflow - maxRetries=0 runs once without retrying',
+    { timeout: 60_000 },
+    async () => {
+      const run = await triggerWorkflow('maxRetriesZeroWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The step with maxRetries=0 that succeeds should have run on attempt 1
+      expect(returnValue.successResult).toEqual({ attempt: 1 });
+
+      // The step with maxRetries=0 that fails should have thrown an error
+      expect(returnValue.gotError).toBe(true);
+
+      // The failing step should have only run once (attempt 1), not retried
+      expect(returnValue.failedAttempt).toBe(1);
+    }
+  );
+
+  test(
     'stepDirectCallWorkflow - calling step functions directly outside workflow context',
     { timeout: 60_000 },
     async () => {
