@@ -107,8 +107,7 @@ export async function getNextBuilder() {
       const options = {
         inputFiles: files,
         workflowGeneratedDir,
-        tsBaseUrl: tsConfig.baseUrl,
-        tsPaths: tsConfig.paths,
+        tsconfigPath: tsConfig.tsconfigPath,
       };
 
       const { manifest } = await this.buildStepsFunction(options);
@@ -167,13 +166,11 @@ export async function getNextBuilder() {
     private async buildStepsFunction({
       inputFiles,
       workflowGeneratedDir,
-      tsPaths,
-      tsBaseUrl,
+      tsconfigPath,
     }: {
       inputFiles: string[];
       workflowGeneratedDir: string;
-      tsBaseUrl?: string;
-      tsPaths?: Record<string, string[]>;
+      tsconfigPath?: string;
     }) {
       // Create steps bundle
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
@@ -188,21 +185,18 @@ export async function getNextBuilder() {
         inputFiles,
         outfile: join(stepsRouteDir, 'route.js'),
         externalizeNonSteps: true,
-        tsBaseUrl,
-        tsPaths,
+        tsconfigPath,
       });
     }
 
     private async buildWorkflowsFunction({
       inputFiles,
       workflowGeneratedDir,
-      tsPaths,
-      tsBaseUrl,
+      tsconfigPath,
     }: {
       inputFiles: string[];
       workflowGeneratedDir: string;
-      tsBaseUrl?: string;
-      tsPaths?: Record<string, string[]>;
+      tsconfigPath?: string;
     }): Promise<void | {
       interimBundleCtx: import('esbuild').BuildContext;
       bundleFinal: (interimBundleResult: string) => Promise<void>;
@@ -214,8 +208,7 @@ export async function getNextBuilder() {
         outfile: join(workflowsRouteDir, 'route.js'),
         bundleFinalOutput: false,
         inputFiles,
-        tsBaseUrl,
-        tsPaths,
+        tsconfigPath,
       });
     }
 

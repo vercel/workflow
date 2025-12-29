@@ -16,8 +16,6 @@ export interface SwcPluginOptions {
   mode: 'step' | 'workflow' | 'client';
   entriesToBundle?: string[];
   outdir?: string;
-  tsPaths?: Record<string, string[]>;
-  tsBaseUrl?: string;
   workflowManifest?: WorkflowManifest;
 }
 
@@ -209,14 +207,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             await applySwcTransform(
               relativeFilepath,
               source,
-              options.mode,
-              // we need to provide the tsconfig/jsconfig
-              // alias via swc so that we can resolve them
-              // with our custom resolve logic
-              {
-                paths: options.tsPaths,
-                baseUrl: options.tsBaseUrl,
-              }
+              options.mode
+              // Note: We don't pass paths/baseUrl to SWC because:
+              // 1. SWC's path resolution produces relative paths that esbuild can't resolve
+              // 2. We handle TypeScript path aliases in our onResolve handler instead
             );
 
           if (!options.workflowManifest) {
