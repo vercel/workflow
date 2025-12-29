@@ -3,7 +3,6 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import chalk from 'chalk';
-import { parse } from 'comment-json';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
@@ -40,55 +39,19 @@ export abstract class BaseBuilder {
   abstract build(): Promise<void>;
 
   /**
-   * Extracts TypeScript path mappings and baseUrl from tsconfig.json/jsconfig.json.
-   * Used to properly resolve module imports during bundling.
+   * Finds tsconfig.json/jsconfig.json for the project.
+   * Used by esbuild to properly resolve module imports during bundling.
    */
   protected async getTsConfigOptions(): Promise<{
-    baseUrl?: string;
-    paths?: Record<string, string[]>;
     tsconfigPath?: string;
   }> {
-    const options: {
-      paths?: Record<string, string[]>;
-      baseUrl?: string;
-      tsconfigPath?: string;
-    } = {};
-
     const cwd = this.config.workingDir || process.cwd();
 
-    const tsJsConfig = await findUp(['tsconfig.json', 'jsconfig.json'], {
+    const tsconfigPath = await findUp(['tsconfig.json', 'jsconfig.json'], {
       cwd,
     });
 
-    if (tsJsConfig) {
-      options.tsconfigPath = tsJsConfig;
-      try {
-        const rawJson = await readFile(tsJsConfig, 'utf8');
-        const parsed: null | {
-          compilerOptions?: {
-            paths?: Record<string, string[]> | undefined;
-            baseUrl?: string;
-          };
-        } = parse(rawJson) as any;
-
-        if (parsed) {
-          options.paths = parsed.compilerOptions?.paths;
-
-          if (parsed.compilerOptions?.baseUrl) {
-            options.baseUrl = resolve(cwd, parsed.compilerOptions.baseUrl);
-          } else {
-            options.baseUrl = cwd;
-          }
-        }
-      } catch (err) {
-        console.error(
-          `Failed to parse ${tsJsConfig} aliases might not apply properly`,
-          err
-        );
-      }
-    }
-
-    return options;
+    return { tsconfigPath };
   }
 
   /**
