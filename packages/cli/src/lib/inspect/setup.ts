@@ -67,7 +67,7 @@ export const setupCliWorld = async (
       chalk.cyan(
         `Update available: ${updateCheck.currentVersion} → ${updateCheck.latestVersion}`
       ),
-      chalk.gray('Run: npm install -g @workflow/cli@latest')
+      chalk.gray('Run: `[npm|yarn|pnpm] i workflow@latest`')
     );
   }
 

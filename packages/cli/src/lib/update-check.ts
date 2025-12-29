@@ -86,19 +86,14 @@ async function fetchLatestVersion(
       'dist-tags': { [tag: string]: string };
     };
 
-    // Determine which tag to use based on current version
-    const isPrerelease = currentVersion.includes('-');
-    const tag = isPrerelease ? 'beta' : 'latest';
-
-    const latestVersion = data['dist-tags'][tag];
+    // Always use 'latest' tag - even beta versions are published as latest
+    const latestVersion = data['dist-tags']['latest'];
     if (!latestVersion) {
-      logger.debug(`No ${tag} version found in registry`);
+      logger.debug('No latest version found in registry');
       return null;
     }
 
-    logger.debug(
-      `Current: ${currentVersion}, Latest (${tag}): ${latestVersion}`
-    );
+    logger.debug(`Current: ${currentVersion}, Latest: ${latestVersion}`);
     return latestVersion;
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
