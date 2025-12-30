@@ -7,13 +7,40 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const require = createRequire(import.meta.url);
-const packageJson = require('../package.json') as {
+/**
+ * Load package.json using import.meta.resolve to handle bundled environments correctly.
+ * This ensures the path works even when bundled by tools like Vite/SvelteKit.
+ * Falls back to createRequire for compatibility with test environments.
+ */
+function loadPackageJson(): {
   name: string;
   version: string;
-};
+} {
+  try {
+    // Try to use import.meta.resolve first (Node.js 20.10+ and modern bundlers)
+    // This works correctly in bundled environments where relative paths would break
+    if (typeof import.meta.resolve === 'function') {
+      const packageJsonUrl = import.meta.resolve('../package.json');
+      const absolutePath = fileURLToPath(packageJsonUrl);
+      const content = readFileSync(absolutePath, 'utf-8');
+      return JSON.parse(content);
+    }
+  } catch {
+    // Fall through to createRequire approach
+  }
+
+  // Fallback for environments where import.meta.resolve is not available
+  const require = createRequire(import.meta.url);
+  return require('../package.json') as {
+    name: string;
+    version: string;
+  };
+}
+
+const packageJson = loadPackageJson();
 
 /** Package name for version tracking */
 export const PACKAGE_NAME = packageJson.name;
