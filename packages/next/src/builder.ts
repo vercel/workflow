@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { join, resolve } from 'node:path';
+import { useStepPattern, useWorkflowPattern } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import {
   createSocketServer,
@@ -67,9 +68,36 @@ export async function getNextBuilder() {
       try {
         const cacheContent = await readFile(cacheFile, 'utf-8');
         const cacheData = JSON.parse(cacheContent);
+
+        // Filter workflow files: check they exist and contain "use workflow"
+        const workflowFiles: string[] = [];
+        for (const file of cacheData.workflowFiles || []) {
+          try {
+            const content = await readFile(file, 'utf-8');
+            if (useWorkflowPattern.test(content)) {
+              workflowFiles.push(file);
+            }
+          } catch {
+            // File doesn't exist or can't be read, skip it
+          }
+        }
+
+        // Filter step files: check they exist and contain "use step"
+        const stepFiles: string[] = [];
+        for (const file of cacheData.stepFiles || []) {
+          try {
+            const content = await readFile(file, 'utf-8');
+            if (useStepPattern.test(content)) {
+              stepFiles.push(file);
+            }
+          } catch {
+            // File doesn't exist or can't be read, skip it
+          }
+        }
+
         return {
-          workflowFiles: cacheData.workflowFiles || [],
-          stepFiles: cacheData.stepFiles || [],
+          workflowFiles,
+          stepFiles,
         };
       } catch {
         // Cache file doesn't exist or is invalid, return null
@@ -270,7 +298,7 @@ export async function getNextBuilder() {
       const stepFiles = new Set<string>();
       let debounceTimer: NodeJS.Timeout | null = null;
       let buildTriggered = false;
-      const BUILD_DEBOUNCE_MS = this.isDevServer ? 500 : 2_000;
+      const BUILD_DEBOUNCE_MS = this.isDevServer ? 250 : 1_000;
 
       // Attempt to load cached workflows/steps from previous build
       const cache = await this.readWorkflowsCache();

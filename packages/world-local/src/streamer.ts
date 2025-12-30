@@ -93,13 +93,16 @@ export function createStreamer(basedir: string): Streamer {
       _runId: string | Promise<string>,
       chunk: string | Uint8Array
     ) {
+      // Generate ULID synchronously BEFORE any await to preserve call order.
+      // This ensures that chunks written in sequence maintain their order even
+      // when runId is a promise that multiple writes are waiting on.
+      const chunkId = `chnk_${monotonicUlid()}`;
+
       // Await runId if it's a promise to ensure proper flushing
       const runId = await _runId;
 
       // Register this stream for the run
       await registerStreamForRun(runId, name);
-
-      const chunkId = `chnk_${monotonicUlid()}`;
 
       // Convert chunk to buffer for serialization
       let chunkBuffer: Buffer;
@@ -136,13 +139,14 @@ export function createStreamer(basedir: string): Streamer {
     },
 
     async closeStream(name: string, _runId: string | Promise<string>) {
+      // Generate ULID synchronously BEFORE any await to preserve call order.
+      const chunkId = `chnk_${monotonicUlid()}`;
+
       // Await runId if it's a promise to ensure proper flushing
       const runId = await _runId;
 
       // Register this stream for the run (in case writeToStream wasn't called)
       await registerStreamForRun(runId, name);
-
-      const chunkId = `chnk_${monotonicUlid()}`;
       const chunkPath = path.join(
         basedir,
         'streams',

@@ -102,8 +102,10 @@ describe('streamer', () => {
             const chunk = deserializeChunk(
               await fs.readFile(`${testDir}/streams/chunks/${file}`)
             );
-            const stream_id = String(file.split('-').at(-1)).split('.')[0];
-            const time = decodeTime(stream_id);
+            // Extract ULID from filename: "streamName-chnk_ULID.json"
+            const chunkIdPart = String(file.split('-').at(-1)).split('.')[0]; // "chnk_ULID"
+            const ulid = chunkIdPart.replace('chnk_', ''); // Just the ULID
+            const time = decodeTime(ulid);
             const timeDiff = time - lastTime;
             lastTime = time;
 
