@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "NodeNext",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "moduleResolution": "NodeNext",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "paths": {
+      "@/*": ["./*"],
+      "@repo/*": ["../../*"]
+    },
+    "plugins": [
+      {
+        "name": "workflow"
+      }
+    ]
+  },
+  "include": ["**/*.ts", "**/*.tsx", "*.js"],
+  "exclude": ["node_modules"]
+}
