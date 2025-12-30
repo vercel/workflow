@@ -75,7 +75,7 @@ export const setupCliWorld = async (
       ),
       chalk.gray(
         terminalLink(
-          'View releases',
+          'View changelog',
           'https://github.com/vercel/workflow/releases'
         )
       )
