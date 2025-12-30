@@ -180,6 +180,20 @@ async function waitForBuildComplete(): Promise<void> {
     socket.on('error', onError);
     socket.on('end', onEnd);
     socket.on('close', onClose);
+
+    const authToken = process.env.WORKFLOW_SOCKET_AUTH;
+
+    if (!authToken) {
+      throw new Error(
+        `Invariant: no socket auth token provided for workflow loader`
+      );
+    }
+    // we trigger a build here in case no other events trigger
+    // the build so that we aren't waiting until 60 second timeout
+    const message: SocketMessage = {
+      type: 'trigger-build',
+    };
+    socket.write(serializeMessage(message, authToken));
   });
 }
 

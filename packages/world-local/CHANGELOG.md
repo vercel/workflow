@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.0.1-beta.23
+
+### Patch Changes
+
+- [#704](https://github.com/vercel/workflow/pull/704) [`2dbe494`](https://github.com/vercel/workflow/commit/2dbe49495dd4fae22edc53e190952c8f15289b8b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix race condition in streamer when multiple writes share a promise runId.
+
 ## 4.0.1-beta.22
 
 ### Patch Changes

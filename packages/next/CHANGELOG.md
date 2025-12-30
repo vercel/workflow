@@ -1,5 +1,15 @@
 # @workflow/next
 
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- [#700](https://github.com/vercel/workflow/pull/700) [`851c020`](https://github.com/vercel/workflow/commit/851c0203fe3a19ce51cc9897316e74a066580334) Thanks [@ijjk](https://github.com/ijjk)! - Validate cached workflows/steps and reduce build debounce
+
+- Updated dependencies []:
+  - @workflow/core@4.0.1-beta.33
+  - @workflow/builders@4.0.1-beta.32
+
 ## 4.0.1-beta.36
 
 ### Patch Changes
