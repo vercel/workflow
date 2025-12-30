@@ -6,13 +6,20 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json') as {
+  name: string;
+  version: string;
+};
+
 /** Package name for version tracking */
-export const PACKAGE_NAME = '@workflow/world-local';
+export const PACKAGE_NAME = packageJson.name;
 
 /** Current package version - imported at build time */
-export const PACKAGE_VERSION = '4.0.1-beta.20';
+export const PACKAGE_VERSION = packageJson.version;
 
 /** Filename for storing version information in the data directory */
 const VERSION_FILENAME = 'version.txt';
