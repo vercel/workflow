@@ -70,7 +70,15 @@ export const setupCliWorld = async (
       // Note that we're suggesting install "latest" instead of the release tag that the user is
       // on, because we currently tag beta releases as "latest". After GA, we need to adjust
       // this to install the release tag that the user is on.
-      chalk.gray('Run: `[npm|yarn|pnpm] i workflow@latest`')
+      chalk.gray(
+        `Run: \`[npm|bun|pnpm] i workflow@${updateCheck.latestVersion}\``
+      ),
+      chalk.gray(
+        terminalLink(
+          'View releases',
+          'https://github.com/vercel/workflow/releases'
+        )
+      )
     );
   }
 
