@@ -16,6 +16,8 @@ import {
   formatVersion,
   formatVersionFile,
   initDataDir,
+  PACKAGE_NAME,
+  PACKAGE_VERSION,
   type ParsedVersion,
   parseVersion,
   parseVersionFile,
@@ -373,7 +375,8 @@ describe('initDataDir', () => {
 
     // Write the current version
     const versionPath = path.join(dataDir, 'version.txt');
-    writeFileSync(versionPath, '@workflow/world-local@4.0.1-beta.20');
+    const currentVersion = `${PACKAGE_NAME}@${PACKAGE_VERSION}`;
+    writeFileSync(versionPath, currentVersion);
 
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -384,7 +387,7 @@ describe('initDataDir', () => {
 
     // File should remain unchanged
     const content = readFileSync(versionPath, 'utf-8');
-    expect(content).toBe('@workflow/world-local@4.0.1-beta.20');
+    expect(content).toBe(currentVersion);
   });
 
   it('should call upgradeVersion when versions differ', () => {
