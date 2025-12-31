@@ -72,7 +72,7 @@ Chat messages need to be stored somewhere—typically a database. In this exampl
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { WorkflowChatTransport } from "@workflow/ai/transport"; // [!code highlight]
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
 
@@ -237,7 +237,7 @@ We can replace our `useChat` react hook with a custom hook that manages the chat
 
 import type { UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react"; // [!code highlight]
-import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { WorkflowChatTransport } from "@workflow/ai/transport"; // [!code highlight]
 import { useState, useCallback, useMemo } from "react";
 
 export function useMultiTurnChat() {

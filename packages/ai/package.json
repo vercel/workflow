@@ -49,6 +49,10 @@
     "./xai": {
       "types": "./dist/providers/xai.d.ts",
       "default": "./dist/providers/xai.js"
+    },
+    "./transport": {
+      "types": "./dist/workflow-chat-transport.d.ts",
+      "default": "./dist/workflow-chat-transport.js"
     }
   },
   "scripts": {
