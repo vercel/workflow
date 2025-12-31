@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 4.0.1-beta.34
+
+### Patch Changes
+
+- [#703](https://github.com/vercel/workflow/pull/703) [`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Do not include initial attempt in step function `maxRetries` count
+
+- [#712](https://github.com/vercel/workflow/pull/712) [`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c) Thanks [@ijjk](https://github.com/ijjk)! - Revert lazy workflow and step discovery
+
+- Updated dependencies [[`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2)]:
+  - @workflow/utils@4.0.1-beta.10
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/world-local@4.0.1-beta.24
+  - @workflow/world-vercel@4.0.1-beta.25
+
 ## 4.0.1-beta.33
 
 ### Patch Changes

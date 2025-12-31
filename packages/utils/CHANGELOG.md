@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 4.0.1-beta.10
+
+### Patch Changes
+
+- [#703](https://github.com/vercel/workflow/pull/703) [`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `pluralize()` util function
+
 ## 4.0.1-beta.9
 
 ### Patch Changes
