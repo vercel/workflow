@@ -1,7 +1,4 @@
-export {
-  parseStepName,
-  parseWorkflowName,
-} from '@workflow/core/parse-name';
+export { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 
 export * from './api/workflow-api-client';

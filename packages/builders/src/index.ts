@@ -14,6 +14,7 @@ export type {
   StandaloneConfig,
   SvelteKitConfig,
   VercelBuildOutputConfig,
+  ReactRouterConfig,
   WorkflowConfig,
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';

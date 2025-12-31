@@ -42,6 +42,7 @@
     "./nuxt": "./dist/nuxt.js",
     "./sveltekit": "./dist/sveltekit.js",
     "./astro": "./dist/astro.js",
+    "./react-router": "./dist/react-router.js",
     "./vite": "./dist/vite.js",
     "./runtime": "./dist/runtime.js"
   },
@@ -63,6 +64,7 @@
     "@workflow/nitro": "workspace:*",
     "@workflow/nuxt": "workspace:*",
     "@workflow/sveltekit": "workspace:*",
+    "@workflow/react-router": "workspace:*",
     "@workflow/rollup": "workspace:*"
   },
   "devDependencies": {

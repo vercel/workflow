@@ -331,7 +331,7 @@ jobs:
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
           APP_NAME: ${{ matrix.app.name }}
-          DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
+          DEPLOYMENT_URL: "http://localhost:${{ (matrix.app.name == 'sveltekit' || matrix.app.name == 'react-router') && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
 
       - name: Generate E2E summary

@@ -4,6 +4,7 @@ export const validBuildTargets = [
   'next',
   'sveltekit',
   'astro',
+  'react-router',
 ] as const;
 export type BuildTarget = (typeof validBuildTargets)[number];
 
@@ -82,6 +83,17 @@ export interface AstroConfig extends BaseWorkflowConfig {
 }
 
 /**
+ * Configuration for React Router builds.
+ */
+export interface ReactRouterConfig extends BaseWorkflowConfig {
+  buildTarget: 'react-router';
+  // Astro builder computes paths dynamically, so these are not used
+  stepsBundlePath: string;
+  workflowsBundlePath: string;
+  webhookBundlePath: string;
+}
+
+/**
  * Discriminated union of all builder configuration types.
  */
 export type WorkflowConfig =
@@ -89,7 +101,8 @@ export type WorkflowConfig =
   | VercelBuildOutputConfig
   | NextConfig
   | SvelteKitConfig
-  | AstroConfig;
+  | AstroConfig
+  | ReactRouterConfig;
 
 export function isValidBuildTarget(
   target: string | undefined

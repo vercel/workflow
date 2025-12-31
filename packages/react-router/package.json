@@ -1,0 +1,42 @@
+{
+  "name": "@workflow/react-router",
+  "version": "4.0.0-beta.1",
+  "description": "React Router integration for Workflow DevKit",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/react-router"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist"
+  },
+  "dependencies": {
+    "@react-router/dev": "^7.10.1",
+    "@swc/core": "1.15.3",
+    "@workflow/builders": "workspace:*",
+    "@workflow/rollup": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/vite": "workspace:*",
+    "exsolve": "^1.0.7",
+    "pathe": "^2.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "vite": "7.1.11"
+  }
+}
