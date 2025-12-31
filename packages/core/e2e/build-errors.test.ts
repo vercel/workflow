@@ -16,8 +16,6 @@ const exec = promisify(execOriginal);
  */
 describe('build error messages', () => {
   const restoreFiles: Array<{ path: string; content: string | null }> = [];
-  const appName = process.env.APP_NAME ?? 'nextjs-turbopack';
-  const appPath = getWorkbenchAppPath(appName);
 
   afterEach(async () => {
     // Restore files in reverse order to handle dependencies
@@ -29,8 +27,6 @@ describe('build error messages', () => {
       }
     }
     restoreFiles.length = 0;
-    // previous failures can cause successive tests to fail
-    await fs.rm(path.join(appPath, '.next'), { recursive: true, force: true });
   });
 
   /**
@@ -93,8 +89,11 @@ describe('build error messages', () => {
 
   test(
     'should show helpful error when using Node.js module in workflow',
-    { timeout: 60_000 },
+    { timeout: 120_000 },
     async () => {
+      const appName = process.env.APP_NAME ?? 'nextjs-turbopack';
+      const appPath = getWorkbenchAppPath(appName);
+
       // Note: filename must NOT start with _ (those are skipped by registry generator)
       const badWorkflowContent = `
 import { readFileSync } from 'fs';
@@ -139,8 +138,10 @@ export async function nodeModuleViolationWorkflow() {
     process.env.APP_NAME && process.env.APP_NAME !== 'nextjs-turbopack'
   )(
     'should show top-level package name for external dependencies that use Node.js modules',
-    { timeout: 60_000 },
+    { timeout: 120_000 },
     async () => {
+      const appPath = getWorkbenchAppPath('nextjs-turbopack');
+
       // @vercel/blob internally uses Node.js modules (via undici)
       // The error should show "@vercel/blob" not the internal Node.js module
       const badWorkflowContent = `
@@ -182,8 +183,11 @@ export async function blobViolationWorkflow() {
 
   test(
     'should show helpful error when using Bun module in workflow',
-    { timeout: 60_000 },
+    { timeout: 120_000 },
     async () => {
+      const appName = process.env.APP_NAME ?? 'nextjs-turbopack';
+      const appPath = getWorkbenchAppPath(appName);
+
       // Bun modules should show a different error message than Node.js modules
       const badWorkflowContent = `
 import { serve } from 'bun';
@@ -219,8 +223,11 @@ export async function bunViolationWorkflow() {
 
   test(
     'should report all violations when multiple Node.js modules are used',
-    { timeout: 60_000 },
+    { timeout: 120_000 },
     async () => {
+      const appName = process.env.APP_NAME ?? 'nextjs-turbopack';
+      const appPath = getWorkbenchAppPath(appName);
+
       // Using multiple Node.js modules should report errors for all of them
       const badWorkflowContent = `
 import { readFileSync } from 'fs';

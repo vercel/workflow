@@ -18,7 +18,8 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./loader": "./dist/loader.js"
+    "./loader": "./dist/loader.js",
+    "./runtime": "./dist/runtime.js"
   },
   "scripts": {
     "build": "tsc",
@@ -29,11 +30,15 @@
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*"
+    "@workflow/swc-plugin": "workspace:*",
+    "semver": "7.7.3",
+    "watchpack": "2.4.4"
   },
   "devDependencies": {
     "@workflow/tsconfig": "workspace:*",
     "@types/node": "catalog:",
+    "@types/semver": "7.7.1",
+    "@types/watchpack": "2.4.4",
     "next": "16.0.10"
   },
   "peerDependencies": {
