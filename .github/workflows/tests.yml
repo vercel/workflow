@@ -30,8 +30,8 @@ jobs:
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
-          comment-author: 'github-actions[bot]'
-          body-includes: '<!-- e2e-test-results -->'
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- e2e-test-results -->"
 
       - name: Get existing comment body
         if: steps.find-comment.outputs.comment-id != ''
@@ -133,9 +133,9 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          setup-rust: 'true'
-          install-args: '--ignore-scripts'
-          build-packages: 'false'
+          setup-rust: "true"
+          install-args: "--ignore-scripts"
+          build-packages: "false"
 
       - name: Run Unit Tests
         run: pnpm test --filter='!./docs'
@@ -215,6 +215,9 @@ jobs:
           - name: "astro"
             project-id: "prj_YDAXj3K8LM0hgejuIMhioz2yLgTI"
             project-slug: "workbench-astro-workflow"
+          - name: "elysiajs-node"
+            project-id: "prj_6XgRspR2MY8zJXraq0LQrCPcAPCx"
+            project-slug: "workbench-elysiajs-node-workflow"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -225,7 +228,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          build-packages: 'false'
+          build-packages: "false"
 
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
@@ -282,8 +285,8 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
-          build-packages: 'false'
+          install-dependencies: "false"
+          build-packages: "false"
 
       - id: set-matrix
         run: echo "matrix=$(node ./scripts/create-test-matrix.mjs)" >> $GITHUB_OUTPUT
@@ -307,8 +310,8 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
-          build-packages: 'false'
+          install-dependencies: "false"
+          build-packages: "false"
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
@@ -369,8 +372,8 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
-          build-packages: 'false'
+          install-dependencies: "false"
+          build-packages: "false"
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
@@ -451,8 +454,8 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
-          build-packages: 'false'
+          install-dependencies: "false"
+          build-packages: "false"
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
@@ -585,8 +588,8 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
-          build-packages: 'false'
+          install-dependencies: "false"
+          build-packages: "false"
 
       - id: set-matrix
         run: echo "matrix=$(node ./scripts/create-community-worlds-matrix.mjs)" >> $GITHUB_OUTPUT
@@ -611,7 +614,15 @@ jobs:
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows, e2e-community]
+    needs:
+      [
+        e2e-vercel-prod,
+        e2e-local-dev,
+        e2e-local-prod,
+        e2e-local-postgres,
+        e2e-windows,
+        e2e-community,
+      ]
     if: always() && !cancelled()
     timeout-minutes: 10
 

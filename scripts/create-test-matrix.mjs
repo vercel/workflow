@@ -62,6 +62,12 @@ const DEV_TEST_CONFIGS = {
     apiFileImportPath: '../..',
     workflowsDir: 'src/workflows',
   },
+  'elysiajs-node': {
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
+    apiFilePath: './src/index.ts',
+    apiFileImportPath: '..',
+  },
 };
 
 const matrix = {
@@ -135,6 +141,12 @@ matrix.app.push({
   name: 'astro',
   project: 'workbench-astro-workflow',
   ...DEV_TEST_CONFIGS.astro,
+});
+
+matrix.app.push({
+  name: 'elysiajs-node',
+  project: 'workbench-elysiajs-node-workflow',
+  ...DEV_TEST_CONFIGS['elysiajs-node'],
 });
 
 console.log(JSON.stringify(matrix));
