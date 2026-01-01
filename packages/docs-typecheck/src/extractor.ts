@@ -51,8 +51,12 @@ function getMarkersBeforeBlock(
   let skipTypeCheck = false;
   let expectedErrors: number[] = [];
 
-  // Check for skip marker
-  const skipMatch = lookbackText.match(/<!--\s*@skip-typecheck[^>]*-->/g);
+  // Check for skip marker (HTML comment or MDX comment)
+  // HTML: <!-- @skip-typecheck ... -->
+  // MDX:  {/* @skip-typecheck ... */}
+  const skipMatch = lookbackText.match(
+    /(?:<!--\s*@skip-typecheck[^>]*-->|\{\/\*\s*@skip-typecheck[^*]*\*\/\})/g
+  );
   if (skipMatch) {
     const lastSkipIndex = lookbackText.lastIndexOf(skipMatch.at(-1)!);
     const textBetween = lookbackText.substring(lastSkipIndex);

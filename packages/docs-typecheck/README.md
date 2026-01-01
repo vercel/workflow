@@ -35,19 +35,21 @@ DOCS_FILE="foundations/" pnpm test:docs
 
 ### Skip type checking for specific code blocks
 
-Add an HTML comment before the code block (invisible in rendered docs):
+Add a comment before the code block (invisible in rendered docs):
+
+**For MDX files** (use JSX comment syntax):
 
 ```markdown
-<!-- @skip-typecheck -->
+{/* @skip-typecheck: reason */}
 ```typescript
 // This code will not be type-checked
 ```
 ```
 
-You can optionally include an explanation:
+**For Markdown files** (use HTML comment syntax):
 
 ```markdown
-<!-- @skip-typecheck: Shows two mutually exclusive options -->
+<!-- @skip-typecheck: reason -->
 ```typescript
 // This code will not be type-checked
 ```
