@@ -34,6 +34,7 @@
     "clean": "turbo clean",
     "typecheck": "turbo typecheck",
     "test:e2e": "vitest run packages/core/e2e/e2e.test.ts",
+    "test:docs": "pnpm --filter @workflow/docs-typecheck test:docs",
     "bench": "vitest bench packages/core/e2e/bench.bench.ts",
     "bench:local": "DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack vitest bench packages/core/e2e/bench.bench.ts",
     "lint": "biome check",
