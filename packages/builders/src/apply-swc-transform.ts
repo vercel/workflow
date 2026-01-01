@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transform } from '@swc/core';
 
@@ -30,7 +31,7 @@ export async function applySwcTransform(
   workflowManifest: WorkflowManifest;
 }> {
   const swcPluginPath = require.resolve('@workflow/swc-plugin', {
-    paths: [fileURLToPath(import.meta.url)],
+    paths: [dirname(fileURLToPath(import.meta.url))],
   });
 
   // Determine if this is a TypeScript file
