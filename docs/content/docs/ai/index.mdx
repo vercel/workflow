@@ -241,7 +241,7 @@ export default withWorkflow(nextConfig);
 
 Move the agent logic into a separate function, which will serve as our workflow definition.
 
-<!-- @skip-typecheck: Shows two mutually exclusive model options -->
+{/* @skip-typecheck: Shows two mutually exclusive model options */}
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
 import { DurableAgent } from "@workflow/ai/agent"; // [!code highlight]
 import { getWritable } from "workflow"; // [!code highlight]
