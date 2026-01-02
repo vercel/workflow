@@ -451,6 +451,26 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     }
   }, [isLocalAndHasMissingData, onReload]);
 
+  // Refresh when tab regains focus after a delay, to prevent stale UI.
+  // TODO: We should generally move to using SWR or similar for _all_ API calls here.
+  // TODO: Further future, remove the refresh button entirely, and do live in-place refreshing
+  // once all world backends support live pagination of existing views.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && lastRefreshTime) {
+        const timeSinceLastRefresh = Date.now() - lastRefreshTime.getTime();
+        if (timeSinceLastRefresh >= 10000) {
+          onReload();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [lastRefreshTime, onReload]);
+
   const localDirText = (
     <code className="font-mono">
       {dataDirInfo?.shortName || 'current directory'}
