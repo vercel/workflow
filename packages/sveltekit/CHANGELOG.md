@@ -1,5 +1,15 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.31
+
+### Patch Changes
+
+- [#705](https://github.com/vercel/workflow/pull/705) [`7ff68d1`](https://github.com/vercel/workflow/commit/7ff68d1753c43b14d161d249f6745de6beddd99b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Pass `tsconfig` to esbuild for support of "paths" aliases
+
+- Updated dependencies [[`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c), [`7ff68d1`](https://github.com/vercel/workflow/commit/7ff68d1753c43b14d161d249f6745de6beddd99b)]:
+  - @workflow/builders@4.0.1-beta.33
+  - @workflow/vite@4.0.0-beta.2
+
 ## 4.0.0-beta.30
 
 ### Patch Changes

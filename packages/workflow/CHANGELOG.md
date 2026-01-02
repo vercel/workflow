@@ -1,5 +1,22 @@
 # workflow
 
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- [#712](https://github.com/vercel/workflow/pull/712) [`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c) Thanks [@ijjk](https://github.com/ijjk)! - Revert lazy workflow and step discovery
+
+- Updated dependencies [[`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2), [`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c), [`7ff68d1`](https://github.com/vercel/workflow/commit/7ff68d1753c43b14d161d249f6745de6beddd99b)]:
+  - @workflow/core@4.0.1-beta.34
+  - @workflow/nitro@4.0.1-beta.37
+  - @workflow/next@4.0.1-beta.38
+  - @workflow/sveltekit@4.0.0-beta.31
+  - @workflow/astro@4.0.0-beta.16
+  - @workflow/cli@4.0.1-beta.40
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/nuxt@4.0.1-beta.26
+
 ## 4.0.1-beta.39
 
 ### Patch Changes
