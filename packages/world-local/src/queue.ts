@@ -7,7 +7,7 @@ import { Agent } from 'undici';
 import z from 'zod';
 import type { Config } from './config.js';
 import { resolveBaseUrl } from './config.js';
-import { getPackageInfo } from './init.js';
+import { PACKAGE_VERSION } from './init.js';
 
 // For local queue, there is no technical limit on the message visibility lifespan,
 // but the environment variable can be used for testing purposes to set a max visibility limit.
@@ -205,8 +205,7 @@ export function createQueue(config: Partial<Config>): Queue {
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
-    const packageInfo = await getPackageInfo();
-    return `dpl_local@${packageInfo.version}`;
+    return `dpl_local@${PACKAGE_VERSION}`;
   };
 
   return { queue, createQueueHandler, getDeploymentId };

@@ -15,7 +15,6 @@ import {
   ensureDataDir,
   formatVersion,
   formatVersionFile,
-  getPackageInfo,
   initDataDir,
   type ParsedVersion,
   parseVersion,
@@ -166,39 +165,39 @@ describe('ensureDataDir', () => {
   });
 
   describe('directory creation', () => {
-    it('should create the directory if it does not exist', async () => {
+    it('should create the directory if it does not exist', () => {
       const dataDir = path.join(testBaseDir, 'new-data-dir');
       expect(existsSync(dataDir)).toBe(false);
 
-      await ensureDataDir(dataDir);
+      ensureDataDir(dataDir);
 
       expect(existsSync(dataDir)).toBe(true);
     });
 
-    it('should create nested directories recursively', async () => {
+    it('should create nested directories recursively', () => {
       const dataDir = path.join(testBaseDir, 'level1', 'level2', 'level3');
       expect(existsSync(dataDir)).toBe(false);
 
-      await ensureDataDir(dataDir);
+      ensureDataDir(dataDir);
 
       expect(existsSync(dataDir)).toBe(true);
     });
 
-    it('should not throw if the directory already exists', async () => {
+    it('should not throw if the directory already exists', () => {
       const dataDir = path.join(testBaseDir, 'existing-dir');
       mkdirSync(dataDir);
       expect(existsSync(dataDir)).toBe(true);
 
-      await expect(ensureDataDir(dataDir)).resolves.not.toThrow();
+      expect(() => ensureDataDir(dataDir)).not.toThrow();
     });
 
-    it('should handle relative paths by resolving to absolute paths', async () => {
+    it('should handle relative paths by resolving to absolute paths', () => {
       const originalCwd = process.cwd();
       try {
         process.chdir(testBaseDir);
         const relativeDir = 'relative-data-dir';
 
-        await ensureDataDir(relativeDir);
+        ensureDataDir(relativeDir);
 
         expect(existsSync(path.join(testBaseDir, relativeDir))).toBe(true);
       } finally {
@@ -212,16 +211,14 @@ describe('ensureDataDir', () => {
 
     it.skipIf(isWindows)(
       'should throw DataDirAccessError if directory is not readable',
-      async () => {
+      () => {
         const dataDir = path.join(testBaseDir, 'unreadable-dir');
         mkdirSync(dataDir);
         chmodSync(dataDir, 0o000);
 
         try {
-          await expect(ensureDataDir(dataDir)).rejects.toThrow(
-            DataDirAccessError
-          );
-          await expect(ensureDataDir(dataDir)).rejects.toThrow(/not readable/);
+          expect(() => ensureDataDir(dataDir)).toThrow(DataDirAccessError);
+          expect(() => ensureDataDir(dataDir)).toThrow(/not readable/);
         } finally {
           chmodSync(dataDir, 0o755);
         }
@@ -230,16 +227,14 @@ describe('ensureDataDir', () => {
 
     it.skipIf(isWindows)(
       'should throw DataDirAccessError if directory is not writable',
-      async () => {
+      () => {
         const dataDir = path.join(testBaseDir, 'readonly-dir');
         mkdirSync(dataDir);
         chmodSync(dataDir, 0o555);
 
         try {
-          await expect(ensureDataDir(dataDir)).rejects.toThrow(
-            DataDirAccessError
-          );
-          await expect(ensureDataDir(dataDir)).rejects.toThrow(/not writable/);
+          expect(() => ensureDataDir(dataDir)).toThrow(DataDirAccessError);
+          expect(() => ensureDataDir(dataDir)).toThrow(/not writable/);
         } finally {
           chmodSync(dataDir, 0o755);
         }
@@ -248,7 +243,7 @@ describe('ensureDataDir', () => {
 
     it.skipIf(isWindows)(
       'should throw DataDirAccessError if parent directory is not writable',
-      async () => {
+      () => {
         const parentDir = path.join(testBaseDir, 'readonly-parent');
         mkdirSync(parentDir);
         chmodSync(parentDir, 0o555);
@@ -256,10 +251,8 @@ describe('ensureDataDir', () => {
         const dataDir = path.join(parentDir, 'new-child-dir');
 
         try {
-          await expect(ensureDataDir(dataDir)).rejects.toThrow(
-            DataDirAccessError
-          );
-          await expect(ensureDataDir(dataDir)).rejects.toThrow(
+          expect(() => ensureDataDir(dataDir)).toThrow(DataDirAccessError);
+          expect(() => ensureDataDir(dataDir)).toThrow(
             /Failed to create data directory/
           );
         } finally {
@@ -270,7 +263,7 @@ describe('ensureDataDir', () => {
   });
 
   describe('DataDirAccessError', () => {
-    it('should include the data directory path in the error', async () => {
+    it('should include the data directory path in the error', () => {
       const dataDir = path.join(testBaseDir, 'readonly-parent-for-error');
       const isWindows = process.platform === 'win32';
 
@@ -281,7 +274,7 @@ describe('ensureDataDir', () => {
         const childDir = path.join(dataDir, 'child');
 
         try {
-          await ensureDataDir(childDir);
+          ensureDataDir(childDir);
         } catch (error) {
           expect(error).toBeInstanceOf(DataDirAccessError);
           expect((error as DataDirAccessError).dataDir).toBe(childDir);
@@ -291,7 +284,7 @@ describe('ensureDataDir', () => {
       }
     });
 
-    it('should include the error code when available', async () => {
+    it('should include the error code when available', () => {
       const isWindows = process.platform === 'win32';
 
       if (!isWindows) {
@@ -302,7 +295,7 @@ describe('ensureDataDir', () => {
         const dataDir = path.join(parentDir, 'child');
 
         try {
-          await ensureDataDir(dataDir);
+          ensureDataDir(dataDir);
         } catch (error) {
           expect(error).toBeInstanceOf(DataDirAccessError);
           expect((error as DataDirAccessError).code).toBeDefined();
@@ -314,28 +307,28 @@ describe('ensureDataDir', () => {
   });
 
   describe('edge cases', () => {
-    it('should handle empty string by creating directory at current path', async () => {
+    it('should handle empty string by creating directory at current path', () => {
       const originalCwd = process.cwd();
       try {
         process.chdir(testBaseDir);
-        await expect(ensureDataDir('.')).resolves.not.toThrow();
+        expect(() => ensureDataDir('.')).not.toThrow();
       } finally {
         process.chdir(originalCwd);
       }
     });
 
-    it('should handle paths with special characters', async () => {
+    it('should handle paths with special characters', () => {
       const dataDir = path.join(testBaseDir, 'special-chars-dir-@#$%');
 
-      await ensureDataDir(dataDir);
+      ensureDataDir(dataDir);
 
       expect(existsSync(dataDir)).toBe(true);
     });
 
-    it('should handle paths with spaces', async () => {
+    it('should handle paths with spaces', () => {
       const dataDir = path.join(testBaseDir, 'dir with spaces');
 
-      await ensureDataDir(dataDir);
+      ensureDataDir(dataDir);
 
       expect(existsSync(dataDir)).toBe(true);
     });
@@ -362,10 +355,10 @@ describe('initDataDir', () => {
     vi.restoreAllMocks();
   });
 
-  it('should create version.txt for new data directory', async () => {
+  it('should create version.txt for new data directory', () => {
     const dataDir = path.join(testBaseDir, 'new-data');
 
-    await initDataDir(dataDir);
+    initDataDir(dataDir);
 
     const versionPath = path.join(dataDir, 'version.txt');
     expect(existsSync(versionPath)).toBe(true);
@@ -374,29 +367,27 @@ describe('initDataDir', () => {
     expect(content).toMatch(/^@workflow\/world-local@\d+\.\d+\.\d+/);
   });
 
-  it('should not modify version.txt if version matches', async () => {
+  it('should not modify version.txt if version matches', () => {
     const dataDir = path.join(testBaseDir, 'existing-data');
     mkdirSync(dataDir, { recursive: true });
 
     // Write the current version
-    const packageInfo = await getPackageInfo();
     const versionPath = path.join(dataDir, 'version.txt');
-    const currentVersion = `${packageInfo.name}@${packageInfo.version}`;
-    writeFileSync(versionPath, currentVersion);
+    writeFileSync(versionPath, '@workflow/world-local@4.0.1-beta.20');
 
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await initDataDir(dataDir);
+    initDataDir(dataDir);
 
     // Should not log upgrade message since versions match
     expect(consoleSpy).not.toHaveBeenCalled();
 
     // File should remain unchanged
     const content = readFileSync(versionPath, 'utf-8');
-    expect(content).toBe(currentVersion);
+    expect(content).toBe('@workflow/world-local@4.0.1-beta.20');
   });
 
-  it('should call upgradeVersion when versions differ', async () => {
+  it('should call upgradeVersion when versions differ', () => {
     const dataDir = path.join(testBaseDir, 'old-data');
     mkdirSync(dataDir, { recursive: true });
 
@@ -406,7 +397,7 @@ describe('initDataDir', () => {
 
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await initDataDir(dataDir);
+    initDataDir(dataDir);
 
     // Should log upgrade message
     expect(consoleSpy).toHaveBeenCalledWith(
@@ -418,7 +409,7 @@ describe('initDataDir', () => {
     expect(content).toMatch(/^@workflow\/world-local@4\.0\.1/);
   });
 
-  it('should handle data directory with newer version', async () => {
+  it('should handle data directory with newer version', () => {
     const dataDir = path.join(testBaseDir, 'newer-data');
     mkdirSync(dataDir, { recursive: true });
 
@@ -429,7 +420,7 @@ describe('initDataDir', () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     // This will call upgradeVersion which just logs for now
-    await initDataDir(dataDir);
+    initDataDir(dataDir);
 
     // Should log the upgrade message (even for "downgrades")
     expect(consoleSpy).toHaveBeenCalledWith(
