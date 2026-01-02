@@ -406,6 +406,10 @@ export function workflowEntrypoint(
                   return { timeoutSeconds: result.timeoutSeconds };
                 }
               } else {
+                // NOTE: this error could be an error thrown in user code, or could also be a WorkflowRuntimeError
+                // (for instance when the event log is corrupted, this is thrown by the event consumer). We could
+                // specially handle these if needed.
+
                 const errorName = getErrorName(err);
                 const errorMessage =
                   err instanceof Error ? err.message : String(err);

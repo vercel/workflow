@@ -1,4 +1,4 @@
-import { FatalError } from '@workflow/errors';
+import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -276,5 +276,40 @@ describe('createUseStep', () => {
       stepName: 'add',
       args: [2, 3],
     });
+  });
+
+  it('should invoke workflow error handler with WorkflowRuntimeError for unexpected event type', async () => {
+    // Simulate a corrupted event log where a step receives an unexpected event type
+    // (e.g., a wait_completed event when expecting step_completed/step_failed)
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_completed', // Wrong event type for a step!
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    let workflowError: Error | undefined;
+    ctx.onWorkflowError = (err) => {
+      workflowError = err;
+    };
+
+    const useStep = createUseStep(ctx);
+    const add = useStep('add');
+
+    // Start the step - it will process the event asynchronously
+    const stepPromise = add(1, 2);
+
+    // Wait for the error handler to be called
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError?.message).toContain('Unexpected event type for step');
+    expect(workflowError?.message).toContain('step_01K11TFZ62YS0YYFDQ3E8B9YCV');
+    expect(workflowError?.message).toContain('add');
+    expect(workflowError?.message).toContain('wait_completed');
   });
 });

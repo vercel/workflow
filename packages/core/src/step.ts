@@ -71,7 +71,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         });
 
         if (event.correlationId !== correlationId) {
-          // We're not interested in this event - the correlationId belongs to a different step
+          // We're not interested in this event - the correlationId belongs to a different entity
           return EventConsumerResult.NotConsumed;
         }
 
@@ -140,11 +140,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.Finished;
         }
 
-        // An unexpected event type has been received, but it does belong to this step (matching `correlationId`)
+        // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
         setTimeout(() => {
-          reject(
+          ctx.onWorkflowError(
             new WorkflowRuntimeError(
-              `Unexpected event type for step ${correlationId} (${stepName}) "${event.eventType}"`
+              `Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`
             )
           );
         }, 0);

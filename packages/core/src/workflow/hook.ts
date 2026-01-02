@@ -6,6 +6,7 @@ import { WorkflowSuspension } from '../global.js';
 import { webhookLogger } from '../logger.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
+import { WorkflowRuntimeError } from '@workflow/errors';
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
@@ -43,24 +44,23 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
           }, 0);
-          return EventConsumerResult.Finished;
         }
+        return EventConsumerResult.NotConsumed;
+      }
+
+      if (event.correlationId !== correlationId) {
+        // We're not interested in this event - the correlationId belongs to a different entity
+        return EventConsumerResult.NotConsumed;
       }
 
       // Check for hook_created event to remove this hook from the queue if it was already created
-      if (
-        event?.eventType === 'hook_created' &&
-        event.correlationId === correlationId
-      ) {
+      if (event.eventType === 'hook_created') {
         // Remove this hook from the invocations queue (O(1) delete using Map)
         ctx.invocationsQueue.delete(correlationId);
         return EventConsumerResult.Consumed;
       }
 
-      if (
-        event?.eventType === 'hook_received' &&
-        event.correlationId === correlationId
-      ) {
+      if (event.eventType === 'hook_received') {
         if (promises.length > 0) {
           const next = promises.shift();
           if (next) {
@@ -78,7 +78,21 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.Consumed;
       }
 
-      return EventConsumerResult.NotConsumed;
+      if (event.eventType === 'hook_disposed') {
+        // If a hook is explicitly disposed, we're done processing any more
+        // events for it
+        return EventConsumerResult.Finished;
+      }
+
+      // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      setTimeout(() => {
+        ctx.onWorkflowError(
+          new WorkflowRuntimeError(
+            `Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`
+          )
+        );
+      }, 0);
+      return EventConsumerResult.Finished;
     });
 
     // Helper function to create a new promise that waits for the next hook payload
