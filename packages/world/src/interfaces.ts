@@ -38,15 +38,10 @@ export interface Streamer {
 /**
  * Storage interface for workflow data.
  *
- * All entity mutations (runs, steps, hooks) MUST go through events.create().
- * The World implementation atomically creates the entity when processing the corresponding event.
+ * Workflow storage models an append-only event log, so all state changes are handled through `events.create()`.
+ * Run/Step/Hook entities provide materialized views into the current state, but entities can't be modified directly.
  *
- * Entity methods are read-only:
- * - runs: get, list
- * - steps: get, list
- * - hooks: get, getByToken, list
- *
- * State changes are done via events:
+ * User-originated state changes are also handled via events:
  * - run_cancelled event for run cancellation
  * - hook_disposed event for explicit hook disposal (optional)
  *

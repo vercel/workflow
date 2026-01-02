@@ -278,8 +278,8 @@ export interface CreateEventParams {
 
 /**
  * Result of creating an event. Includes the created event and optionally
- * the entity that was created or updated as a result of the event.
- * This reduces round-trips by returning entity data along with the event.
+ * the entity that was created or updated as a result of the event, with any updates applied to it.
+
  */
 export interface EventResult {
   /** The created event */

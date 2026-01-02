@@ -4,7 +4,7 @@
 "@workflow/world-local": patch
 "@workflow/world-postgres": patch
 "@workflow/world-vercel": patch
-"@workflow/web": patch
+
 "@workflow/web-shared": patch
 ---
 
