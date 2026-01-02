@@ -194,7 +194,7 @@ async function isCacheValid(
 
 /**
  * Check for updates with filesystem caching
- * Cache is valid for 1 day unless the local version changes
+ * Cache is valid unless the local version changes
  */
 export async function checkForUpdateCached(
   currentVersion: string,
