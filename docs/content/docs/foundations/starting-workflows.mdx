@@ -38,12 +38,11 @@ export async function POST(request: Request) {
 
 When you call `start()`, it returns a [`Run`](/docs/api-reference/workflow-api/start#returns) object that provides access to the workflow's status and results.
 
-{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 import { start } from "workflow/api";
 import { processOrder } from "./workflows/process-order";
 
-const run = await start(processOrder, [orderId]);
+const run = await start(processOrder, [/* orderId */]);
 
 // The run object has properties you can await
 console.log("Run ID:", run.runId);
