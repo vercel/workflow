@@ -1,4 +1,5 @@
 import { waitUntil } from '@vercel/functions';
+import { pluralize } from '@workflow/utils';
 
 /**
  * Builds a workflow suspension log message based on the counts of steps, hooks, and waits.
@@ -20,13 +21,13 @@ export function buildWorkflowSuspensionMessage(
 
   const parts = [];
   if (stepCount > 0) {
-    parts.push(`${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`);
+    parts.push(`${stepCount} ${pluralize('step', 'steps', stepCount)}`);
   }
   if (hookCount > 0) {
-    parts.push(`${hookCount} ${hookCount === 1 ? 'hook' : 'hooks'}`);
+    parts.push(`${hookCount} ${pluralize('hook', 'hooks', hookCount)}`);
   }
   if (waitCount > 0) {
-    parts.push(`${waitCount} ${waitCount === 1 ? 'timer' : 'timers'}`);
+    parts.push(`${waitCount} ${pluralize('timer', 'timers', waitCount)}`);
   }
 
   const resumeMsgParts: string[] = [];

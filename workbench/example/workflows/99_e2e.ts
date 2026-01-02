@@ -1,3 +1,5 @@
+// Test path alias resolution - imports a helper from outside the workbench directory
+import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
@@ -470,6 +472,59 @@ export async function retryableAndFatalErrorWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+// Test that maxRetries = 0 means the step runs once but does not retry on failure
+async function stepWithNoRetries() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetries - attempt: ${attempt}`);
+  // Always fail - with maxRetries = 0, this should only run once
+  throw new Error(`Failed on attempt ${attempt}`);
+}
+stepWithNoRetries.maxRetries = 0;
+
+// Test that maxRetries = 0 works when the step succeeds
+async function stepWithNoRetriesThatSucceeds() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetriesThatSucceeds - attempt: ${attempt}`);
+  return { attempt };
+}
+stepWithNoRetriesThatSucceeds.maxRetries = 0;
+
+export async function maxRetriesZeroWorkflow() {
+  'use workflow';
+  console.log('Starting maxRetries = 0 workflow');
+
+  // First, verify that a step with maxRetries = 0 can still succeed
+  const successResult = await stepWithNoRetriesThatSucceeds();
+
+  // Now test that a failing step with maxRetries = 0 does NOT retry
+  let failedAttempt: number | null = null;
+  let gotError = false;
+  try {
+    await stepWithNoRetries();
+  } catch (error: any) {
+    gotError = true;
+    // Extract the attempt number from the error message
+    const match = error.message?.match(/attempt (\d+)/);
+    if (match) {
+      failedAttempt = parseInt(match[1], 10);
+    }
+  }
+
+  console.log(
+    `Workflow completed: successResult=${JSON.stringify(successResult)}, gotError=${gotError}, failedAttempt=${failedAttempt}`
+  );
+
+  return {
+    successResult,
+    gotError,
+    failedAttempt,
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function hookCleanupTestWorkflow(
   token: string,
   customData: string
@@ -608,4 +663,27 @@ export async function spawnWorkflowFromStepWorkflow(inputValue: number) {
     childRunId,
     childResult,
   };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Step that calls a helper function imported via path alias.
+ */
+async function callPathsAliasHelper() {
+  'use step';
+  // Call the helper function imported via @repo/* path alias
+  return pathsAliasHelper();
+}
+
+/**
+ * Test that TypeScript path aliases work correctly.
+ * This workflow uses a step that calls a helper function imported via the @repo/* path alias,
+ * which resolves to a file outside the workbench directory.
+ */
+export async function pathsAliasWorkflow() {
+  'use workflow';
+  // Call the step that uses the path alias helper
+  const result = await callPathsAliasHelper();
+  return result;
 }

@@ -3,8 +3,8 @@ import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
-  type SvelteKitConfig,
   NORMALIZE_REQUEST_CODE,
+  type SvelteKitConfig,
 } from '@workflow/builders';
 
 const SVELTEKIT_VIRTUAL_MODULES = [
@@ -45,13 +45,12 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
 
     const options = {
       inputFiles,
       workflowGeneratedDir,
-      tsBaseUrl: tsConfig.baseUrl,
-      tsPaths: tsConfig.paths,
+      tsconfigPath,
     };
 
     // Generate the three SvelteKit route handlers
@@ -71,13 +70,11 @@ export class SvelteKitBuilder extends BaseBuilder {
   private async buildStepsRoute({
     inputFiles,
     workflowGeneratedDir,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }) {
     // Create steps route: .well-known/workflow/v1/step/+server.js
     const stepsRouteDir = join(workflowGeneratedDir, 'step');
@@ -88,8 +85,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       inputFiles,
       outfile: join(stepsRouteDir, '+server.js'),
       externalizeNonSteps: true,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter
@@ -113,13 +109,11 @@ export const POST = async ({request}) => {
   private async buildWorkflowsRoute({
     inputFiles,
     workflowGeneratedDir,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }) {
     // Create workflows route: .well-known/workflow/v1/flow/+server.js
     const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
@@ -130,8 +124,7 @@ export const POST = async ({request}) => {
       outfile: join(workflowsRouteDir, '+server.js'),
       bundleFinalOutput: false,
       inputFiles,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter

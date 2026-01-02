@@ -5,6 +5,7 @@ import {
   WorkflowAPIError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { StepInvokePayloadSchema } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
@@ -120,8 +121,12 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           // This handles edge cases where the step handler is invoked after max retries have been exceeded
           // (e.g., when the step repeatedly times out or fails before reaching the catch handler at line 822).
           // Without this check, the step would retry forever.
-          if (attempt > maxRetries) {
-            const errorMessage = `Step "${stepName}" exceeded max retries (${attempt} attempts)`;
+          // Note: maxRetries is the number of RETRIES after the first attempt, so total attempts = maxRetries + 1
+          // Use > here (not >=) because this guards against re-invocation AFTER all attempts are used.
+          // The post-failure check uses >= to decide whether to retry after a failure.
+          if (attempt > maxRetries + 1) {
+            const retryCount = attempt - 1;
+            const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
             console.error(`[Workflows] "${workflowRunId}" - ${errorMessage}`);
             // Update step status first (idempotent), then create event
             await world.steps.update(workflowRunId, stepId, {
@@ -332,14 +337,16 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 ...Attribute.StepMaxRetries(maxRetries),
               });
 
-              if (attempt > maxRetries) {
+              // Note: maxRetries is the number of RETRIES after the first attempt, so total attempts = maxRetries + 1
+              if (attempt >= maxRetries + 1) {
                 // Max retries reached
                 const errorStack = getErrorStack(err);
                 const stackLines = errorStack.split('\n').slice(0, 4);
+                const retryCount = attempt - 1;
                 console.error(
-                  `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${attempt}):\n  > ${stackLines.join('\n    > ')}\n\n  Max retries reached\n  Bubbling error to parent workflow`
+                  `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${attempt}, ${retryCount} ${pluralize('retry', 'retries', retryCount)}):\n  > ${stackLines.join('\n    > ')}\n\n  Max retries reached\n  Bubbling error to parent workflow`
                 );
-                const errorMessage = `Step "${stepName}" failed after max retries: ${String(err)}`;
+                const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${String(err)}`;
                 await world.events.create(workflowRunId, {
                   eventType: 'step_failed',
                   correlationId: stepId,

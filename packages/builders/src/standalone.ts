@@ -11,12 +11,11 @@ export class StandaloneBuilder extends BaseBuilder {
 
   async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
 
     const options = {
       inputFiles,
-      tsBaseUrl: tsConfig.baseUrl,
-      tsPaths: tsConfig.paths,
+      tsconfigPath,
     };
     const manifest = await this.buildStepsBundle(options);
     await this.buildWorkflowsBundle(options);
@@ -38,12 +37,10 @@ export class StandaloneBuilder extends BaseBuilder {
 
   private async buildStepsBundle({
     inputFiles,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }) {
     console.log('Creating steps bundle at', this.config.stepsBundlePath);
 
@@ -53,8 +50,7 @@ export class StandaloneBuilder extends BaseBuilder {
     const { manifest } = await this.createStepsBundle({
       outfile: stepsBundlePath,
       inputFiles,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     return manifest;
@@ -62,12 +58,10 @@ export class StandaloneBuilder extends BaseBuilder {
 
   private async buildWorkflowsBundle({
     inputFiles,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }): Promise<void> {
     console.log(
       'Creating workflows bundle at',
@@ -82,8 +76,7 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.createWorkflowsBundle({
       outfile: workflowBundlePath,
       inputFiles,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
   }
 

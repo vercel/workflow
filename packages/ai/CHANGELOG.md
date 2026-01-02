@@ -1,5 +1,12 @@
 # @workflow/ai
 
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- Updated dependencies [[`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c)]:
+  - workflow@4.0.1-beta.40
+
 ## 4.0.1-beta.39
 
 ### Patch Changes

@@ -23,12 +23,7 @@ export type WorkflowManifest = {
 export async function applySwcTransform(
   filename: string,
   source: string,
-  mode: 'workflow' | 'step' | 'client' | false,
-  jscConfig?: {
-    paths?: Record<string, string[]>;
-    // this must be absolute path
-    baseUrl?: string;
-  }
+  mode: 'workflow' | 'step' | 'client' | false
 ): Promise<{
   code: string;
   workflowManifest: WorkflowManifest;
@@ -62,9 +57,6 @@ export async function applySwcTransform(
             plugins: [[require.resolve('@workflow/swc-plugin'), { mode }]],
           }
         : undefined,
-
-      ...jscConfig,
-
       transform: {
         react: {
           runtime: 'preserve',

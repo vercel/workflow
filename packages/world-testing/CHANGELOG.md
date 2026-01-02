@@ -1,5 +1,15 @@
 # @workflow/world-testing
 
+## 4.0.1-beta.41
+
+### Patch Changes
+
+- [#712](https://github.com/vercel/workflow/pull/712) [`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c) Thanks [@ijjk](https://github.com/ijjk)! - Revert lazy workflow and step discovery
+
+- Updated dependencies [[`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c)]:
+  - workflow@4.0.1-beta.40
+  - @workflow/cli@4.0.1-beta.40
+
 ## 4.0.1-beta.40
 
 ### Patch Changes

@@ -1,5 +1,6 @@
 'use client';
 
+import { pluralize } from '@workflow/utils';
 import { AlertCircle, GitBranch, Workflow } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { WorkflowGraphViewer } from '@/components/flow-graph/workflow-graph-viewer';
@@ -55,6 +56,13 @@ export function WorkflowsList({
         a.workflowName.localeCompare(b.workflowName)
       ),
     [workflows]
+  );
+
+  const selectedWorkflowStepCount = useMemo(
+    () =>
+      selectedWorkflow?.nodes.filter((node) => node.data.nodeKind === 'step')
+        .length ?? 0,
+    [selectedWorkflow]
   );
 
   const handleViewWorkflow = (workflow: WorkflowGraph) => {
@@ -134,7 +142,7 @@ export function WorkflowsList({
                     <TableCell className="text-center py-2">
                       <Badge variant="secondary" className="gap-1">
                         <GitBranch className="h-3 w-3" />
-                        {stepCount} {stepCount === 1 ? 'step' : 'steps'}
+                        {stepCount} {pluralize('step', 'steps', stepCount)}
                       </Badge>
                     </TableCell>
                   </TableRow>
@@ -162,16 +170,8 @@ export function WorkflowsList({
                   <div>
                     <Badge variant="outline" className="gap-1">
                       <GitBranch className="h-3 w-3" />
-                      {
-                        selectedWorkflow.nodes.filter(
-                          (node) => node.data.nodeKind === 'step'
-                        ).length
-                      }{' '}
-                      {selectedWorkflow.nodes.filter(
-                        (node) => node.data.nodeKind === 'step'
-                      ).length === 1
-                        ? 'step'
-                        : 'steps'}
+                      {selectedWorkflowStepCount}{' '}
+                      {pluralize('step', 'steps', selectedWorkflowStepCount)}
                     </Badge>
                   </div>
                 </div>

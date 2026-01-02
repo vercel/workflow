@@ -629,6 +629,24 @@ describe('e2e', () => {
   });
 
   test(
+    'maxRetriesZeroWorkflow - maxRetries=0 runs once without retrying',
+    { timeout: 60_000 },
+    async () => {
+      const run = await triggerWorkflow('maxRetriesZeroWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The step with maxRetries=0 that succeeds should have run on attempt 1
+      expect(returnValue.successResult).toEqual({ attempt: 1 });
+
+      // The step with maxRetries=0 that fails should have thrown an error
+      expect(returnValue.gotError).toBe(true);
+
+      // The failing step should have only run once (attempt 1), not retried
+      expect(returnValue.failedAttempt).toBe(1);
+    }
+  );
+
+  test(
     'stepDirectCallWorkflow - calling step functions directly outside workflow context',
     { timeout: 60_000 },
     async () => {
@@ -950,6 +968,27 @@ describe('e2e', () => {
       expect(stepBody).toBe(
         'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
       );
+    }
+  );
+
+  test(
+    'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow uses a step that calls a helper function imported via @repo/* path alias
+      // which resolves to a file outside the workbench directory (../../lib/steps/paths-alias-test.ts)
+      const run = await triggerWorkflow('pathsAliasWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The step should return the helper's identifier string
+      expect(returnValue).toBe('pathsAliasHelper');
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe('pathsAliasHelper');
     }
   );
 });
