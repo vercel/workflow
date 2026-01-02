@@ -11,6 +11,8 @@ export interface CodeSample {
   skipTypeCheck: boolean;
   /** Error codes to ignore for this specific sample (via <!-- @expect-error:2304,2307 -->) */
   expectedErrors: number[];
+  /** Whether the code sample contains ellipsis (...) indicating incomplete/partial code */
+  isIncomplete: boolean;
 }
 
 export interface ProcessedCodeSample extends CodeSample {

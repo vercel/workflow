@@ -5,6 +5,9 @@ const CODE_BLOCK_REGEX =
 const EXPECT_ERROR_REGEX = /<!--\s*@expect-error:([0-9,\s]+)\s*-->/;
 // Match entire line comments with [!code ...] including any trailing text
 const HIGHLIGHT_COMMENT_REGEX = /\s*\/\/\s*\[!code[^\]]*\].*$/gm;
+// Match ellipsis patterns indicating incomplete code: standalone "...", "// ...", or "/* ... */"
+const INCOMPLETE_CODE_REGEX =
+  /(?:^\s*\.{3}\s*$|\/\/\s*\.{3}|\/\*\s*\.{3}\s*\*\/)/m;
 
 /**
  * Normalizes the language identifier
@@ -123,6 +126,9 @@ export function extractCodeSamples(
     // Calculate line number (1-indexed, pointing to first line of code)
     const lineNumber = getLineNumber(content, matchIndex) + 1;
 
+    // Check if code contains ellipsis patterns indicating incomplete code
+    const isIncomplete = INCOMPLETE_CODE_REGEX.test(processedCode);
+
     samples.push({
       source: processedCode,
       language: normalizedLang,
@@ -130,6 +136,7 @@ export function extractCodeSamples(
       lineNumber,
       skipTypeCheck,
       expectedErrors,
+      isIncomplete,
     });
   }
 

@@ -2,7 +2,7 @@ import { globSync } from 'glob';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { extractCodeSamples } from '../src/extractor.js';
+import { extractCodeSamples } from '../dist/extractor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../..');
