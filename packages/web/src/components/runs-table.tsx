@@ -2,6 +2,7 @@
 
 import { parseWorkflowName } from '@workflow/core/parse-name';
 import {
+  cancelRun,
   type EnvMap,
   type Event,
   getErrorMessage,
@@ -15,16 +16,17 @@ import {
   ArrowUpAZ,
   ChevronLeft,
   ChevronRight,
-  Loader2Icon,
+  Loader2,
   MoreHorizontal,
   RefreshCw,
+  XCircle,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { DocsLink } from '@/components/ui/docs-link';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -53,11 +55,14 @@ import {
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
 import { useDataDirInfo } from '@/lib/hooks';
+import { useTableSelection } from '@/lib/hooks/use-table-selection';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
+import { SelectionBar } from './display-utils/selection-bar';
 import { StatusBadge } from './display-utils/status-badge';
 import { TableSkeleton } from './display-utils/table-skeleton';
 import { RunActionsDropdownItems } from './run-actions';
+import { Checkbox } from './ui/checkbox';
 
 // Inner content that fetches events when it mounts (only rendered when dropdown is open)
 function RunActionsDropdownContentInner({
@@ -408,6 +413,16 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     status: status === 'all' ? undefined : status,
   });
 
+  // Multi-select functionality
+  const selection = useTableSelection<WorkflowRun>({
+    getItemId: (run) => run.runId,
+  });
+
+  const runs = data.data ?? [];
+
+  // Bulk cancel state
+  const [isBulkCancelling, setIsBulkCancelling] = useState(false);
+
   const isLocalAndHasMissingData =
     isLocal &&
     (!dataDirInfo?.dataDir || !data?.data?.length) &&
@@ -433,6 +448,54 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     setLastRefreshTime(() => new Date());
     reload();
   }, [reload]);
+
+  // Get selected runs that are cancellable (pending or running)
+  const selectedRuns = useMemo(() => {
+    return runs.filter((run) => selection.selectedIds.has(run.runId));
+  }, [runs, selection.selectedIds]);
+
+  const cancellableSelectedRuns = useMemo(() => {
+    return selectedRuns.filter(
+      (run) => run.status === 'pending' || run.status === 'running'
+    );
+  }, [selectedRuns]);
+
+  const hasCancellableSelection = cancellableSelectedRuns.length > 0;
+
+  const handleBulkCancel = useCallback(async () => {
+    if (isBulkCancelling || cancellableSelectedRuns.length === 0) return;
+
+    setIsBulkCancelling(true);
+    try {
+      const results = await Promise.allSettled(
+        cancellableSelectedRuns.map((run) => cancelRun(env, run.runId))
+      );
+
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.filter((r) => r.status === 'rejected').length;
+
+      if (failed === 0) {
+        toast.success(
+          `Cancelled ${succeeded} run${succeeded !== 1 ? 's' : ''}`
+        );
+      } else if (succeeded === 0) {
+        toast.error(`Failed to cancel ${failed} run${failed !== 1 ? 's' : ''}`);
+      } else {
+        toast.warning(
+          `Cancelled ${succeeded} run${succeeded !== 1 ? 's' : ''}, ${failed} failed`
+        );
+      }
+
+      selection.clearSelection();
+      onReload();
+    } catch (err) {
+      toast.error('Failed to cancel runs', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsBulkCancelling(false);
+    }
+  }, [env, cancellableSelectedRuns, isBulkCancelling, selection, onReload]);
 
   const toggleSortOrder = () => {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
@@ -501,6 +564,14 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10">
+                      <Checkbox
+                        checked={selection.isAllSelected(runs)}
+                        indeterminate={selection.isSomeSelected(runs)}
+                        onCheckedChange={() => selection.toggleSelectAll(runs)}
+                        aria-label="Select all runs"
+                      />
+                    </TableHead>
                     <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
                       Workflow
                     </TableHead>
@@ -520,12 +591,20 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.data?.map((run) => (
+                  {runs.map((run) => (
                     <TableRow
                       key={run.runId}
                       className="cursor-pointer group relative"
                       onClick={() => onRunClick(run.runId)}
+                      data-selected={selection.isSelected(run)}
                     >
+                      <TableCell className="py-2">
+                        <Checkbox
+                          checked={selection.isSelected(run)}
+                          onCheckedChange={() => selection.toggleSelection(run)}
+                          aria-label={`Select run ${run.runId}`}
+                        />
+                      </TableCell>
                       <TableCell className="py-2">
                         <CopyableText text={run.workflowName} overlay>
                           {parseWorkflowName(run.workflowName)?.shortName ||
@@ -606,6 +685,34 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
           </div>
         </>
       )}
+
+      <SelectionBar
+        selectionCount={selection.selectionCount}
+        onClearSelection={selection.clearSelection}
+        itemLabel="runs"
+        actions={
+          hasCancellableSelection && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+              onClick={handleBulkCancel}
+              disabled={isBulkCancelling}
+            >
+              {isBulkCancelling ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <XCircle className="h-4 w-4 mr-1" />
+              )}
+              Cancel{' '}
+              {cancellableSelectedRuns.length !== selection.selectionCount
+                ? `${cancellableSelectedRuns.length} `
+                : ''}
+              {isBulkCancelling ? 'cancelling...' : ''}
+            </Button>
+          )
+        }
+      />
     </div>
   );
 }
