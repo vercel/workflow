@@ -39,15 +39,22 @@ export function isViteBasedFramework(): boolean {
  * - Local prod builds (nitro/bundler output doesn't preserve source maps)
  */
 export function hasStepSourceMaps(): boolean {
-  // Vercel deployments have proper source maps
+  // Next.js and SvelteKit currently do not consume inline sourcemaps from the step bundle
+  // TODO: we need to fix this in Next.js and/or SvelteKit
+  const appName = process.env.APP_NAME as string;
+  if (['nextjs-webpack', 'nextjs-turbopack', 'sveltekit'].includes(appName)) {
+    return false;
+  }
+
   if (!isLocalDeployment()) {
+    // Vercel deployments have proper source maps
     return true;
   }
   // Local dev mode has source maps (DEV_TEST_CONFIG is only set for dev tests)
   if (process.env.DEV_TEST_CONFIG) {
     return true;
   }
-  // Local prod builds don't have source maps
+  // Prod builds typically don't have source maps (with the exception of vercel above)
   return false;
 }
 
