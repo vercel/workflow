@@ -651,9 +651,11 @@ describe('e2e', () => {
             const run = await triggerWorkflow('errorStepBasic', []);
             const result = await getWorkflowReturnValue(run.runId);
 
-            expect(result.name).toBe('WorkflowRunFailedError');
-            expect(result.cause.message).toContain('Step error message');
+            // Workflow catches the error and returns it
+            expect(result.caught).toBe(true);
+            expect(result.message).toContain('Step error message');
 
+            // Verify step failed via CLI
             const { json: steps } = await cliInspectJson(
               `steps --runId ${run.runId}`
             );
@@ -661,9 +663,11 @@ describe('e2e', () => {
               s.stepName.includes('errorStepFn')
             );
             expect(failedStep.status).toBe('failed');
+            expect(failedStep.error.message).toContain('Step error message');
 
+            // Workflow completed (error was caught)
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
-            expect(runData.status).toBe('failed');
+            expect(runData.status).toBe('completed');
           }
         );
 
@@ -674,11 +678,13 @@ describe('e2e', () => {
             const run = await triggerWorkflow('errorStepCrossFile', []);
             const result = await getWorkflowReturnValue(run.runId);
 
-            expect(result.name).toBe('WorkflowRunFailedError');
-            expect(result.cause.message).toContain(
+            // Workflow catches the error and returns message + stack
+            expect(result.caught).toBe(true);
+            expect(result.message).toContain(
               'Step error from imported helper module'
             );
 
+            // Verify step failed via CLI - original stack has function names
             const { json: steps } = await cliInspectJson(
               `steps --runId ${run.runId}`
             );
@@ -687,13 +693,15 @@ describe('e2e', () => {
             );
             expect(failedStep.status).toBe('failed');
             // Note: Step errors don't have source-mapped stack traces (known limitation)
+            // but function names are preserved in the step's error
             expect(failedStep.error.stack).toContain('throwErrorFromStep');
             expect(failedStep.error.stack).toContain(
               'stepThatThrowsFromHelper'
             );
 
+            // Workflow completed (error was caught)
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
-            expect(runData.status).toBe('failed');
+            expect(runData.status).toBe('completed');
           }
         );
       });

@@ -601,15 +601,23 @@ errorStepFn.maxRetries = 0;
 /** Test: Step error message propagates correctly to workflow */
 export async function errorStepBasic() {
   'use workflow';
-  await errorStepFn();
-  return 'never reached';
+  try {
+    await errorStepFn();
+    return { caught: false, message: null, stack: null };
+  } catch (e: any) {
+    return { caught: true, message: e.message, stack: e.stack };
+  }
 }
 
 /** Test: Step error from imported module has function names in stack */
 export async function errorStepCrossFile() {
   'use workflow';
-  await stepThatThrowsFromHelper(); // from helpers.ts
-  return 'never reached';
+  try {
+    await stepThatThrowsFromHelper(); // from helpers.ts
+    return { caught: false, message: null, stack: null };
+  } catch (e: any) {
+    return { caught: true, message: e.message, stack: e.stack };
+  }
 }
 
 // ------------------------------------------------------------
