@@ -31,6 +31,47 @@ function compareVersions(a: string, b: string): boolean {
     return { parts, prerelease };
   };
 
+  const comparePrerelease = (
+    pre1: string | undefined,
+    pre2: string | undefined
+  ): number => {
+    if (!pre1 && !pre2) return 0; // both no prerelease
+    if (!pre1 && pre2) return 1; // no prerelease > prerelease
+    if (pre1 && !pre2) return -1; // prerelease < no prerelease
+    if (typeof pre1 !== 'string' || typeof pre2 !== 'string') return 0;
+
+    // Both have prerelease - compare them properly
+    const parts1 = pre1.split('.');
+    const parts2 = pre2.split('.');
+
+    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+      const p1 = parts1[i];
+      const p2 = parts2[i];
+
+      // If one side is missing, it's less than the other
+      if (p1 === undefined) return -1;
+      if (p2 === undefined) return 1;
+
+      // Try to parse as numbers for numeric comparison
+      const num1 = Number(p1);
+      const num2 = Number(p2);
+      const isNum1 = !Number.isNaN(num1) && p1 !== '';
+      const isNum2 = !Number.isNaN(num2) && p2 !== '';
+
+      if (isNum1 && isNum2) {
+        // Both are numbers - compare numerically
+        if (num1 > num2) return 1;
+        if (num1 < num2) return -1;
+      } else {
+        // At least one is non-numeric - compare as strings
+        if (p1 > p2) return 1;
+        if (p1 < p2) return -1;
+      }
+    }
+
+    return 0; // equal
+  };
+
   const versionA = parseVersion(a);
   const versionB = parseVersion(b);
 
@@ -42,15 +83,8 @@ function compareVersions(a: string, b: string): boolean {
 
   // If versions are equal up to patch level, check prerelease
   // No prerelease is considered greater than prerelease
-  if (!versionA.prerelease && versionB.prerelease) return true;
-  if (versionA.prerelease && !versionB.prerelease) return false;
-
-  // Both have prereleases or both don't - they're equal
-  if (versionA.prerelease && versionB.prerelease) {
-    return versionA.prerelease > versionB.prerelease;
-  }
-
-  return false;
+  const preResult = comparePrerelease(versionA.prerelease, versionB.prerelease);
+  return preResult > 0;
 }
 
 /**
