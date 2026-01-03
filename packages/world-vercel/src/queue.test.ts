@@ -118,6 +118,31 @@ describe('createQueue', () => {
         }
       }
     });
+
+    it('should silently handle idempotency key conflicts', async () => {
+      mockSend.mockRejectedValue(
+        new Error('Duplicate idempotency key detected')
+      );
+
+      const queue = createQueue();
+      const result = await queue.queue(
+        '__wkf_workflow_test',
+        { runId: 'run-123' },
+        { idempotencyKey: 'my-key' }
+      );
+
+      // Should not throw, and should return a placeholder messageId
+      expect(result.messageId).toBe('msg_duplicate_my-key');
+    });
+
+    it('should rethrow non-idempotency errors', async () => {
+      mockSend.mockRejectedValue(new Error('Some other error'));
+
+      const queue = createQueue();
+      await expect(
+        queue.queue('__wkf_workflow_test', { runId: 'run-123' })
+      ).rejects.toThrow('Some other error');
+    });
   });
 
   describe('createQueueHandler()', () => {
