@@ -683,8 +683,11 @@ describe('e2e', () => {
             expect(result.message).toContain(
               'Step error from imported helper module'
             );
+            // Stack trace propagates to caught error with function names
+            expect(result.stack).toContain('throwErrorFromStep');
+            expect(result.stack).toContain('stepThatThrowsFromHelper');
 
-            // Verify step failed via CLI - original stack has function names
+            // Verify step failed via CLI - same stack info available there too
             const { json: steps } = await cliInspectJson(
               `steps --runId ${run.runId}`
             );
@@ -692,8 +695,6 @@ describe('e2e', () => {
               s.stepName.includes('stepThatThrowsFromHelper')
             );
             expect(failedStep.status).toBe('failed');
-            // Note: Step errors don't have source-mapped stack traces (known limitation)
-            // but function names are preserved in the step's error
             expect(failedStep.error.stack).toContain('throwErrorFromStep');
             expect(failedStep.error.stack).toContain(
               'stepThatThrowsFromHelper'

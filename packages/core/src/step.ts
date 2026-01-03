@@ -97,7 +97,13 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Step failed - bubble up to workflow
           if (event.eventData.fatal) {
             setTimeout(() => {
-              reject(new FatalError(event.eventData.error));
+              const error = new FatalError(event.eventData.error);
+              // Preserve the original stack trace from the step execution
+              // This ensures that deeply nested errors show the full call chain
+              if (event.eventData.stack) {
+                error.stack = event.eventData.stack;
+              }
+              reject(error);
             }, 0);
             return EventConsumerResult.Finished;
           } else {
