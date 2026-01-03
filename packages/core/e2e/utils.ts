@@ -20,6 +20,28 @@ export function isLocalDeployment(): boolean {
   return localHosts.some((host) => deploymentUrl.includes(host));
 }
 
+/**
+ * Checks if step error source maps are expected to work in the current test environment.
+ * Source maps work in:
+ * - Vercel prod deployments (production builds have proper source maps)
+ * - Local dev mode (DEV_TEST_CONFIG is set, uses step bundle with inline source maps)
+ *
+ * Source maps do NOT work in:
+ * - Local prod builds (nitro/bundler output doesn't preserve source maps)
+ */
+export function hasStepSourceMaps(): boolean {
+  // Vercel deployments have proper source maps
+  if (!isLocalDeployment()) {
+    return true;
+  }
+  // Local dev mode has source maps (DEV_TEST_CONFIG is only set for dev tests)
+  if (process.env.DEV_TEST_CONFIG) {
+    return true;
+  }
+  // Local prod builds don't have source maps
+  return false;
+}
+
 function getCliArgs(): string {
   const deploymentUrl = process.env.DEPLOYMENT_URL;
   if (!deploymentUrl) {

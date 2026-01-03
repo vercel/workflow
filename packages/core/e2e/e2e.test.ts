@@ -6,7 +6,7 @@ import { dehydrateWorkflowArguments } from '../src/serialization';
 import {
   cliInspectJson,
   getProtectionBypassHeaders,
-  isLocalDeployment,
+  hasStepSourceMaps,
 } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -657,7 +657,9 @@ describe('e2e', () => {
             // Stack trace contains function name and source file
             expect(result.stack).toContain('errorStepFn');
             expect(result.stack).not.toContain('evalmachine');
-            expect(result.stack).toContain('99_e2e.ts');
+            if (hasStepSourceMaps()) {
+              expect(result.stack).toContain('99_e2e.ts');
+            }
 
             // Verify step failed via CLI (--withData needed to resolve errorRef)
             const { json: steps } = await cliInspectJson(
@@ -671,7 +673,9 @@ describe('e2e', () => {
             // Step error also has function name and source file in stack
             expect(failedStep.error.stack).toContain('errorStepFn');
             expect(failedStep.error.stack).not.toContain('evalmachine');
-            expect(failedStep.error.stack).toContain('99_e2e.ts');
+            if (hasStepSourceMaps()) {
+              expect(failedStep.error.stack).toContain('99_e2e.ts');
+            }
 
             // Workflow completed (error was caught)
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
@@ -695,7 +699,9 @@ describe('e2e', () => {
             expect(result.stack).toContain('throwErrorFromStep');
             expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
-            expect(result.stack).toContain('helpers.ts');
+            if (hasStepSourceMaps()) {
+              expect(result.stack).toContain('helpers.ts');
+            }
 
             // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
             const { json: steps } = await cliInspectJson(
@@ -710,7 +716,9 @@ describe('e2e', () => {
               'stepThatThrowsFromHelper'
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
-            expect(failedStep.error.stack).toContain('helpers.ts');
+            if (hasStepSourceMaps()) {
+              expect(failedStep.error.stack).toContain('helpers.ts');
+            }
 
             // Workflow completed (error was caught)
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
