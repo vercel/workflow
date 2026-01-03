@@ -662,6 +662,7 @@ describe('e2e', () => {
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('errorStepFn')
             );
+            console.log('ERROR TEST', failedStep);
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.message).toContain('Step error message');
 
@@ -694,6 +695,7 @@ describe('e2e', () => {
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('stepThatThrowsFromHelper')
             );
+            console.log('ERROR TEST', failedStep);
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.stack).toContain('throwErrorFromStep');
             expect(failedStep.error.stack).toContain(
