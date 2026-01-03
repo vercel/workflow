@@ -38,7 +38,8 @@
     "@workflow/rollup": "4.0.0-beta.1",
     "@workflow/astro": "4.0.0-beta.1",
     "@workflow/example-fastify": "0.0.0",
-    "@workflow/vite": "4.0.0-beta.1"
+    "@workflow/vite": "4.0.0-beta.1",
+    "@workflow/docs-typecheck": "0.0.0"
   },
   "changesets": [
     "add-documentation",
@@ -50,6 +51,7 @@
     "angry-owls-beg",
     "bigint-serialization",
     "bitter-ads-hear",
+    "bitter-guests-flow",
     "bitter-trees-rest",
     "blue-sloths-juggle",
     "brave-walls-trade",
@@ -175,6 +177,7 @@
     "lucky-breads-fry",
     "lucky-dolphins-flow",
     "lucky-signs-shine",
+    "major-kiwis-itch",
     "major-moles-sit",
     "major-roses-yell",
     "mean-mangos-hope",
@@ -193,6 +196,7 @@
     "nine-insects-refuse",
     "nine-owls-write",
     "ninety-cobras-shop",
+    "ninety-geckos-lose",
     "ninety-lions-grab",
     "odd-bobcats-repair",
     "odd-years-fail",
@@ -200,6 +204,7 @@
     "open-weeks-sniff",
     "petite-eggs-tell",
     "pink-aliens-itch",
+    "plain-parks-lick",
     "poor-eyes-build",
     "poor-frogs-wear",
     "poor-lines-make",

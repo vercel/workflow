@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.41
+
+### Patch Changes
+
+- [#714](https://github.com/vercel/workflow/pull/714) [`a531a74`](https://github.com/vercel/workflow/commit/a531a740094339ea7074b3f4145f9ce9e588adb6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Revert exporting `DurableAgent` from the root "@workflow/ai" package
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.41
+
 ## 4.0.1-beta.40
 
 ### Patch Changes

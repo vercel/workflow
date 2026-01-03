@@ -1,5 +1,11 @@
 # @workflow/builders
 
+## 4.0.1-beta.34
+
+### Patch Changes
+
+- [#713](https://github.com/vercel/workflow/pull/713) [`d552374`](https://github.com/vercel/workflow/commit/d552374b13945c76cbffccfcfdef38f4e3b5a97c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Resolve `@workflow/swc-plugin` relative to the "builders" package
+
 ## 4.0.1-beta.33
 
 ### Patch Changes

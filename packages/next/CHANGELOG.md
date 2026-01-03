@@ -1,5 +1,12 @@
 # @workflow/next
 
+## 4.0.1-beta.39
+
+### Patch Changes
+
+- Updated dependencies [[`d552374`](https://github.com/vercel/workflow/commit/d552374b13945c76cbffccfcfdef38f4e3b5a97c)]:
+  - @workflow/builders@4.0.1-beta.34
+
 ## 4.0.1-beta.38
 
 ### Patch Changes
