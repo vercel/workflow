@@ -120,7 +120,7 @@ export abstract class BaseBuilder {
         write: false,
         outdir,
         bundle: true,
-        sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+        sourcemap: false,
         absWorkingDir: this.config.workingDir,
         logLevel: 'silent',
       });
@@ -750,7 +750,7 @@ export const OPTIONS = handler;`;
         '.mjs',
         '.cjs',
       ],
-      sourcemap: false,
+      sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
       mainFields: ['module', 'main'],
       // Don't externalize anything - bundle everything including workflow packages
       external: [],

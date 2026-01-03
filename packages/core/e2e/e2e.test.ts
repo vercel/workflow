@@ -645,7 +645,7 @@ describe('e2e', () => {
 
       describe('step errors', () => {
         test(
-          'basic step error preserves message',
+          'basic step error preserves message and stack trace',
           { timeout: 60_000 },
           async () => {
             const run = await triggerWorkflow('errorStepBasic', []);
@@ -654,6 +654,10 @@ describe('e2e', () => {
             // Workflow catches the error and returns it
             expect(result.caught).toBe(true);
             expect(result.message).toContain('Step error message');
+            // Stack trace contains function name and source file
+            expect(result.stack).toContain('errorStepFn');
+            expect(result.stack).not.toContain('evalmachine');
+            expect(result.stack).toContain('99_e2e.ts');
 
             // Verify step failed via CLI (--withData needed to resolve errorRef)
             const { json: steps } = await cliInspectJson(
@@ -662,9 +666,12 @@ describe('e2e', () => {
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('errorStepFn')
             );
-            console.log('ERROR TEST', failedStep);
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.message).toContain('Step error message');
+            // Step error also has function name and source file in stack
+            expect(failedStep.error.stack).toContain('errorStepFn');
+            expect(failedStep.error.stack).not.toContain('evalmachine');
+            expect(failedStep.error.stack).toContain('99_e2e.ts');
 
             // Workflow completed (error was caught)
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
@@ -684,9 +691,11 @@ describe('e2e', () => {
             expect(result.message).toContain(
               'Step error from imported helper module'
             );
-            // Stack trace propagates to caught error with function names
+            // Stack trace propagates to caught error with function names and source file
             expect(result.stack).toContain('throwErrorFromStep');
             expect(result.stack).toContain('stepThatThrowsFromHelper');
+            expect(result.stack).not.toContain('evalmachine');
+            expect(result.stack).toContain('helpers.ts');
 
             // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
             const { json: steps } = await cliInspectJson(
@@ -695,12 +704,13 @@ describe('e2e', () => {
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('stepThatThrowsFromHelper')
             );
-            console.log('ERROR TEST', failedStep);
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.stack).toContain('throwErrorFromStep');
             expect(failedStep.error.stack).toContain(
               'stepThatThrowsFromHelper'
             );
+            expect(failedStep.error.stack).not.toContain('evalmachine');
+            expect(failedStep.error.stack).toContain('helpers.ts');
 
             // Workflow completed (error was caught)
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
