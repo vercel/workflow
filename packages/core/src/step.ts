@@ -114,11 +114,23 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.invocationsQueue.delete(event.correlationId);
           // Step failed - bubble up to workflow
           setTimeout(() => {
-            const error = new FatalError(event.eventData.error);
-            // Preserve the original stack trace from the step execution
-            // This ensures that deeply nested errors show the full call chain
-            if (event.eventData.stack) {
-              error.stack = event.eventData.stack;
+            const errorData = event.eventData.error;
+            const isErrorObject =
+              typeof errorData === 'object' && errorData !== null;
+
+            const errorMessage = isErrorObject
+              ? (errorData.message ?? 'Unknown error')
+              : typeof errorData === 'string'
+                ? errorData
+                : 'Unknown error';
+
+            const errorStack =
+              (isErrorObject ? errorData.stack : undefined) ??
+              event.eventData.stack;
+
+            const error = new FatalError(errorMessage);
+            if (errorStack) {
+              error.stack = errorStack;
             }
             reject(error);
           }, 0);
