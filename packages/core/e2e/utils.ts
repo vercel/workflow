@@ -27,7 +27,7 @@ export function isLocalDeployment(): boolean {
  */
 export function hasStepSourceMaps(): boolean {
   // Next.js does not consume inline sourcemaps AT ALL for step bundles
-  // TODO: we need to fix thi
+  // TODO: we need to fix this
   const appName = process.env.APP_NAME as string;
   if (['nextjs-webpack', 'nextjs-turbopack'].includes(appName)) {
     return false;
@@ -68,10 +68,7 @@ export function hasWorkflowSourceMaps(): boolean {
 
   // These frameworks currently don't handle sourcemaps correctly in local dev
   // TODO: figure out how to get sourcemaps working in these frameworks too
-  if (
-    process.env.DEV_TEST_CONFIG &&
-    ['vite', 'sveltekit', 'astro'].includes(appName)
-  ) {
+  if (process.env.DEV_TEST_CONFIG && ['vite', 'astro'].includes(appName)) {
     return false;
   }
 
