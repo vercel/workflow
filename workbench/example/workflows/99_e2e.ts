@@ -381,6 +381,131 @@ export async function promiseRaceStressTestWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+async function stepThatRetriesAndSucceeds() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepThatRetriesAndSucceeds - attempt: ${attempt}`);
+
+  // Fail on attempts 1 and 2, succeed on attempt 3
+  if (attempt < 3) {
+    console.log(`Attempt ${attempt} - throwing error to trigger retry`);
+    throw new Error(`Failed on attempt ${attempt}`);
+  }
+
+  console.log(`Attempt ${attempt} - succeeding`);
+  return attempt;
+}
+
+export async function retryAttemptCounterWorkflow() {
+  'use workflow';
+  console.log('Starting retry attempt counter workflow');
+
+  // This step should fail twice and succeed on the third attempt
+  const finalAttempt = await stepThatRetriesAndSucceeds();
+
+  console.log(`Workflow completed with final attempt: ${finalAttempt}`);
+  return { finalAttempt };
+}
+
+//////////////////////////////////////////////////////////
+
+async function stepThatThrowsRetryableError() {
+  'use step';
+  const { attempt, stepStartedAt } = getStepMetadata();
+  if (attempt === 1) {
+    throw new RetryableError('Retryable error', {
+      retryAfter: '10s',
+    });
+  }
+  return {
+    attempt,
+    stepStartedAt,
+    duration: Date.now() - stepStartedAt.getTime(),
+  };
+}
+
+export async function crossFileErrorWorkflow() {
+  'use workflow';
+  // This will throw an error from the imported helpers.ts file
+  callThrower();
+  return 'never reached';
+}
+
+//////////////////////////////////////////////////////////
+
+export async function retryableAndFatalErrorWorkflow() {
+  'use workflow';
+
+  const retryableResult = await stepThatThrowsRetryableError();
+
+  let gotFatalError = false;
+  try {
+    await stepThatFails();
+  } catch (error: any) {
+    if (FatalError.is(error)) {
+      gotFatalError = true;
+    }
+  }
+
+  return { retryableResult, gotFatalError };
+}
+
+//////////////////////////////////////////////////////////
+
+// Test that maxRetries = 0 means the step runs once but does not retry on failure
+async function stepWithNoRetries() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetries - attempt: ${attempt}`);
+  // Always fail - with maxRetries = 0, this should only run once
+  throw new Error(`Failed on attempt ${attempt}`);
+}
+stepWithNoRetries.maxRetries = 0;
+
+// Test that maxRetries = 0 works when the step succeeds
+async function stepWithNoRetriesThatSucceeds() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetriesThatSucceeds - attempt: ${attempt}`);
+  return { attempt };
+}
+stepWithNoRetriesThatSucceeds.maxRetries = 0;
+
+export async function maxRetriesZeroWorkflow() {
+  'use workflow';
+  console.log('Starting maxRetries = 0 workflow');
+
+  // First, verify that a step with maxRetries = 0 can still succeed
+  const successResult = await stepWithNoRetriesThatSucceeds();
+
+  // Now test that a failing step with maxRetries = 0 does NOT retry
+  let failedAttempt: number | null = null;
+  let gotError = false;
+  try {
+    await stepWithNoRetries();
+  } catch (error: any) {
+    gotError = true;
+    console.log('Received error', typeof error, error, error.message);
+    // Extract the attempt number from the error message
+    const match = error.message?.match(/attempt (\d+)/);
+    if (match) {
+      failedAttempt = parseInt(match[1], 10);
+    }
+  }
+
+  console.log(
+    `Workflow completed: successResult=${JSON.stringify(successResult)}, gotError=${gotError}, failedAttempt=${failedAttempt}`
+  );
+
+  return {
+    successResult,
+    gotError,
+    failedAttempt,
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function hookCleanupTestWorkflow(
   token: string,
   customData: string
