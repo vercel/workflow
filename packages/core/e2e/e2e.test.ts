@@ -655,9 +655,9 @@ describe('e2e', () => {
             expect(result.caught).toBe(true);
             expect(result.message).toContain('Step error message');
 
-            // Verify step failed via CLI
+            // Verify step failed via CLI (--withData needed to resolve errorRef)
             const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId}`
+              `steps --runId ${run.runId} --withData`
             );
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('errorStepFn')
@@ -688,9 +688,9 @@ describe('e2e', () => {
             expect(result.stack).toContain('throwErrorFromStep');
             expect(result.stack).toContain('stepThatThrowsFromHelper');
 
-            // Verify step failed via CLI - same stack info available there too
+            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
             const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId}`
+              `steps --runId ${run.runId} --withData`
             );
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('stepThatThrowsFromHelper')
