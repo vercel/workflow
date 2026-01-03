@@ -7,6 +7,7 @@ import {
   cliInspectJson,
   getProtectionBypassHeaders,
   hasStepSourceMaps,
+  hasWorkflowSourceMaps,
 } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -627,13 +628,8 @@ describe('e2e', () => {
             expect(result.cause.stack).toContain('errorWorkflowCrossFile');
             expect(result.cause.stack).not.toContain('evalmachine');
 
-            // helpers.ts reference (known issue: vite-based frameworks dev mode)
-            const isViteBasedFrameworkDevMode =
-              (process.env.APP_NAME === 'sveltekit' ||
-                process.env.APP_NAME === 'vite' ||
-                process.env.APP_NAME === 'astro') &&
-              isLocalDeployment();
-            if (!isViteBasedFrameworkDevMode) {
+            // helpers.ts reference (known issue: vite-based frameworks in local deployments)
+            if (hasWorkflowSourceMaps()) {
               expect(result.cause.stack).toContain('helpers.ts');
             }
 
