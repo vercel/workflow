@@ -25,8 +25,9 @@ export function isLocalDeployment(): boolean {
  * Vite-based frameworks: vite, sveltekit, astro
  */
 export function isViteBasedFramework(): boolean {
-  const appName = process.env.APP_NAME;
-  return appName === 'vite' || appName === 'sveltekit' || appName === 'astro';
+  const appName = process.env.APP_NAME as string;
+  // TODO: figure out how to get sourcemaps working in these frameworks too
+  return ['vite', 'sveltekit', 'astro'].includes(appName);
 }
 
 /**
@@ -54,7 +55,8 @@ export function hasStepSourceMaps(): boolean {
   if (process.env.DEV_TEST_CONFIG) {
     return true;
   }
-  // Prod builds typically don't have source maps (with the exception of vercel above)
+
+  // Prod buils for frameowrks off-vercel typically don't consume source maps
   return false;
 }
 
@@ -65,10 +67,20 @@ export function hasStepSourceMaps(): boolean {
  *   These frameworks have a known issue where helpers.ts references are not preserved
  */
 export function hasWorkflowSourceMaps(): boolean {
-  // Vite-based frameworks in local deployment don't have proper source maps
-  if (isViteBasedFramework() && isLocalDeployment()) {
+  const appName = process.env.APP_NAME as string;
+
+  // Vercel deployments have proper source map support for workflow error
+  if (!isLocalDeployment()) {
+    return true;
+  }
+
+  // These frameworks currently don't handle sourcemaps correctly in local dev
+  // TODO: figure out how to get sourcemaps working in these frameworks too
+  if (['vite', 'sveltekit', 'astro'].includes(appName)) {
     return false;
   }
+
+  // Works everywhere else
   return true;
 }
 

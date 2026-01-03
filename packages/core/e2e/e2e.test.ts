@@ -628,9 +628,12 @@ describe('e2e', () => {
             expect(result.cause.stack).toContain('errorWorkflowCrossFile');
             expect(result.cause.stack).not.toContain('evalmachine');
 
-            // helpers.ts reference (known issue: vite-based frameworks in local deployments)
+            // Workflow source maps are not properly supported everyhwere. Check the definition
+            // of hasWorkflowSourceMaps() to see where they are supported
             if (hasWorkflowSourceMaps()) {
               expect(result.cause.stack).toContain('helpers.ts');
+            } else {
+              expect(result.cause.stack).not.toContain('helpers.ts');
             }
 
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
@@ -653,8 +656,13 @@ describe('e2e', () => {
             // Stack trace contains function name and source file
             expect(result.stack).toContain('errorStepFn');
             expect(result.stack).not.toContain('evalmachine');
+
+            // Source maps are not supported everyhwere. Check the definition
+            // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('99_e2e.ts');
+            } else {
+              expect(result.stack).not.toContain('99_e2e.ts');
             }
 
             // Verify step failed via CLI (--withData needed to resolve errorRef)
@@ -666,11 +674,17 @@ describe('e2e', () => {
             );
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.message).toContain('Step error message');
+
             // Step error also has function name and source file in stack
             expect(failedStep.error.stack).toContain('errorStepFn');
             expect(failedStep.error.stack).not.toContain('evalmachine');
+
+            // Source maps are not supported everyhwere. Check the definition
+            // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('99_e2e.ts');
+            } else {
+              expect(failedStep.error.stack).not.toContain('99_e2e.ts');
             }
 
             // Workflow completed (error was caught)
@@ -695,8 +709,13 @@ describe('e2e', () => {
             expect(result.stack).toContain('throwErrorFromStep');
             expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
+
+            // Source maps are not supported everyhwere. Check the definition
+            // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('helpers.ts');
+            } else {
+              expect(result.stack).not.toContain('helpers.ts');
             }
 
             // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
@@ -712,8 +731,12 @@ describe('e2e', () => {
               'stepThatThrowsFromHelper'
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
+            // Source maps are not supported everyhwere. Check the definition
+            // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('helpers.ts');
+            } else {
+              expect(failedStep.error.stack).not.toContain('helpers.ts');
             }
 
             // Workflow completed (error was caught)
