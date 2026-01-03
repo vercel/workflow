@@ -141,6 +141,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               correlationId: stepId,
               eventData: {
                 error: errorMessage,
+                stack: step.error?.stack,
                 fatal: true,
               },
             });
