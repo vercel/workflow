@@ -109,6 +109,7 @@ jobs:
           sleep 10
           pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --outputFile=e2e-community-${{ inputs.world-id }}.json || true
         env:
+          NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ inputs.app-name }}
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'

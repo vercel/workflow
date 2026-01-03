@@ -241,6 +241,7 @@ jobs:
       - name: Run E2E Tests
         run: pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-vercel-prod-${{ matrix.app.name }}.json
         env:
+          NODE_OPTIONS: "--enable-source-maps"
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
           APP_NAME: ${{ matrix.app.name }}
           WORKFLOW_VERCEL_SKIP_PROXY: 'true'
@@ -330,6 +331,7 @@ jobs:
           pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
+          NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
@@ -396,6 +398,7 @@ jobs:
           echo "starting tests in 10 seconds" && sleep 10
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
+          NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
 
@@ -481,6 +484,7 @@ jobs:
           echo "starting tests in 10 seconds" && sleep 10
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
+          NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
 
@@ -542,6 +546,7 @@ jobs:
           Stop-Job $job
         shell: powershell
         env:
+          NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
