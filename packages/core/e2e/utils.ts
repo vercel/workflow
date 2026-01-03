@@ -21,62 +21,57 @@ export function isLocalDeployment(): boolean {
 }
 
 /**
- * Checks if the current test is running against a vite-based framework.
- * Vite-based frameworks: vite, sveltekit, astro
- */
-export function isViteBasedFramework(): boolean {
-  const appName = process.env.APP_NAME as string;
-  // TODO: figure out how to get sourcemaps working in these frameworks too
-  return ['vite', 'sveltekit', 'astro'].includes(appName);
-}
-
-/**
  * Checks if step error source maps are expected to work in the current test environment.
- * Source maps work in:
- * - Vercel prod deployments (production builds have proper source maps)
- * - Local dev mode (DEV_TEST_CONFIG is set, uses step bundle with inline source maps)
- *
- * Source maps do NOT work in:
- * - Local prod builds (nitro/bundler output doesn't preserve source maps)
+ * TODO: ideally it should work consistently everywhere and we should fix the issues and
+ *       get rid of this strange matrix
  */
 export function hasStepSourceMaps(): boolean {
-  // Next.js and SvelteKit currently do not consume inline sourcemaps from the step bundle
-  // TODO: we need to fix this in Next.js and/or SvelteKit
+  // Next.js does not consume inline sourcemaps AT ALL for step bundles
+  // TODO: we need to fix thi
   const appName = process.env.APP_NAME as string;
-  if (['nextjs-webpack', 'nextjs-turbopack', 'sveltekit'].includes(appName)) {
+  if (['nextjs-webpack', 'nextjs-turbopack'].includes(appName)) {
     return false;
   }
 
+  // Vercel builds have proper source maps for all other frameworks, EXCEPT sveltekit
   if (!isLocalDeployment()) {
-    // Vercel deployments have proper source maps
-    return true;
-  }
-  // Local dev mode has source maps (DEV_TEST_CONFIG is only set for dev tests)
-  if (process.env.DEV_TEST_CONFIG) {
-    return true;
+    return appName !== 'sveltekit';
   }
 
-  // Prod buils for frameowrks off-vercel typically don't consume source maps
-  return false;
+  // Vite only works in vercel, not on local prod or dev
+  if (appName === 'vite') {
+    return false;
+  }
+
+  // Prod buils for frameworks typically don't consume source maps. So let's disable testing
+  // in local prod and local postgres tests
+  if (!process.env.DEV_TEST_CONFIG) {
+    return false;
+  }
+
+  // Works everywhere else (i.e. other frameworks in dev mode)
+  return true;
 }
 
 /**
  * Checks if workflow error source maps are expected to work in the current test environment.
- * Source maps work in most environments EXCEPT:
- * - Vite-based frameworks (vite, sveltekit, astro) in local deployments
- *   These frameworks have a known issue where helpers.ts references are not preserved
+ * TODO: ideally it should work consistently everywhere and we should fix the issues and
+ *       get rid of this strange matrix
  */
 export function hasWorkflowSourceMaps(): boolean {
   const appName = process.env.APP_NAME as string;
 
-  // Vercel deployments have proper source map support for workflow error
+  // Vercel deployments have proper source map support for workflow errors
   if (!isLocalDeployment()) {
     return true;
   }
 
   // These frameworks currently don't handle sourcemaps correctly in local dev
   // TODO: figure out how to get sourcemaps working in these frameworks too
-  if (['vite', 'sveltekit', 'astro'].includes(appName)) {
+  if (
+    process.env.DEV_TEST_CONFIG &&
+    ['vite', 'sveltekit', 'astro'].includes(appName)
+  ) {
     return false;
   }
 
