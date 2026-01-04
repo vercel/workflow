@@ -64,7 +64,7 @@ export const WorkflowRunId = SemanticConvention<string>('workflow.run.id');
 
 /** Current status of the workflow run */
 export const WorkflowRunStatus = SemanticConvention<
-  WorkflowRun['status'] | 'pending_steps'
+  WorkflowRun['status'] | 'workflow_suspended'
 >('workflow.run.status');
 
 /** Timestamp when the workflow execution started (Unix timestamp) */
@@ -105,6 +105,16 @@ export const WorkflowErrorMessage = SemanticConvention<string>(
 /** Number of steps created during workflow execution */
 export const WorkflowStepsCreated = SemanticConvention<number>(
   'workflow.steps.created'
+);
+
+/** Number of hooks created during workflow execution */
+export const WorkflowHooksCreated = SemanticConvention<number>(
+  'workflow.hooks.created'
+);
+
+/** Number of waits created during workflow execution */
+export const WorkflowWaitsCreated = SemanticConvention<number>(
+  'workflow.waits.created'
 );
 
 // Step attributes
@@ -204,4 +214,19 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
 /** Number of webhook handlers triggered */
 export const WebhookHandlersTriggered = SemanticConvention<number>(
   'webhook.handlers.triggered'
+);
+
+// Suspension attributes
+
+export const WorkflowSuspensionState = SemanticConvention<'suspended'>(
+  'workflow.suspension.state'
+);
+export const WorkflowSuspensionHookCount = SemanticConvention<number>(
+  'workflow.suspension.hook_count'
+);
+export const WorkflowSuspensionStepCount = SemanticConvention<number>(
+  'workflow.suspension.step_count'
+);
+export const WorkflowSuspensionWaitCount = SemanticConvention<number>(
+  'workflow.suspension.wait_count'
 );

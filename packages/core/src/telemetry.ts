@@ -1,6 +1,8 @@
 import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
 import { once } from '@workflow/utils';
+import { WorkflowSuspension } from './global.js';
+import * as Attr from './telemetry/semantic-conventions.js';
 
 // ============================================================
 // Trace Context Propagation Utilities
@@ -100,10 +102,33 @@ export async function trace<T>(
         code: otel.SpanStatusCode.ERROR,
         message: (e as Error).message,
       });
+      applyWorkflowSuspensionToSpan(e, otel, span);
       throw e;
     } finally {
       span.end();
     }
+  });
+}
+
+/**
+ * Applies workflow suspension attributes to the given span if the error is a WorkflowSuspension
+ * which is technically not an error, but an algebraic effect indicating suspension.
+ */
+function applyWorkflowSuspensionToSpan(
+  error: unknown,
+  otel: typeof api,
+  span: api.Span
+) {
+  if (!error || !WorkflowSuspension.is(error)) {
+    return;
+  }
+
+  span.setStatus({ code: otel.SpanStatusCode.OK });
+  span.setAttributes({
+    ...Attr.WorkflowSuspensionState('suspended'),
+    ...Attr.WorkflowSuspensionStepCount(error.stepCount),
+    ...Attr.WorkflowSuspensionHookCount(error.hookCount),
+    ...Attr.WorkflowSuspensionWaitCount(error.waitCount),
   });
 }
 

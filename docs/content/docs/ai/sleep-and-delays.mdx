@@ -63,6 +63,7 @@ export const flightBookingTools = {
 
 To round it off, extend the UI to display the tool call status. This can be done either by displaying the tool call information directly, or by emitting custom data parts to the stream (see [Streaming Updates from Tools](/docs/ai/streaming-updates-from-tools) for more details). In this case, since there aren't any fine-grained progress updates to show, we'll just display the tool call information directly:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="app/page.tsx" lineNumbers
 export default function ChatPage() {
 
@@ -194,6 +195,8 @@ export async function pollForResult(jobId: string) {
 async function checkJobStatus(jobId: string) {
   "use step";
   // Check job status...
+  const response = await fetch(`/api/jobs/${jobId}`);
+  return response.json();
 }
 ```
 

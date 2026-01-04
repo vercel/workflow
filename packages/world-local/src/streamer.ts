@@ -2,11 +2,17 @@ import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import type { Streamer } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { listJSONFiles, readBuffer, write } from './fs.js';
+import { z } from 'zod';
+import { listJSONFiles, readBuffer, readJSON, write, writeJSON } from './fs.js';
 
 // Create a monotonic ULID factory that ensures ULIDs are always increasing
 // even when generated within the same millisecond
 const monotonicUlid = monotonicFactory(() => Math.random());
+
+// Schema for the run-to-streams mapping file
+const RunStreamsSchema = z.object({
+  streams: z.array(z.string()),
+});
 
 /**
  * A chunk consists of a boolean `eof` indicating if it's the last chunk,
@@ -48,16 +54,55 @@ export function createStreamer(basedir: string): Streamer {
     ];
   }>();
 
+  // Track which streams have already been registered for a run (in-memory cache)
+  const registeredStreams = new Set<string>();
+
+  // Helper to record the runId <> streamId association
+  async function registerStreamForRun(
+    runId: string,
+    streamName: string
+  ): Promise<void> {
+    const cacheKey = `${runId}:${streamName}`;
+    if (registeredStreams.has(cacheKey)) {
+      return; // Already registered in this session
+    }
+
+    const runStreamsPath = path.join(
+      basedir,
+      'streams',
+      'runs',
+      `${runId}.json`
+    );
+
+    // Read existing streams for this run
+    const existing = await readJSON(runStreamsPath, RunStreamsSchema);
+    const streams = existing?.streams ?? [];
+
+    // Add stream if not already present
+    if (!streams.includes(streamName)) {
+      streams.push(streamName);
+      await writeJSON(runStreamsPath, { streams }, { overwrite: true });
+    }
+
+    registeredStreams.add(cacheKey);
+  }
+
   return {
     async writeToStream(
       name: string,
       _runId: string | Promise<string>,
       chunk: string | Uint8Array
     ) {
-      // Await runId if it's a promise to ensure proper flushing
-      await _runId;
+      // Generate ULID synchronously BEFORE any await to preserve call order.
+      // This ensures that chunks written in sequence maintain their order even
+      // when runId is a promise that multiple writes are waiting on.
+      const chunkId = `chnk_${monotonicUlid()}`;
 
-      const chunkId = `strm_${monotonicUlid()}`;
+      // Await runId if it's a promise to ensure proper flushing
+      const runId = await _runId;
+
+      // Register this stream for the run
+      await registerStreamForRun(runId, name);
 
       // Convert chunk to buffer for serialization
       let chunkBuffer: Buffer;
@@ -94,10 +139,14 @@ export function createStreamer(basedir: string): Streamer {
     },
 
     async closeStream(name: string, _runId: string | Promise<string>) {
-      // Await runId if it's a promise to ensure proper flushing
-      await _runId;
+      // Generate ULID synchronously BEFORE any await to preserve call order.
+      const chunkId = `chnk_${monotonicUlid()}`;
 
-      const chunkId = `strm_${monotonicUlid()}`;
+      // Await runId if it's a promise to ensure proper flushing
+      const runId = await _runId;
+
+      // Register this stream for the run (in case writeToStream wasn't called)
+      await registerStreamForRun(runId, name);
       const chunkPath = path.join(
         basedir,
         'streams',
@@ -111,6 +160,18 @@ export function createStreamer(basedir: string): Streamer {
       );
 
       streamEmitter.emit(`close:${name}` as const, { streamName: name });
+    },
+
+    async listStreamsByRunId(runId: string) {
+      const runStreamsPath = path.join(
+        basedir,
+        'streams',
+        'runs',
+        `${runId}.json`
+      );
+
+      const data = await readJSON(runStreamsPath, RunStreamsSchema);
+      return data?.streams ?? [];
     },
 
     async readFromStream(name: string, startIndex = 0) {
@@ -127,6 +188,8 @@ export function createStreamer(basedir: string): Streamer {
             chunkData: Uint8Array;
           }> = [];
           let isReadingFromDisk = true;
+          // Buffer close event if it arrives during disk reading
+          let pendingClose = false;
 
           const chunkListener = (event: {
             streamName: string;
@@ -156,12 +219,17 @@ export function createStreamer(basedir: string): Streamer {
           };
 
           const closeListener = () => {
+            // Buffer close event if disk reading is still in progress
+            if (isReadingFromDisk) {
+              pendingClose = true;
+              return;
+            }
             // Remove listeners before closing
             streamEmitter.off(`chunk:${name}` as const, chunkListener);
             streamEmitter.off(`close:${name}` as const, closeListener);
             try {
               controller.close();
-            } catch (e) {
+            } catch {
               // Ignore if controller is already closed (e.g., from cancel() or EOF)
             }
           };
@@ -218,10 +286,21 @@ export function createStreamer(basedir: string): Streamer {
             removeListeners();
             try {
               controller.close();
-            } catch (e) {
+            } catch {
               // Ignore if controller is already closed (e.g., from closeListener event)
             }
             return;
+          }
+
+          // Process any pending close event that arrived during disk reading
+          if (pendingClose) {
+            streamEmitter.off(`chunk:${name}` as const, chunkListener);
+            streamEmitter.off(`close:${name}` as const, closeListener);
+            try {
+              controller.close();
+            } catch {
+              // Ignore if controller is already closed
+            }
           }
         },
 

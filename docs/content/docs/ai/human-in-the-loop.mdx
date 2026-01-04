@@ -71,6 +71,7 @@ export const bookingApprovalHook = defineHook({
 
 Create a tool that creates a hook instance using the tool call ID as the token. The UI will use this ID to submit the approval.
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
 import { z } from "zod";
 
@@ -236,6 +237,7 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
 
 Use the component we just created to render the tool call and approval controls in your chat interface:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="app/page.tsx" lineNumbers
 // ... existing imports ...
 import { BookingApproval } from "@/components/booking-approval";

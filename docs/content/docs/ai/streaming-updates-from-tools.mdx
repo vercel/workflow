@@ -38,6 +38,7 @@ The `type` field must be a string starting with `data-` followed by your custom 
 
 Use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside a step function to get a handle to the stream. This is the same stream that the LLM and other tools calls are writing to, so we can inject out own data packets directly.
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
 import { getWritable } from "workflow"; // [!code highlight]
 import type { UIMessageChunk } from "ai";
@@ -88,6 +89,7 @@ Key points:
 
 Update your chat component to detect and render the custom data parts. Data parts are stored in the message's `parts` array alongside text and tool invocation parts:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="app/page.tsx" lineNumbers
 {message.parts.map((part, partIndex) => {
   // Render text parts

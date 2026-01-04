@@ -102,8 +102,10 @@ describe('streamer', () => {
             const chunk = deserializeChunk(
               await fs.readFile(`${testDir}/streams/chunks/${file}`)
             );
-            const stream_id = String(file.split('-').at(-1)).split('.')[0];
-            const time = decodeTime(stream_id);
+            // Extract ULID from filename: "streamName-chnk_ULID.json"
+            const chunkIdPart = String(file.split('-').at(-1)).split('.')[0]; // "chnk_ULID"
+            const ulid = chunkIdPart.replace('chnk_', ''); // Just the ULID
+            const time = decodeTime(ulid);
             const timeDiff = time - lastTime;
             lastTime = time;
 
@@ -508,7 +510,112 @@ describe('streamer', () => {
         const content = chunks.join('');
         expect(content).toBe('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n');
       });
+    });
 
+    describe('listStreamsByRunId', () => {
+      it('should return empty array when no streams exist', async () => {
+        const { streamer } = await setupStreamer();
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+        expect(streams).toEqual([]);
+      });
+
+      it('should return streams associated with the runId', async () => {
+        const { streamer } = await setupStreamer();
+
+        // Stream names can be anything - they're tracked via explicit mapping
+        const streamName1 = 'my-stdout-stream';
+        const streamName2 = 'my-stderr-stream';
+
+        await streamer.writeToStream(streamName1, TEST_RUN_ID, 'stdout output');
+        await streamer.writeToStream(streamName2, TEST_RUN_ID, 'stderr output');
+        await streamer.closeStream(streamName1, TEST_RUN_ID);
+        await streamer.closeStream(streamName2, TEST_RUN_ID);
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        expect(streams).toHaveLength(2);
+        expect(streams).toContain(streamName1);
+        expect(streams).toContain(streamName2);
+      });
+
+      it('should not return streams from different runIds', async () => {
+        const { streamer } = await setupStreamer();
+
+        const otherRunId = 'wrun_other1234567890123';
+
+        const targetStream = 'target-stdout';
+        const otherStream = 'other-stdout';
+
+        await streamer.writeToStream(
+          targetStream,
+          TEST_RUN_ID,
+          'target output'
+        );
+        await streamer.writeToStream(otherStream, otherRunId, 'other output');
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        expect(streams).toHaveLength(1);
+        expect(streams).toContain(targetStream);
+        expect(streams).not.toContain(otherStream);
+
+        // Also verify the other run has only its stream
+        const otherStreams = await streamer.listStreamsByRunId(otherRunId);
+        expect(otherStreams).toHaveLength(1);
+        expect(otherStreams).toContain(otherStream);
+      });
+
+      it('should return unique stream names even with multiple chunks', async () => {
+        const { streamer } = await setupStreamer();
+
+        const streamName = 'chunked-output';
+
+        // Write multiple chunks to the same stream
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk1');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk2');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk3');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        // Should only return the stream name once, not once per chunk
+        expect(streams).toHaveLength(1);
+        expect(streams).toContain(streamName);
+      });
+
+      it('should handle stream names with dashes', async () => {
+        const { streamer } = await setupStreamer();
+
+        const streamName = 'my-complex-stream-name';
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'data');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        expect(streams).toHaveLength(1);
+        expect(streams).toContain(streamName);
+      });
+
+      it('should register stream even if only closeStream is called', async () => {
+        const { streamer } = await setupStreamer();
+
+        const streamName = 'close-only-stream';
+
+        // Only call closeStream without writeToStream
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const streams = await streamer.listStreamsByRunId(TEST_RUN_ID);
+
+        expect(streams).toHaveLength(1);
+        expect(streams).toContain(streamName);
+      });
+    });
+
+    describe('integration scenarios', () => {
       it('should handle runId as a promise and flush correctly when promise resolves', async () => {
         const { streamer } = await setupStreamer();
         const streamName = 'promise-runid-test';

@@ -1,0 +1,39 @@
+{
+  "name": "@workflow/docs-typecheck",
+  "description": "Type-check documentation code samples",
+  "version": "0.0.1-beta.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test:docs": "vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "workflow": "workspace:*",
+    "@workflow/core": "workspace:*",
+    "@workflow/next": "workspace:*",
+    "@workflow/ai": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "zod": "catalog:",
+    "ai": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/react": "^19.0.0",
+    "@workflow/tsconfig": "workspace:*",
+    "glob": "^11.0.0",
+    "react": "^19.0.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -3,9 +3,16 @@ import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
-  type SvelteKitConfig,
   NORMALIZE_REQUEST_CODE,
+  type SvelteKitConfig,
 } from '@workflow/builders';
+
+const SVELTEKIT_VIRTUAL_MODULES = [
+  '$env/*', // All $env subpaths
+  '$lib', // Exact $lib import
+  '$lib/*', // All $lib subpaths
+  '$app/*', // All $app subpaths
+];
 
 export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<SvelteKitConfig>) {
@@ -19,6 +26,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       workflowsBundlePath: '', // unused in base
       webhookBundlePath: '', // unused in base
       workingDir,
+      externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
     });
   }
 
@@ -37,43 +45,47 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
 
     const options = {
       inputFiles,
       workflowGeneratedDir,
-      tsBaseUrl: tsConfig.baseUrl,
-      tsPaths: tsConfig.paths,
+      tsconfigPath,
     };
 
     // Generate the three SvelteKit route handlers
-    await this.buildStepsRoute(options);
+    const manifest = await this.buildStepsRoute(options);
     await this.buildWorkflowsRoute(options);
     await this.buildWebhookRoute({ workflowGeneratedDir });
+
+    // Generate unified manifest
+    const workflowBundlePath = join(workflowGeneratedDir, 'flow/+server.js');
+    await this.createManifest({
+      workflowBundlePath,
+      manifestDir: workflowGeneratedDir,
+      manifest,
+    });
   }
 
   private async buildStepsRoute({
     inputFiles,
     workflowGeneratedDir,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }) {
     // Create steps route: .well-known/workflow/v1/step/+server.js
     const stepsRouteDir = join(workflowGeneratedDir, 'step');
     await mkdir(stepsRouteDir, { recursive: true });
 
-    await this.createStepsBundle({
+    const { manifest } = await this.createStepsBundle({
       format: 'esm',
       inputFiles,
       outfile: join(stepsRouteDir, '+server.js'),
       externalizeNonSteps: true,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter
@@ -91,18 +103,17 @@ export const POST = async ({request}) => {
     );
 
     await writeFile(stepsRouteFile, stepsRouteContent);
+    return manifest;
   }
 
   private async buildWorkflowsRoute({
     inputFiles,
     workflowGeneratedDir,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }) {
     // Create workflows route: .well-known/workflow/v1/flow/+server.js
     const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
@@ -113,8 +124,7 @@ export const POST = async ({request}) => {
       outfile: join(workflowsRouteDir, '+server.js'),
       bundleFinalOutput: false,
       inputFiles,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     // Post-process the generated file to wrap with SvelteKit request converter

@@ -13,17 +13,24 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await mkdir(workflowGeneratedDir, { recursive: true });
 
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
     const options = {
       inputFiles,
       workflowGeneratedDir,
-      tsBaseUrl: tsConfig.baseUrl,
-      tsPaths: tsConfig.paths,
+      tsconfigPath,
     };
-    await this.buildStepsFunction(options);
+    const manifest = await this.buildStepsFunction(options);
     await this.buildWorkflowsFunction(options);
     await this.buildWebhookFunction(options);
     await this.createBuildOutputConfig(outputDir);
+
+    // Generate unified manifest
+    const workflowBundlePath = join(workflowGeneratedDir, 'flow.func/index.js');
+    await this.createManifest({
+      workflowBundlePath,
+      manifestDir: workflowGeneratedDir,
+      manifest,
+    });
 
     await this.createClientLibrary();
   }
@@ -31,24 +38,21 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   private async buildStepsFunction({
     inputFiles,
     workflowGeneratedDir,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
-  }): Promise<void> {
+    tsconfigPath?: string;
+  }) {
     console.log('Creating Vercel Build Output API steps function');
     const stepsFuncDir = join(workflowGeneratedDir, 'step.func');
     await mkdir(stepsFuncDir, { recursive: true });
 
     // Create steps bundle
-    await this.createStepsBundle({
+    const { manifest } = await this.createStepsBundle({
       inputFiles,
       outfile: join(stepsFuncDir, 'index.js'),
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     // Create package.json and .vc-config.json for steps function
@@ -57,18 +61,18 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       shouldAddSourcemapSupport: true,
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
     });
+
+    return manifest;
   }
 
   private async buildWorkflowsFunction({
     inputFiles,
     workflowGeneratedDir,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }): Promise<void> {
     console.log('Creating Vercel Build Output API workflows function');
     const workflowsFuncDir = join(workflowGeneratedDir, 'flow.func');
@@ -77,8 +81,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createWorkflowsBundle({
       outfile: join(workflowsFuncDir, 'index.js'),
       inputFiles,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     // Create package.json and .vc-config.json for workflows function
@@ -92,10 +95,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     workflowGeneratedDir,
     bundle = true,
   }: {
-    inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
     bundle?: boolean;
   }): Promise<void> {
     console.log('Creating Vercel Build Output API webhook function');

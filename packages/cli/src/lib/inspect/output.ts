@@ -1,6 +1,10 @@
 import { hydrateResourceIO } from '@workflow/core/observability';
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
-import { getRun } from '@workflow/core/runtime';
+import {
+  getDeserializeStream,
+  getExternalRevivers,
+} from '@workflow/core/serialization';
+import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import type {
   Event,
   Hook,
@@ -136,9 +140,7 @@ const checkAndHandleVercelAccessError = (
   if (backend === 'vercel' && error && typeof error === 'object') {
     const err = error as Record<string, unknown>;
     if (err.status === 403) {
-      logger.error(
-        'Your current vercel account does not have access to this workflow run. Please use `vercel login` to login, or use `vercel switch` to ensure you can access the correct team.'
-      );
+      logger.error(VERCEL_403_ERROR_MESSAGE);
       return true;
     }
   }
@@ -345,7 +347,11 @@ const showTable = (
   TABLE_TRUNCATE_IO_LENGTH = displaySettings.dataFieldWidth;
 
   // Show status legend if using abbreviated status
-  if (displaySettings.abbreviateStatus && visibleProps.includes('status')) {
+  if (
+    data.length > 0 &&
+    displaySettings.abbreviateStatus &&
+    visibleProps.includes('status')
+  ) {
     showStatusLegend();
   }
 
@@ -391,23 +397,6 @@ const showTable = (
 const showJson = (data: unknown) => {
   const json = JSON.stringify(data, null, 2);
   process.stdout.write(`${json}\n`);
-};
-
-const getCursorHint = ({
-  hasMore,
-  cursor,
-}: {
-  hasMore: boolean;
-  cursor: string | null;
-}) => {
-  // Only show cursor hint in non-interactive mode (e.g., CI or when piped)
-  if (!isCI() && process.stdout.isTTY) {
-    return undefined;
-  }
-
-  if (hasMore && cursor) {
-    return `More results available. Append\n--cursor "${cursor}"\nto this command to fetch the next page.`;
-  }
 };
 
 /**
@@ -558,6 +547,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
 
   await setupListPagination<WorkflowRun>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       try {
         const runs = await world.runs.list({
@@ -695,6 +685,7 @@ export const listSteps = async (
 
   await setupListPagination<Step>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       logger.debug(`Fetching steps for run ${runId}`);
       try {
@@ -760,17 +751,22 @@ export const showStep = async (
 };
 
 export const showStream = async (
-  _: World,
+  world: World,
   streamId: string,
   opts: InspectCLIOptions = {}
 ) => {
   if (opts.runId || opts.stepId) {
     logger.warn(
-      'Filtering by run-id or step-id is not supported in get calls, ignoring filter.'
+      'Filtering by run-id or step-id is not supported when showing a stream, ignoring filter.'
     );
   }
-  const run = getRun(streamId);
-  const stream = run.readable;
+  const rawStream = await world.readFromStream(streamId);
+
+  // Deserialize the stream to get JavaScript objects
+  const revivers = getExternalRevivers(globalThis, [], '');
+  const transform = getDeserializeStream(revivers);
+  const stream = rawStream.pipeThrough(transform);
+
   logger.info('Streaming to stdout, press CTRL+C to abort.');
   logger.info(
     'Use --json to output the stream as newline-delimited JSON without info logs.\n'
@@ -782,7 +778,7 @@ export const showStream = async (
  * Listing streams only lists available stream IDs based on run/step passed,
  * and doesn't read any data from the streams.
  */
-export const listStreams = async (
+export const listStreamsByRunId = async (
   world: World,
   opts: InspectCLIOptions = {}
 ) => {
@@ -794,151 +790,44 @@ export const listStreams = async (
       'Filtering by workflow-name is not supported for streams, ignoring filter.'
     );
   }
-  const steps: Step[] = [];
-  const runs: WorkflowRun[] = [];
   if (opts.stepId) {
-    try {
-      const step = await world.steps.get(undefined, opts.stepId, {
-        resolveData: 'all',
-      });
-      steps.push(step);
-    } catch (error) {
-      if (handleApiError(error, opts.backend)) {
-        process.exit(1);
-      }
-      throw error;
-    }
-  } else if (opts.runId) {
-    try {
-      const run = await world.runs.get(opts.runId, { resolveData: 'all' });
-      runs.push(run);
-      const runsSteps = await world.steps.list({
-        runId: opts.runId,
-        pagination: {
-          sortOrder: opts.sort || 'desc',
-          cursor: opts.cursor,
-          limit: opts.limit || DEFAULT_PAGE_SIZE,
-        },
-        resolveData: 'all', // Need data to find stream IDs
-      });
-      runsSteps.data.forEach((step: Step) => {
-        steps.push(step);
-      });
-      logger.info(getCursorHint(runsSteps));
-    } catch (error) {
-      if (handleApiError(error, opts.backend)) {
-        process.exit(1);
-      }
-      throw error;
-    }
-  } else {
     logger.warn(
-      'No run-id or step-id provided. Listing streams for latest run instead.',
-      'Use --run=<run-id> or --step=<step-id> to filter streams by run or step.'
+      'Filtering by step-id is not supported for streams, ignoring filter.'
+    );
+  }
+
+  let runId = opts.runId;
+  if (!runId) {
+    logger.warn(
+      'No run-id provided. Listing streams for latest run instead.',
+      'Use --run=<run-id> to filter streams by run.'
     );
     const run = await getRecentRun(world, opts);
     if (!run) {
       logger.warn('No runs found.');
       return;
     }
-
-    try {
-      const fullRun = await world.runs.get(run.runId, { resolveData: 'all' });
-      runs.push(fullRun);
-      const runsSteps = await world.steps.list({
-        runId: runs[0].runId,
-        pagination: {
-          sortOrder: opts.sort || 'desc',
-          cursor: opts.cursor,
-          limit: opts.limit || DEFAULT_PAGE_SIZE,
-        },
-        resolveData: 'all', // Need data to find stream IDs
-      });
-      runsSteps.data.forEach((step: Step) => {
-        steps.push(step);
-      });
-      logger.info(getCursorHint(runsSteps));
-    } catch (error) {
-      if (handleApiError(error, opts.backend)) {
-        process.exit(1);
-      }
-      throw error;
-    }
+    runId = run.runId;
   }
 
-  const runIds = runs.map((item) => item.runId);
-  const stepIds = steps.map((item) => item.stepId);
-  logger.debug(`Found IO for runs/steps: ${runIds.concat(stepIds).join(', ')}`);
-
-  const runsWithHydratedIO = runs.map(hydrateResourceIO);
-  const stepsWithHydratedIO = steps.map(hydrateResourceIO);
-
-  const matchingStreams = [
-    ...runsWithHydratedIO,
-    ...stepsWithHydratedIO,
-  ].flatMap((item) =>
-    findAllStreamIdsForObjectWithIO({
-      input: item.input,
-      output: item.output,
-      runId: item.runId,
-      stepId: 'stepId' in item ? item.stepId : undefined,
-    })
-  );
-
-  if (opts.json) {
-    showJson(matchingStreams);
-    return;
-  }
-  logger.log(showTable(matchingStreams, ['runId', 'stepId', 'streamId']));
-};
-
-const findAllStreamIdsForObjectWithIO = (obj: {
-  input: any;
-  output: any;
-  runId?: string;
-  stepId?: string;
-}) => {
-  const matchingStreams: {
-    runId?: string;
-    stepId?: string;
-    streamId: string;
-  }[] = [];
-  const inputStreams = getStreamIdsFromHydratedObject(obj.input);
-  for (const streamId of inputStreams) {
-    matchingStreams.push({
-      runId: obj.runId,
-      stepId: obj.stepId || '/',
+  try {
+    const streamIds = await world.listStreamsByRunId(runId);
+    const matchingStreams = streamIds.map((streamId) => ({
+      runId,
       streamId,
-    });
-  }
-  const outputStreams = getStreamIdsFromHydratedObject(obj.output);
-  for (const streamId of outputStreams) {
-    matchingStreams.push({
-      runId: obj.runId,
-      stepId: obj.stepId || '/',
-      streamId,
-    });
-  }
-  return matchingStreams;
-};
+    }));
 
-const getStreamIdsFromHydratedObject = (io: any): string[] => {
-  const streamIds: string[] = [];
-  const traverse = (obj: any): void => {
-    if (isStreamId(obj as string)) {
-      streamIds.push(obj as string);
+    if (opts.json) {
+      showJson(matchingStreams);
       return;
     }
-    if (!obj || typeof obj !== 'object') return;
-    if (Array.isArray(obj)) {
-      obj.forEach(traverse);
-    } else {
-      Object.values(obj).forEach(traverse);
+    logger.log(showTable(matchingStreams, ['runId', 'streamId']));
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
     }
-  };
-
-  traverse(io);
-  return streamIds;
+    throw error;
+  }
 };
 
 export const listEvents = async (
@@ -1005,6 +894,7 @@ export const listEvents = async (
 
   await setupListPagination<Event>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       logger.debug(`Fetching events for run ${filterId}`);
       try {
@@ -1074,6 +964,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
   // Setup pagination with new mechanism
   await setupListPagination<Hook>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       if (!runId) {
         logger.debug('Fetching all hooks');

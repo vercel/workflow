@@ -504,6 +504,7 @@ Streams are automatically closed when the workflow run completes, but explicitly
 
 **Use typed streams for type safety:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 const writable = getWritable<MyDataType>();
 const writer = writable.getWriter();

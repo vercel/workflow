@@ -1,5 +1,106 @@
 # @workflow/ai
 
+## 4.0.1-beta.41
+
+### Patch Changes
+
+- [#714](https://github.com/vercel/workflow/pull/714) [`a531a74`](https://github.com/vercel/workflow/commit/a531a740094339ea7074b3f4145f9ce9e588adb6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Revert exporting `DurableAgent` from the root "@workflow/ai" package
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.41
+
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- Updated dependencies [[`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c)]:
+  - workflow@4.0.1-beta.40
+
+## 4.0.1-beta.39
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.39
+
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- [#695](https://github.com/vercel/workflow/pull/695) [`25bfa52`](https://github.com/vercel/workflow/commit/25bfa52d02d8c5bb677a7effcb993d107f6ad130) Thanks [@ctate](https://github.com/ctate)! - Fix: Handle object-style finishReason for AI SDK v5/v6 compatibility
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.38
+
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- [#692](https://github.com/vercel/workflow/pull/692) [`b97b87b`](https://github.com/vercel/workflow/commit/b97b87b4fe4e6577ce65621de59878bb6bc2befb) Thanks [@ctate](https://github.com/ctate)! - Add support for AI SDK v6
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.37
+
+## 4.0.1-beta.36
+
+### Patch Changes
+
+- [#668](https://github.com/vercel/workflow/pull/668) [`26d9769`](https://github.com/vercel/workflow/commit/26d9769335707985bddbb521d8f8e31bef7fe5ec) Thanks [@ctate](https://github.com/ctate)! - Improved AI SDK parity for `DurableAgent`
+
+- Updated dependencies [[`8ba8b6b`](https://github.com/vercel/workflow/commit/8ba8b6be6b62c549bd6743a1e5eb96feee93b4d5)]:
+  - workflow@4.0.1-beta.36
+
+## 4.0.1-beta.35
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.35
+
+## 4.0.1-beta.34
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.34
+
+## 4.0.1-beta.33
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.33
+
+## 4.0.1-beta.32
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.32
+
+## 4.0.1-beta.31
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.31
+
+## 4.0.1-beta.30
+
+### Patch Changes
+
+- [#586](https://github.com/vercel/workflow/pull/586) [`a4b67a9`](https://github.com/vercel/workflow/commit/a4b67a9b3aa0130785e6376fbeb636ca3c39b3a1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Show a conversation view in the trace viewer UI for `doStreamStep` steps from DurableAgent
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.30
+
+## 4.0.1-beta.29
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.29
+
 ## 4.0.1-beta.28
 
 ### Patch Changes

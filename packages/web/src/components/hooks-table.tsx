@@ -2,11 +2,14 @@
 
 import {
   cancelRun,
-  fetchEventsByCorrelationId,
   getErrorMessage,
+  HookResolveModalWrapper,
+  ResolveHookDropdownItem,
   recreateRun,
+  useHookActions,
   useWorkflowHooks,
 } from '@workflow/web-shared';
+import { fetchEventsByCorrelationId } from '@workflow/web-shared/server';
 import type { Event, Hook } from '@workflow/world';
 import {
   AlertCircle,
@@ -89,6 +92,14 @@ export function HooksTable({
   } = useWorkflowHooks(env, {
     runId,
     sortOrder: 'desc',
+  });
+
+  // Hook actions for resolve functionality
+  const hookActions = useHookActions({
+    env,
+    callbacks: {
+      onSuccess: reload,
+    },
   });
 
   const loading = data.isLoading;
@@ -212,7 +223,7 @@ export function HooksTable({
           <TooltipTrigger asChild>
             <span className="font-semibold cursor-help">{displayText}</span>
           </TooltipTrigger>
-          <TooltipContent>
+          <TooltipContent className="max-w-xs">
             <div className="text-xs">
               Showing first 100 invocations. There may be more.
             </div>
@@ -226,6 +237,9 @@ export function HooksTable({
 
   return (
     <div>
+      {/* Modal for resolving hooks - rendered at top level */}
+      <HookResolveModalWrapper hookActions={hookActions} />
+
       <div className="flex items-center justify-between">
         <div className="flex items-end gap-2">
           <p className="text-sm text-muted-foreground">Last refreshed</p>
@@ -342,6 +356,12 @@ export function HooksTable({
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
+                            <ResolveHookDropdownItem
+                              hook={hook}
+                              stopPropagation
+                              onResolveClick={hookActions.openResolveModal}
+                              DropdownMenuItem={DropdownMenuItem}
+                            />
                             <DropdownMenuItem
                               onClick={async (e) => {
                                 e.stopPropagation();
@@ -365,7 +385,7 @@ export function HooksTable({
                               }}
                             >
                               <RotateCw className="h-4 w-4 mr-2" />
-                              Re-run
+                              Replay Run
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               onClick={async (e) => {

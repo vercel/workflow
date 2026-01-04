@@ -78,6 +78,7 @@ OPENAI_API_KEY=...
 
 Then modify your API endpoint to use the OpenAI provider:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="app/api/chat/route.ts" lineNumbers
 // ...
 import { openai } from "@workflow/ai/openai"; // [!code highlight]
@@ -240,6 +241,7 @@ export default withWorkflow(nextConfig);
 
 Move the agent logic into a separate function, which will serve as our workflow definition.
 
+{/* @skip-typecheck: Shows two mutually exclusive model options */}
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
 import { DurableAgent } from "@workflow/ai/agent"; // [!code highlight]
 import { getWritable } from "workflow"; // [!code highlight]
@@ -313,6 +315,7 @@ Key changes:
 
 Mark all tool definitions with `"use step"` to make them durable. This enables automatic retries and observability for each tool call:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="workflows/chat/steps/tools.ts​" lineNumbers
 // ...
 

@@ -1,5 +1,5 @@
 import { runInContext } from 'node:vm';
-import { ERROR_SLUGS } from '@workflow/errors';
+import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import type { Event, WorkflowRun } from '@workflow/world';
@@ -16,6 +16,7 @@ import {
 import { createUseStep } from './step.js';
 import {
   BODY_INIT_SYMBOL,
+  STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
   WORKFLOW_SLEEP,
@@ -118,6 +119,8 @@ export async function runWorkflow(
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CONTEXT_SYMBOL] = ctx;
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[STABLE_ULID] = ulid;
 
     // NOTE: Will have a config override to use the custom fetch step.
     //       For now `fetch` must be explicitly imported from `workflow`.
@@ -125,6 +128,43 @@ export async function runWorkflow(
       throw new vmGlobalThis.Error(
         `Global "fetch" is unavailable in workflow functions. Use the "fetch" step function from "workflow" to make HTTP requests.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.FETCH_IN_WORKFLOW_FUNCTION}`
       );
+    };
+
+    // Override timeout/interval functions to throw helpful errors
+    // These are not supported in workflow functions because they rely on
+    // asynchronous scheduling which breaks deterministic replay
+    const timeoutErrorMessage =
+      'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions. Use the "sleep" function from "workflow" for time-based delays.';
+
+    (vmGlobalThis as any).setTimeout = () => {
+      throw new WorkflowRuntimeError(timeoutErrorMessage, {
+        slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
+      });
+    };
+    (vmGlobalThis as any).setInterval = () => {
+      throw new WorkflowRuntimeError(timeoutErrorMessage, {
+        slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
+      });
+    };
+    (vmGlobalThis as any).clearTimeout = () => {
+      throw new WorkflowRuntimeError(timeoutErrorMessage, {
+        slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
+      });
+    };
+    (vmGlobalThis as any).clearInterval = () => {
+      throw new WorkflowRuntimeError(timeoutErrorMessage, {
+        slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
+      });
+    };
+    (vmGlobalThis as any).setImmediate = () => {
+      throw new WorkflowRuntimeError(timeoutErrorMessage, {
+        slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
+      });
+    };
+    (vmGlobalThis as any).clearImmediate = () => {
+      throw new WorkflowRuntimeError(timeoutErrorMessage, {
+        slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
+      });
     };
 
     // `Request` and `Response` are special built-in classes that invoke steps

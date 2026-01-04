@@ -274,10 +274,13 @@ async function streamTextStep(
   }
 
   reader.releaseLock();
-
-  // Close the stream
-  writer.close();
   writer.releaseLock();
+
+  // Return the result for the workflow to use
+  return {
+    messages: await result.response.then((r) => r.messages),
+    finishReason: await result.finishReason,
+  };
 }
 
 async function endStream(writable: WritableStream<UIMessageChunk>) {

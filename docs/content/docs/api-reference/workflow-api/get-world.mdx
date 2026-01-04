@@ -1,0 +1,92 @@
+---
+title: getWorld
+---
+
+Retrieves the World instance for direct access to workflow storage, queuing, and streaming backends. This function returns a `World` which provides low-level access to manage workflow runs, steps, events, and hooks.
+
+Use this function when you need direct access to the underlying workflow infrastructure, such as listing all runs, querying events, or implementing custom workflow management logic.
+
+```typescript lineNumbers
+import { getWorld } from "workflow/api";
+
+const world = getWorld();
+```
+
+## API Signature
+
+### Parameters
+
+This function does not accept any parameters.
+
+### Returns
+
+Returns a `World` object:
+
+<TSDoc
+definition={`
+import type { World } from "@workflow/world";
+export default World;`}
+showSections={["returns"]}
+/>
+
+## Examples
+
+### List Workflow Runs
+
+List all workflow runs with pagination:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/api";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const cursor = url.searchParams.get("cursor") ?? undefined;
+
+  try {
+    const world = getWorld(); // [!code highlight]
+    const runs = await world.runs.list({
+      pagination: { cursor },
+    });
+
+    return Response.json(runs);
+  } catch (error) {
+    return Response.json(
+      { error: "Failed to list workflow runs" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+### Cancel a Workflow Run
+
+Cancel a running workflow:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/api";
+
+export async function POST(req: Request) {
+  const { runId } = await req.json();
+
+  if (!runId) {
+    return Response.json({ error: "No runId provided" }, { status: 400 });
+  }
+
+  try {
+    const world = getWorld(); // [!code highlight]
+    const run = await world.runs.cancel(runId); // [!code highlight]
+
+    return Response.json({ status: run.status });
+  } catch (error) {
+    return Response.json(
+      { error: "Failed to cancel workflow run" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+## Related Functions
+
+- [`getRun()`](/docs/api-reference/workflow-api/get-run) - Higher-level API for working with individual runs by ID.
+- [`start()`](/docs/api-reference/workflow-api/start) - Start a new workflow run.

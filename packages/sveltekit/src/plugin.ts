@@ -9,7 +9,7 @@ export function workflowPlugin(): Plugin[] {
   const enqueue = createBuildQueue();
 
   return [
-    workflowTransformPlugin(),
+    workflowTransformPlugin() as Plugin,
     {
       name: 'workflow:sveltekit',
     },

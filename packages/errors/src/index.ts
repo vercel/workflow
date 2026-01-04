@@ -30,6 +30,7 @@ export const ERROR_SLUGS = {
   WEBHOOK_INVALID_RESPOND_WITH_VALUE: 'webhook-invalid-respond-with-value',
   WEBHOOK_RESPONSE_NOT_SENT: 'webhook-response-not-sent',
   FETCH_IN_WORKFLOW_FUNCTION: 'fetch-in-workflow',
+  TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -283,3 +284,6 @@ export class RetryableError extends Error {
     return isError(value) && value.name === 'RetryableError';
   }
 }
+
+export const VERCEL_403_ERROR_MESSAGE =
+  'Your current vercel account does not have access to this resource. Use `vercel login` or `vercel switch` to ensure you are linked to the right account. You might need to run `vercel env pull` to use the latest environment variables.';

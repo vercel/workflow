@@ -1,4 +1,4 @@
-import { getPort } from '@workflow/utils/get-port';
+import { getWorkflowPort } from '@workflow/utils/get-port';
 import { once } from './util.js';
 
 const getDataDirFromEnv = () => {
@@ -44,7 +44,7 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
     return `http://localhost:${process.env.PORT}`;
   }
 
-  const detectedPort = await getPort();
+  const detectedPort = await getWorkflowPort();
   if (detectedPort) {
     return `http://localhost:${detectedPort}`;
   }

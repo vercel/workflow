@@ -1,21 +1,13 @@
 'use client';
 
-import { AlertCircle } from 'lucide-react';
+import { ErrorBoundary } from '@workflow/web-shared';
 import { useRouter } from 'next/navigation';
-import { ErrorBoundary } from '@/components/error-boundary';
 import { HooksTable } from '@/components/hooks-table';
 import { RunsTable } from '@/components/runs-table';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { WorkflowsList } from '@/components/workflows-list';
 import { buildUrlWithConfig, useQueryParamConfig } from '@/lib/config';
-import {
-  useHookIdState,
-  useSidebarState,
-  useTabState,
-  useWorkflowIdState,
-} from '@/lib/url-state';
-import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
+import { useHookIdState, useSidebarState, useTabState } from '@/lib/url-state';
 
 export default function Home() {
   const router = useRouter();
@@ -26,13 +18,8 @@ export default function Home() {
 
   const selectedHookId = sidebar === 'hook' && hookId ? hookId : undefined;
 
-  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged
-  // Fetch workflow graph manifest
-  // const {
-  //   manifest: graphManifest,
-  //   loading: graphLoading,
-  //   error: graphError,
-  // } = useWorkflowGraphManifest(config);
+  // Only show workflows tab for local backend
+  const isLocalBackend = config.backend === 'local';
 
   const handleRunClick = (runId: string, streamId?: string) => {
     if (!streamId) {
@@ -57,17 +44,15 @@ export default function Home() {
     }
   };
 
-  // TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged.
-  // const workflows = graphManifest ? Object.values(graphManifest.workflows) : [];
-
   return (
     <div className="max-w-7xl mx-auto px-4">
       <Tabs value={tab} onValueChange={setTab} className="w-full">
         <TabsList className="mb-4">
           <TabsTrigger value="runs">Runs</TabsTrigger>
           <TabsTrigger value="hooks">Hooks</TabsTrigger>
-          {/* TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged */}
-          {/* <TabsTrigger value="workflows">Workflows</TabsTrigger> */}
+          {isLocalBackend && (
+            <TabsTrigger value="workflows">Workflows</TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value="runs">
           <ErrorBoundary
@@ -89,28 +74,16 @@ export default function Home() {
             />
           </ErrorBoundary>
         </TabsContent>
-        {/* TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged */}
-        {/* <TabsContent value="workflows">
-          <ErrorBoundary
-            title="Workflows Error"
-            description="Failed to load workflow graph data. Please try refreshing the page."
-          >
-            <div className="space-y-6">
-              {graphError && (
-                <Alert variant="destructive">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>Error Loading Workflows</AlertTitle>
-                  <AlertDescription>{graphError.message}</AlertDescription>
-                </Alert>
-              )}
-              <WorkflowsList
-                workflows={workflows}
-                onWorkflowSelect={() => {}}
-                loading={graphLoading}
-              />
-            </div>
-          </ErrorBoundary>
-        </TabsContent> */}
+        {isLocalBackend && (
+          <TabsContent value="workflows">
+            <ErrorBoundary
+              title="Workflows Error"
+              description="Failed to load workflow graph data. Please try refreshing the page."
+            >
+              <WorkflowsList config={config} />
+            </ErrorBoundary>
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

@@ -143,6 +143,11 @@ export interface ListPaginationOptions<TData> {
    * Optional callback for when fetching starts
    */
   onFetchStart?: (pageIndex: number) => void;
+
+  /**
+   * Enable interactive pagination with keyboard controls
+   */
+  interactive?: boolean;
 }
 
 /**
@@ -151,7 +156,11 @@ export interface ListPaginationOptions<TData> {
 export async function setupListPagination<TData>(
   options: ListPaginationOptions<TData>
 ): Promise<void> {
-  const { initialCursor, fetchPage, displayPage, onFetchStart } = options;
+  const { initialCursor, fetchPage, displayPage, onFetchStart, interactive } =
+    options;
+
+  // Interactive mode requires both TTY support and explicit --interactive flag
+  const enableInteractive = interactive && isInteractive();
 
   // Pages stack - stores all fetched pages
   const pages: PageData<TData>[] = [];
@@ -172,7 +181,7 @@ export async function setupListPagination<TData>(
     pageIndex = index;
 
     // Clear screen for subsequent pages in interactive mode
-    if (isInteractive()) {
+    if (enableInteractive) {
       console.clear();
     }
 
@@ -183,7 +192,13 @@ export async function setupListPagination<TData>(
   // Fetch and display first page
   const firstPage = await showPage(0, initialCursor);
 
-  if (!isInteractive()) {
+  // In non-interactive mode, show info if there are more pages
+  if (!enableInteractive) {
+    if (firstPage.hasMore) {
+      logger.info(
+        '\nMore results available. Use --interactive (-i) to paginate through results.'
+      );
+    }
     return;
   }
 
@@ -208,7 +223,7 @@ export async function setupListPagination<TData>(
         pageIndex = newPageIndex;
         const cachedPage = pages[newPageIndex];
 
-        if (isInteractive()) {
+        if (enableInteractive) {
           console.clear();
         }
 
@@ -257,7 +272,7 @@ export async function setupListPagination<TData>(
         pageIndex--;
         const prevPage = pages[pageIndex];
 
-        if (isInteractive()) {
+        if (enableInteractive) {
           console.clear();
         }
 

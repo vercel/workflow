@@ -85,6 +85,7 @@ Step functions are primarily meant to be used inside a workflow.
 Calling a step from outside a workflow or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op). This means you can reuse step functions in other parts of your codebase without needing to duplicate business logic.
 
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 async function updateUser(userId: string) {
   "use step";

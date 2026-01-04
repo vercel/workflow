@@ -12,6 +12,7 @@ Workflows use special directives to mark code for transformation by the Workflow
 
 Workflows use two directives to mark functions for special handling:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 export async function handleUserSignup(email: string) {
   "use workflow"; // [!code highlight]
@@ -69,6 +70,7 @@ flowchart LR
 
 **Input:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 export async function createUser(email: string) {
   "use step";
@@ -78,6 +80,7 @@ export async function createUser(email: string) {
 
 **Output:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 import { registerStepFunction } from "workflow/internal/private"; // [!code highlight]
 
@@ -106,6 +109,7 @@ registerStepFunction("step//workflows/user.js//createUser", createUser); // [!co
 
 **Input:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 export async function createUser(email: string) {
   "use step";
@@ -121,6 +125,7 @@ export async function handleUserSignup(email: string) {
 
 **Output:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 export async function createUser(email: string) {
   return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//workflows/user.js//createUser")(email); // [!code highlight]
@@ -155,6 +160,7 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 
 **Input:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 export async function handleUserSignup(email: string) {
   "use workflow";
@@ -165,6 +171,7 @@ export async function handleUserSignup(email: string) {
 
 **Output:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 export async function handleUserSignup(email: string) {
   throw new Error("You attempted to execute ..."); // [!code highlight]

@@ -20,7 +20,7 @@ import {
   validateWorldConfig,
   type WorldConfig,
 } from '@/lib/config-world';
-import { useWorldsAvailability } from '@/lib/hooks';
+import { useDataDirInfo, useWorldsAvailability } from '@/lib/hooks';
 
 interface SettingsSidebarProps {
   open?: boolean;
@@ -43,6 +43,7 @@ export function SettingsSidebar({
 
   const { data: worldsAvailability = [], isLoading: isLoadingWorlds } =
     useWorldsAvailability();
+  const { data: dataDirInfo } = useDataDirInfo(localConfig.dataDir);
 
   const backend = localConfig.backend || 'local';
   const isLocal = backend === 'local';
@@ -213,19 +214,19 @@ export function SettingsSidebar({
                         onChange={(e) =>
                           handleInputChange('dataDir', e.target.value)
                         }
-                        placeholder=".workflow-data or .next/workflow-data"
+                        placeholder="Path to your project directory"
                         className={
                           getFieldError('dataDir') ? 'border-destructive' : ''
                         }
                       />
                       <p className="text-xs text-muted-foreground">
-                        Path to the workflow data directory. Can be relative or
-                        absolute.
+                        Path to your project or its workflow data directory.
+                        Relative paths allowed. Leave empty to search current
+                        directory.
                       </p>
                     </div>
 
-                    {/* TODO(Karthik): Uncomment after https://github.com/vercel/workflow/pull/455 is merged */}
-                    {/* <div className="space-y-2">
+                    <div className="space-y-2">
                       <Label htmlFor="manifestPath">Manifest Path</Label>
                       <Input
                         id="manifestPath"
@@ -249,7 +250,7 @@ export function SettingsSidebar({
                         Path to the workflow manifest file. Leave empty to use
                         default locations.
                       </p>
-                    </div> */}
+                    </div>
                   </>
                 )}
 
@@ -353,7 +354,6 @@ export function SettingsSidebar({
                     </AlertDescription>
                   </Alert>
                 )}
-
                 <div className="flex flex-col gap-2 pt-4">
                   <Button
                     onClick={handleValidateAndApply}

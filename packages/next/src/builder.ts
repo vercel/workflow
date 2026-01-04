@@ -34,18 +34,27 @@ export async function getNextBuilder() {
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
 
       const inputFiles = await this.getInputFiles();
-      const tsConfig = await this.getTsConfigOptions();
+      const tsconfigPath = await this.findTsConfigPath();
 
       const options = {
         inputFiles,
         workflowGeneratedDir,
-        tsBaseUrl: tsConfig.baseUrl,
-        tsPaths: tsConfig.paths,
+        tsconfigPath,
       };
 
-      const stepsBuildContext = await this.buildStepsFunction(options);
+      const { manifest, context: stepsBuildContext } =
+        await this.buildStepsFunction(options);
       const workflowsBundle = await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
+
+      // Write unified manifest to workflow generated directory
+      const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
+      await this.createManifest({
+        workflowBundlePath,
+        manifestDir: workflowGeneratedDir,
+        manifest,
+      });
+
       await this.writeFunctionsConfig(outputDir);
 
       if (this.config.watch) {
@@ -151,7 +160,8 @@ export async function getNextBuilder() {
           options.inputFiles = newInputFiles;
 
           await stepsCtx.dispose();
-          const newStepsCtx = await this.buildStepsFunction(options);
+          const { context: newStepsCtx } =
+            await this.buildStepsFunction(options);
           if (!newStepsCtx) {
             throw new Error(
               'Invariant: expected steps build context after rebuild'
@@ -374,13 +384,11 @@ export async function getNextBuilder() {
     private async buildStepsFunction({
       inputFiles,
       workflowGeneratedDir,
-      tsPaths,
-      tsBaseUrl,
+      tsconfigPath,
     }: {
       inputFiles: string[];
       workflowGeneratedDir: string;
-      tsBaseUrl?: string;
-      tsPaths?: Record<string, string[]>;
+      tsconfigPath?: string;
     }) {
       // Create steps bundle
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
@@ -395,21 +403,18 @@ export async function getNextBuilder() {
         inputFiles,
         outfile: join(stepsRouteDir, 'route.js'),
         externalizeNonSteps: true,
-        tsBaseUrl,
-        tsPaths,
+        tsconfigPath,
       });
     }
 
     private async buildWorkflowsFunction({
       inputFiles,
       workflowGeneratedDir,
-      tsPaths,
-      tsBaseUrl,
+      tsconfigPath,
     }: {
       inputFiles: string[];
       workflowGeneratedDir: string;
-      tsBaseUrl?: string;
-      tsPaths?: Record<string, string[]>;
+      tsconfigPath?: string;
     }): Promise<void | {
       interimBundleCtx: import('esbuild').BuildContext;
       bundleFinal: (interimBundleResult: string) => Promise<void>;
@@ -421,8 +426,7 @@ export async function getNextBuilder() {
         outfile: join(workflowsRouteDir, 'route.js'),
         bundleFinalOutput: false,
         inputFiles,
-        tsBaseUrl,
-        tsPaths,
+        tsconfigPath,
       });
     }
 

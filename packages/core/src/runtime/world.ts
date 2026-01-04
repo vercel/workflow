@@ -32,7 +32,8 @@ export const createWorld = (): World => {
 
   if (targetWorld === 'vercel') {
     return createVercelWorld({
-      baseUrl: process.env.WORKFLOW_VERCEL_PROXY_URL,
+      baseUrl: process.env.WORKFLOW_VERCEL_BACKEND_URL,
+      skipProxy: process.env.WORKFLOW_VERCEL_SKIP_PROXY === 'true',
       token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
       projectConfig: {
         environment: process.env.WORKFLOW_VERCEL_ENV,

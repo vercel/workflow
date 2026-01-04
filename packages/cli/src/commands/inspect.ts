@@ -1,4 +1,5 @@
 import { Args, Flags } from '@oclif/core';
+import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import type { InspectCLIOptions } from '../lib/config/types.js';
@@ -9,7 +10,7 @@ import {
   listRuns,
   listSleeps,
   listSteps,
-  listStreams,
+  listStreamsByRunId,
   showHook,
   showRun,
   showStep,
@@ -35,8 +36,7 @@ export default class Inspect extends BaseCommand {
   async catch(error: any) {
     // Check if this is a 403 error from the Vercel backend
     if (error?.status === 403) {
-      const message =
-        'Your current vercel account does not have access to this workflow run. Please use `vercel login` to login, or use `vercel switch` to ensure you can access the correct team.';
+      const message = VERCEL_403_ERROR_MESSAGE;
       logger.error(message);
     } else if (LOGGING_CONFIG.VERBOSE_MODE) {
       logger.error(error);
@@ -141,13 +141,22 @@ export default class Inspect extends BaseCommand {
 
       const id = args.id;
 
-      const world = await setupCliWorld(flags, this.config.version);
+      // For web mode, allow config errors so we can open the web UI for configuration
+      const isWebMode = flags.web || resource === 'web';
+      const world = await setupCliWorld(flags, this.config.version, isWebMode);
 
       // Handle web UI mode
-      if (flags.web || resource === 'web') {
+      if (isWebMode) {
         const actualResource = resource === 'web' ? 'run' : resource;
         await launchWebUI(actualResource, id, flags, this.config.version);
         process.exit(0);
+      }
+
+      // For non-web commands, we need a valid world
+      if (!world) {
+        throw new Error(
+          'Failed to connect to backend. Check your configuration.'
+        );
       }
 
       // Convert flags to InspectCLIOptions with proper typing
@@ -175,7 +184,7 @@ export default class Inspect extends BaseCommand {
         if (id) {
           await showStream(world, id, options);
         } else {
-          await listStreams(world, options);
+          await listStreamsByRunId(world, options);
         }
         process.exit(0);
       }
@@ -239,6 +248,7 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     workflowName: flags.workflowName,
     withData: flags.withData,
     backend: flags.backend,
+    interactive: flags.interactive,
   };
 }
 

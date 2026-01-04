@@ -28,7 +28,7 @@ The Workflow DevKit community can be found on [GitHub Discussions](https://githu
 
 Contributions to Workflow DevKit are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and wider community.
 
-## Authors
+## Author list
 
 Workflow DevKit was built by engineers at [Vercel](https://vercel.com) and the [Open Source Community](https://github.com/vercel/workflow/graphs/contributors).
 

@@ -947,6 +947,219 @@ describe('runWorkflow', () => {
     });
   });
 
+  describe('timeout functions', () => {
+    it('should throw an error when calling setTimeout', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [];
+
+      await expect(
+        runWorkflow(
+          `async function workflow() {
+            setTimeout(() => {}, 1000);
+            return 'done';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(
+        'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
+      );
+    });
+
+    it('should throw an error when calling setInterval', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [];
+
+      await expect(
+        runWorkflow(
+          `async function workflow() {
+            setInterval(() => {}, 1000);
+            return 'done';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(
+        'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
+      );
+    });
+
+    it('should throw an error when calling clearTimeout', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [];
+
+      await expect(
+        runWorkflow(
+          `async function workflow() {
+            clearTimeout(123);
+            return 'done';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(
+        'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
+      );
+    });
+
+    it('should throw an error when calling clearInterval', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [];
+
+      await expect(
+        runWorkflow(
+          `async function workflow() {
+            clearInterval(123);
+            return 'done';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(
+        'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
+      );
+    });
+
+    it('should throw an error when calling setImmediate', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [];
+
+      await expect(
+        runWorkflow(
+          `async function workflow() {
+            setImmediate(() => {});
+            return 'done';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(
+        'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
+      );
+    });
+
+    it('should throw an error when calling clearImmediate', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [];
+
+      await expect(
+        runWorkflow(
+          `async function workflow() {
+            clearImmediate(123);
+            return 'done';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(
+        'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
+      );
+    });
+
+    it('should include documentation link in error message', async () => {
+      let error: Error | undefined;
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRun: WorkflowRun = {
+          runId: 'test-run-123',
+          workflowName: 'workflow',
+          status: 'running',
+          input: dehydrateWorkflowArguments([], ops),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        const events: Event[] = [];
+
+        await runWorkflow(
+          `async function workflow() {
+            setTimeout(() => {}, 1000);
+            return 'done';
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+      assert(error);
+      expect(error.message).toContain(
+        'https://useworkflow.dev/err/timeout-in-workflow'
+      );
+      expect(error.message).toContain(
+        'Use the "sleep" function from "workflow"'
+      );
+    });
+  });
+
   describe('hook', () => {
     it('should throw `WorkflowSuspension` when a hook is awaiting without a "hook_received" event', async () => {
       let error: Error | undefined;

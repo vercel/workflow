@@ -26,7 +26,7 @@
     "lodash.chunk": "^4.2.0",
     "lucide-react": "0.555.0",
     "mixpart": "0.0.4",
-    "next": "16.0.7",
+    "next": "16.0.10",
     "openai": "6.9.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

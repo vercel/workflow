@@ -3,20 +3,22 @@
 import { parseWorkflowName } from '@workflow/core/parse-name';
 import {
   cancelRun,
+  type EnvMap,
+  type Event,
   getErrorMessage,
-  recreateRun,
   useWorkflowRuns,
 } from '@workflow/web-shared';
-import type { WorkflowRunStatus } from '@workflow/world';
+import { fetchEvents, fetchRun } from '@workflow/web-shared/server';
+import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
   ArrowDownAZ,
   ArrowUpAZ,
   ChevronLeft,
   ChevronRight,
+  Loader2,
   MoreHorizontal,
   RefreshCw,
-  RotateCw,
   XCircle,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
@@ -25,11 +27,9 @@ import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { DocsLink } from '@/components/ui/docs-link';
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
@@ -54,10 +54,114 @@ import {
 } from '@/components/ui/tooltip';
 import { worldConfigToEnvMap } from '@/lib/config';
 import type { WorldConfig } from '@/lib/config-world';
+import { useDataDirInfo } from '@/lib/hooks';
+import { useTableSelection } from '@/lib/hooks/use-table-selection';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
+import { SelectionBar } from './display-utils/selection-bar';
 import { StatusBadge } from './display-utils/status-badge';
 import { TableSkeleton } from './display-utils/table-skeleton';
+import { RunActionsDropdownItems } from './run-actions';
+import { Checkbox } from './ui/checkbox';
+
+// Inner content that fetches events when it mounts (only rendered when dropdown is open)
+function RunActionsDropdownContentInner({
+  env,
+  runId,
+  runStatus,
+  onSuccess,
+  showDebugActions,
+}: {
+  env: EnvMap;
+  runId: string;
+  runStatus: WorkflowRunStatus | undefined;
+  onSuccess: () => void;
+  showDebugActions: boolean;
+}) {
+  const [events, setEvents] = useState<Event[] | undefined>(undefined);
+  const [isLoading, setIsLoading] = useState(true);
+  const [run, setRun] = useState<WorkflowRun | undefined>(undefined);
+  const status = run?.status || runStatus;
+
+  useEffect(() => {
+    setIsLoading(true);
+
+    Promise.all([
+      fetchRun(env, runId, 'none'),
+      fetchEvents(env, runId, { limit: 1000, sortOrder: 'desc' }),
+    ])
+      .then(([runResult, eventsResult]) => {
+        if (runResult.success) {
+          setRun(runResult.data);
+        }
+        if (eventsResult.success) {
+          setEvents(eventsResult.data.data);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to fetch run or events:', err);
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
+  }, [env, runId]);
+
+  return (
+    <RunActionsDropdownItems
+      env={env}
+      runId={runId}
+      runStatus={status}
+      events={events}
+      eventsLoading={isLoading}
+      stopPropagation
+      callbacks={{ onSuccess }}
+      showDebugActions={showDebugActions}
+    />
+  );
+}
+
+// Wrapper that only renders content when dropdown is open (lazy loading)
+function LazyDropdownMenu({
+  env,
+  runId,
+  runStatus,
+  onSuccess,
+  showDebugActions,
+}: {
+  env: EnvMap;
+  runId: string;
+  runStatus: WorkflowRunStatus | undefined;
+  onSuccess: () => void;
+  showDebugActions: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      {isOpen && (
+        <DropdownMenuContent align="end">
+          <RunActionsDropdownContentInner
+            env={env}
+            runId={runId}
+            runStatus={runStatus}
+            onSuccess={onSuccess}
+            showDebugActions={showDebugActions}
+          />
+        </DropdownMenuContent>
+      )}
+    </DropdownMenu>
+  );
+}
 
 interface RunsTableProps {
   config: WorldConfig;
@@ -274,17 +378,22 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ? (rawStatus as WorkflowRunStatus | 'all')
       : undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';
+  const showDebugActions = searchParams.get('debug') === '1';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
   const env = useMemo(() => worldConfigToEnvMap(config), [config]);
+  const isLocal = config.backend === 'local' || !config.backend;
+  const { data: dataDirInfo, isLoading: dataDirInfoLoading } = useDataDirInfo(
+    config.dataDir
+  );
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
     config.backend?.includes('vercel') || false;
   // TODO: This is a workaround. We should be getting a list of valid workflow names
-  // from the manifest, which we need to put on the World interface.
+  // from the manifest.
   const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
     new Set()
   );
@@ -304,6 +413,21 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
     status: status === 'all' ? undefined : status,
   });
 
+  // Multi-select functionality
+  const selection = useTableSelection<WorkflowRun>({
+    getItemId: (run) => run.runId,
+  });
+
+  const runs = data.data ?? [];
+
+  // Bulk cancel state
+  const [isBulkCancelling, setIsBulkCancelling] = useState(false);
+
+  const isLocalAndHasMissingData =
+    isLocal &&
+    (!dataDirInfo?.dataDir || !data?.data?.length) &&
+    !dataDirInfoLoading;
+
   // Track seen workflow names from loaded data
   useEffect(() => {
     if (data.data && data.data.length > 0) {
@@ -320,14 +444,101 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
 
   const loading = data.isLoading;
 
-  const onReload = () => {
+  const onReload = useCallback(() => {
     setLastRefreshTime(() => new Date());
     reload();
-  };
+  }, [reload]);
+
+  // Get selected runs that are cancellable (pending or running)
+  const selectedRuns = useMemo(() => {
+    return runs.filter((run) => selection.selectedIds.has(run.runId));
+  }, [runs, selection.selectedIds]);
+
+  const cancellableSelectedRuns = useMemo(() => {
+    return selectedRuns.filter(
+      (run) => run.status === 'pending' || run.status === 'running'
+    );
+  }, [selectedRuns]);
+
+  const hasCancellableSelection = cancellableSelectedRuns.length > 0;
+
+  const handleBulkCancel = useCallback(async () => {
+    if (isBulkCancelling || cancellableSelectedRuns.length === 0) return;
+
+    setIsBulkCancelling(true);
+    try {
+      const results = await Promise.allSettled(
+        cancellableSelectedRuns.map((run) => cancelRun(env, run.runId))
+      );
+
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.filter((r) => r.status === 'rejected').length;
+
+      if (failed === 0) {
+        toast.success(
+          `Cancelled ${succeeded} run${succeeded !== 1 ? 's' : ''}`
+        );
+      } else if (succeeded === 0) {
+        toast.error(`Failed to cancel ${failed} run${failed !== 1 ? 's' : ''}`);
+      } else {
+        toast.warning(
+          `Cancelled ${succeeded} run${succeeded !== 1 ? 's' : ''}, ${failed} failed`
+        );
+      }
+
+      selection.clearSelection();
+      onReload();
+    } catch (err) {
+      toast.error('Failed to cancel runs', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsBulkCancelling(false);
+    }
+  }, [env, cancellableSelectedRuns, isBulkCancelling, selection, onReload]);
 
   const toggleSortOrder = () => {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
   };
+
+  // Only for local env and while we don't already have data,
+  // we periodically refresh the data to check for new runs.
+  // This is both to improve UX slightly, while also ensuring that
+  // we react to a workflow data directory being created after the first run.
+  useEffect(() => {
+    if (isLocalAndHasMissingData) {
+      const interval = setInterval(() => {
+        onReload();
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [isLocalAndHasMissingData, onReload]);
+
+  // Refresh when tab regains focus after a delay, to prevent stale UI.
+  // TODO: We should generally move to using SWR or similar for _all_ API calls here.
+  // TODO: Further future, remove the refresh button entirely, and do live in-place refreshing
+  // once all world backends support live pagination of existing views.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && lastRefreshTime) {
+        const timeSinceLastRefresh = Date.now() - lastRefreshTime.getTime();
+        if (timeSinceLastRefresh >= 10000) {
+          onReload();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [lastRefreshTime, onReload]);
+
+  const localDirText = (
+    <code className="font-mono">
+      {dataDirInfo?.shortName || 'current directory'}
+    </code>
+  );
 
   return (
     <div>
@@ -355,11 +566,16 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ) : loading && !data?.data ? (
         <TableSkeleton />
       ) : !loading && (!data.data || data.data.length === 0) ? (
-        <div className="text-center py-8 text-muted-foreground">
-          No workflow runs found. <br />
-          <DocsLink href="https://useworkflow.dev/docs/foundations/workflows-and-steps">
-            Learn how to create a workflow
-          </DocsLink>
+        <div className="text-sm text-center py-8 text-muted-foreground flex flex-col items-center justify-center gap-3">
+          <span className="text-sm">
+            No workflow runs found
+            {isLocalAndHasMissingData ? <> in {localDirText}</> : ''}.
+          </span>
+          {isLocalAndHasMissingData && (
+            <span className="text-sm flex items-center gap-2">
+              This view will update once you run a workflow.
+            </span>
+          )}
         </div>
       ) : (
         <>
@@ -368,6 +584,14 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10">
+                      <Checkbox
+                        checked={selection.isAllSelected(runs)}
+                        indeterminate={selection.isSomeSelected(runs)}
+                        onCheckedChange={() => selection.toggleSelectAll(runs)}
+                        aria-label="Select all runs"
+                      />
+                    </TableHead>
                     <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
                       Workflow
                     </TableHead>
@@ -387,12 +611,20 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.data?.map((run) => (
+                  {runs.map((run) => (
                     <TableRow
                       key={run.runId}
                       className="cursor-pointer group relative"
                       onClick={() => onRunClick(run.runId)}
+                      data-selected={selection.isSelected(run)}
                     >
+                      <TableCell className="py-2">
+                        <Checkbox
+                          checked={selection.isSelected(run)}
+                          onCheckedChange={() => selection.toggleSelection(run)}
+                          aria-label={`Select run ${run.runId}`}
+                        />
+                      </TableCell>
                       <TableCell className="py-2">
                         <CopyableText text={run.workflowName} overlay>
                           {parseWorkflowName(run.workflowName)?.shortName ||
@@ -433,73 +665,13 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                         )}
                       </TableCell>
                       <TableCell className="py-2">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                try {
-                                  const newRunId = await recreateRun(
-                                    env,
-                                    run.runId
-                                  );
-                                  toast.success('New run started', {
-                                    description: `Run ID: ${newRunId}`,
-                                  });
-                                  reload();
-                                } catch (err) {
-                                  toast.error('Failed to re-run', {
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : 'Unknown error',
-                                  });
-                                }
-                              }}
-                            >
-                              <RotateCw className="h-4 w-4 mr-2" />
-                              Re-run
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                if (run.status !== 'pending') {
-                                  toast.error('Cannot cancel', {
-                                    description:
-                                      'Only pending runs can be cancelled',
-                                  });
-                                  return;
-                                }
-                                try {
-                                  await cancelRun(env, run.runId);
-                                  toast.success('Run cancelled');
-                                  reload();
-                                } catch (err) {
-                                  toast.error('Failed to cancel', {
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : 'Unknown error',
-                                  });
-                                }
-                              }}
-                              disabled={run.status !== 'pending'}
-                            >
-                              <XCircle className="h-4 w-4 mr-2" />
-                              Cancel
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        <LazyDropdownMenu
+                          env={env}
+                          runId={run.runId}
+                          runStatus={run.status}
+                          onSuccess={onReload}
+                          showDebugActions={showDebugActions}
+                        />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -533,6 +705,34 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
           </div>
         </>
       )}
+
+      <SelectionBar
+        selectionCount={selection.selectionCount}
+        onClearSelection={selection.clearSelection}
+        itemLabel="runs"
+        actions={
+          hasCancellableSelection && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+              onClick={handleBulkCancel}
+              disabled={isBulkCancelling}
+            >
+              {isBulkCancelling ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : (
+                <XCircle className="h-4 w-4 mr-1" />
+              )}
+              Cancel{' '}
+              {cancellableSelectedRuns.length !== selection.selectionCount
+                ? `${cancellableSelectedRuns.length} `
+                : ''}
+              {isBulkCancelling ? 'cancelling...' : ''}
+            </Button>
+          )
+        }
+      />
     </div>
   );
 }

@@ -20,7 +20,14 @@ export interface NodeMetadata {
 
 export interface NodeData {
   label: string;
-  nodeKind: 'workflow_start' | 'workflow_end' | 'step';
+  nodeKind:
+    | 'workflow_start'
+    | 'workflow_end'
+    | 'step'
+    | 'primitive'
+    | 'conditional'
+    | 'agent'
+    | 'tool';
   stepId?: string;
 }
 
@@ -36,7 +43,7 @@ export interface GraphEdge {
   id: string;
   source: string;
   target: string;
-  type: 'default' | 'loop' | 'conditional' | 'parallel';
+  type: 'default' | 'loop' | 'conditional' | 'parallel' | 'tool';
   label?: string;
 }
 
@@ -105,7 +112,7 @@ export interface StepExecution {
   duration?: number;
   input?: unknown;
   output?: unknown;
-  error?: { message: string; stack: string };
+  error?: { message: string; stack?: string; code?: string };
 }
 
 export interface EdgeTraversal {

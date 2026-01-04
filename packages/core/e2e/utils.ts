@@ -79,6 +79,20 @@ const awaitCommand = async (command: string, args: string[], cwd: string) => {
   );
 };
 
+/**
+ * Returns headers needed to bypass Vercel Deployment Protection.
+ * When VERCEL_AUTOMATION_BYPASS_SECRET is set, includes the x-vercel-protection-bypass header.
+ */
+export function getProtectionBypassHeaders(): HeadersInit {
+  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  if (bypassSecret) {
+    return {
+      'x-vercel-protection-bypass': bypassSecret,
+    };
+  }
+  return {};
+}
+
 export const cliInspectJson = async (args: string) => {
   const cliAppPath = getWorkbenchAppPath();
   const cliArgs = getCliArgs();

@@ -55,5 +55,13 @@ export function createStreamer(config?: APIConfig): Streamer {
       if (!res.ok) throw new Error(`Failed to fetch stream: ${res.status}`);
       return res.body as ReadableStream<Uint8Array>;
     },
+
+    async listStreamsByRunId(runId: string) {
+      const httpConfig = await getHttpConfig(config);
+      const url = new URL(`${httpConfig.baseUrl}/v1/runs/${runId}/streams`);
+      const res = await fetch(url, { headers: httpConfig.headers });
+      if (!res.ok) throw new Error(`Failed to list streams: ${res.status}`);
+      return (await res.json()) as string[];
+    },
   };
 }

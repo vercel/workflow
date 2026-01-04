@@ -1,0 +1,120 @@
+---
+title: timeout-in-workflow
+---
+
+This error occurs when you try to use `setTimeout()`, `setInterval()`, or related timing functions directly inside a workflow function.
+
+## Error Message
+
+```
+Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions. Use the "sleep" function from "workflow" for time-based delays.
+```
+
+## Why This Happens
+
+Workflow functions run in a sandboxed environment where timing functions like `setTimeout()` and `setInterval()` are not available. These functions rely on asynchronous scheduling that would break the **deterministic replay** guarantees that workflows depend on.
+
+When a workflow suspends and later resumes, it replays from the event log. If timing functions were allowed, the replay would produce different results than the original execution.
+
+## Quick Fix
+
+Use the `sleep` function from the `workflow` package for time-based delays. Unlike `setTimeout()`, `sleep` is tracked in the event log and replays correctly.
+
+**Before:**
+
+```typescript lineNumbers title="workflows/delayed.ts"
+export async function delayedWorkflow() {
+  "use workflow";
+
+  // Error - setTimeout is not available in workflow functions
+  await new Promise(resolve => setTimeout(resolve, 5000)); // [!code highlight]
+
+  return 'done';
+}
+```
+
+**After:**
+
+```typescript lineNumbers title="workflows/delayed.ts"
+import { sleep } from 'workflow'; // [!code highlight]
+
+export async function delayedWorkflow() {
+  "use workflow";
+
+  // sleep is tracked in the event log and replays correctly
+  await sleep('5s'); // [!code highlight]
+
+  return 'done';
+}
+```
+
+## Unavailable Functions
+
+These timing functions cannot be used in workflow functions:
+
+- `setTimeout()`
+- `setInterval()`
+- `setImmediate()`
+- `clearTimeout()`
+- `clearInterval()`
+- `clearImmediate()`
+
+## Common Scenarios
+
+### Polling with Delays
+
+If you need to poll an external service with delays between requests:
+
+```typescript lineNumbers title="workflows/polling.ts"
+import { sleep } from 'workflow';
+
+export async function pollingWorkflow() {
+  "use workflow";
+
+  let status = 'pending';
+
+  while (status === 'pending') {
+    status = await checkStatus(); // step function
+    if (status === 'pending') {
+      await sleep('10s'); // [!code highlight]
+    }
+  }
+
+  return status;
+}
+
+async function checkStatus() {
+  "use step";
+  const response = await fetch('https://api.example.com/status');
+  const data = await response.json();
+  return data.status;
+}
+```
+
+### Scheduled Delays
+
+For workflows that need to wait for a specific duration:
+
+```typescript lineNumbers title="workflows/reminder.ts"
+import { sleep } from 'workflow';
+
+export async function reminderWorkflow(message: string) {
+  "use workflow";
+
+  // Wait 24 hours before sending reminder
+  await sleep('24h'); // [!code highlight]
+
+  await sendReminder(message);
+
+  return 'reminder sent';
+}
+
+async function sendReminder(message: string) {
+  "use step";
+  // Send reminder logic
+}
+```
+
+<Callout type="info">
+The `sleep` function accepts duration strings like `'5s'`, `'10m'`, `'1h'`, `'24h'`, or milliseconds as a number. See the [sleep API reference](/docs/api-reference/workflow/sleep) for more details.
+</Callout>

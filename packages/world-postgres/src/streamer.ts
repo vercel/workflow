@@ -94,12 +94,13 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
       chunk: string | Uint8Array
     ) {
       // Await runId if it's a promise to ensure proper flushing
-      await _runId;
+      const runId = await _runId;
 
       const chunkId = genChunkId();
       await drizzle.insert(streams).values({
         chunkId,
         streamId: name,
+        runId,
         chunkData: !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk,
         eof: false,
       });
@@ -118,12 +119,13 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
       _runId: string | Promise<string>
     ): Promise<void> {
       // Await runId if it's a promise to ensure proper flushing
-      await _runId;
+      const runId = await _runId;
 
       const chunkId = genChunkId();
       await drizzle.insert(streams).values({
         chunkId,
         streamId: name,
+        runId,
         chunkData: Buffer.from([]),
         eof: true,
       });
@@ -206,6 +208,16 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
           cleanups.forEach((fn) => fn());
         },
       });
+    },
+
+    async listStreamsByRunId(runId: string): Promise<string[]> {
+      // Query distinct stream IDs associated with the runId
+      const results = await drizzle
+        .selectDistinct({ streamId: streams.streamId })
+        .from(streams)
+        .where(eq(streams.runId, runId));
+
+      return results.map((r) => r.streamId);
     },
   };
 }

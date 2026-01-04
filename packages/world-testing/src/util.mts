@@ -7,7 +7,7 @@ import jsonlines from 'jsonlines';
 import { assert, onTestFailed, onTestFinished } from 'vitest';
 import type { TypedHook } from 'workflow';
 import * as z from 'zod';
-import type manifest from '../.well-known/workflow/v1/manifest.debug.json';
+import type manifest from '../.well-known/workflow/v1/manifest.json';
 
 export const Control = z.object({
   state: z.literal('listening'),

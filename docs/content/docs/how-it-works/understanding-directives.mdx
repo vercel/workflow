@@ -20,6 +20,7 @@ The Workflow DevKit has two types of functions:
 
 **Step functions** are side-effecting operations with full Node.js runtime access. Think of them like named RPC calls - they run once, their result is persisted, and they can be [retried on failure](/docs/foundations/errors-and-retries):
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 async function fetchUserData(userId: string) {
   "use step";
@@ -104,6 +105,7 @@ Before settling on directives, we prototyped several other approaches. Each had 
 
 Our first proof of concept used a wrapper-based API without a build step:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export const myWorkflow = workflow(() => {
   const message = run(async () => step());
@@ -119,6 +121,7 @@ This implementation used "throwing promises" (similar to early React Suspense) t
 
 Any operation that could produce non-deterministic results had to be wrapped in `run()`:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export const myWorkflow = workflow(async () => {
   // These would be non-deterministic without wrapping
@@ -134,6 +137,7 @@ This was verbose and easy to forget. Moreover, if a developer forgot to wrap som
 
 For example:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export const myWorkflow = workflow(async () => {
   // Nothing stops you from doing this:
@@ -149,6 +153,7 @@ export const myWorkflow = workflow(async () => {
 
 Variables captured in closures would behave unexpectedly when steps mutated them:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export const myWorkflow = workflow(async () => {
   let counter = 0;
@@ -171,6 +176,7 @@ The workflow function would replay multiple times, but mutations inside `run()` 
 
 Since we used thrown promises for control flow, `try/catch` blocks became unreliable:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export const myWorkflow = workflow(async () => {
   try {
@@ -191,6 +197,7 @@ export const myWorkflow = workflow(async () => {
 
 We explored using generators for explicit suspension points, inspired by libraries like Effect.ts:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export const myWorkflow = workflow(function*() {
   const message = yield* run(() => step());
@@ -208,6 +215,7 @@ We're big fans of [Effect.ts](https://effect.website/) and the power of generato
 
 Generators require a custom mental model that differs significantly from familiar async/await patterns. The `yield*` syntax and generator delegation were unfamiliar to many developers:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 // Standard async/await (familiar)
 const result = await fetchData();
@@ -218,6 +226,7 @@ const result = yield* run(() => fetchData()); // [!code highlight]
 
 Complex workflows became particularly verbose and difficult to read:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export const myWorkflow = workflow(function*() {
   const user = yield* run(() => fetchUser());
@@ -240,6 +249,7 @@ export const myWorkflow = workflow(function*() {
 
 Like the runtime-only approach, generators couldn't prevent non-deterministic code:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export const myWorkflow = workflow(function*() {
   const now = Date.now(); // Still possible, still problematic // [!code highlight]
@@ -297,6 +307,7 @@ We considered decorators, but they presented significant challenges both technic
 
 Decorators are not yet a standard syntax ([TC39 proposal](https://github.com/tc39/proposal-decorators)) and they currently only work with classes. A class decorator approach could look like this:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 import {workflow, step} from "workflow";
 
@@ -335,6 +346,7 @@ See the [Macro Wrapper](#macro-wrapper-approach) section below for a deeper dive
 
 We also explored compile-time macro approaches - using a compiler to transform wrapper functions or decorators into directive-based code:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 // Function wrapper approach
 import { useWorkflow } from "workflow"
@@ -374,6 +386,7 @@ The fundamental issue is that both wrappers and decorators make workflows appear
 
 **Concrete examples of how this breaks:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 // Someone writes a "helpful" utility
 function withRetry(fn: Function) {
@@ -447,6 +460,7 @@ In fact, Workflow DevKit will throw an error that links to this error page: [Nod
 
 Steps are transformed into function calls that communicate with the runtime:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export async function processOrder(orderId: string) {
   "use workflow";
@@ -508,6 +522,7 @@ The `"use step"` directive maintains consistency. While steps run in the full No
 
 We could have used a function wrapper just for steps:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 // Mixed approach (inconsistent)
 export async function processOrder(orderId: string) {
@@ -542,6 +557,7 @@ export async function processOrder(orderId: string) {
 
 This breaks down because many valid async operations inside workflows aren't steps:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export async function processOrder(orderId: string) {
   "use workflow";

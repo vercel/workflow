@@ -6,7 +6,7 @@ API reference for runtime functions from the `workflow/api` package.
 
 ## Functions
 
-Workflow DevKit provides runtime functions that are used outside of workflow and step functions. These are accessed from the runtime entrypoint (e.g. where `start(workflowFn)` is called):
+The API package is for access and introspection of workflow data to inspect runs, start new runs, or access anything else directly accessible by the world.
 
 <Cards>
     <Card href="/docs/api-reference/workflow-api/start" title="start()">
@@ -20,5 +20,8 @@ Workflow DevKit provides runtime functions that are used outside of workflow and
     </Card>
     <Card href="/docs/api-reference/workflow-api/get-run" title="getRun()">
         Get workflow run status and metadata without waiting for completion.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/get-world" title="getWorld()">
+        Get direct access to workflow storage, queuing, and streaming backends.
     </Card>
 </Cards>

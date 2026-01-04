@@ -1,9 +1,13 @@
 import { withResolvers } from '@workflow/utils';
-import { assert, afterAll, describe, expect, test } from 'vitest';
-import { dehydrateWorkflowArguments } from '../src/serialization';
-import { cliInspectJson, isLocalDeployment } from './utils';
 import fs from 'fs';
 import path from 'path';
+import { afterAll, assert, describe, expect, test } from 'vitest';
+import { dehydrateWorkflowArguments } from '../src/serialization';
+import {
+  cliInspectJson,
+  getProtectionBypassHeaders,
+  isLocalDeployment,
+} from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
@@ -63,6 +67,7 @@ async function triggerWorkflow(
 
   const res = await fetch(url, {
     method: 'POST',
+    headers: getProtectionBypassHeaders(),
     body: JSON.stringify(dehydratedArgs),
   });
   if (!res.ok) {
@@ -98,7 +103,7 @@ async function getWorkflowReturnValue(runId: string) {
     const url = new URL('/api/trigger', deploymentUrl);
     url.searchParams.set('runId', runId);
 
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: getProtectionBypassHeaders() });
 
     if (res.status === 202) {
       // Workflow run is still running, so we need to wait and poll again
@@ -226,6 +231,7 @@ describe('e2e', () => {
 
     let res = await fetch(hookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({ token, data: { message: 'one' } }),
     });
     expect(res.status).toBe(200);
@@ -235,6 +241,7 @@ describe('e2e', () => {
     // Invalid token test
     res = await fetch(hookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({ token: 'invalid' }),
     });
     // NOTE: For Nitro apps (Vite, Hono, etc.) in dev mode, status 404 does some
@@ -246,6 +253,7 @@ describe('e2e', () => {
 
     res = await fetch(hookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({ token, data: { message: 'two' } }),
     });
     expect(res.status).toBe(200);
@@ -254,6 +262,7 @@ describe('e2e', () => {
 
     res = await fetch(hookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({ token, data: { message: 'three', done: true } }),
     });
     expect(res.status).toBe(200);
@@ -297,6 +306,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({ message: 'one' }),
       }
     );
@@ -312,6 +322,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({ message: 'two' }),
       }
     );
@@ -327,6 +338,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({ message: 'three' }),
       }
     );
@@ -371,6 +383,7 @@ describe('e2e', () => {
     );
     const res = await fetch(invalidWebhookUrl, {
       method: 'POST',
+      headers: getProtectionBypassHeaders(),
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(404);
@@ -447,10 +460,12 @@ describe('e2e', () => {
   test('outputStreamWorkflow', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('outputStreamWorkflow', []);
     const stream = await fetch(
-      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`
+      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`,
+      { headers: getProtectionBypassHeaders() }
     );
     const namedStream = await fetch(
-      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=test`
+      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=test`,
+      { headers: getProtectionBypassHeaders() }
     );
     const textDecoderStream = new TextDecoderStream();
     stream.body?.pipeThrough(textDecoderStream);
@@ -498,10 +513,12 @@ describe('e2e', () => {
     async () => {
       const run = await triggerWorkflow('outputStreamInsideStepWorkflow', []);
       const stream = await fetch(
-        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`
+        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`,
+        { headers: getProtectionBypassHeaders() }
       );
       const namedStream = await fetch(
-        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=step-ns`
+        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=step-ns`,
+        { headers: getProtectionBypassHeaders() }
       );
       const textDecoderStream = new TextDecoderStream();
       stream.body?.pipeThrough(textDecoderStream);
@@ -612,6 +629,24 @@ describe('e2e', () => {
   });
 
   test(
+    'maxRetriesZeroWorkflow - maxRetries=0 runs once without retrying',
+    { timeout: 60_000 },
+    async () => {
+      const run = await triggerWorkflow('maxRetriesZeroWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The step with maxRetries=0 that succeeds should have run on attempt 1
+      expect(returnValue.successResult).toEqual({ attempt: 1 });
+
+      // The step with maxRetries=0 that fails should have thrown an error
+      expect(returnValue.gotError).toBe(true);
+
+      // The failing step should have only run once (attempt 1), not retried
+      expect(returnValue.failedAttempt).toBe(1);
+    }
+  );
+
+  test(
     'stepDirectCallWorkflow - calling step functions directly outside workflow context',
     { timeout: 60_000 },
     async () => {
@@ -619,7 +654,10 @@ describe('e2e', () => {
       const url = new URL('/api/test-direct-step-call', deploymentUrl);
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
         body: JSON.stringify({ x: 3, y: 5 }),
       });
 
@@ -720,6 +758,7 @@ describe('e2e', () => {
       const hookUrl = new URL('/api/hook', deploymentUrl);
       let res = await fetch(hookUrl, {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({
           token,
           data: { message: 'test-message-1', customData },
@@ -750,6 +789,7 @@ describe('e2e', () => {
       // Send payload to second workflow using same token
       res = await fetch(hookUrl, {
         method: 'POST',
+        headers: getProtectionBypassHeaders(),
         body: JSON.stringify({
           token,
           data: { message: 'test-message-2', customData },
@@ -890,6 +930,65 @@ describe('e2e', () => {
         childResult: inputValue * 2,
         originalValue: inputValue,
       });
+    }
+  );
+
+  test(
+    'health check endpoint - workflow and step endpoints respond to __health query parameter',
+    { timeout: 30_000 },
+    async () => {
+      // Test the flow endpoint health check
+      const flowHealthUrl = new URL(
+        '/.well-known/workflow/v1/flow?__health',
+        deploymentUrl
+      );
+      const flowRes = await fetch(flowHealthUrl, {
+        method: 'POST',
+        headers: getProtectionBypassHeaders(),
+      });
+      expect(flowRes.status).toBe(200);
+      expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
+      const flowBody = await flowRes.text();
+      expect(flowBody).toBe(
+        'Workflow DevKit "/.well-known/workflow/v1/flow" endpoint is healthy'
+      );
+
+      // Test the step endpoint health check
+      const stepHealthUrl = new URL(
+        '/.well-known/workflow/v1/step?__health',
+        deploymentUrl
+      );
+      const stepRes = await fetch(stepHealthUrl, {
+        method: 'POST',
+        headers: getProtectionBypassHeaders(),
+      });
+      expect(stepRes.status).toBe(200);
+      expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
+      const stepBody = await stepRes.text();
+      expect(stepBody).toBe(
+        'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
+      );
+    }
+  );
+
+  test(
+    'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow uses a step that calls a helper function imported via @repo/* path alias
+      // which resolves to a file outside the workbench directory (../../lib/steps/paths-alias-test.ts)
+      const run = await triggerWorkflow('pathsAliasWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The step should return the helper's identifier string
+      expect(returnValue).toBe('pathsAliasHelper');
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe('pathsAliasHelper');
     }
   );
 });

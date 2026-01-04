@@ -50,13 +50,12 @@ export class LocalBuilder extends BaseBuilder {
 
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
 
     const options = {
       inputFiles,
       workflowGeneratedDir,
-      tsBaseUrl: tsConfig.baseUrl,
-      tsPaths: tsConfig.paths,
+      tsconfigPath,
     };
 
     // Generate the three Astro route handlers
@@ -68,13 +67,11 @@ export class LocalBuilder extends BaseBuilder {
   private async buildStepsRoute({
     inputFiles,
     workflowGeneratedDir,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }) {
     // Create steps route: .well-known/workflow/v1/step.js
     const stepsRouteFile = join(workflowGeneratedDir, 'step.js');
@@ -83,8 +80,7 @@ export class LocalBuilder extends BaseBuilder {
       inputFiles,
       outfile: stepsRouteFile,
       externalizeNonSteps: true,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
@@ -106,13 +102,11 @@ export const prerender = false;`
   private async buildWorkflowsRoute({
     inputFiles,
     workflowGeneratedDir,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
     workflowGeneratedDir: string;
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }) {
     // Create workflows route: .well-known/workflow/v1/flow.js
     const workflowsRouteFile = join(workflowGeneratedDir, 'flow.js');
@@ -121,8 +115,7 @@ export const prerender = false;`
       outfile: workflowsRouteFile,
       bundleFinalOutput: false,
       inputFiles,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
 
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');

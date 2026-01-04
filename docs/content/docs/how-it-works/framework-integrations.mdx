@@ -77,6 +77,7 @@ Each file exports a `POST` function that accepts Web standard `Request` objects.
 
 Client mode transforms your application code to provide better DX. Add a Bun plugin to apply this transformation at runtime:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="workflow-plugin.ts" lineNumbers
 import { plugin } from "bun";
 import { transform } from "@swc/core";
@@ -127,6 +128,7 @@ preload = ["./workflow-plugin.ts"]
 
 Wire up the generated handlers to HTTP endpoints using `Bun.serve()`:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="server.ts" lineNumbers
 import flow from "./.well-known/workflow/v1/flow.js";
 import step from "./.well-known/workflow/v1/step.js";
@@ -215,6 +217,7 @@ This will default to scanning the `./workflows` top-level directory for workflow
 
 **Option 2: Extend `BaseBuilder`** (recommended)
 
+{/* @skip-typecheck: @workflow/cli internal module */}
 ```typescript lineNumbers
 import { BaseBuilder } from "@workflow/cli/dist/lib/builders/base-builder";
 
@@ -253,6 +256,7 @@ If your framework supports virtual server routes and dev mode watching, make sur
 
 Hook into your framework's build:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="pseudocode.ts" lineNumbers
 framework.hooks.hook("build:before", async () => {
   await new MyFrameworkBuilder(framework).build();
@@ -308,6 +312,7 @@ Route the three endpoints to the generated handlers. The exact implementation de
 
 In the bun example above, we left routing to the user. Essentially, the user has to serve routes like this:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="server.ts" lineNumbers
 import flow from "./.well-known/workflow/v1/flow.js";
 import step from "./.well-known/workflow/v1/step.js";
