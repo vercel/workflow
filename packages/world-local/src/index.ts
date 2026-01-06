@@ -5,6 +5,7 @@ import { initDataDir } from './init.js';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
+import { version } from './version.js';
 
 // Re-export init types and utilities for consumers
 export {
@@ -34,6 +35,7 @@ export function createLocalWorld(args?: Partial<Config>): World {
     : {};
   const mergedConfig = { ...config.value, ...definedArgs };
   return {
+    specVersion: version,
     ...createQueue(mergedConfig),
     ...createStorage(mergedConfig.dataDir),
     ...createStreamer(mergedConfig.dataDir),

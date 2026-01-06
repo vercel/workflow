@@ -31,3 +31,4 @@ export {
 } from './shared.js';
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
+export { version } from './version.js';

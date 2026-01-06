@@ -116,6 +116,13 @@ export interface Storage {
  */
 export interface World extends Queue, Storage, Streamer {
   /**
+   * The spec version of this World implementation.
+   * Used for backwards compatibility when operating on runs from different versions.
+   * Derived from the npm package version (e.g., "4.0.1-beta.25").
+   */
+  readonly specVersion: string;
+
+  /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.
    */

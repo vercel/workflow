@@ -11,6 +11,7 @@ import {
   createStepsStorage,
 } from './storage.js';
 import { createStreamer } from './streamer.js';
+import { version } from './version.js';
 
 function createStorage(drizzle: Drizzle): Storage {
   return {
@@ -42,6 +43,7 @@ export function createWorld(
   const streamer = createStreamer(postgres, drizzle);
 
   return {
+    specVersion: version,
     ...storage,
     ...streamer,
     ...queue,
