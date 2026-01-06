@@ -295,9 +295,12 @@ export function workflowEntrypoint(
                   eventType: 'run_started',
                 });
                 // Use the run entity from the event response (no extra get call needed)
-                if (result.run) {
-                  workflowRun = result.run;
+                if (!result.run) {
+                  throw new Error(
+                    `Event creation for 'run_started' did not return the run entity for run \"${runId}\"`
+                  );
                 }
+                workflowRun = result.run;
               }
 
               // At this point, the workflow is "running" and `startedAt` should

@@ -184,4 +184,95 @@ describe('createSleep', () => {
     expect(workflowError?.message).toContain('Unexpected event type for wait');
     expect(workflowError?.message).toContain('hook_received');
   });
+
+  it('should keep queue item after wait_created (not terminal)', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:05.000Z'),
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    let workflowError: Error | undefined;
+    ctx.onWorkflowError = (err) => {
+      workflowError = err;
+    };
+
+    const sleep = createSleep(ctx);
+    const sleepPromise = sleep('5s');
+
+    // Wait for event processing
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Queue item should still exist (wait_created is not terminal)
+    expect(ctx.invocationsQueue.size).toBe(1);
+    const waitItem = ctx.invocationsQueue.get(
+      'wait_01K11TFZ62YS0YYFDQ3E8B9YCV'
+    );
+    expect(waitItem).toBeDefined();
+    expect(waitItem?.type).toBe('wait');
+
+    // Should suspend since wait_completed is not yet received
+    expect(workflowError).toBeInstanceOf(WorkflowSuspension);
+  });
+
+  it('should remove queue item when wait_completed (terminal state)', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    const sleep = createSleep(ctx);
+
+    // Before sleep completes, queue should have the item
+    expect(ctx.invocationsQueue.size).toBe(0); // Not added yet
+
+    await sleep('1s');
+
+    // Queue should be empty after completion (terminal state)
+    expect(ctx.invocationsQueue.size).toBe(0);
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
+
+  it('should resolve with void when wait_completed', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    const sleep = createSleep(ctx);
+    const result = await sleep('1s');
+
+    // sleep() should resolve with void/undefined
+    expect(result).toBeUndefined();
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
 });

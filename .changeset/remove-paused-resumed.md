@@ -7,7 +7,7 @@
 "@workflow/web-shared": patch
 ---
 
-**BREAKING CHANGE**: Remove unused paused/resumed run events and states
+Remove the unused paused/resumed run events and states
 
 - Remove `run_paused` and `run_resumed` event types
 - Remove `paused` status from `WorkflowRunStatus`

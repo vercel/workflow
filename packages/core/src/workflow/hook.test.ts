@@ -171,4 +171,93 @@ describe('createCreateHook', () => {
     );
     expect(runtimeErrors).toHaveLength(0);
   });
+
+  it('should handle multiple hook_received events with iterator', async () => {
+    const ops: Promise<any>[] = [];
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          payload: dehydrateStepReturnValue({ message: 'first' }, ops),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          payload: dehydrateStepReturnValue({ message: 'second' }, ops),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_3',
+        runId: 'wrun_123',
+        eventType: 'hook_disposed',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook<{ message: string }>();
+
+    const payloads: { message: string }[] = [];
+    for await (const payload of hook) {
+      payloads.push(payload);
+      if (payloads.length >= 2) break;
+    }
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toEqual({ message: 'first' });
+    expect(payloads[1]).toEqual({ message: 'second' });
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
+
+  it('should include token in error message for unexpected event type', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_completed', // Wrong event type
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          result: ['test'],
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    let workflowError: Error | undefined;
+    ctx.onWorkflowError = (err) => {
+      workflowError = err;
+    };
+
+    const createHook = createCreateHook(ctx);
+    // Create hook with a specific token
+    const hook = createHook({ token: 'my-custom-token' });
+
+    // Start awaiting the hook
+    const hookPromise = hook.then((v) => v);
+
+    // Wait for the error handler to be called
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError?.message).toContain('my-custom-token');
+  });
 });
