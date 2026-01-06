@@ -1,12 +1,12 @@
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
-import type { HookReceivedEvent } from '@workflow/world';
+import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import { webhookLogger } from '../logger.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
@@ -29,6 +29,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const promises: PromiseWithResolvers<T>[] = [];
 
     let eventLogEmpty = false;
+
+    // Track if we have a conflict so we can reject future awaits
+    let hasConflict = false;
+    let conflictErrorRef: WorkflowRuntimeError | null = null;
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
@@ -57,6 +61,31 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (event.eventType === 'hook_created') {
         // Remove this hook from the invocations queue (O(1) delete using Map)
         ctx.invocationsQueue.delete(correlationId);
+        return EventConsumerResult.Consumed;
+      }
+
+      // Handle hook_conflict event - another workflow is using this token
+      if (event.eventType === 'hook_conflict') {
+        // Remove this hook from the invocations queue
+        ctx.invocationsQueue.delete(correlationId);
+
+        // Store the conflict event so we can reject any awaited promises
+        const conflictEvent = event as HookConflictEvent;
+        const conflictError = new WorkflowRuntimeError(
+          `Hook token "${conflictEvent.eventData.token}" is already in use by another workflow`,
+          { slug: ERROR_SLUGS.HOOK_CONFLICT }
+        );
+
+        // Reject any pending promises
+        for (const resolver of promises) {
+          resolver.reject(conflictError);
+        }
+        promises.length = 0;
+
+        // Mark that we have a conflict so future awaits also reject
+        hasConflict = true;
+        conflictErrorRef = conflictError;
+
         return EventConsumerResult.Consumed;
       }
 
@@ -98,6 +127,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Helper function to create a new promise that waits for the next hook payload
     function createHookPromise(): Promise<T> {
       const resolvers = withResolvers<T>();
+
+      // If we have a conflict, reject immediately
+      // This handles the iterator case where each await should reject
+      if (hasConflict && conflictErrorRef) {
+        resolvers.reject(conflictErrorRef);
+        return resolvers.promise;
+      }
+
       if (payloadsQueue.length > 0) {
         const nextPayload = payloadsQueue.shift();
         if (nextPayload) {

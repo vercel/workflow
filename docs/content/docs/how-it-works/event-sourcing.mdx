@@ -104,20 +104,25 @@ Hooks can receive multiple payloads while active and are disposed when no longer
 ```mermaid
 flowchart TD
     A["(start)"] -->|"hook_created"| B["active"]
+    A -->|"hook_conflict"| D["conflicted"]
     B -->|"hook_received"| B
     B -->|"hook_disposed"| C["disposed"]
 
     style C fill:#a78bfa,stroke:#8b5cf6,color:#000
+    style D fill:#a78bfa,stroke:#8b5cf6,color:#000
 ```
 
 **Hook states:**
 
 - `active`: Ready to receive payloads (hook exists in storage)
 - `disposed`: No longer accepting payloads (hook is deleted from storage)
+- `conflicted`: Hook creation failed because the token is already in use by another workflow
 
 Unlike other entities, hooks don't have a `status` field—the states above are conceptual. An "active" hook is one that exists in storage, while "disposed" means the hook has been deleted. When a `hook_disposed` event is created, the hook record is removed rather than updated.
 
-While a hook is active, its token is reserved and cannot be used by other workflows. This prevents token reuse conflicts across concurrent workflows. When a hook is disposed (either explicitly or when its workflow completes), the token is released and can be claimed by future workflows. Hooks are automatically disposed when a workflow reaches a terminal state (`completed`, `failed`, or `cancelled`). The `hook_disposed` event is only needed for explicit disposal before workflow completion.
+While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token that is already in use by another active hook, a `hook_conflict` event is recorded instead of `hook_created`. This causes the hook's promise to reject with a `WorkflowRuntimeError`, failing the workflow gracefully. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
+
+When a hook is disposed (either explicitly or when its workflow completes), the token is released and can be claimed by future workflows. Hooks are automatically disposed when a workflow reaches a terminal state (`completed`, `failed`, or `cancelled`). The `hook_disposed` event is only needed for explicit disposal before workflow completion.
 
 See [Hooks & Webhooks](/docs/foundations/hooks) for more on how hooks and webhooks work.
 
@@ -176,6 +181,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | Event | Description |
 |-------|-------------|
 | `hook_created` | Creates a new hook in `active` state. Contains the hook token and optional metadata. |
+| `hook_conflict` | Records that hook creation failed because the token is already in use by another active hook. The hook is not created, and the workflow will fail with a `WorkflowRuntimeError` when the hook is awaited. |
 | `hook_received` | Records that a payload was delivered to the hook. The hook remains `active` and can receive more payloads. |
 | `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. |
 
@@ -204,6 +210,7 @@ Terminal states represent the end of an entity's lifecycle. Once an entity reach
 **Hook terminal states:**
 
 - `disposed`: Hook has been deleted from storage and is no longer active
+- `conflicted`: Hook creation failed due to token conflict (hook was never created)
 
 **Wait terminal states:**
 

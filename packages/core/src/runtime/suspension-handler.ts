@@ -72,16 +72,23 @@ export async function handleSuspension({
 
   // Process hooks first to prevent race conditions with webhook receivers
   // All hook creations run in parallel
+  // Track any hook conflicts that occur - these will be handled by re-enqueueing the workflow
+  let hasHookConflict = false;
+
   if (hookEvents.length > 0) {
     await Promise.all(
       hookEvents.map(async (hookEvent) => {
         try {
-          await world.events.create(runId, hookEvent);
+          const result = await world.events.create(runId, hookEvent);
+          // Check if the world returned a hook_conflict event instead of hook_created
+          // The hook_conflict event is stored in the event log and will be replayed
+          // on the next workflow invocation, causing the hook's promise to reject
+          if (result.event.eventType === 'hook_conflict') {
+            hasHookConflict = true;
+          }
         } catch (err) {
           if (WorkflowAPIError.is(err)) {
-            if (err.status === 409) {
-              console.warn(`Hook already exists, continuing: ${err.message}`);
-            } else if (err.status === 410) {
+            if (err.status === 410) {
               console.warn(
                 `Workflow run "${runId}" has already completed, skipping hook: ${err.message}`
               );
@@ -216,6 +223,15 @@ export async function handleSuspension({
     ...Attribute.WorkflowHooksCreated(hookItems.length),
     ...Attribute.WorkflowWaitsCreated(waitItems.length),
   });
+
+  // If any hook conflicts occurred, re-enqueue the workflow immediately
+  // On the next iteration, the hook consumer will see the hook_conflict event
+  // and reject the promise with a WorkflowRuntimeError
+  // We do this after processing all other operations (steps, waits) to ensure
+  // they are recorded in the event log before the re-execution
+  if (hasHookConflict) {
+    return { timeoutSeconds: 1 };
+  }
 
   if (minTimeoutSeconds !== null) {
     return { timeoutSeconds: minTimeoutSeconds };

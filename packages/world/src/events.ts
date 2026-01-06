@@ -19,6 +19,7 @@ export const EventTypeSchema = z.enum([
   'hook_created',
   'hook_received',
   'hook_disposed',
+  'hook_conflict', // Created by world when hook token already exists
   // Wait lifecycle events
   'wait_created',
   'wait_completed',
@@ -119,6 +120,22 @@ const HookDisposedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
 });
 
+/**
+ * Event created by World implementations when a hook_created request
+ * conflicts with an existing hook token. This event is NOT user-creatable -
+ * it is only returned by the World when a token conflict is detected.
+ *
+ * When the hook consumer sees this event, it should reject any awaited
+ * promises with a HookTokenConflictError.
+ */
+const HookConflictEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('hook_conflict'),
+  correlationId: z.string(),
+  eventData: z.object({
+    token: z.string(),
+  }),
+});
+
 const WaitCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('wait_created'),
   correlationId: z.string(),
@@ -211,7 +228,8 @@ const WorkflowStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('workflow_started'),
 });
 
-// Discriminated union (used for both creation requests and server responses)
+// Discriminated union for user-creatable events (requests to world.events.create)
+// Note: hook_conflict is NOT included here - it can only be created by World implementations
 export const CreateEventSchema = z.discriminatedUnion('eventType', [
   // Run lifecycle events
   RunCreatedEventSchema,
@@ -238,8 +256,37 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   WorkflowStartedEventSchema,
 ]);
 
-// Server response include runId, eventId, and createdAt
-export const EventSchema = CreateEventSchema.and(
+// Discriminated union for ALL events (includes World-only events like hook_conflict)
+// This is used for reading events from the event log
+const AllEventsSchema = z.discriminatedUnion('eventType', [
+  // Run lifecycle events
+  RunCreatedEventSchema,
+  RunStartedEventSchema,
+  RunCompletedEventSchema,
+  RunFailedEventSchema,
+  RunCancelledEventSchema,
+  // Step lifecycle events
+  StepCreatedEventSchema,
+  StepCompletedEventSchema,
+  StepFailedEventSchema,
+  StepRetryingEventSchema,
+  StepStartedEventSchema,
+  // Hook lifecycle events
+  HookCreatedEventSchema,
+  HookReceivedEventSchema,
+  HookDisposedEventSchema,
+  HookConflictEventSchema, // World-only: created when hook token conflicts
+  // Wait lifecycle events
+  WaitCreatedEventSchema,
+  WaitCompletedEventSchema,
+  // Legacy workflow events (deprecated)
+  WorkflowCompletedEventSchema,
+  WorkflowFailedEventSchema,
+  WorkflowStartedEventSchema,
+]);
+
+// Server response includes runId, eventId, and createdAt
+export const EventSchema = AllEventsSchema.and(
   z.object({
     runId: z.string(),
     eventId: z.string(),
@@ -250,6 +297,7 @@ export const EventSchema = CreateEventSchema.and(
 // Inferred types
 export type Event = z.infer<typeof EventSchema>;
 export type HookReceivedEvent = z.infer<typeof HookReceivedEventSchema>;
+export type HookConflictEvent = z.infer<typeof HookConflictEventSchema>;
 
 /**
  * Union of all possible event request types.

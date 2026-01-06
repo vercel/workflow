@@ -1070,16 +1070,22 @@ describe('Storage (Postgres integration)', () => {
           input: [],
         });
 
-        // Try to create another hook with the same token - should fail
-        await expect(
-          events.create(run2.runId, {
-            eventType: 'hook_created' as const,
-            correlationId: 'hook_2',
-            eventData: { token },
-          })
-        ).rejects.toThrow(
-          `Hook with token ${token} already exists for this project`
+        // Try to create another hook with the same token - should return hook_conflict event
+        const result = await events.create(run2.runId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        // Should return a hook_conflict event instead of throwing
+        expect(result.event.eventType).toBe('hook_conflict');
+        expect(result.event.correlationId).toBe('hook_2');
+        expect((result.event as any).eventData.token).toBe(token);
+        expect((result.event as any).eventData.message).toContain(
+          `Hook with token ${token} already exists`
         );
+        // No hook entity should be created
+        expect(result.hook).toBeUndefined();
       });
 
       it('should allow token reuse after hook is disposed', async () => {

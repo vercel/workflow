@@ -260,4 +260,82 @@ describe('createCreateHook', () => {
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
     expect(workflowError?.message).toContain('my-custom-token');
   });
+
+  it('should reject with WorkflowRuntimeError when hook_conflict event is received', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_conflict',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'my-conflicting-token',
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'my-conflicting-token' });
+
+    // Await should reject with WorkflowRuntimeError
+    await expect(hook).rejects.toThrow(WorkflowRuntimeError);
+    await expect(hook).rejects.toThrow(/hook-conflict/);
+  });
+
+  it('should reject multiple awaits when hook_conflict event is received (iterator case)', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_conflict',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'my-conflicting-token',
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'my-conflicting-token' });
+
+    // First await should reject
+    await expect(hook).rejects.toThrow(WorkflowRuntimeError);
+
+    // Subsequent awaits should also reject (simulating iterator pattern)
+    await expect(hook).rejects.toThrow(WorkflowRuntimeError);
+    await expect(hook).rejects.toThrow(WorkflowRuntimeError);
+  });
+
+  it('should remove hook from invocations queue when hook_conflict event is received', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_conflict',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          token: 'my-conflicting-token',
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({ token: 'my-conflicting-token' });
+
+    // Hook should initially be in the queue
+    expect(ctx.invocationsQueue.size).toBe(1);
+
+    // Try to await (will reject)
+    try {
+      await hook;
+    } catch {
+      // Expected to throw
+    }
+
+    // After processing conflict event, hook should be removed from queue
+    expect(ctx.invocationsQueue.size).toBe(0);
+  });
 });

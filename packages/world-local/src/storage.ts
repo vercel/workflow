@@ -767,15 +767,50 @@ export function createStorage(basedir: string): Storage {
           // Check for duplicate token before creating hook
           const hooksDir = path.join(basedir, 'hooks');
           const hookFiles = await listJSONFiles(hooksDir);
+          let hasConflict = false;
           for (const file of hookFiles) {
             const existingHookPath = path.join(hooksDir, `${file}.json`);
             const existingHook = await readJSON(existingHookPath, HookSchema);
             if (existingHook && existingHook.token === hookData.token) {
-              throw new WorkflowAPIError(
-                `Hook with token ${hookData.token} already exists for this project`,
-                { status: 409 }
-              );
+              hasConflict = true;
+              break;
             }
+          }
+
+          if (hasConflict) {
+            // Create hook_conflict event instead of hook_created
+            // This allows the workflow to continue and fail gracefully when the hook is awaited
+            const conflictEvent: Event = {
+              eventType: 'hook_conflict',
+              correlationId: data.correlationId,
+              eventData: {
+                token: hookData.token,
+              },
+              runId: effectiveRunId,
+              eventId,
+              createdAt: now,
+            };
+
+            // Store the conflict event
+            const compositeKey = `${effectiveRunId}-${eventId}`;
+            const eventPath = path.join(
+              basedir,
+              'events',
+              `${compositeKey}.json`
+            );
+            await writeJSON(eventPath, conflictEvent);
+
+            const resolveData =
+              params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+            const filteredEvent = filterEventData(conflictEvent, resolveData);
+
+            // Return EventResult with conflict event (no hook entity created)
+            return {
+              event: filteredEvent,
+              run,
+              step,
+              hook: undefined,
+            };
           }
 
           hook = {

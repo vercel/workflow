@@ -1,0 +1,85 @@
+---
+title: hook-conflict
+---
+
+This error occurs when you try to create a hook with a token that is already in use by another active workflow run. Hook tokens must be unique across all running workflows in your project.
+
+## Error Message
+
+```
+Hook token conflict: Hook with token <token> already exists for this project
+```
+
+## Why This Happens
+
+Hooks use tokens to identify incoming webhook payloads. When you create a hook with `createHook({ token: "my-token" })`, the Workflow runtime reserves that token for your workflow run. If another workflow run is already using that token, a conflict occurs.
+
+This typically happens when:
+
+1. **Two workflows start simultaneously** with the same hardcoded token
+2. **A previous workflow run is still waiting** for a hook when a new run tries to use the same token
+3. **Token generation is not unique** across concurrent workflow executions
+
+## Common Causes
+
+### Hardcoded Token Values
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript lineNumbers
+// Error - multiple concurrent runs will conflict
+export async function processPayment() {
+  "use workflow";
+
+  const hook = createHook({ token: "payment-hook" }); // [!code highlight]
+  // If another run is already waiting on "payment-hook", this will fail
+  const payment = await hook;
+}
+```
+
+**Solution:** Use unique tokens that include the run ID or other unique identifiers.
+
+```typescript lineNumbers
+export async function processPayment(orderId: string) {
+  "use workflow";
+
+  // Include unique identifier in token
+  const hook = createHook({ token: `payment-${orderId}` }); // [!code highlight]
+  const payment = await hook;
+}
+```
+
+### Omitting the Token (Auto-generated)
+
+The safest approach is to let the Workflow runtime generate a unique token automatically:
+
+```typescript lineNumbers
+export async function processPayment() {
+  "use workflow";
+
+  const hook = createHook(); // Auto-generated unique token // [!code highlight]
+  console.log(`Send webhook to token: ${hook.token}`);
+  const payment = await hook;
+}
+```
+
+## When Hook Tokens Are Released
+
+Hook tokens are automatically released when:
+
+- The workflow run **completes** (successfully or with an error)
+- The workflow run is **cancelled**
+- The hook is explicitly **disposed**
+
+After a workflow completes, its hook tokens become available for reuse by other workflows.
+
+## Best Practices
+
+1. **Use auto-generated tokens** when possible - they are guaranteed to be unique
+2. **Include unique identifiers** if you need custom tokens (order ID, user ID, etc.)
+3. **Avoid reusing the same token** across multiple concurrent workflow runs
+4. **Consider using webhooks** (`createWebhook`) if you need a fixed, predictable URL that can receive multiple payloads
+
+## Related
+
+- [Hooks](/docs/foundations/hooks) - Learn more about using hooks in workflows
+- [Webhooks](/docs/foundations/webhooks) - Alternative for fixed webhook URLs

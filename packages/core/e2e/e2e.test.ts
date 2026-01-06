@@ -986,8 +986,9 @@ describe('e2e', () => {
       // The second workflow should fail with a hook token conflict error
       const run2Result = await getWorkflowReturnValue(run2.runId);
       expect(run2Result.name).toBe('WorkflowRunFailedError');
-      expect(run2Result.cause.message).toContain('already exists');
-      expect(run2Result.cause.status).toBe(409);
+      expect(run2Result.cause.message).toContain(
+        'already in use by another workflow'
+      );
 
       // Verify workflow 2 failed
       const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);

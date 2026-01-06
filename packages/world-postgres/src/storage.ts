@@ -699,10 +699,46 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           token: eventData.token,
         });
         if (existingHook) {
-          throw new WorkflowAPIError(
-            `Hook with token ${eventData.token} already exists for this project`,
-            { status: 409 }
-          );
+          // Create hook_conflict event instead of throwing 409
+          // This allows the workflow to continue and fail gracefully when the hook is awaited
+          const conflictEventData = {
+            token: eventData.token,
+          };
+
+          const [conflictValue] = await drizzle
+            .insert(events)
+            .values({
+              runId: effectiveRunId,
+              eventId,
+              correlationId: data.correlationId,
+              eventType: 'hook_conflict',
+              eventData: conflictEventData,
+            })
+            .returning({ createdAt: events.createdAt });
+
+          if (!conflictValue) {
+            throw new WorkflowAPIError(
+              `Event ${eventId} could not be created`,
+              { status: 409 }
+            );
+          }
+
+          const conflictResult = {
+            eventType: 'hook_conflict' as const,
+            correlationId: data.correlationId,
+            eventData: conflictEventData,
+            ...conflictValue,
+            runId: effectiveRunId,
+            eventId,
+          };
+          const parsedConflict = EventSchema.parse(conflictResult);
+          const resolveData = params?.resolveData ?? 'all';
+          return {
+            event: filterEventData(parsedConflict, resolveData),
+            run,
+            step,
+            hook: undefined,
+          };
         }
 
         const [hookValue] = await drizzle
