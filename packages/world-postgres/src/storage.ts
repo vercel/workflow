@@ -298,7 +298,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         ) {
           throw new WorkflowAPIError(
             `Cannot transition run from terminal state "${currentRun.status}"`,
-            { status: 409 }
+            { status: 410 }
           );
         }
 
@@ -309,7 +309,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         ) {
           throw new WorkflowAPIError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`,
-            { status: 409 }
+            { status: 410 }
           );
         }
       }
@@ -343,7 +343,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (isStepTerminal(validatedStep.status)) {
           throw new WorkflowAPIError(
             `Cannot modify step in terminal state "${validatedStep.status}"`,
-            { status: 409 }
+            { status: 410 }
           );
         }
 
@@ -352,7 +352,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (validatedStep.status !== 'running') {
             throw new WorkflowAPIError(
               `Cannot modify non-running step on run in terminal state "${currentRun.status}"`,
-              { status: 409 }
+              { status: 410 }
             );
           }
         }
@@ -588,7 +588,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (['completed', 'failed'].includes(existing.status)) {
             throw new WorkflowAPIError(
               `Cannot modify step in terminal state "${existing.status}"`,
-              { status: 409 }
+              { status: 410 }
             );
           }
         }
@@ -644,7 +644,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (['completed', 'failed'].includes(existing.status)) {
             throw new WorkflowAPIError(
               `Cannot modify step in terminal state "${existing.status}"`,
-              { status: 409 }
+              { status: 410 }
             );
           }
         }

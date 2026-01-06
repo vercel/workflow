@@ -387,7 +387,7 @@ export function createStorage(basedir: string): Storage {
           ) {
             throw new WorkflowAPIError(
               `Cannot transition run from terminal state "${currentRun.status}"`,
-              { status: 409 }
+              { status: 410 }
             );
           }
 
@@ -398,7 +398,7 @@ export function createStorage(basedir: string): Storage {
           ) {
             throw new WorkflowAPIError(
               `Cannot create new entities on run in terminal state "${currentRun.status}"`,
-              { status: 409 }
+              { status: 410 }
             );
           }
         }
@@ -433,7 +433,7 @@ export function createStorage(basedir: string): Storage {
           if (isStepTerminal(validatedStep.status)) {
             throw new WorkflowAPIError(
               `Cannot modify step in terminal state "${validatedStep.status}"`,
-              { status: 409 }
+              { status: 410 }
             );
           }
 
@@ -442,7 +442,7 @@ export function createStorage(basedir: string): Storage {
             if (validatedStep.status !== 'running') {
               throw new WorkflowAPIError(
                 `Cannot modify non-running step on run in terminal state "${currentRun.status}"`,
-                { status: 409 }
+                { status: 410 }
               );
             }
           }
