@@ -118,7 +118,16 @@ export interface World extends Queue, Storage, Streamer {
   /**
    * The spec version of this World implementation.
    * Used for backwards compatibility when operating on runs from different versions.
-   * Derived from the npm package version (e.g., "4.0.1-beta.25").
+   *
+   * @example
+   * ```ts
+   * import { version } from '@workflow/world';
+   *
+   * const world: World = {
+   *   specVersion: version,
+   *   // ...other World properties
+   * };
+   * ```
    */
   readonly specVersion: string;
 

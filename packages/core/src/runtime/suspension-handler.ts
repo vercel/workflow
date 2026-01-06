@@ -1,4 +1,5 @@
 import type { Span } from '@opentelemetry/api';
+import { waitUntil } from '@vercel/functions';
 import { WorkflowAPIError } from '@workflow/errors';
 import type { CreateEventRequest, World } from '@workflow/world';
 import type {

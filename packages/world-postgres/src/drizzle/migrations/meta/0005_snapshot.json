@@ -1,5 +1,5 @@
 {
-  "id": "c0d1e2f3-g4h5-6789-0123-456789abcdef",
+  "id": "7adbbd35-ca90-4353-bb34-3d1b2435a027",
   "prevId": "b9c4d5e6-f7a8-9012-3456-78901bcdef01",
   "version": "7",
   "dialect": "postgresql",
@@ -231,6 +231,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "spec_version": {
+          "name": "spec_version",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": false
+        },
         "execution_context": {
           "name": "execution_context",
           "type": "jsonb",
@@ -290,12 +296,6 @@
         "expired_at": {
           "name": "expired_at",
           "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "spec_version": {
-          "name": "spec_version",
-          "type": "varchar",
           "primaryKey": false,
           "notNull": false
         }
@@ -557,14 +557,7 @@
     "public.status": {
       "name": "status",
       "schema": "public",
-      "values": [
-        "pending",
-        "running",
-        "completed",
-        "failed",
-        "paused",
-        "cancelled"
-      ]
+      "values": ["pending", "running", "completed", "failed", "cancelled"]
     }
   },
   "schemas": {

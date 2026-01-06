@@ -1,9 +1,9 @@
 import type { World } from '@workflow/world';
+import { version } from '@workflow/world';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
-import { version } from './version.js';
 
 export { createQueue } from './queue.js';
 export { createStorage } from './storage.js';

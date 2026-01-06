@@ -1,4 +1,5 @@
 import type { Storage, World } from '@workflow/world';
+import { version } from '@workflow/world';
 import PgBoss from 'pg-boss';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
@@ -11,7 +12,6 @@ import {
   createStepsStorage,
 } from './storage.js';
 import { createStreamer } from './streamer.js';
-import { version } from './version.js';
 
 function createStorage(drizzle: Drizzle): Storage {
   return {

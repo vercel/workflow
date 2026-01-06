@@ -1,11 +1,11 @@
 import type { World } from '@workflow/world';
+import { version } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
 import { initDataDir } from './init.js';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
-import { version } from './version.js';
 
 // Re-export init types and utilities for consumers
 export {
