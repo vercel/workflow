@@ -18,7 +18,6 @@ This typically happens when:
 
 1. **Two workflows start simultaneously** with the same hardcoded token
 2. **A previous workflow run is still waiting** for a hook when a new run tries to use the same token
-3. **Token generation is not unique** across concurrent workflow executions
 
 ## Common Causes
 
@@ -61,6 +60,33 @@ export async function processPayment() {
   const payment = await hook;
 }
 ```
+
+## Handling Hook Conflicts in Your Workflow
+
+When a hook conflict occurs, awaiting the hook will throw a `WorkflowRuntimeError`. You can catch this error to handle the conflict gracefully:
+
+```typescript lineNumbers
+import { WorkflowRuntimeError } from "@workflow/errors";
+
+export async function processPayment(orderId: string) {
+  "use workflow";
+
+  const hook = createHook({ token: `payment-${orderId}` });
+
+  try {
+    const payment = await hook; // [!code highlight]
+    return { success: true, payment };
+  } catch (error) {
+    if (error instanceof WorkflowRuntimeError && error.slug === "hook-conflict") { // [!code highlight]
+      // Another workflow is already processing this order
+      return { success: false, reason: "duplicate-processing" };
+    }
+    throw error; // Re-throw other errors
+  }
+}
+```
+
+This pattern is useful when you want to detect and handle duplicate processing attempts instead of letting the workflow fail.
 
 ## When Hook Tokens Are Released
 
