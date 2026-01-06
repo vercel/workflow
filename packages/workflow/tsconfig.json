@@ -1,7 +1,10 @@
 {
   "extends": "@workflow/tsconfig/base.json",
   "compilerOptions": {
-    "outDir": "dist"
+    "outDir": "dist",
+    "sourceMap": false,
+    // See https://github.com/vercel/workflow/pull/352
+    "inlineSourceMap": true
   },
   "include": ["src"],
   "exclude": ["node_modules", "**/*.test.ts"]
