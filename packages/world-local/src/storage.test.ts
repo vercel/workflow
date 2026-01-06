@@ -1293,7 +1293,7 @@ describe('Storage', () => {
         expect(fileExists).toBe(true);
       });
 
-      it('should throw error when creating a hook with a duplicate token', async () => {
+      it('should return hook_conflict event when creating a hook with a duplicate token', async () => {
         // Create first hook with a token
         const hookData = {
           hookId: 'hook_1',
@@ -1302,17 +1302,19 @@ describe('Storage', () => {
 
         await createHook(storage, testRunId, hookData);
 
-        // Try to create another hook with the same token
-        const duplicateHookData = {
-          hookId: 'hook_2',
-          token: 'duplicate-test-token',
-        };
+        // Try to create another hook with the same token - should return hook_conflict event
+        const result = await storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token: 'duplicate-test-token' },
+        });
 
-        await expect(
-          createHook(storage, testRunId, duplicateHookData)
-        ).rejects.toThrow(
-          'Hook with token duplicate-test-token already exists for this project'
+        expect(result.event.eventType).toBe('hook_conflict');
+        expect(result.event.correlationId).toBe('hook_2');
+        expect((result.event as any).eventData.token).toBe(
+          'duplicate-test-token'
         );
+        expect(result.hook).toBeUndefined();
       });
 
       it('should allow multiple hooks with different tokens for the same run', async () => {
@@ -1341,15 +1343,15 @@ describe('Storage', () => {
 
         expect(hook1.token).toBe(token);
 
-        // Try to create another hook with the same token - should fail
-        await expect(
-          createHook(storage, testRunId, {
-            hookId: 'hook_2',
-            token,
-          })
-        ).rejects.toThrow(
-          `Hook with token ${token} already exists for this project`
-        );
+        // Try to create another hook with the same token - should return hook_conflict
+        const conflictResult = await storage.events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(conflictResult.event.eventType).toBe('hook_conflict');
+        expect(conflictResult.hook).toBeUndefined();
 
         // Dispose the first hook via hook_disposed event
         await disposeHook(storage, testRunId, 'hook_1');
@@ -1382,15 +1384,16 @@ describe('Storage', () => {
 
         expect(hook1.token).toBe(token);
 
-        // Try to create hook with same token in second run - should fail
-        await expect(
-          createHook(storage, run2.runId, {
-            hookId: 'hook_2',
-            token,
-          })
-        ).rejects.toThrow(
-          `Hook with token ${token} already exists for this project`
-        );
+        // Try to create hook with same token in second run - should return hook_conflict
+        const result = await storage.events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_2',
+          eventData: { token },
+        });
+
+        expect(result.event.eventType).toBe('hook_conflict');
+        expect((result.event as any).eventData.token).toBe(token);
+        expect(result.hook).toBeUndefined();
       });
     });
 
