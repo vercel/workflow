@@ -152,7 +152,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               eventData: {
                 error: errorMessage,
                 stack: step.error?.stack,
-                fatal: true,
               },
             });
 
