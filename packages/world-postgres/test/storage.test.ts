@@ -1081,9 +1081,6 @@ describe('Storage (Postgres integration)', () => {
         expect(result.event.eventType).toBe('hook_conflict');
         expect(result.event.correlationId).toBe('hook_2');
         expect((result.event as any).eventData.token).toBe(token);
-        expect((result.event as any).eventData.message).toContain(
-          `Hook with token ${token} already exists`
-        );
         // No hook entity should be created
         expect(result.hook).toBeUndefined();
       });

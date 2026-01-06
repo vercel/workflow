@@ -1,4 +1,5 @@
 import { types } from 'node:util';
+import { WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { assert, describe, expect, it } from 'vitest';
 import type { WorkflowSuspension } from './global.js';
@@ -1639,6 +1640,103 @@ describe('runWorkflow', () => {
         token: 'my-custom-token',
         result: 'success',
       });
+    });
+
+    it('should reject with WorkflowRuntimeError when hook_conflict event is received', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_conflict',
+          correlationId: 'hook_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            token: 'my-duplicate-token',
+          },
+          createdAt: new Date(),
+        },
+      ];
+
+      let error: Error | undefined;
+      try {
+        await runWorkflow(
+          `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          const hook = createHook({ token: 'my-duplicate-token' });
+          const payload = await hook;
+          return payload;
+        }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+
+      expect(error).toBeInstanceOf(WorkflowRuntimeError);
+      expect(error?.message).toContain('already in use by another workflow');
+      expect(error?.message).toContain('my-duplicate-token');
+    });
+
+    it('should reject multiple awaits when hook_conflict is received (iterator pattern)', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_conflict',
+          correlationId: 'hook_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            token: 'conflicting-token',
+          },
+          createdAt: new Date(),
+        },
+      ];
+
+      let error: Error | undefined;
+      try {
+        await runWorkflow(
+          `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          const hook = createHook({ token: 'conflicting-token' });
+          const results = [];
+          for await (const payload of hook) {
+            results.push(payload);
+            if (results.length >= 2) break;
+          }
+          return results;
+        }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+
+      expect(error).toBeInstanceOf(WorkflowRuntimeError);
+      expect(error?.message).toContain('already in use by another workflow');
     });
   });
 
