@@ -267,6 +267,10 @@ export async function* streamTextIterator({
         lastStepWasToolCalls = true;
 
         // Add assistant message with tool calls to the conversation
+        // Note: providerMetadata from the tool call is mapped to providerOptions
+        // in the prompt format, following the AI SDK convention. This is critical
+        // for providers like Gemini that require thoughtSignature to be preserved
+        // across multi-turn tool calls.
         conversationPrompt.push({
           role: 'assistant',
           content: toolCalls.map((toolCall) => ({
@@ -274,6 +278,9 @@ export async function* streamTextIterator({
             toolCallId: toolCall.toolCallId,
             toolName: toolCall.toolName,
             input: JSON.parse(toolCall.input),
+            ...(toolCall.providerMetadata != null
+              ? { providerOptions: toolCall.providerMetadata }
+              : {}),
           })),
         });
 
