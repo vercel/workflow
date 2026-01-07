@@ -38,15 +38,24 @@ export const StepInvokePayloadSchema = z.object({
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
 export type StepInvokePayload = z.infer<typeof StepInvokePayloadSchema>;
+export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
 
 /**
- * Health check payload - internal type used by core to verify queue pipeline.
- * Not exported as part of the public API.
+ * Health check payload - used to verify that the queue pipeline
+ * can deliver messages to workflow/step endpoints.
+ * This bypasses Deployment Protection on Vercel.
  */
-const HealthCheckPayloadSchema = z.object({
+export const HealthCheckPayloadSchema = z.object({
   __healthCheck: z.literal(true),
   correlationId: z.string(),
 });
+
+/**
+ * Stream name prefix for health check responses.
+ * The full stream name is `__health_check__${correlationId}`.
+ * Used by both the core handlers and world implementations.
+ */
+export const HEALTH_CHECK_STREAM_PREFIX = '__health_check__';
 
 export const QueuePayloadSchema = z.union([
   WorkflowInvokePayloadSchema,
