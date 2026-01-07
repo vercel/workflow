@@ -1,7 +1,50 @@
-import type { Event, World } from '@workflow/world';
+import type { Event, HealthCheckPayload, World } from '@workflow/world';
+import {
+  HEALTH_CHECK_STREAM_PREFIX,
+  HealthCheckPayloadSchema,
+} from '@workflow/world';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { getWorld } from './world.js';
+
+/**
+ * Checks if the given message is a health check payload.
+ * If so, returns the parsed payload. Otherwise returns undefined.
+ */
+export function parseHealthCheckPayload(
+  message: unknown
+): HealthCheckPayload | undefined {
+  const result = HealthCheckPayloadSchema.safeParse(message);
+  if (result.success) {
+    return result.data;
+  }
+  return undefined;
+}
+
+/**
+ * Handles a health check message by writing the result to the world's stream.
+ * The caller can listen to this stream to get the health check response.
+ *
+ * @param healthCheck - The parsed health check payload
+ * @param endpoint - Which endpoint is responding ('workflow' or 'step')
+ */
+export async function handleHealthCheckMessage(
+  healthCheck: HealthCheckPayload,
+  endpoint: 'workflow' | 'step'
+): Promise<void> {
+  const world = getWorld();
+  const streamName = `${HEALTH_CHECK_STREAM_PREFIX}${healthCheck.correlationId}`;
+  const response = JSON.stringify({
+    healthy: true,
+    endpoint,
+    correlationId: healthCheck.correlationId,
+    timestamp: Date.now(),
+  });
+  // Use the correlationId as the "runId" for streaming purposes
+  // This is a bit of a hack but allows us to reuse the streaming infrastructure
+  await world.writeToStream(streamName, healthCheck.correlationId, response);
+  await world.closeStream(streamName, healthCheck.correlationId);
+}
 
 /**
  * Loads all workflow run events by iterating through all pages of paginated results.
