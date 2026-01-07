@@ -42,6 +42,7 @@ export { WorkflowSuspension } from './global.js';
 export {
   type HealthCheckEndpoint,
   type HealthCheckOptions,
+  type HealthCheckResult,
   healthCheck,
 } from './runtime/helpers.js';
 export {
