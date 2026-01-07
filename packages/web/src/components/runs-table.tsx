@@ -6,6 +6,7 @@ import {
   type EnvMap,
   type Event,
   getErrorMessage,
+  reenqueueRun,
   useWorkflowRuns,
 } from '@workflow/web-shared';
 import { fetchEvents, fetchRun } from '@workflow/web-shared/server';
@@ -20,6 +21,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   XCircle,
+  Zap,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -70,13 +72,11 @@ function RunActionsDropdownContentInner({
   runId,
   runStatus,
   onSuccess,
-  showDebugActions,
 }: {
   env: EnvMap;
   runId: string;
   runStatus: WorkflowRunStatus | undefined;
   onSuccess: () => void;
-  showDebugActions: boolean;
 }) {
   const [events, setEvents] = useState<Event[] | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
@@ -115,7 +115,6 @@ function RunActionsDropdownContentInner({
       eventsLoading={isLoading}
       stopPropagation
       callbacks={{ onSuccess }}
-      showDebugActions={showDebugActions}
     />
   );
 }
@@ -126,13 +125,11 @@ function LazyDropdownMenu({
   runId,
   runStatus,
   onSuccess,
-  showDebugActions,
 }: {
   env: EnvMap;
   runId: string;
   runStatus: WorkflowRunStatus | undefined;
   onSuccess: () => void;
-  showDebugActions: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -155,7 +152,6 @@ function LazyDropdownMenu({
             runId={runId}
             runStatus={runStatus}
             onSuccess={onSuccess}
-            showDebugActions={showDebugActions}
           />
         </DropdownMenuContent>
       )}
@@ -378,7 +374,6 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ? (rawStatus as WorkflowRunStatus | 'all')
       : undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';
-  const showDebugActions = searchParams.get('debug') === '1';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
@@ -420,8 +415,9 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
 
   const runs = data.data ?? [];
 
-  // Bulk cancel state
+  // Bulk action states
   const [isBulkCancelling, setIsBulkCancelling] = useState(false);
+  const [isBulkReenqueuing, setIsBulkReenqueuing] = useState(false);
 
   const isLocalAndHasMissingData =
     isLocal &&
@@ -496,6 +492,43 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       setIsBulkCancelling(false);
     }
   }, [env, cancellableSelectedRuns, isBulkCancelling, selection, onReload]);
+
+  const handleBulkReenqueue = useCallback(async () => {
+    if (isBulkReenqueuing || selectedRuns.length === 0) return;
+
+    setIsBulkReenqueuing(true);
+    try {
+      const results = await Promise.allSettled(
+        selectedRuns.map((run) => reenqueueRun(env, run.runId))
+      );
+
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.filter((r) => r.status === 'rejected').length;
+
+      if (failed === 0) {
+        toast.success(
+          `Re-enqueued ${succeeded} run${succeeded !== 1 ? 's' : ''}`
+        );
+      } else if (succeeded === 0) {
+        toast.error(
+          `Failed to re-enqueue ${failed} run${failed !== 1 ? 's' : ''}`
+        );
+      } else {
+        toast.warning(
+          `Re-enqueued ${succeeded} run${succeeded !== 1 ? 's' : ''}, ${failed} failed`
+        );
+      }
+
+      selection.clearSelection();
+      onReload();
+    } catch (err) {
+      toast.error('Failed to re-enqueue runs', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsBulkReenqueuing(false);
+    }
+  }, [env, selectedRuns, isBulkReenqueuing, selection, onReload]);
 
   const toggleSortOrder = () => {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
@@ -670,7 +703,6 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                           runId={run.runId}
                           runStatus={run.status}
                           onSuccess={onReload}
-                          showDebugActions={showDebugActions}
                         />
                       </TableCell>
                     </TableRow>
@@ -711,26 +743,50 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
         onClearSelection={selection.clearSelection}
         itemLabel="runs"
         actions={
-          hasCancellableSelection && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
-              onClick={handleBulkCancel}
-              disabled={isBulkCancelling}
-            >
-              {isBulkCancelling ? (
-                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-              ) : (
-                <XCircle className="h-4 w-4 mr-1" />
-              )}
-              Cancel{' '}
-              {cancellableSelectedRuns.length !== selection.selectionCount
-                ? `${cancellableSelectedRuns.length} `
-                : ''}
-              {isBulkCancelling ? 'cancelling...' : ''}
-            </Button>
-          )
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+                  onClick={handleBulkReenqueue}
+                  disabled={isBulkReenqueuing}
+                >
+                  {isBulkReenqueuing ? (
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                  ) : (
+                    <Zap className="h-4 w-4 mr-1" />
+                  )}
+                  {isBulkReenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Re-enqueue the workflow orchestration layer for selected runs.
+                Useful if workflows appear stuck.
+              </TooltipContent>
+            </Tooltip>
+            {hasCancellableSelection && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+                onClick={handleBulkCancel}
+                disabled={isBulkCancelling}
+              >
+                {isBulkCancelling ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <XCircle className="h-4 w-4 mr-1" />
+                )}
+                Cancel{' '}
+                {cancellableSelectedRuns.length !== selection.selectionCount
+                  ? `${cancellableSelectedRuns.length} `
+                  : ''}
+                {isBulkCancelling ? 'cancelling...' : ''}
+              </Button>
+            )}
+          </>
         }
       />
     </div>

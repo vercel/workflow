@@ -176,7 +176,6 @@ export function RunDetailView({
   const activeTab =
     (searchParams.get('tab') as 'trace' | 'graph' | 'streams') || 'trace';
   const selectedStreamId = searchParams.get('streamId');
-  const showDebugActions = searchParams.get('debug') === '1';
 
   // Helper to update URL search params
   const updateSearchParams = useCallback(
@@ -404,7 +403,6 @@ export function RunDetailView({
                   onRerunClick={handleRerunClick}
                   onCancelClick={handleCancelClick}
                   callbacks={{ onSuccess: update }}
-                  showDebugActions={showDebugActions}
                 />
               </div>
             </div>

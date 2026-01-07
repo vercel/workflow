@@ -7,14 +7,25 @@ import {
   type Event,
   recreateRun,
   reenqueueRun,
-  shouldShowReenqueueButton,
   wakeUpRun,
 } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
-import { Loader2, RotateCw, XCircle, Zap } from 'lucide-react';
+import {
+  AlarmClockOff,
+  Loader2,
+  MoreHorizontal,
+  RotateCw,
+  XCircle,
+  Zap,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Tooltip,
   TooltipContent,
@@ -67,11 +78,6 @@ function useRunActions({
   const eventAnalysis = useMemo(() => analyzeEvents(events), [events]);
   const hasPendingSleeps = eventAnalysis.hasPendingSleeps;
 
-  const showReenqueueForStuckWorkflow = useMemo(
-    () => shouldShowReenqueueButton(events, runStatus),
-    [events, runStatus]
-  );
-
   const handleReplay = useCallback(async () => {
     if (rerunning) return null;
 
@@ -120,17 +126,17 @@ function useRunActions({
       setWakingUp(true);
       const result = await wakeUpRun(env, runId);
       if (result.stoppedCount > 0) {
-        toast.success('Run woken up', {
-          description: `Interrupted ${result.stoppedCount} pending sleep${result.stoppedCount > 1 ? 's' : ''} and woke up the run.`,
+        toast.success('Active sleeps cancelled', {
+          description: `Cancelled ${result.stoppedCount} active sleep${result.stoppedCount > 1 ? 's' : ''} and resumed the run.`,
         });
       } else {
-        toast.info('No pending sleeps', {
-          description: 'There were no pending sleep calls to interrupt.',
+        toast.info('No active sleeps', {
+          description: 'There were no active sleep calls to cancel.',
         });
       }
       callbacks?.onSuccess?.();
     } catch (err) {
-      toast.error('Failed to wake up', {
+      toast.error('Failed to cancel sleeps', {
         description: err instanceof Error ? err.message : 'Unknown error',
       });
     } finally {
@@ -170,7 +176,6 @@ function useRunActions({
     wakingUp,
     cancelling,
     hasPendingSleeps,
-    showReenqueueForStuckWorkflow,
     // Handlers
     handleReplay,
     handleReenqueue,
@@ -183,28 +188,26 @@ function useRunActions({
 // Shared Tooltip Content
 // ============================================================================
 
-function WakeUpTooltipContent() {
+function CancelSleepsTooltipContent({
+  hasPendingSleeps,
+}: {
+  hasPendingSleeps: boolean;
+}) {
+  if (!hasPendingSleeps) {
+    return <>No active sleep calls to cancel.</>;
+  }
   return (
     <>
-      Interrupt any current calls to <code>sleep</code> and wake up the run.
+      Cancel any active <code>sleep</code> calls and resume the run immediately.
     </>
   );
 }
 
-function ReenqueueTooltipContent({ isStuck }: { isStuck: boolean }) {
-  if (isStuck) {
-    return (
-      <>
-        This workflow has no active steps or sleep calls, it maybe be stuck.
-        Re-enqueue the workflow orchestration layer to resume execution.
-      </>
-    );
-  }
+function ReenqueueTooltipContent() {
   return (
     <>
-      Re-enqueue the workflow orchestration layer. This is a no-op, unless the
-      workflow got stuck due to an implementation issue in the World. This is
-      useful for debugging custom Worlds.
+      Re-enqueue the workflow orchestration layer. Use this if the workflow
+      appears stuck with no active steps. This is a no-op for healthy workflows.
     </>
   );
 }
@@ -216,8 +219,6 @@ function ReenqueueTooltipContent({ isStuck }: { isStuck: boolean }) {
 export interface RunActionsDropdownItemsProps extends RunActionsBaseProps {
   /** Stop click event propagation (useful in table rows) */
   stopPropagation?: boolean;
-  /** Show debug actions like Re-enqueue (requires debug=1 URL param) */
-  showDebugActions?: boolean;
 }
 
 export function RunActionsDropdownItems({
@@ -228,7 +229,6 @@ export function RunActionsDropdownItems({
   eventsLoading,
   callbacks,
   stopPropagation = false,
-  showDebugActions = false,
 }: RunActionsDropdownItemsProps) {
   const {
     rerunning,
@@ -236,7 +236,6 @@ export function RunActionsDropdownItems({
     wakingUp,
     cancelling,
     hasPendingSleeps,
-    showReenqueueForStuckWorkflow,
     handleReplay,
     handleReenqueue,
     handleWakeUp,
@@ -253,7 +252,7 @@ export function RunActionsDropdownItems({
     handleReenqueue();
   };
 
-  const onWakeUp = (e: React.MouseEvent) => {
+  const onCancelSleeps = (e: React.MouseEvent) => {
     if (stopPropagation) e.stopPropagation();
     handleWakeUp();
   };
@@ -265,10 +264,6 @@ export function RunActionsDropdownItems({
 
   const isRunActive = runStatus === 'pending' || runStatus === 'running';
 
-  // Determine which button to show: Wake up, Re-enqueue, or disabled Wake up
-  const showReenqueue =
-    !eventsLoading && (showDebugActions || showReenqueueForStuckWorkflow);
-
   return (
     <>
       <DropdownMenuItem onClick={onReplay} disabled={rerunning}>
@@ -276,49 +271,37 @@ export function RunActionsDropdownItems({
         {rerunning ? 'Replaying...' : 'Replay Run'}
       </DropdownMenuItem>
 
-      {/* Wake up / Re-enqueue button - mutually exclusive */}
-      {eventsLoading ? (
-        // Loading state: show Wake up button with spinner
-        <DropdownMenuItem disabled>
-          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          Wake up
-        </DropdownMenuItem>
-      ) : showReenqueue ? (
-        // Re-enqueue: shown when debug flag or stuck workflow detected
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <DropdownMenuItem onClick={onReenqueue} disabled={reenqueuing}>
-              <Zap className="h-4 w-4 mr-2" />
-              {reenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
-            </DropdownMenuItem>
-          </TooltipTrigger>
-          <TooltipContent side="left" className="max-w-xs">
-            <ReenqueueTooltipContent
-              isStuck={showReenqueueForStuckWorkflow && !showDebugActions}
-            />
-          </TooltipContent>
-        </Tooltip>
-      ) : (
-        // Wake up: enabled if pending sleeps, disabled otherwise
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <DropdownMenuItem
-              onClick={onWakeUp}
-              disabled={!hasPendingSleeps || wakingUp}
-            >
-              <Zap className="h-4 w-4 mr-2" />
-              {wakingUp ? 'Waking up...' : 'Wake up'}
-            </DropdownMenuItem>
-          </TooltipTrigger>
-          <TooltipContent side="left" className="max-w-xs">
-            {hasPendingSleeps ? (
-              <WakeUpTooltipContent />
-            ) : (
-              <>No pending sleep calls to interrupt.</>
-            )}
-          </TooltipContent>
-        </Tooltip>
-      )}
+      {/* Re-enqueue - always shown */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuItem
+            onClick={onReenqueue}
+            disabled={eventsLoading || reenqueuing}
+          >
+            <Zap className="h-4 w-4 mr-2" />
+            {reenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
+          </DropdownMenuItem>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="max-w-xs">
+          <ReenqueueTooltipContent />
+        </TooltipContent>
+      </Tooltip>
+
+      {/* Cancel Active Sleeps - disabled if no active sleeps */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuItem
+            onClick={onCancelSleeps}
+            disabled={eventsLoading || !hasPendingSleeps || wakingUp}
+          >
+            <AlarmClockOff className="h-4 w-4 mr-2" />
+            {wakingUp ? 'Cancelling sleeps...' : 'Cancel Active Sleeps'}
+          </DropdownMenuItem>
+        </TooltipTrigger>
+        <TooltipContent side="left" className="max-w-xs">
+          <CancelSleepsTooltipContent hasPendingSleeps={hasPendingSleeps} />
+        </TooltipContent>
+      </Tooltip>
 
       <DropdownMenuItem
         onClick={onCancel}
@@ -341,8 +324,6 @@ export interface RunActionsButtonsProps extends RunActionsBaseProps {
   onCancelClick?: () => void;
   /** Called when rerun button is clicked - typically shows a confirmation dialog */
   onRerunClick?: () => void;
-  /** Show debug actions like Re-enqueue (requires debug=1 URL param) */
-  showDebugActions?: boolean;
 }
 
 export function RunActionsButtons({
@@ -355,13 +336,11 @@ export function RunActionsButtons({
   callbacks,
   onCancelClick,
   onRerunClick,
-  showDebugActions = false,
 }: RunActionsButtonsProps) {
   const {
     reenqueuing,
     wakingUp,
     hasPendingSleeps,
-    showReenqueueForStuckWorkflow,
     handleReenqueue,
     handleWakeUp,
   } = useRunActions({ env, runId, runStatus, events, callbacks });
@@ -377,24 +356,6 @@ export function RunActionsButtons({
       ? 'Cannot re-run while workflow is still running'
       : '';
 
-  // Re-enqueue button logic
-  const canReenqueue = !loading && !reenqueuing;
-  const reenqueueDisabledReason = reenqueuing
-    ? 'Re-enqueuing workflow...'
-    : loading
-      ? 'Loading run data...'
-      : '';
-
-  // Wake up button logic
-  const canWakeUp = !loading && !wakingUp && hasPendingSleeps;
-  const wakeUpDisabledReason = wakingUp
-    ? 'Waking up workflow...'
-    : loading
-      ? 'Loading run data...'
-      : !hasPendingSleeps
-        ? 'No pending sleep calls to interrupt'
-        : '';
-
   // Cancel button logic
   const cancelDisabledReason =
     runStatus === 'completed'
@@ -404,10 +365,6 @@ export function RunActionsButtons({
         : runStatus === 'cancelled'
           ? 'Run has already been cancelled'
           : '';
-
-  // Determine which button to show: Wake up, Re-enqueue, or disabled Wake up
-  const showReenqueue =
-    !eventsLoading && (showDebugActions || showReenqueueForStuckWorkflow);
 
   return (
     <>
@@ -439,69 +396,6 @@ export function RunActionsButtons({
         </TooltipContent>
       </Tooltip>
 
-      {/* Wake up / Re-enqueue Button - mutually exclusive */}
-      {eventsLoading ? (
-        // Loading state: show Wake up button with spinner
-        <Button variant="outline" size="sm" disabled>
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Wake up
-        </Button>
-      ) : showReenqueue ? (
-        // Re-enqueue: shown when debug flag or stuck workflow detected
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleReenqueue}
-                disabled={!canReenqueue || reenqueuing}
-              >
-                <Zap className="h-4 w-4" />
-                {reenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">
-            {reenqueueDisabledReason ? (
-              <p>{reenqueueDisabledReason}</p>
-            ) : (
-              <p>
-                <ReenqueueTooltipContent
-                  isStuck={showReenqueueForStuckWorkflow && !showDebugActions}
-                />
-              </p>
-            )}
-          </TooltipContent>
-        </Tooltip>
-      ) : (
-        // Wake up: enabled if pending sleeps, disabled otherwise
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleWakeUp}
-                disabled={!canWakeUp || wakingUp}
-              >
-                <Zap className="h-4 w-4" />
-                {wakingUp ? 'Waking up...' : 'Wake up'}
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">
-            {wakeUpDisabledReason ? (
-              <p>{wakeUpDisabledReason}</p>
-            ) : (
-              <p>
-                <WakeUpTooltipContent />
-              </p>
-            )}
-          </TooltipContent>
-        </Tooltip>
-      )}
-
       {/* Cancel Button */}
       <Tooltip>
         <TooltipTrigger asChild>
@@ -525,6 +419,55 @@ export function RunActionsButtons({
           )}
         </TooltipContent>
       </Tooltip>
+
+      {/* More Actions Menu */}
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>More actions</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="end">
+          {/* Re-enqueue - always shown */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuItem
+                onClick={handleReenqueue}
+                disabled={loading || eventsLoading || reenqueuing}
+              >
+                <Zap className="h-4 w-4 mr-2" />
+                {reenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
+              </DropdownMenuItem>
+            </TooltipTrigger>
+            <TooltipContent side="left" className="max-w-xs">
+              <ReenqueueTooltipContent />
+            </TooltipContent>
+          </Tooltip>
+
+          {/* Cancel Active Sleeps - disabled if no active sleeps */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuItem
+                onClick={handleWakeUp}
+                disabled={
+                  loading || eventsLoading || !hasPendingSleeps || wakingUp
+                }
+              >
+                <AlarmClockOff className="h-4 w-4 mr-2" />
+                {wakingUp ? 'Cancelling sleeps...' : 'Cancel Active Sleeps'}
+              </DropdownMenuItem>
+            </TooltipTrigger>
+            <TooltipContent side="left" className="max-w-xs">
+              <CancelSleepsTooltipContent hasPendingSleeps={hasPendingSleeps} />
+            </TooltipContent>
+          </Tooltip>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </>
   );
 }
