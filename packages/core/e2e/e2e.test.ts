@@ -1072,9 +1072,18 @@ describe('e2e', () => {
   );
 
   test(
-    'health check endpoint - workflow and step endpoints respond to __health query parameter',
+    'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
     { timeout: 30_000 },
     async () => {
+      // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
+      // This approach requires direct HTTP access and works when:
+      // - Running locally (for port detection)
+      // - Vercel Deployment Protection bypass headers are available
+      //
+      // For production use on Vercel with Deployment Protection enabled, use the
+      // queue-based `world.healthCheck()` method instead, which bypasses protection
+      // by sending messages through the Queue infrastructure.
+
       // Test the flow endpoint health check
       const flowHealthUrl = new URL(
         '/.well-known/workflow/v1/flow?__health',

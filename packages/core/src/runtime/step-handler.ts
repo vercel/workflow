@@ -25,7 +25,13 @@ import {
   withTraceContext,
 } from '../telemetry.js';
 import { getErrorName, getErrorStack } from '../types.js';
-import { getQueueOverhead, queueMessage, withHealthCheck } from './helpers.js';
+import {
+  getQueueOverhead,
+  handleHealthCheckMessage,
+  parseHealthCheckPayload,
+  queueMessage,
+  withHealthCheck,
+} from './helpers.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -33,6 +39,13 @@ const DEFAULT_STEP_MAX_RETRIES = 3;
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',
   async (message_, metadata) => {
+    // Check if this is a health check message
+    const healthCheck = parseHealthCheckPayload(message_);
+    if (healthCheck) {
+      await handleHealthCheckMessage(healthCheck, 'step');
+      return;
+    }
+
     const {
       workflowName,
       workflowRunId,

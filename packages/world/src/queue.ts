@@ -36,18 +36,50 @@ export const StepInvokePayloadSchema = z.object({
   requestedAt: z.coerce.date().optional(),
 });
 
+/**
+ * Health check payload - used to verify that the queue pipeline
+ * can deliver messages to workflow/step endpoints.
+ * This bypasses Deployment Protection on Vercel.
+ */
+export const HealthCheckPayloadSchema = z.object({
+  __healthCheck: z.literal(true),
+  correlationId: z.string(),
+});
+
+/**
+ * Stream name prefix for health check responses.
+ * The full stream name is `__health_check__${correlationId}`.
+ * Used by both the core handlers and world implementations.
+ */
+export const HEALTH_CHECK_STREAM_PREFIX = '__health_check__';
+
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
 export type StepInvokePayload = z.infer<typeof StepInvokePayloadSchema>;
+export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
 
 export const QueuePayloadSchema = z.union([
   WorkflowInvokePayloadSchema,
   StepInvokePayloadSchema,
+  HealthCheckPayloadSchema,
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
 export interface QueueOptions {
   deploymentId?: string;
   idempotencyKey?: string;
+}
+
+export type HealthCheckEndpoint = 'workflow' | 'step';
+
+export interface HealthCheckOptions {
+  /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
+  timeout?: number;
+}
+
+export interface HealthCheckResult {
+  healthy: boolean;
+  /** Error message if health check failed */
+  error?: string;
 }
 
 export interface Queue {
@@ -77,4 +109,20 @@ export interface Queue {
       // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
     ) => Promise<void | { timeoutSeconds: number }>
   ): (req: Request) => Promise<Response>;
+
+  /**
+   * Performs a health check by sending a message through the queue pipeline
+   * and verifying it is processed by the specified endpoint.
+   *
+   * This method bypasses Deployment Protection on Vercel because it goes
+   * through the queue infrastructure rather than direct HTTP.
+   *
+   * @param endpoint - Which endpoint to health check: 'workflow' or 'step'
+   * @param options - Optional configuration for the health check
+   * @returns Promise resolving to health check result
+   */
+  healthCheck?(
+    endpoint: HealthCheckEndpoint,
+    options?: HealthCheckOptions
+  ): Promise<HealthCheckResult>;
 }

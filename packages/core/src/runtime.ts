@@ -16,6 +16,8 @@ import { parseWorkflowName } from './parse-name.js';
 import {
   getAllWorkflowRunEvents,
   getQueueOverhead,
+  handleHealthCheckMessage,
+  parseHealthCheckPayload,
   withHealthCheck,
 } from './runtime/helpers.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
@@ -43,15 +45,13 @@ export {
   resumeWebhook,
 } from './runtime/resume-hook.js';
 export { type StartOptions, start } from './runtime/start.js';
-
+export { stepEntrypoint } from './runtime/step-handler.js';
 export {
   createWorld,
   getWorld,
   getWorldHandlers,
   setWorld,
 } from './runtime/world.js';
-
-export { stepEntrypoint } from './runtime/step-handler.js';
 
 /**
  * Options for configuring a workflow's readable stream.
@@ -236,6 +236,13 @@ export function workflowEntrypoint(
   const handler = getWorldHandlers().createQueueHandler(
     '__wkf_workflow_',
     async (message_, metadata) => {
+      // Check if this is a health check message
+      const healthCheck = parseHealthCheckPayload(message_);
+      if (healthCheck) {
+        await handleHealthCheckMessage(healthCheck, 'workflow');
+        return;
+      }
+
       const {
         runId,
         traceCarrier: traceContext,
