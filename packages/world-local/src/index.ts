@@ -33,7 +33,6 @@ export function createLocalWorld(args?: Partial<Config>): World {
       )
     : {};
   const mergedConfig = { ...config.value, ...definedArgs };
-
   return {
     ...createQueue(mergedConfig),
     ...createStorage(mergedConfig.dataDir),
