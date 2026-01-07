@@ -751,7 +751,7 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                   size="sm"
                   className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                   onClick={handleBulkReenqueue}
-                  disabled={isBulkReenqueuing}
+                  disabled={isBulkReenqueuing || selectedRuns.length === 0}
                 >
                   {isBulkReenqueuing ? (
                     <Loader2 className="h-4 w-4 mr-1 animate-spin" />
