@@ -2,7 +2,7 @@
 
 This project uses **bd** (beads, see https://github.com/steveyegge/beads) for issue tracking. Run `bd onboard` to get started.
 
-> Note: `db` can be installed via `npm install -g @beads/bd` if necessary.
+> Note: `bd` can be installed via `brew install steveyegge/beads/bd` if necessary.
 
 ## Quick Reference
 
