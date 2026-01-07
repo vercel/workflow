@@ -115,7 +115,7 @@ export function EventsList({
                     >
                       <span
                         className="text-[11px] font-medium"
-                        style={{ color: 'var(--ds-gray-500)' }}
+                        style={{ color: 'var(--ds-gray-700)' }}
                       >
                         {key}
                       </span>

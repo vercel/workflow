@@ -570,7 +570,7 @@ export const AttributeBlock = ({
       <div className="flex items-center gap-1.5">
         <span
           className="text-[11px] font-medium"
-          style={{ color: 'var(--ds-gray-500)' }}
+          style={{ color: 'var(--ds-gray-700)' }}
         >
           {attribute}
         </span>
@@ -594,7 +594,7 @@ export const AttributeBlock = ({
       <div key={attribute} className="flex flex-col gap-0 my-2">
         <span
           className="text-xs font-medium"
-          style={{ color: 'var(--ds-gray-500)' }}
+          style={{ color: 'var(--ds-gray-700)' }}
         >
           {attribute}
         </span>
@@ -670,7 +670,7 @@ export const AttributePanel = ({
               >
                 <span
                   className="text-[11px] font-medium"
-                  style={{ color: 'var(--ds-gray-500)' }}
+                  style={{ color: 'var(--ds-gray-700)' }}
                 >
                   {attribute}
                 </span>
