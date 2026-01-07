@@ -33,7 +33,12 @@ export function hasStepSourceMaps(): boolean {
     return false;
   }
 
-  // Vercel builds have proper source maps for all other frameworks, EXCEPT sveltekit
+  // Vercel production builds don't support step source maps
+  if (process.env.WORKFLOW_VERCEL_ENV === 'production') {
+    return false;
+  }
+
+  // Vercel preview builds have proper source maps for all other frameworks, EXCEPT sveltekit
   if (!isLocalDeployment()) {
     return appName !== 'sveltekit';
   }
