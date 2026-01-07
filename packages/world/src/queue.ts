@@ -69,13 +69,9 @@ export interface QueueOptions {
   idempotencyKey?: string;
 }
 
-export type HealthCheckEndpoint = 'workflow' | 'step';
-
-export interface HealthCheckOptions {
-  /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
-  timeout?: number;
-}
-
+/**
+ * Result of a health check operation.
+ */
 export interface HealthCheckResult {
   healthy: boolean;
   /** Error message if health check failed */
@@ -109,20 +105,4 @@ export interface Queue {
       // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
     ) => Promise<void | { timeoutSeconds: number }>
   ): (req: Request) => Promise<Response>;
-
-  /**
-   * Performs a health check by sending a message through the queue pipeline
-   * and verifying it is processed by the specified endpoint.
-   *
-   * This method bypasses Deployment Protection on Vercel because it goes
-   * through the queue infrastructure rather than direct HTTP.
-   *
-   * @param endpoint - Which endpoint to health check: 'workflow' or 'step'
-   * @param options - Optional configuration for the health check
-   * @returns Promise resolving to health check result
-   */
-  healthCheck?(
-    endpoint: HealthCheckEndpoint,
-    options?: HealthCheckOptions
-  ): Promise<HealthCheckResult>;
 }

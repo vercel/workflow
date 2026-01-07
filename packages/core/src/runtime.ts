@@ -40,6 +40,11 @@ import { runWorkflow } from './workflow.js';
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
 export {
+  type HealthCheckEndpoint,
+  type HealthCheckOptions,
+  healthCheck,
+} from './runtime/helpers.js';
+export {
   getHookByToken,
   resumeHook,
   resumeWebhook,
