@@ -123,6 +123,8 @@ export abstract class BaseBuilder {
         sourcemap: false,
         absWorkingDir: this.config.workingDir,
         logLevel: 'silent',
+        // External packages that should not be bundled during discovery
+        external: this.config.externalPackages || [],
       });
     } catch (_) {}
 
@@ -483,6 +485,8 @@ export abstract class BaseBuilder {
         // happens first, preventing false positives on Node.js imports in unused code paths
         createNodeModuleErrorPlugin(),
       ],
+      // External packages that should not be bundled (e.g., server-only, client-only for Next.js)
+      external: this.config.externalPackages || [],
     });
     const interimBundle = await interimBundleCtx.rebuild();
 
