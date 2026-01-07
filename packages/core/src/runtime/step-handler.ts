@@ -40,6 +40,9 @@ const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',
   async (message_, metadata) => {
     // Check if this is a health check message
+    // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
+    // They only write a simple status response to a stream and do not expose sensitive data.
+    // The stream name includes a unique correlationId that must be known by the caller.
     const healthCheck = parseHealthCheckPayload(message_);
     if (healthCheck) {
       await handleHealthCheckMessage(healthCheck, 'step');
