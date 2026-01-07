@@ -5,10 +5,10 @@
 
 import { unstable_cache } from 'next/cache';
 import type {
-  WorldsStatus,
   World,
-  WorldE2E,
   WorldBenchmark,
+  WorldE2E,
+  WorldsStatus,
 } from '@/components/worlds/types';
 
 // Import manifest data at build time

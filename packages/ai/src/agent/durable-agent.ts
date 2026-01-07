@@ -8,11 +8,11 @@ import type {
 } from '@ai-sdk/provider';
 import {
   asSchema,
-  Output,
   type FinishReason,
   type LanguageModelResponseMetadata,
   type LanguageModelUsage,
   type ModelMessage,
+  Output,
   type StepResult,
   type StopCondition,
   type StreamTextOnStepFinishCallback,
@@ -735,7 +735,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
     // Track the final conversation messages from the iterator
     let finalMessages: LanguageModelV2Prompt | undefined;
-    let encounteredError: unknown = undefined;
+    let encounteredError: unknown;
     let wasAborted = false;
 
     try {

@@ -1,8 +1,8 @@
-import type { AstroIntegration, HookParameters } from 'astro';
-import { LocalBuilder, VercelBuilder } from './builder.js';
+import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
-import { createBuildQueue } from '@workflow/builders';
+import type { AstroIntegration, HookParameters } from 'astro';
+import { LocalBuilder, VercelBuilder } from './builder.js';
 
 export function workflowPlugin(): AstroIntegration {
   const builder = new LocalBuilder();

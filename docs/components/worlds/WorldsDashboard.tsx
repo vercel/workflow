@@ -1,11 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { WorldCard } from './WorldCard';
-import { BenchmarkChart, BenchmarkBar } from './BenchmarkChart';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { BenchmarkBar, BenchmarkChart } from './BenchmarkChart';
 import type { WorldsStatus } from './types';
+import { WorldCard } from './WorldCard';
 
 interface WorldsDashboardProps {
   data: WorldsStatus;

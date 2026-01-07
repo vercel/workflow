@@ -43,15 +43,13 @@ export {
   resumeWebhook,
 } from './runtime/resume-hook.js';
 export { type StartOptions, start } from './runtime/start.js';
-
+export { stepEntrypoint } from './runtime/step-handler.js';
 export {
   createWorld,
   getWorld,
   getWorldHandlers,
   setWorld,
 } from './runtime/world.js';
-
-export { stepEntrypoint } from './runtime/step-handler.js';
 
 /**
  * Options for configuring a workflow's readable stream.

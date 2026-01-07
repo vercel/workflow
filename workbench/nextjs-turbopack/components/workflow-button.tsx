@@ -1,5 +1,6 @@
 'use client';
 
+import type { WorkflowDefinition } from '@/app/workflows/definitions';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
@@ -7,7 +8,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import type { WorkflowDefinition } from '@/app/workflows/definitions';
 
 interface WorkflowButtonProps {
   workflow: WorkflowDefinition;

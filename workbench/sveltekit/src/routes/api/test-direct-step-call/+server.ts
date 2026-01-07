@@ -2,7 +2,7 @@
 // After the SWC compiler changes, step functions in client mode have their directive removed
 // and keep their original implementation, allowing them to be called as regular async functions
 
-import { type RequestHandler } from '@sveltejs/kit';
+import type { RequestHandler } from '@sveltejs/kit';
 import { add } from '../../../workflows/99_e2e';
 
 export const POST: RequestHandler = async ({ request }) => {

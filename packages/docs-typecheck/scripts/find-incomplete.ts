@@ -1,7 +1,7 @@
-import { globSync } from 'glob';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { globSync } from 'glob';
 import { extractCodeSamples } from '../dist/extractor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

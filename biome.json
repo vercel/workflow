@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.2.5/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.3.3/schema.json",
   "files": {
     "includes": [
       "**/*.js",
@@ -21,18 +21,20 @@
       "!**/.env",
       "!target",
       "!**/tests/fixture",
-      "!**/tests/errors"
+      "!**/tests/errors",
+      "!**/.workflow-data",
+      "!**/.nuxt",
+      "!**/.nitro",
+      "!**/.output"
     ],
     "ignoreUnknown": true
   },
   "formatter": {
     "enabled": true,
     "formatWithErrors": false,
-    "indentStyle": "space",
-    "indentWidth": 2,
-    "lineEnding": "lf",
     "lineWidth": 80,
-    "attributePosition": "auto"
+    "attributePosition": "auto",
+    "useEditorconfig": true
   },
   "linter": {
     "enabled": true,
@@ -74,6 +76,7 @@
     }
   },
   "assist": {
+    "enabled": true,
     "actions": {
       "source": {
         "organizeImports": "on"

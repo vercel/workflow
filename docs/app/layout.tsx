@@ -1,9 +1,9 @@
 import './global.css';
+import type { Metadata } from 'next';
 import { Navbar } from '@/components/geistdocs/navbar';
 import { GeistdocsProvider } from '@/components/geistdocs/provider';
 import { mono, sans } from '@/lib/geistdocs/fonts';
 import { cn } from '@/lib/utils';
-import { Metadata } from 'next';
 
 const Logo = () => (
   <span className="flex items-center gap-1.5 font-semibold text-foreground tracking-tight text-xl">

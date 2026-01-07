@@ -1,10 +1,10 @@
 import { useCallback } from 'react';
-import { useLocalStorage } from './use-local-storage';
-import type { LogEntry } from '@/components/terminal-log';
 import type {
   Invocation,
   InvocationStatus,
 } from '@/components/invocations-panel';
+import type { LogEntry } from '@/components/terminal-log';
+import { useLocalStorage } from './use-local-storage';
 
 const ACTIVE_STATUSES: InvocationStatus[] = [
   'invoked',

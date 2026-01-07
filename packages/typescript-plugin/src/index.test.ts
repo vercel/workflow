@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
 import ts from 'typescript/lib/tsserverlibrary';
+import { describe, expect, it, vi } from 'vitest';
 import * as pluginModule from './index';
 
 // The plugin exports with `export =` which is CommonJS style

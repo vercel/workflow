@@ -1,7 +1,7 @@
-import { defineConfig } from 'astro/config';
-import { workflow } from 'workflow/astro';
 import node from '@astrojs/node';
 import vercel from '@astrojs/vercel';
+import { defineConfig } from 'astro/config';
+import { workflow } from 'workflow/astro';
 
 // Node adapter needed for ci tests
 const adapter = process.env.VERCEL_DEPLOYMENT_ID
