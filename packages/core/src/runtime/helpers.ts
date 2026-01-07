@@ -1,14 +1,6 @@
-import type {
-  Event,
-  HealthCheckPayload,
-  HealthCheckResult,
-  World,
-} from '@workflow/world';
-import {
-  HEALTH_CHECK_STREAM_PREFIX,
-  HealthCheckPayloadSchema,
-} from '@workflow/world';
+import type { Event, World } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { z } from 'zod';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { getWorld } from './world.js';
@@ -17,6 +9,33 @@ import { getWorld } from './world.js';
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 
 const generateId = monotonicFactory();
+
+/**
+ * Stream name prefix for health check responses.
+ * The full stream name is `__health_check__${correlationId}`.
+ */
+const HEALTH_CHECK_STREAM_PREFIX = '__health_check__';
+
+/**
+ * Health check payload - used to verify that the queue pipeline
+ * can deliver messages to workflow/step endpoints.
+ * This bypasses Deployment Protection on Vercel.
+ */
+const HealthCheckPayloadSchema = z.object({
+  __healthCheck: z.literal(true),
+  correlationId: z.string(),
+});
+
+type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
+
+/**
+ * Result of a health check operation.
+ */
+export interface HealthCheckResult {
+  healthy: boolean;
+  /** Error message if health check failed */
+  error?: string;
+}
 
 /**
  * Checks if the given message is a health check payload.
