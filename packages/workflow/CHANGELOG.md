@@ -1,5 +1,21 @@
 # workflow
 
+## 4.0.1-beta.42
+
+### Patch Changes
+
+- [#729](https://github.com/vercel/workflow/pull/729) [`01f59a3`](https://github.com/vercel/workflow/commit/01f59a3b960070e2e42804b259b6d789a9ea6789) Thanks [@ijjk](https://github.com/ijjk)! - Reland sourcemap fix for workflow package
+
+- Updated dependencies [[`505063c`](https://github.com/vercel/workflow/commit/505063cbb9ef04af8531c2cd3cd3840b5d272f82), [`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf)]:
+  - @workflow/next@4.0.1-beta.40
+  - @workflow/core@4.0.1-beta.35
+  - @workflow/astro@4.0.0-beta.18
+  - @workflow/cli@4.0.1-beta.42
+  - @workflow/nitro@4.0.1-beta.39
+  - @workflow/sveltekit@4.0.0-beta.33
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.28
+
 ## 4.0.1-beta.41
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- [#728](https://github.com/vercel/workflow/pull/728) [`de31837`](https://github.com/vercel/workflow/commit/de3183719c6e5bb6e6a1008a36a401e5afa27b0f) Thanks [@haydenbleasel](https://github.com/haydenbleasel)! - Upgrade Streamdown to 1.6.11
+
+- Updated dependencies [[`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf)]:
+  - @workflow/core@4.0.1-beta.35
+
 ## 4.0.1-beta.36
 
 ### Patch Changes

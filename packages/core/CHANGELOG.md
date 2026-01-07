@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.0.1-beta.35
+
+### Patch Changes
+
+- [#720](https://github.com/vercel/workflow/pull/720) [`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf) Thanks [@pranaygp](https://github.com/pranaygp)! - Correctly propagate stack traces for step errors
+
 ## 4.0.1-beta.34
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @workflow/next
 
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- [#731](https://github.com/vercel/workflow/pull/731) [`505063c`](https://github.com/vercel/workflow/commit/505063cbb9ef04af8531c2cd3cd3840b5d272f82) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Special-case "server-only" and "client-only" packages as external
+
+- Updated dependencies [[`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf), [`505063c`](https://github.com/vercel/workflow/commit/505063cbb9ef04af8531c2cd3cd3840b5d272f82), [`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf)]:
+  - @workflow/builders@4.0.1-beta.35
+  - @workflow/core@4.0.1-beta.35
+
 ## 4.0.1-beta.39
 
 ### Patch Changes

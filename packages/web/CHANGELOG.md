@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 4.0.1-beta.24
+
+### Patch Changes
+
+- [#716](https://github.com/vercel/workflow/pull/716) [`0da8e54`](https://github.com/vercel/workflow/commit/0da8e543742ad160dedc28f998cfe16fe1e3fd84) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow selecting and cancelling multiple runs from table view
+
+- [#717](https://github.com/vercel/workflow/pull/717) [`8bc4e5f`](https://github.com/vercel/workflow/commit/8bc4e5fe3ccd67ccdd39737d3d30ad4268215a27) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refresh run table on stale re-focus
+
 ## 4.0.1-beta.23
 
 ### Patch Changes
