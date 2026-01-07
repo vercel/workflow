@@ -1,4 +1,4 @@
-import type { Event, World } from '@workflow/world';
+import type { Event, ValidQueueName, World } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -105,14 +105,11 @@ export async function healthCheck(
   const streamName = `${HEALTH_CHECK_STREAM_PREFIX}${correlationId}`;
 
   // Determine which queue to use based on endpoint
-  const queueName =
-    endpoint === 'workflow'
-      ? '__wkf_workflow___health_check__'
-      : '__wkf_step___health_check__';
+  const queueName: ValidQueueName = `__wkf_${endpoint}___health_check__`;
 
   try {
     // Send the health check message through the queue
-    await world.queue(queueName as `__wkf_workflow_${string}`, {
+    await world.queue(queueName, {
       __healthCheck: true,
       correlationId,
     });
