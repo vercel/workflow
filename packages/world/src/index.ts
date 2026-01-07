@@ -10,6 +10,10 @@ export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
 export type * from './queue.js';
 export {
+  HEALTH_CHECK_STEP_QUEUE,
+  HEALTH_CHECK_STREAM_PREFIX,
+  HEALTH_CHECK_WORKFLOW_QUEUE,
+  HealthCheckPayloadSchema,
   MessageId,
   QueuePayloadSchema,
   QueuePrefix,

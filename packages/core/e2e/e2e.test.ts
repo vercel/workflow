@@ -1119,6 +1119,43 @@ describe('e2e', () => {
   );
 
   test(
+    'health check (queue-based) - workflow and step endpoints respond to health check messages',
+    { timeout: 60_000 },
+    async () => {
+      // NOTE: This tests the queue-based health check using healthCheck() function.
+      // This approach bypasses Vercel Deployment Protection by sending messages
+      // through the Queue infrastructure rather than direct HTTP.
+      const url = new URL('/api/test-health-check', deploymentUrl);
+
+      // Test workflow endpoint health check
+      const workflowRes = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
+        body: JSON.stringify({ endpoint: 'workflow', timeout: 30000 }),
+      });
+      expect(workflowRes.status).toBe(200);
+      const workflowResult = await workflowRes.json();
+      expect(workflowResult.healthy).toBe(true);
+
+      // Test step endpoint health check
+      const stepRes = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
+        body: JSON.stringify({ endpoint: 'step', timeout: 30000 }),
+      });
+      expect(stepRes.status).toBe(200);
+      const stepResult = await stepRes.json();
+      expect(stepResult.healthy).toBe(true);
+    }
+  );
+
+  test(
     'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
     { timeout: 60_000 },
     async () => {

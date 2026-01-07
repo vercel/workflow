@@ -1,6 +1,16 @@
-import type { Event, ValidQueueName, World } from '@workflow/world';
+import type {
+  Event,
+  HealthCheckPayload,
+  ValidQueueName,
+  World,
+} from '@workflow/world';
+import {
+  HEALTH_CHECK_STEP_QUEUE,
+  HEALTH_CHECK_STREAM_PREFIX,
+  HEALTH_CHECK_WORKFLOW_QUEUE,
+  HealthCheckPayloadSchema,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { z } from 'zod';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { getWorld } from './world.js';
@@ -9,24 +19,6 @@ import { getWorld } from './world.js';
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 
 const generateId = monotonicFactory();
-
-/**
- * Stream name prefix for health check responses.
- * The full stream name is `__health_check__${correlationId}`.
- */
-const HEALTH_CHECK_STREAM_PREFIX = '__health_check__';
-
-/**
- * Health check payload - used to verify that the queue pipeline
- * can deliver messages to workflow/step endpoints.
- * This bypasses Deployment Protection on Vercel.
- */
-const HealthCheckPayloadSchema = z.object({
-  __healthCheck: z.literal(true),
-  correlationId: z.string(),
-});
-
-type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
 
 /**
  * Result of a health check operation.
@@ -105,15 +97,12 @@ export async function healthCheck(
   const streamName = `${HEALTH_CHECK_STREAM_PREFIX}${correlationId}`;
 
   // Determine which queue to use based on endpoint
-  const queueName: ValidQueueName = `__wkf_${endpoint}___health_check__`;
+  const queueName: ValidQueueName =
+    endpoint === 'workflow'
+      ? HEALTH_CHECK_WORKFLOW_QUEUE
+      : HEALTH_CHECK_STEP_QUEUE;
 
   try {
-    // Send the health check message through the queue
-    await world.queue(queueName, {
-      __healthCheck: true,
-      correlationId,
-    });
-
     // Wait for the response with timeout
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
@@ -135,17 +124,47 @@ export async function healthCheck(
       }
 
       // Parse the response
-      const responseText = new TextDecoder().decode(
-        Buffer.concat(chunks.map((c) => Buffer.from(c)))
-      );
-      const response = JSON.parse(responseText);
+      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const combined = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      const responseText = new TextDecoder().decode(combined);
+
+      let response: unknown;
+      try {
+        response = JSON.parse(responseText);
+      } catch {
+        throw new Error('Invalid health check response format');
+      }
+
+      // Type guard: ensure response has the expected structure
+      if (
+        typeof response !== 'object' ||
+        response === null ||
+        !('healthy' in response) ||
+        typeof (response as { healthy: unknown }).healthy !== 'boolean'
+      ) {
+        throw new Error('Invalid health check response structure');
+      }
 
       return {
-        healthy: response.healthy === true,
+        healthy: (response as { healthy: boolean }).healthy,
       };
     };
 
-    return await Promise.race([readStreamResponse(), timeoutPromise]);
+    // Start reading from stream BEFORE sending the queue message to avoid race condition
+    const responsePromise = readStreamResponse();
+
+    // Send the health check message through the queue
+    await world.queue(queueName, {
+      __healthCheck: true,
+      correlationId,
+    });
+
+    return await Promise.race([responsePromise, timeoutPromise]);
   } catch (error) {
     return {
       healthy: false,
