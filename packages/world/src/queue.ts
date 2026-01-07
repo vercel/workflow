@@ -57,6 +57,16 @@ export const HealthCheckPayloadSchema = z.object({
  */
 export const HEALTH_CHECK_STREAM_PREFIX = '__health_check__';
 
+/**
+ * Queue name for workflow health checks.
+ */
+export const HEALTH_CHECK_WORKFLOW_QUEUE = '__wkf_workflow_health_check';
+
+/**
+ * Queue name for step health checks.
+ */
+export const HEALTH_CHECK_STEP_QUEUE = '__wkf_step_health_check';
+
 export const QueuePayloadSchema = z.union([
   WorkflowInvokePayloadSchema,
   StepInvokePayloadSchema,

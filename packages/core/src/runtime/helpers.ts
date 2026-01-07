@@ -5,7 +5,9 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  HEALTH_CHECK_STEP_QUEUE,
   HEALTH_CHECK_STREAM_PREFIX,
+  HEALTH_CHECK_WORKFLOW_QUEUE,
   HealthCheckPayloadSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -97,8 +99,8 @@ export async function healthCheck(
   // Determine which queue to use based on endpoint
   const queueName: ValidQueueName =
     endpoint === 'workflow'
-      ? '__wkf_workflow_health_check'
-      : '__wkf_step_health_check';
+      ? HEALTH_CHECK_WORKFLOW_QUEUE
+      : HEALTH_CHECK_STEP_QUEUE;
 
   try {
     // Wait for the response with timeout
@@ -142,13 +144,14 @@ export async function healthCheck(
       if (
         typeof response !== 'object' ||
         response === null ||
-        !('healthy' in response)
+        !('healthy' in response) ||
+        typeof (response as { healthy: unknown }).healthy !== 'boolean'
       ) {
         throw new Error('Invalid health check response structure');
       }
 
       return {
-        healthy: (response as { healthy: unknown }).healthy === true,
+        healthy: (response as { healthy: boolean }).healthy,
       };
     };
 
