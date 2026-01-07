@@ -238,17 +238,15 @@ export async function launchWebUI(
   const teamSlug = envVars.WORKFLOW_VERCEL_TEAM;
   const projectName = envVars.WORKFLOW_VERCEL_PROJECT;
 
-  if (!envVars.WORKFLOW_LOCAL_UI && isVercelBackend) {
+  // Check if user wants local UI via flag or environment variable
+  const useLocalUi = flags.localUi || envVars.WORKFLOW_LOCAL_UI;
+
+  if (!useLocalUi && isVercelBackend) {
     logger.info(
-      'If you do not want to use the Vercel dashboard, set WORKFLOW_LOCAL_UI=1 in your environment variables.'
+      'If you do not want to use the Vercel dashboard, use the --localUi flag or set WORKFLOW_LOCAL_UI=1 in your environment variables.'
     );
   }
-  if (
-    isVercelBackend &&
-    teamSlug &&
-    projectName &&
-    !envVars.WORKFLOW_LOCAL_UI
-  ) {
+  if (isVercelBackend && teamSlug && projectName && !useLocalUi) {
     logger.debug(
       `Checking Vercel dashboard availability for team: ${teamSlug}, project: ${projectName}`
     );

@@ -109,6 +109,15 @@ export const cliFlags = {
     helpGroup: 'Output',
     helpLabel: '--noBrowser',
   }),
+  localUi: Flags.boolean({
+    description:
+      'Use local web UI instead of Vercel dashboard (when backend is vercel)',
+    required: false,
+    default: false,
+    env: 'WORKFLOW_LOCAL_UI',
+    helpGroup: 'Output',
+    helpLabel: '--localUi',
+  }),
   sort: Flags.string({
     description: 'sort order for list commands',
     required: false,
