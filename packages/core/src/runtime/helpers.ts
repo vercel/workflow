@@ -131,15 +131,24 @@ export async function healthCheck(
       }
       const responseText = new TextDecoder().decode(combined);
 
-      let response: any;
+      let response: unknown;
       try {
         response = JSON.parse(responseText);
       } catch {
         throw new Error('Invalid health check response format');
       }
 
+      // Type guard: ensure response has the expected structure
+      if (
+        typeof response !== 'object' ||
+        response === null ||
+        !('healthy' in response)
+      ) {
+        throw new Error('Invalid health check response structure');
+      }
+
       return {
-        healthy: response.healthy === true,
+        healthy: (response as { healthy: unknown }).healthy === true,
       };
     };
 
