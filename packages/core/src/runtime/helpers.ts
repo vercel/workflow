@@ -1,11 +1,22 @@
-import type { Event, HealthCheckPayload, World } from '@workflow/world';
+import type {
+  Event,
+  HealthCheckPayload,
+  HealthCheckResult,
+  World,
+} from '@workflow/world';
 import {
   HEALTH_CHECK_STREAM_PREFIX,
   HealthCheckPayloadSchema,
 } from '@workflow/world';
+import { monotonicFactory } from 'ulid';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { getWorld } from './world.js';
+
+/** Default timeout for health checks in milliseconds */
+const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
+
+const generateId = monotonicFactory();
 
 /**
  * Checks if the given message is a health check payload.
@@ -44,6 +55,87 @@ export async function handleHealthCheckMessage(
   // This is a bit of a hack but allows us to reuse the streaming infrastructure
   await world.writeToStream(streamName, healthCheck.correlationId, response);
   await world.closeStream(streamName, healthCheck.correlationId);
+}
+
+export type HealthCheckEndpoint = 'workflow' | 'step';
+
+export interface HealthCheckOptions {
+  /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
+  timeout?: number;
+}
+
+/**
+ * Performs a health check by sending a message through the queue pipeline
+ * and verifying it is processed by the specified endpoint.
+ *
+ * This function bypasses Deployment Protection on Vercel because it goes
+ * through the queue infrastructure rather than direct HTTP.
+ *
+ * @param world - The World instance to use for the health check
+ * @param endpoint - Which endpoint to health check: 'workflow' or 'step'
+ * @param options - Optional configuration for the health check
+ * @returns Promise resolving to health check result
+ */
+export async function healthCheck(
+  world: World,
+  endpoint: HealthCheckEndpoint,
+  options?: HealthCheckOptions
+): Promise<HealthCheckResult> {
+  const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
+  const correlationId = `hc_${generateId()}`;
+  const streamName = `${HEALTH_CHECK_STREAM_PREFIX}${correlationId}`;
+
+  // Determine which queue to use based on endpoint
+  const queueName =
+    endpoint === 'workflow'
+      ? '__wkf_workflow___health_check__'
+      : '__wkf_step___health_check__';
+
+  try {
+    // Send the health check message through the queue
+    await world.queue(queueName as `__wkf_workflow_${string}`, {
+      __healthCheck: true,
+      correlationId,
+    });
+
+    // Wait for the response with timeout
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`Health check timed out after ${timeout}ms`));
+      }, timeout);
+    });
+
+    const readStreamResponse = async (): Promise<HealthCheckResult> => {
+      // Read from the stream - the handler will write to this when it receives the health check
+      const stream = await world.readFromStream(streamName);
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+
+      let done = false;
+      while (!done) {
+        const result = await reader.read();
+        done = result.done;
+        if (result.value) chunks.push(result.value);
+      }
+
+      // Parse the response
+      const responseText = new TextDecoder().decode(
+        Buffer.concat(chunks.map((c) => Buffer.from(c)))
+      );
+      const response = JSON.parse(responseText);
+
+      return {
+        healthy: response.healthy === true,
+      };
+    };
+
+    return await Promise.race([readStreamResponse(), timeoutPromise]);
+  } catch (error) {
+    return {
+      healthy: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 /**
