@@ -24,6 +24,16 @@ import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
 
 /**
+ * Provider-executed tool result captured from the stream.
+ */
+export interface ProviderExecutedToolResult {
+  toolCallId: string;
+  toolName: string;
+  result: unknown;
+  isError?: boolean;
+}
+
+/**
  * The value yielded by the stream text iterator when tool calls are requested.
  * Contains both the tool calls and the current conversation messages.
  */
@@ -38,6 +48,8 @@ export interface StreamTextIteratorYieldValue {
   context?: unknown;
   /** The UIMessageChunks written during this step (only when collectUIChunks is enabled) */
   uiChunks?: UIMessageChunk[];
+  /** Provider-executed tool results (keyed by tool call ID) */
+  providerExecutedToolResults?: Map<string, ProviderExecutedToolResult>;
 }
 
 // This runs in the workflow context
@@ -251,6 +263,7 @@ export async function* streamTextIterator({
         finish,
         step,
         uiChunks: stepUIChunks,
+        providerExecutedToolResults,
       } = await doStreamStep(
         conversationPrompt,
         currentModel,
@@ -306,12 +319,14 @@ export async function* streamTextIterator({
 
         // Yield the tool calls along with the current conversation messages
         // This allows executeTool to pass the conversation context to tool execute functions
+        // Also include provider-executed tool results so they can be used instead of local execution
         const toolResults = yield {
           toolCalls,
           messages: conversationPrompt,
           step,
           context: currentContext,
           uiChunks: allStepUIChunks,
+          providerExecutedToolResults,
         };
 
         const toolOutputChunks = await writeToolOutputToUI(

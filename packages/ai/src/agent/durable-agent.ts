@@ -780,6 +780,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
           step,
           context,
           uiChunks,
+          providerExecutedToolResults,
         } = result.value;
         if (step) {
           // The step result is compatible with StepResult<TTools> since we're using the same tools
@@ -796,8 +797,17 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
         // Only execute tools if there are tool calls
         if (toolCalls.length > 0) {
-          const toolResults = await Promise.all(
-            toolCalls.map(
+          // Separate provider-executed tool calls from client-executed ones
+          const clientToolCalls = toolCalls.filter(
+            (tc) => !tc.providerExecuted
+          );
+          const providerToolCalls = toolCalls.filter(
+            (tc) => tc.providerExecuted
+          );
+
+          // Execute client tools
+          const clientToolResults = await Promise.all(
+            clientToolCalls.map(
               (toolCall): Promise<LanguageModelV2ToolResultPart> =>
                 executeTool(
                   toolCall,
@@ -808,6 +818,61 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
                 )
             )
           );
+
+          // For provider-executed tools, use the results from the stream
+          const providerToolResults: LanguageModelV2ToolResultPart[] =
+            providerToolCalls.map((toolCall) => {
+              const streamResult = providerExecutedToolResults?.get(
+                toolCall.toolCallId
+              );
+              if (streamResult) {
+                return {
+                  type: 'tool-result' as const,
+                  toolCallId: toolCall.toolCallId,
+                  toolName: toolCall.toolName,
+                  output: {
+                    type: streamResult.isError
+                      ? ('error-text' as const)
+                      : ('text' as const),
+                    value:
+                      typeof streamResult.result === 'string'
+                        ? streamResult.result
+                        : JSON.stringify(streamResult.result),
+                  },
+                };
+              }
+              // If no result from stream, return an empty result
+              // This can happen if the provider didn't send a tool-result stream part
+              return {
+                type: 'tool-result' as const,
+                toolCallId: toolCall.toolCallId,
+                toolName: toolCall.toolName,
+                output: {
+                  type: 'text' as const,
+                  value: '',
+                },
+              };
+            });
+
+          // Combine results in the original order
+          const toolResults = toolCalls.map((tc) => {
+            const clientResult = clientToolResults.find(
+              (r) => r.toolCallId === tc.toolCallId
+            );
+            if (clientResult) return clientResult;
+            const providerResult = providerToolResults.find(
+              (r) => r.toolCallId === tc.toolCallId
+            );
+            if (providerResult) return providerResult;
+            // This should never happen, but return empty result as fallback
+            return {
+              type: 'tool-result' as const,
+              toolCallId: tc.toolCallId,
+              toolName: tc.toolName,
+              output: { type: 'text' as const, value: '' },
+            };
+          });
+
           result = await iterator.next(toolResults);
         } else {
           // Final step with no tool calls - just advance the iterator

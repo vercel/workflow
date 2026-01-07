@@ -257,6 +257,198 @@ describe('DurableAgent', () => {
         },
       });
     });
+
+    it('should skip local execution for provider-executed tools', async () => {
+      // This tool should NOT be called because the tool call is provider-executed
+      const executeFn = vi.fn();
+      const tools: ToolSet = {
+        // This is a local tool - should never be called for provider-executed calls
+        localTool: {
+          description: 'A local tool',
+          inputSchema: z.object({}),
+          execute: executeFn,
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      // Create a provider-executed tool result map
+      const providerExecutedToolResults = new Map();
+      providerExecutedToolResults.set('provider-call-id', {
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        result: 'Search results for: test query',
+        isError: false,
+      });
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'provider-call-id',
+                  toolName: 'WebSearch',
+                  input: '{"query":"test query"}',
+                  providerExecuted: true, // This is a provider-executed tool
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+              providerExecutedToolResults,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // The local tool execute function should NOT have been called
+      expect(executeFn).not.toHaveBeenCalled();
+
+      // Verify that the iterator was called with the provider-executed tool result
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        output: {
+          type: 'text',
+          value: 'Search results for: test query',
+        },
+      });
+    });
+
+    it('should handle mixed provider-executed and local tools', async () => {
+      const localToolResult = { local: 'result' };
+      const localExecuteFn = vi.fn().mockResolvedValue(localToolResult);
+      const tools: ToolSet = {
+        localTool: {
+          description: 'A local tool',
+          inputSchema: z.object({}),
+          execute: localExecuteFn,
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      // Create a provider-executed tool result map
+      const providerExecutedToolResults = new Map();
+      providerExecutedToolResults.set('provider-call-id', {
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        result: { searchResults: ['result1', 'result2'] },
+        isError: false,
+      });
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                // Local tool call - should be executed locally
+                {
+                  toolCallId: 'local-call-id',
+                  toolName: 'localTool',
+                  input: '{}',
+                  providerExecuted: false,
+                } as LanguageModelV2ToolCall,
+                // Provider-executed tool call - should use stream result
+                {
+                  toolCallId: 'provider-call-id',
+                  toolName: 'WebSearch',
+                  input: '{"query":"test"}',
+                  providerExecuted: true,
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+              providerExecutedToolResults,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // The local tool execute function SHOULD have been called
+      expect(localExecuteFn).toHaveBeenCalledTimes(1);
+
+      // Verify that the iterator was called with both tool results
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(2);
+
+      // First result should be from local tool
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'local-call-id',
+        toolName: 'localTool',
+        output: {
+          type: 'text',
+          value: JSON.stringify(localToolResult),
+        },
+      });
+
+      // Second result should be from provider-executed tool
+      expect(toolResultsCall[1]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        output: {
+          type: 'text',
+          value: JSON.stringify({ searchResults: ['result1', 'result2'] }),
+        },
+      });
+    });
   });
 
   describe('prepareStep callback', () => {
