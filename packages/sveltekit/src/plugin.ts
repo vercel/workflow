@@ -1,11 +1,11 @@
-import type { Plugin } from 'vite';
-import { SvelteKitBuilder } from './builder.js';
+import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
-import { createBuildQueue } from '@workflow/builders';
+import type { Plugin } from 'vite';
+import { SvelteKitBuilder } from './builder.js';
 
 export function workflowPlugin(): Plugin[] {
-  let builder = new SvelteKitBuilder();
+  const builder = new SvelteKitBuilder();
   const enqueue = createBuildQueue();
 
   return [

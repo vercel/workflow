@@ -1,5 +1,5 @@
-import { source } from '@/lib/geistdocs/source';
 import type { Node, Root } from 'fumadocs-core/page-tree';
+import { source } from '@/lib/geistdocs/source';
 
 export const revalidate = false;
 export const dynamic = 'force-static';

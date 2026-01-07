@@ -1,6 +1,6 @@
+import { execFile } from 'node:child_process';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import { execFile } from 'node:child_process';
 
 const execFileAsync = promisify(execFile);
 
@@ -104,10 +104,7 @@ async function getLinuxPorts(pid: number): Promise<number[]> {
           inodeToPort.set(inode, port);
         }
       }
-    } catch {
-      // File might not exist (e.g., no IPv6 support) - continue to next file
-      continue;
-    }
+    } catch {}
   }
 
   // Return all ports in socket inode order (deterministic)

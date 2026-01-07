@@ -13,6 +13,7 @@ import { join, relative, resolve } from 'node:path';
 
 // Resolve symlinks in tmpdir to avoid macOS /var -> /private/var issues
 const realTmpdir = realpathSync(tmpdir());
+
 import * as esbuild from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import {

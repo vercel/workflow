@@ -1,6 +1,8 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
+This project uses **bd** (beads, see https://github.com/steveyegge/beads) for issue tracking. Run `bd onboard` to get started.
+
+> Note: `bd` can be installed via `brew install steveyegge/beads/bd` if necessary.
 
 ## Quick Reference
 

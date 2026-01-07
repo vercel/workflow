@@ -1,11 +1,11 @@
 'use client';
 
-import { useRef, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { WORKFLOW_DEFINITIONS } from '@/app/workflows/definitions';
-import { WorkflowButton } from '@/components/workflow-button';
-import { TerminalLog } from '@/components/terminal-log';
 import { InvocationsPanel } from '@/components/invocations-panel';
+import { TerminalLog } from '@/components/terminal-log';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { WorkflowButton } from '@/components/workflow-button';
 import { useWorkflowStorage } from '@/hooks';
 
 export default function Home() {

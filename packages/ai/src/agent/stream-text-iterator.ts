@@ -87,7 +87,7 @@ export async function* streamTextIterator({
   let currentGenerationSettings = generationSettings ?? {};
   let currentToolChoice = toolChoice;
   let currentContext = experimental_context;
-  let currentActiveTools: string[] | undefined = undefined;
+  let currentActiveTools: string[] | undefined;
 
   const steps: StepResult<any>[] = [];
   let done = false;

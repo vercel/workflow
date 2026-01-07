@@ -1,11 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { globSync } from 'glob';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { globSync } from 'glob';
+import { describe, expect, it } from 'vitest';
 import { extractCodeSamples } from '../extractor.js';
 import { addInferredImports } from '../import-inference.js';
-import { typeCheckBatch, formatResult } from '../type-checker.js';
+import { formatResult, typeCheckBatch } from '../type-checker.js';
 import type {
   CodeSample,
   ProcessedCodeSample,
@@ -26,10 +26,10 @@ const repoRoot = path.resolve(__dirname, '../../../..');
 const docsFileFilter = process.env.DOCS_FILE;
 
 // Find all MDX documentation files
-let docsFiles = globSync(path.join(repoRoot, 'docs/content/docs/**/*.mdx'));
+const docsFiles = globSync(path.join(repoRoot, 'docs/content/docs/**/*.mdx'));
 
 // Find package README files
-let readmeFiles = globSync(path.join(repoRoot, 'packages/*/README.md'));
+const readmeFiles = globSync(path.join(repoRoot, 'packages/*/README.md'));
 
 // Combine all documentation files - use relative paths for better output
 let allDocFiles = [...docsFiles, ...readmeFiles].map((f) =>

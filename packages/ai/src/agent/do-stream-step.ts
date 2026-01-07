@@ -7,8 +7,8 @@ import type {
   SharedV2ProviderOptions,
 } from '@ai-sdk/provider';
 import {
-  gateway,
   type FinishReason,
+  gateway,
   type StepResult,
   type StopCondition,
   type ToolChoice,

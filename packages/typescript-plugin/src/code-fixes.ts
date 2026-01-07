@@ -111,7 +111,7 @@ function getDirectWorkflowInvocationFix(
   }
 
   // Find the call expression at the error position
-  let callExpr: any = undefined;
+  let callExpr: any;
 
   function visit(node: Node) {
     if (

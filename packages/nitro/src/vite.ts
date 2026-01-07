@@ -1,13 +1,12 @@
-import type {} from 'nitro/vite';
-import type { Nitro } from 'nitro/types';
-import type { Plugin } from 'vite';
-import { LocalBuilder } from './builders.js';
-import type { Plugin as VitePlugin } from 'vite';
-import type { ModuleOptions } from './index.js';
-import nitroModule from './index.js';
+import { createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
-import { createBuildQueue } from '@workflow/builders';
+import type { Nitro } from 'nitro/types';
+import type {} from 'nitro/vite';
+import type { Plugin, Plugin as VitePlugin } from 'vite';
+import { LocalBuilder } from './builders.js';
+import type { ModuleOptions } from './index.js';
+import nitroModule from './index.js';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
