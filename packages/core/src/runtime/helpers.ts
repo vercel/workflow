@@ -46,6 +46,15 @@ export function parseHealthCheckPayload(
 }
 
 /**
+ * Generates a fake runId for health check streams.
+ * This runId passes server validation but is not associated with a real run.
+ * The server skips run validation for streams starting with `__health_check__`.
+ */
+function generateHealthCheckRunId(): string {
+  return `wrun_${generateId()}`;
+}
+
+/**
  * Handles a health check message by writing the result to the world's stream.
  * The caller can listen to this stream to get the health check response.
  *
@@ -64,10 +73,12 @@ export async function handleHealthCheckMessage(
     correlationId: healthCheck.correlationId,
     timestamp: Date.now(),
   });
-  // Use the correlationId as the "runId" for streaming purposes
-  // This is a bit of a hack but allows us to reuse the streaming infrastructure
-  await world.writeToStream(streamName, healthCheck.correlationId, response);
-  await world.closeStream(streamName, healthCheck.correlationId);
+  // Use a fake runId that passes validation.
+  // The stream name includes the correlationId for identification.
+  // The server skips run validation for health check streams.
+  const fakeRunId = generateHealthCheckRunId();
+  await world.writeToStream(streamName, fakeRunId, response);
+  await world.closeStream(streamName, fakeRunId);
 }
 
 export type HealthCheckEndpoint = 'workflow' | 'step';
@@ -104,74 +115,87 @@ export async function healthCheck(
       ? '__wkf_workflow_health_check'
       : '__wkf_step_health_check';
 
+  const startTime = Date.now();
+
   try {
-    // Wait for the response with timeout
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        reject(new Error(`Health check timed out after ${timeout}ms`));
-      }, timeout);
-    });
-
-    const readStreamResponse = async (): Promise<HealthCheckResult> => {
-      // Read from the stream - the handler will write to this when it receives the health check
-      // Pass correlationId as runId to match the write path
-      const stream = await world.readFromStream(
-        streamName,
-        undefined,
-        correlationId
-      );
-      const reader = stream.getReader();
-      const chunks: Uint8Array[] = [];
-
-      let done = false;
-      while (!done) {
-        const result = await reader.read();
-        done = result.done;
-        if (result.value) chunks.push(result.value);
-      }
-
-      // Parse the response
-      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-      const combined = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-      const responseText = new TextDecoder().decode(combined);
-
-      let response: unknown;
-      try {
-        response = JSON.parse(responseText);
-      } catch {
-        throw new Error('Invalid health check response format');
-      }
-
-      // Type guard: ensure response has the expected structure
-      if (
-        typeof response !== 'object' ||
-        response === null ||
-        !('healthy' in response) ||
-        typeof (response as { healthy: unknown }).healthy !== 'boolean'
-      ) {
-        throw new Error('Invalid health check response structure');
-      }
-
-      return {
-        healthy: (response as { healthy: boolean }).healthy,
-      };
-    };
-
-    // Start reading from stream BEFORE sending the queue message to avoid race condition
-    const responsePromise = readStreamResponse();
-
-    // Send the health check message through the queue
+    // Send the health check message through the queue first
     await world.queue(queueName, {
       __healthCheck: true,
       correlationId,
     });
 
-    return await Promise.race([responsePromise, timeoutPromise]);
+    // Poll for the stream response with retries
+    // The stream may not exist immediately after queueing on Vercel
+    const pollInterval = 100; // ms between retries
+
+    while (Date.now() - startTime < timeout) {
+      try {
+        // Try to read from the stream by name (includes correlationId)
+        const stream = await world.readFromStream(streamName);
+        const reader = stream.getReader();
+        const chunks: Uint8Array[] = [];
+
+        let done = false;
+        while (!done) {
+          const result = await reader.read();
+          done = result.done;
+          if (result.value) chunks.push(result.value);
+        }
+
+        // If we got no data, the stream might not have been written yet
+        if (chunks.length === 0) {
+          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+          continue;
+        }
+
+        // Parse the response
+        const totalLength = chunks.reduce(
+          (sum, chunk) => sum + chunk.length,
+          0
+        );
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+        const responseText = new TextDecoder().decode(combined);
+
+        let response: unknown;
+        try {
+          response = JSON.parse(responseText);
+        } catch {
+          // Response might not be valid JSON yet, retry
+          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+          continue;
+        }
+
+        // Type guard: ensure response has the expected structure
+        if (
+          typeof response !== 'object' ||
+          response === null ||
+          !('healthy' in response) ||
+          typeof (response as { healthy: unknown }).healthy !== 'boolean'
+        ) {
+          // Invalid structure, retry
+          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+          continue;
+        }
+
+        return {
+          healthy: (response as { healthy: boolean }).healthy,
+        };
+      } catch {
+        // Stream might not exist yet, retry after a delay
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      }
+    }
+
+    // Timeout reached
+    return {
+      healthy: false,
+      error: `Health check timed out after ${timeout}ms`,
+    };
   } catch (error) {
     return {
       healthy: false,
