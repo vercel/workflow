@@ -1,10 +1,12 @@
 // This route tests the queue-based health check functionality
 
+import { defineEventHandler, readRawBody } from 'h3';
 import { getWorld, healthCheck } from 'workflow/runtime';
 
-export default async (event: { req: Request }) => {
+export default defineEventHandler(async (event) => {
   try {
-    const body = await event.req.json();
+    const rawBody = await readRawBody(event);
+    const body = rawBody ? JSON.parse(rawBody) : {};
     const { endpoint = 'workflow', timeout = 30000 } = body;
 
     console.log(
@@ -24,4 +26,4 @@ export default async (event: { req: Request }) => {
       error: error instanceof Error ? error.message : String(error),
     };
   }
-};
+});
