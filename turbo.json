@@ -4,6 +4,12 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../../packages/tsconfig/base.json",
+        "../../pnpm-workspace.yaml",
+        "../../.node-version"
+      ],
       "outputs": [
         "dist/**",
         "build",
