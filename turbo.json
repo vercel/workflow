@@ -6,9 +6,9 @@
       "dependsOn": ["^build"],
       "inputs": [
         "$TURBO_DEFAULT$",
-        "../../packages/tsconfig/base.json",
-        "../../pnpm-workspace.yaml",
-        "../../.node-version"
+        "$TURBO_ROOT$/packages/tsconfig/base.json",
+        "$TURBO_ROOT$/pnpm-workspace.yaml",
+        "$TURBO_ROOT$/.node-version"
       ],
       "outputs": [
         "dist/**",
