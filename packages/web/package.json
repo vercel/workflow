@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "4.0.1-beta.24",
+  "version": "4.0.1-beta.25",
   "private": false,
   "files": [
     ".next",

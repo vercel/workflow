@@ -1,5 +1,23 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- [#736](https://github.com/vercel/workflow/pull/736) [`0d79ff0`](https://github.com/vercel/workflow/commit/0d79ff084ce85880a11b9d056bd07c26bf68547a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Increase contrast on attribute items in sidebar
+
+- [#751](https://github.com/vercel/workflow/pull/751) [`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the unused paused/resumed run events and states
+
+  - Remove `run_paused` and `run_resumed` event types
+  - Remove `paused` status from `WorkflowRunStatus`
+  - Remove `PauseWorkflowRunParams` and `ResumeWorkflowRunParams` types
+  - Remove `pauseWorkflowRun` and `resumeWorkflowRun` functions from world-vercel
+
+- Updated dependencies [[`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167)]:
+  - @workflow/world@4.0.1-beta.12
+  - @workflow/core@4.0.1-beta.36
+  - @workflow/errors@4.0.1-beta.13
+
 ## 4.0.1-beta.37
 
 ### Patch Changes

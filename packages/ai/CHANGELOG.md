@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.43
+
+### Patch Changes
+
+- [#733](https://github.com/vercel/workflow/pull/733) [`4b43186`](https://github.com/vercel/workflow/commit/4b43186eeca64548d351a20b5845865086393960) Thanks [@pranaygp](https://github.com/pranaygp)! - fix: preserve providerMetadata in multi-turn tool calls for Gemini thinking models
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.43
+
 ## 4.0.1-beta.42
 
 ### Patch Changes

@@ -1,5 +1,20 @@
 # @workflow/world-vercel
 
+## 4.0.1-beta.26
+
+### Patch Changes
+
+- [#751](https://github.com/vercel/workflow/pull/751) [`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the unused paused/resumed run events and states
+
+  - Remove `run_paused` and `run_resumed` event types
+  - Remove `paused` status from `WorkflowRunStatus`
+  - Remove `PauseWorkflowRunParams` and `ResumeWorkflowRunParams` types
+  - Remove `pauseWorkflowRun` and `resumeWorkflowRun` functions from world-vercel
+
+- Updated dependencies [[`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167)]:
+  - @workflow/world@4.0.1-beta.12
+  - @workflow/errors@4.0.1-beta.13
+
 ## 4.0.1-beta.25
 
 ### Patch Changes
