@@ -6,12 +6,13 @@ import { HooksTable } from '@/components/hooks-table';
 import { RunsTable } from '@/components/runs-table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { WorkflowsList } from '@/components/workflows-list';
-import { buildUrlWithConfig, useQueryParamConfig } from '@/lib/config';
+import { buildUrlWithConfig } from '@/lib/config';
 import { useHookIdState, useSidebarState, useTabState } from '@/lib/url-state';
+import { useWorldConfig } from '@/lib/world-config-context';
 
 export default function Home() {
   const router = useRouter();
-  const config = useQueryParamConfig();
+  const { config } = useWorldConfig();
   const [sidebar] = useSidebarState();
   const [hookId] = useHookIdState();
   const [tab, setTab] = useTabState();

@@ -1,7 +1,7 @@
 /** biome-ignore-all lint/correctness/useUniqueElementIds: <not relevant> */
 'use client';
 
-import { AlertCircle, AlertTriangle, Settings, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Lock, Settings, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -14,13 +14,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useQueryParamConfig, useUpdateConfigQueryParams } from '@/lib/config';
+import { useUpdateConfigQueryParams } from '@/lib/config';
 import {
   type ValidationError,
   validateWorldConfig,
   type WorldConfig,
 } from '@/lib/config-world';
 import { useDataDirInfo, useWorldsAvailability } from '@/lib/hooks';
+import { useWorldConfig } from '@/lib/world-config-context';
 
 interface SettingsSidebarProps {
   open?: boolean;
@@ -31,7 +32,7 @@ export function SettingsSidebar({
   open: controlledOpen,
   onOpenChange,
 }: SettingsSidebarProps = {}) {
-  const config = useQueryParamConfig();
+  const { config, isHardcoded, backendDisplayName } = useWorldConfig();
   const updateConfig = useUpdateConfigQueryParams();
 
   const [internalOpen, setInternalOpen] = useState(false);
@@ -43,7 +44,8 @@ export function SettingsSidebar({
 
   const { data: worldsAvailability = [], isLoading: isLoadingWorlds } =
     useWorldsAvailability();
-  const { data: dataDirInfo } = useDataDirInfo(localConfig.dataDir);
+  // Note: dataDirInfo could be used in the future to show project info
+  useDataDirInfo(localConfig.dataDir);
 
   const backend = localConfig.backend || 'local';
   const isLocal = backend === 'local';
@@ -128,6 +130,19 @@ export function SettingsSidebar({
               </div>
 
               <div className="space-y-4">
+                {/* Show locked banner when in hardcoded mode */}
+                {isHardcoded && (
+                  <Alert className="!bg-blue-500/10 !border-blue-500/20">
+                    <Lock className="h-4 w-4" />
+                    <AlertTitle>Self-Hosted Mode</AlertTitle>
+                    <AlertDescription>
+                      Configuration is set via server environment variables and
+                      cannot be changed. Connected to:{' '}
+                      <strong>{backendDisplayName}</strong>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
                 <div className="space-y-2">
                   <Label htmlFor="backend">Backend</Label>
                   <Select
@@ -135,8 +150,9 @@ export function SettingsSidebar({
                     onValueChange={(value) =>
                       handleInputChange('backend', value)
                     }
+                    disabled={isHardcoded}
                   >
-                    <SelectTrigger id="backend">
+                    <SelectTrigger id="backend" disabled={isHardcoded}>
                       <SelectValue placeholder="Select backend" />
                     </SelectTrigger>
                     <SelectContent>
@@ -160,28 +176,31 @@ export function SettingsSidebar({
                     </SelectContent>
                   </Select>
                   {/* Show warning if selected world is not installed */}
-                  {(() => {
-                    const selectedWorld = worldsAvailability.find(
-                      (w) => w.id === backend
-                    );
-                    if (selectedWorld && !selectedWorld.isInstalled) {
-                      return (
-                        <div className="flex items-start gap-2 p-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
-                          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                          <div className="text-xs">
-                            <p className="font-medium">Package not installed</p>
-                            <p className="mt-1 text-muted-foreground">
-                              Run:{' '}
-                              <code className="bg-muted px-1 py-0.5 rounded">
-                                {selectedWorld.installCommand}
-                              </code>
-                            </p>
-                          </div>
-                        </div>
+                  {!isHardcoded &&
+                    (() => {
+                      const selectedWorld = worldsAvailability.find(
+                        (w) => w.id === backend
                       );
-                    }
-                    return null;
-                  })()}
+                      if (selectedWorld && !selectedWorld.isInstalled) {
+                        return (
+                          <div className="flex items-start gap-2 p-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
+                            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                            <div className="text-xs">
+                              <p className="font-medium">
+                                Package not installed
+                              </p>
+                              <p className="mt-1 text-muted-foreground">
+                                Run:{' '}
+                                <code className="bg-muted px-1 py-0.5 rounded">
+                                  {selectedWorld.installCommand}
+                                </code>
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                 </div>
 
                 {isLocal && (
@@ -195,6 +214,7 @@ export function SettingsSidebar({
                           handleInputChange('port', e.target.value)
                         }
                         placeholder="3001"
+                        disabled={isHardcoded}
                         className={
                           getFieldError('port') ? 'border-destructive' : ''
                         }
@@ -215,6 +235,7 @@ export function SettingsSidebar({
                           handleInputChange('dataDir', e.target.value)
                         }
                         placeholder="Path to your project directory"
+                        disabled={isHardcoded}
                         className={
                           getFieldError('dataDir') ? 'border-destructive' : ''
                         }
@@ -235,6 +256,7 @@ export function SettingsSidebar({
                           handleInputChange('manifestPath', e.target.value)
                         }
                         placeholder="app/.well-known/workflow/v1/manifest.json"
+                        disabled={isHardcoded}
                         className={
                           getFieldError('manifestPath')
                             ? 'border-destructive'
@@ -260,11 +282,16 @@ export function SettingsSidebar({
                       <Label htmlFor="postgresUrl">Connection URL</Label>
                       <Input
                         id="postgresUrl"
-                        value={localConfig.postgresUrl || ''}
+                        value={
+                          isHardcoded
+                            ? '********' // Hide URL in hardcoded mode for security
+                            : localConfig.postgresUrl || ''
+                        }
                         onChange={(e) =>
                           handleInputChange('postgresUrl', e.target.value)
                         }
                         placeholder="postgres://user:pass@host:5432/db"
+                        disabled={isHardcoded}
                         className={
                           getFieldError('postgresUrl')
                             ? 'border-destructive'
@@ -291,6 +318,7 @@ export function SettingsSidebar({
                           handleInputChange('env', e.target.value)
                         }
                         placeholder="production or preview"
+                        disabled={isHardcoded}
                       />
                     </div>
 
@@ -304,6 +332,7 @@ export function SettingsSidebar({
                           handleInputChange('authToken', e.target.value)
                         }
                         placeholder="Vercel auth token"
+                        disabled={isHardcoded}
                       />
                     </div>
 
@@ -316,6 +345,7 @@ export function SettingsSidebar({
                           handleInputChange('project', e.target.value)
                         }
                         placeholder="prj_..."
+                        disabled={isHardcoded}
                       />
                     </div>
 
@@ -328,12 +358,13 @@ export function SettingsSidebar({
                           handleInputChange('team', e.target.value)
                         }
                         placeholder="team_..."
+                        disabled={isHardcoded}
                       />
                     </div>
                   </>
                 )}
 
-                {errors.length > 0 && (
+                {errors.length > 0 && !isHardcoded && (
                   <Alert
                     variant="destructive"
                     className="!bg-destructive/10 !border-destructive"
@@ -355,19 +386,21 @@ export function SettingsSidebar({
                   </Alert>
                 )}
                 <div className="flex flex-col gap-2 pt-4">
-                  <Button
-                    onClick={handleValidateAndApply}
-                    disabled={
-                      isValidating ||
-                      !hasChanges ||
-                      worldsAvailability.some(
-                        (w) => w.id === backend && !w.isInstalled
-                      )
-                    }
-                    className="w-full"
-                  >
-                    {isValidating ? 'Validating...' : 'Apply Configuration'}
-                  </Button>
+                  {!isHardcoded && (
+                    <Button
+                      onClick={handleValidateAndApply}
+                      disabled={
+                        isValidating ||
+                        !hasChanges ||
+                        worldsAvailability.some(
+                          (w) => w.id === backend && !w.isInstalled
+                        )
+                      }
+                      className="w-full"
+                    >
+                      {isValidating ? 'Validating...' : 'Apply Configuration'}
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     onClick={() => {
@@ -377,7 +410,7 @@ export function SettingsSidebar({
                     }}
                     className="w-full"
                   >
-                    Cancel
+                    {isHardcoded ? 'Close' : 'Cancel'}
                   </Button>
                 </div>
               </div>

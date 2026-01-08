@@ -24,6 +24,76 @@ import type {
 
 export type EnvMap = Record<string, string | undefined>;
 
+/**
+ * Configuration that can be hardcoded via environment variables.
+ * When WORKFLOW_TARGET_WORLD is set, the web UI operates in "self-hosted mode"
+ * where the world configuration is locked and cannot be changed via query params.
+ */
+export interface HardcodedConfig {
+  /** Whether the config is hardcoded (self-hosted mode) */
+  isHardcoded: boolean;
+  /** The hardcoded environment map (only set if isHardcoded is true) */
+  envMap?: EnvMap;
+  /** Human-readable backend name for display */
+  backendDisplayName?: string;
+}
+
+/**
+ * Map from WORKFLOW_TARGET_WORLD value to human-readable display name
+ */
+function getBackendDisplayName(targetWorld: string | undefined): string {
+  if (!targetWorld) return 'Local';
+  switch (targetWorld) {
+    case 'local':
+      return 'Local';
+    case 'vercel':
+      return 'Vercel';
+    case '@workflow/world-postgres':
+    case 'postgres':
+      return 'PostgreSQL';
+    default:
+      return targetWorld;
+  }
+}
+
+/**
+ * Check if the web UI is running in self-hosted mode with hardcoded configuration.
+ *
+ * In self-hosted mode, the world configuration is determined by server-side
+ * environment variables and cannot be changed via query parameters or the UI.
+ * This is useful when deploying the observability UI to work with a specific
+ * world backend.
+ *
+ * Self-hosted mode is activated when WORKFLOW_TARGET_WORLD is set on the server.
+ */
+export async function getHardcodedConfig(): Promise<HardcodedConfig> {
+  const targetWorld = process.env.WORKFLOW_TARGET_WORLD;
+
+  // If WORKFLOW_TARGET_WORLD is not set, we're in dynamic mode
+  if (!targetWorld) {
+    return { isHardcoded: false };
+  }
+
+  // Self-hosted mode: build envMap from server environment variables
+  const envMap: EnvMap = {
+    WORKFLOW_TARGET_WORLD: targetWorld,
+    WORKFLOW_VERCEL_ENV: process.env.WORKFLOW_VERCEL_ENV,
+    WORKFLOW_VERCEL_AUTH_TOKEN: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+    WORKFLOW_VERCEL_PROJECT: process.env.WORKFLOW_VERCEL_PROJECT,
+    WORKFLOW_VERCEL_TEAM: process.env.WORKFLOW_VERCEL_TEAM,
+    PORT: process.env.PORT,
+    WORKFLOW_MANIFEST_PATH: process.env.WORKFLOW_MANIFEST_PATH,
+    WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
+    WORKFLOW_POSTGRES_URL: process.env.WORKFLOW_POSTGRES_URL,
+  };
+
+  return {
+    isHardcoded: true,
+    envMap,
+    backendDisplayName: getBackendDisplayName(targetWorld),
+  };
+}
+
 export interface PaginatedResult<T> {
   data: T[];
   cursor?: string;
@@ -65,10 +135,39 @@ export type ServerActionResult<T> =
  */
 const worldCache = new Map<string, World>();
 
+/**
+ * Check if running in self-hosted mode (WORKFLOW_TARGET_WORLD is set on server).
+ * This is a synchronous check used internally by getWorldFromEnv.
+ */
+function isHardcodedMode(): boolean {
+  return !!process.env.WORKFLOW_TARGET_WORLD;
+}
+
+/**
+ * Get the hardcoded envMap from server environment variables.
+ * Only used when isHardcodedMode() returns true.
+ */
+function getHardcodedEnvMap(): EnvMap {
+  return {
+    WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
+    WORKFLOW_VERCEL_ENV: process.env.WORKFLOW_VERCEL_ENV,
+    WORKFLOW_VERCEL_AUTH_TOKEN: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+    WORKFLOW_VERCEL_PROJECT: process.env.WORKFLOW_VERCEL_PROJECT,
+    WORKFLOW_VERCEL_TEAM: process.env.WORKFLOW_VERCEL_TEAM,
+    PORT: process.env.PORT,
+    WORKFLOW_MANIFEST_PATH: process.env.WORKFLOW_MANIFEST_PATH,
+    WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
+    WORKFLOW_POSTGRES_URL: process.env.WORKFLOW_POSTGRES_URL,
+  };
+}
+
 function getWorldFromEnv(envMap: EnvMap) {
+  // In self-hosted mode, ignore the client-provided envMap and use server env vars
+  const effectiveEnvMap = isHardcodedMode() ? getHardcodedEnvMap() : envMap;
+
   // Generate stable cache key from envMap
-  const sortedKeys = Object.keys(envMap).sort();
-  const sortedEntries = sortedKeys.map((key) => [key, envMap[key]]);
+  const sortedKeys = Object.keys(effectiveEnvMap).sort();
+  const sortedEntries = sortedKeys.map((key) => [key, effectiveEnvMap[key]]);
   const cacheKey = JSON.stringify(Object.fromEntries(sortedEntries));
 
   // Check if we have a cached World for this configuration
@@ -80,7 +179,7 @@ function getWorldFromEnv(envMap: EnvMap) {
   }
 
   // No cached World found, create a new one
-  for (const [key, value] of Object.entries(envMap)) {
+  for (const [key, value] of Object.entries(effectiveEnvMap)) {
     if (value === undefined || value === null || value === '') {
       continue;
     }

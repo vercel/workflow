@@ -3,16 +3,16 @@
 import { ErrorBoundary } from '@workflow/web-shared';
 import { useParams } from 'next/navigation';
 import { RunDetailView } from '@/components/run-detail-view';
-import { useQueryParamConfig } from '@/lib/config';
 import {
   useEventIdState,
   useHookIdState,
   useStepIdState,
 } from '@/lib/url-state';
+import { useWorldConfig } from '@/lib/world-config-context';
 
 export default function RunDetailPage() {
   const params = useParams();
-  const config = useQueryParamConfig();
+  const { config } = useWorldConfig();
   const [stepId] = useStepIdState();
   const [eventId] = useEventIdState();
   const [hookId] = useHookIdState();

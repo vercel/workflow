@@ -1,6 +1,7 @@
 'use client';
 
 import { TooltipProvider } from '@radix-ui/react-tooltip';
+import type { EnvMap } from '@workflow/web-shared/server';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ThemeProvider, useTheme } from 'next-themes';
@@ -8,18 +9,24 @@ import { useEffect, useRef } from 'react';
 import { ConnectionStatus } from '@/components/display-utils/connection-status';
 import { SettingsDropdown } from '@/components/settings-dropdown';
 import { Toaster } from '@/components/ui/sonner';
-import { buildUrlWithConfig, useQueryParamConfig } from '@/lib/config';
+import { buildUrlWithConfig } from '@/lib/config';
+import {
+  WorldConfigProvider,
+  useWorldConfig,
+  type HardcodedConfig,
+} from '@/lib/world-config-context';
 import { Logo } from '../icons/logo';
 
 interface LayoutClientProps {
   children: React.ReactNode;
+  hardcodedConfig?: HardcodedConfig;
 }
 
-function LayoutContent({ children }: LayoutClientProps) {
+function LayoutContent({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const config = useQueryParamConfig();
+  const { config } = useWorldConfig();
   const { setTheme } = useTheme();
 
   const id = searchParams.get('id');
@@ -159,7 +166,7 @@ function LayoutContent({ children }: LayoutClientProps) {
   );
 }
 
-export function LayoutClient({ children }: LayoutClientProps) {
+export function LayoutClient({ children, hardcodedConfig }: LayoutClientProps) {
   return (
     <ThemeProvider
       attribute="class"
@@ -168,7 +175,9 @@ export function LayoutClient({ children }: LayoutClientProps) {
       disableTransitionOnChange
       storageKey="workflow-theme"
     >
-      <LayoutContent>{children}</LayoutContent>
+      <WorldConfigProvider hardcodedConfig={hardcodedConfig}>
+        <LayoutContent>{children}</LayoutContent>
+      </WorldConfigProvider>
     </ThemeProvider>
   );
 }
