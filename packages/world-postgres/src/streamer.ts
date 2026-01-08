@@ -141,8 +141,7 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
     },
     async readFromStream(
       name: string,
-      startIndex?: number,
-      _runId?: string
+      startIndex?: number
     ): Promise<ReadableStream<Uint8Array>> {
       const cleanups: (() => void)[] = [];
 
