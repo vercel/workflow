@@ -4,12 +4,7 @@ import type {
   ValidQueueName,
   World,
 } from '@workflow/world';
-import {
-  HEALTH_CHECK_STEP_QUEUE,
-  HEALTH_CHECK_STREAM_PREFIX,
-  HEALTH_CHECK_WORKFLOW_QUEUE,
-  HealthCheckPayloadSchema,
-} from '@workflow/world';
+import { HealthCheckPayloadSchema } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
@@ -19,6 +14,13 @@ import { getWorld } from './world.js';
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 
 const generateId = monotonicFactory();
+
+/**
+ * Returns the stream name for a health check with the given correlation ID.
+ */
+function getHealthCheckStreamName(correlationId: string): string {
+  return `__health_check__${correlationId}`;
+}
 
 /**
  * Result of a health check operation.
@@ -55,7 +57,7 @@ export async function handleHealthCheckMessage(
   endpoint: 'workflow' | 'step'
 ): Promise<void> {
   const world = getWorld();
-  const streamName = `${HEALTH_CHECK_STREAM_PREFIX}${healthCheck.correlationId}`;
+  const streamName = getHealthCheckStreamName(healthCheck.correlationId);
   const response = JSON.stringify({
     healthy: true,
     endpoint,
@@ -94,13 +96,13 @@ export async function healthCheck(
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
   const correlationId = `hc_${generateId()}`;
-  const streamName = `${HEALTH_CHECK_STREAM_PREFIX}${correlationId}`;
+  const streamName = getHealthCheckStreamName(correlationId);
 
   // Determine which queue to use based on endpoint
   const queueName: ValidQueueName =
     endpoint === 'workflow'
-      ? HEALTH_CHECK_WORKFLOW_QUEUE
-      : HEALTH_CHECK_STEP_QUEUE;
+      ? '__wkf_workflow_health_check'
+      : '__wkf_step_health_check';
 
   try {
     // Wait for the response with timeout
