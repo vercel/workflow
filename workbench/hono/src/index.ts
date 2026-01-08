@@ -5,6 +5,7 @@ import {
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { getWorld, healthCheck } from 'workflow/runtime';
 import { allWorkflows } from '../_workflows.js';
 
 const app = new Hono();
@@ -187,6 +188,34 @@ app.post('/api/hook', async ({ req }) => {
   });
 
   return Response.json(hook);
+});
+
+app.post('/api/test-health-check', async ({ req }) => {
+  // This route tests the queue-based health check functionality
+  try {
+    const body = await req.json();
+    const { endpoint = 'workflow', timeout = 30000 } = body;
+
+    console.log(
+      `Testing queue-based health check for endpoint: ${endpoint}, timeout: ${timeout}ms`
+    );
+
+    const world = getWorld();
+    const result = await healthCheck(world, endpoint, { timeout });
+
+    console.log(`Health check result:`, result);
+
+    return Response.json(result);
+  } catch (error) {
+    console.error('Health check test failed:', error);
+    return Response.json(
+      {
+        healthy: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      { status: 500 }
+    );
+  }
 });
 
 app.post('/api/test-direct-step-call', async ({ req }) => {
