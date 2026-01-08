@@ -38,8 +38,7 @@ export interface Streamer {
   closeStream(name: string, runId: string | Promise<string>): Promise<void>;
   readFromStream(
     name: string,
-    startIndex?: number,
-    runId?: string
+    startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;
   listStreamsByRunId(runId: string): Promise<string[]>;
 }
