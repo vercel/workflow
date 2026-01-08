@@ -239,7 +239,7 @@ export async function launchWebUI(
   const projectName = envVars.WORKFLOW_VERCEL_PROJECT;
 
   // Check if user wants local UI via flag or environment variable
-  const useLocalUi = flags.localUi || envVars.WORKFLOW_LOCAL_UI;
+  const useLocalUi = flags.localUi;
 
   if (!useLocalUi && isVercelBackend) {
     logger.info(
