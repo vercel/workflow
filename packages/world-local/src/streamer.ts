@@ -174,7 +174,7 @@ export function createStreamer(basedir: string): Streamer {
       return data?.streams ?? [];
     },
 
-    async readFromStream(name: string, startIndex = 0) {
+    async readFromStream(name: string, startIndex = 0, _runId?: string) {
       const chunksDir = path.join(basedir, 'streams', 'chunks');
       let removeListeners = () => {};
 

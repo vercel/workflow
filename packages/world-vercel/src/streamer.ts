@@ -45,9 +45,9 @@ export function createStreamer(config?: APIConfig): Streamer {
       });
     },
 
-    async readFromStream(name: string, startIndex?: number) {
+    async readFromStream(name: string, startIndex?: number, runId?: string) {
       const httpConfig = await getHttpConfig(config);
-      const url = getStreamUrl(name, undefined, httpConfig);
+      const url = getStreamUrl(name, runId, httpConfig);
       if (typeof startIndex === 'number') {
         url.searchParams.set('startIndex', String(startIndex));
       }

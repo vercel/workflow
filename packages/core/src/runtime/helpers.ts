@@ -114,7 +114,12 @@ export async function healthCheck(
 
     const readStreamResponse = async (): Promise<HealthCheckResult> => {
       // Read from the stream - the handler will write to this when it receives the health check
-      const stream = await world.readFromStream(streamName);
+      // Pass correlationId as runId to match the write path
+      const stream = await world.readFromStream(
+        streamName,
+        undefined,
+        correlationId
+      );
       const reader = stream.getReader();
       const chunks: Uint8Array[] = [];
 
