@@ -5906,6 +5906,9 @@ impl VisitMut for StepTransform {
                             ));
                         }
                         TransformMode::Workflow => {
+                            // Remove directive for consistency with other modes
+                            self.remove_use_step_directive(&mut method.function.body);
+
                             // Generate step ID
                             let step_id =
                                 self.create_id(Some(&full_name), method.function.span, false);
@@ -5944,9 +5947,7 @@ impl VisitMut for StepTransform {
                         }
                         TransformMode::Step | TransformMode::Client => {
                             // Remove directive and replace body with error
-                            if has_workflow {
-                                self.remove_use_workflow_directive(&mut method.function.body);
-                            }
+                            self.remove_use_workflow_directive(&mut method.function.body);
 
                             // Generate workflow ID
                             let workflow_id =
