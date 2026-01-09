@@ -1,16 +1,13 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
+import { getSerializationClass } from './class-serialization.js';
 import {
   createFlushableState,
   flushablePipe,
   pollReadableLock,
   pollWritableLock,
 } from './flushable-stream.js';
-import {
-  getSerializationClass,
-  getSerializationClassId,
-} from './class-serialization.js';
 import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
@@ -344,10 +341,11 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       };
     },
     SerializableClass: (value) => {
-      // Check if this is a registered class constructor
+      // Check if this is a class constructor with a classId property
+      // (set by the SWC plugin for classes with static step/workflow methods)
       if (typeof value !== 'function') return false;
-      const classId = getSerializationClassId(value);
-      if (!classId) return false;
+      const classId = (value as any).classId;
+      if (typeof classId !== 'string') return false;
       return { classId };
     },
     Set: (value) => value instanceof global.Set && Array.from(value),
