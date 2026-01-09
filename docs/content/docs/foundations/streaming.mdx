@@ -474,11 +474,11 @@ async function uploadResult(stream: ReadableStream<Uint8Array>) {
 When writing to a stream in a step function, there is an important contract to understand:
 
 <Callout type="warn">
-**Once a lock is released, no further writes to that stream from that step are allowed.** The framework uses lock release as the signal that the step is done interacting with the stream. Make sure all writes are complete before releasing the lock.
+**Once a lock is released, no further writes to that stream from that step are allowed.** The framework uses lock release as the signal that the step is done interacting with the stream. Make sure all writes are complete before releasing the lock, and do not rely on re-acquiring a lock on the same stream within the same step after it has been released, even if internal implementation details might technically allow it.
 </Callout>
 
 <Callout type="warn">
-**The lock MUST be released to prevent the function from hanging.** If you acquire a lock but never release it, the serverless function will remain active until it times out, even after the step returns and the workflow continues.
+**The lock MUST be released to prevent the function from hanging.** If you acquire a lock but never release it, the serverless function will remain active until it times out, even after the step returns and the workflow continues. Releasing the lock is sufficient; while explicitly closing the stream is safe and recommended for cleanup, it is not required to prevent the function from hanging.
 </Callout>
 
 **Correct pattern - complete all writes before releasing:**
