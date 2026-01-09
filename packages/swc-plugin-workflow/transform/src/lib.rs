@@ -224,6 +224,9 @@ pub struct StepTransform {
     // Track static step methods to strip from class and assign as properties (workflow mode)
     // (class_name, method_name, step_id)
     static_step_methods_to_strip: Vec<(String, String, String)>,
+    // Track classes that need serialization registration (for `this` serialization in static methods)
+    // Set of class names that have static step/workflow methods
+    classes_needing_serialization: HashSet<String>,
 }
 
 // Structure to track variable names and their access patterns
@@ -1086,6 +1089,7 @@ impl StepTransform {
             static_method_step_registrations: Vec::new(),
             static_method_workflow_registrations: Vec::new(),
             static_step_methods_to_strip: Vec::new(),
+            classes_needing_serialization: HashSet::new(),
         }
     }
 
@@ -2017,11 +2021,12 @@ impl StepTransform {
         }
     }
 
-    // Generate the import for registerStepFunction (step mode)
+    // Generate the import for registerStepFunction and registerSerializationClass (step mode)
     fn create_private_imports(
         &self,
         include_register: bool,
         include_closure_vars: bool,
+        include_class_serialization: bool,
     ) -> ModuleItem {
         let mut specifiers = vec![];
 
@@ -2043,6 +2048,19 @@ impl StepTransform {
                 span: DUMMY_SP,
                 local: Ident::new(
                     "registerStepFunction".into(),
+                    DUMMY_SP,
+                    SyntaxContext::empty(),
+                ),
+                imported: None,
+                is_type_only: false,
+            }));
+        }
+
+        if include_class_serialization {
+            specifiers.push(ImportSpecifier::Named(ImportNamedSpecifier {
+                span: DUMMY_SP,
+                local: Ident::new(
+                    "registerSerializationClass".into(),
                     DUMMY_SP,
                     SyntaxContext::empty(),
                 ),
@@ -3037,7 +3055,16 @@ impl VisitMut for StepTransform {
 
                 match self.mode {
                     TransformMode::Workflow => {
-                        // No imports needed for workflow mode
+                        // Check if we need to register classes for serialization (for `this` serialization)
+                        let needs_class_serialization =
+                            !self.classes_needing_serialization.is_empty();
+                        if needs_class_serialization {
+                            imports_to_add.push(self.create_private_imports(
+                                false,
+                                false,
+                                needs_class_serialization,
+                            ));
+                        }
                     }
                     TransformMode::Step => {
                         // Check what needs to be imported
@@ -3052,10 +3079,18 @@ impl VisitMut for StepTransform {
                             .iter()
                             .any(|(_, _, _, closure_vars, _, _)| !closure_vars.is_empty());
 
-                        if needs_register_import || needs_closure_import {
+                        // Check if we need to register classes for serialization
+                        let needs_class_serialization =
+                            !self.classes_needing_serialization.is_empty();
+
+                        if needs_register_import
+                            || needs_closure_import
+                            || needs_class_serialization
+                        {
                             imports_to_add.push(self.create_private_imports(
                                 needs_register_import,
                                 needs_closure_import,
+                                needs_class_serialization,
                             ));
                         }
                     }
@@ -3390,6 +3425,49 @@ impl VisitMut for StepTransform {
                         });
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
+
+                    // Add class serialization registrations
+                    // This allows class constructors to be serialized when used as `this` in static method calls
+                    for class_name in self.classes_needing_serialization.drain() {
+                        // Generate class ID: class//filename//ClassName
+                        let class_id =
+                            naming::format_name("class", &self.filename, &class_name);
+
+                        let registration_call = Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Call(CallExpr {
+                                span: DUMMY_SP,
+                                ctxt: SyntaxContext::empty(),
+                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+                                    "registerSerializationClass".into(),
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                )))),
+                                args: vec![
+                                    // First argument: class ID
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                            span: DUMMY_SP,
+                                            value: class_id.into(),
+                                            raw: None,
+                                        }))),
+                                    },
+                                    // Second argument: ClassName
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Ident(Ident::new(
+                                            class_name.into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        ))),
+                                    },
+                                ],
+                                type_args: None,
+                            })),
+                        });
+                        module.body.push(ModuleItem::Stmt(registration_call));
+                    }
                 }
 
                 // Add static step method property assignments (workflow mode)
@@ -3472,6 +3550,49 @@ impl VisitMut for StepTransform {
                             })),
                         });
                         module.body.push(ModuleItem::Stmt(assignment));
+                    }
+
+                    // Add class serialization registrations for workflow mode
+                    // This allows class constructors to be serialized when used as `this` in static method calls
+                    for class_name in self.classes_needing_serialization.drain() {
+                        // Generate class ID: class//filename//ClassName
+                        let class_id =
+                            naming::format_name("class", &self.filename, &class_name);
+
+                        let registration_call = Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Call(CallExpr {
+                                span: DUMMY_SP,
+                                ctxt: SyntaxContext::empty(),
+                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+                                    "registerSerializationClass".into(),
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                )))),
+                                args: vec![
+                                    // First argument: class ID
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                            span: DUMMY_SP,
+                                            value: class_id.into(),
+                                            raw: None,
+                                        }))),
+                                    },
+                                    // Second argument: ClassName
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Ident(Ident::new(
+                                            class_name.into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        ))),
+                                    },
+                                ],
+                                type_args: None,
+                            })),
+                        });
+                        module.body.push(ModuleItem::Stmt(registration_call));
                     }
                 }
 
@@ -3649,8 +3770,14 @@ impl VisitMut for StepTransform {
                             // No imports needed for workflow mode
                         }
                         TransformMode::Step => {
-                            if !self.registration_calls.is_empty() {
-                                module_items.push(self.create_private_imports(true, false));
+                            let needs_class_serialization =
+                                !self.classes_needing_serialization.is_empty();
+                            if !self.registration_calls.is_empty() || needs_class_serialization {
+                                module_items.push(self.create_private_imports(
+                                    !self.registration_calls.is_empty(),
+                                    false,
+                                    needs_class_serialization,
+                                ));
                             }
                         }
                         TransformMode::Client => {
@@ -5887,6 +6014,10 @@ impl VisitMut for StepTransform {
 
                 if has_step {
                     self.step_function_names.insert(full_name.clone());
+
+                    // Track class for serialization (needed for `this` serialization in static method calls)
+                    self.classes_needing_serialization
+                        .insert(class_name.clone());
 
                     match self.mode {
                         TransformMode::Step => {

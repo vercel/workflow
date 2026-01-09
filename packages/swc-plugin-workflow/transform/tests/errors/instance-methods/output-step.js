@@ -1,4 +1,4 @@
-import { registerStepFunction } from "workflow/internal/private";
+import { registerStepFunction, registerSerializationClass } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"TestClass.staticMethod":{"stepId":"step//input.js//TestClass.staticMethod"}}}}*/;
 export class TestClass {
     // Error: instance methods can't have directives
@@ -17,3 +17,4 @@ export class TestClass {
     }
 }
 registerStepFunction("step//input.js//TestClass.staticMethod", TestClass.staticMethod);
+registerSerializationClass("class//input.js//TestClass", TestClass);

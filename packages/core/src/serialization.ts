@@ -7,7 +7,11 @@ import {
   pollReadableLock,
   pollWritableLock,
 } from './flushable-stream.js';
-import { getStepFunction } from './private.js';
+import {
+  getSerializationClass,
+  getSerializationClassId,
+  getStepFunction,
+} from './private.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
 import {
@@ -63,7 +67,7 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
     const reader = stream.getReader({ mode: 'byob' });
     reader.releaseLock();
     return 'bytes';
-  } catch {}
+  } catch { }
 }
 
 export function getSerializeStream(
@@ -201,8 +205,8 @@ export interface SerializableSpecial {
   Int32Array: string; // base64 string
   Map: [any, any][];
   ReadableStream:
-    | { name: string; type?: 'bytes'; startIndex?: number }
-    | { bodyInit: any };
+  | { name: string; type?: 'bytes'; startIndex?: number }
+  | { bodyInit: any };
   RegExp: { source: string; flags: string };
   Request: {
     method: string;
@@ -222,6 +226,9 @@ export interface SerializableSpecial {
     headers: Headers;
     body: Response['body'];
     redirected: boolean;
+  };
+  SerializableClass: {
+    classId: string;
   };
   Set: any[];
   StepFunction: {
@@ -335,6 +342,13 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
         body: value.body,
         redirected: value.redirected,
       };
+    },
+    SerializableClass: (value) => {
+      // Check if this is a registered class constructor
+      if (typeof value !== 'function') return false;
+      const classId = getSerializationClassId(value);
+      if (!classId) return false;
+      return { classId };
     },
     Set: (value) => value instanceof global.Set && Array.from(value),
     StepFunction: (value) => {
@@ -618,6 +632,16 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     },
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
+    SerializableClass: (value) => {
+      const classId = value.classId;
+      const cls = getSerializationClass(classId);
+      if (!cls) {
+        throw new Error(
+          `Class "${classId}" not found. Make sure the class is registered with registerSerializationClass.`
+        );
+      }
+      return cls;
+    },
     Set: (value) => new global.Set(value),
     StepFunction: (value) => {
       const stepId = value.stepId;
