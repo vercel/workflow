@@ -1178,7 +1178,6 @@ describe('e2e', () => {
 
   // ==================== STATIC METHOD STEP/WORKFLOW TESTS ====================
   // Tests for static methods on classes with "use step" and "use workflow" directives.
-  // Note: `this` serialization is not yet supported, so these methods do not use `this`.
 
   test(
     'Calculator.calculate - static workflow method using static step methods from another class',
@@ -1232,6 +1231,42 @@ describe('e2e', () => {
       );
       expect(runData.status).toBe('completed');
       expect(runData.output).toBe(50);
+    }
+  );
+
+  test(
+    'ChainableService.processWithThis - static step methods using `this` to reference the class',
+    { timeout: 60_000 },
+    async () => {
+      // ChainableService.processWithThis(5) should:
+      // - ChainableService.multiplyByClassValue(5) uses `this.multiplier` (10) -> 5 * 10 = 50
+      // - ChainableService.doubleAndMultiply(5) uses `this.multiplier` (10) -> 5 * 2 * 10 = 100
+      // - sum = 50 + 100 = 150
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'ChainableService.processWithThis',
+        },
+        [5]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toEqual({
+        multiplied: 50, // 5 * 10
+        doubledAndMultiplied: 100, // 5 * 2 * 10
+        sum: 150, // 50 + 100
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        multiplied: 50,
+        doubledAndMultiplied: 100,
+        sum: 150,
+      });
     }
   );
 

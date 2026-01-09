@@ -1,4 +1,5 @@
 // Test path alias resolution - imports a helper from outside the workbench directory
+/** biome-ignore-all lint/complexity/noStaticOnlyClass: <explanation> */
 import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
@@ -717,7 +718,6 @@ export async function errorFatalCatchable() {
 // STATIC METHOD STEP/WORKFLOW TESTS
 // ============================================================
 // Tests for static methods on classes with "use step" and "use workflow" directives.
-// Note: `this` serialization is not yet supported, so these methods do not use `this`.
 // ============================================================
 
 /**
@@ -772,6 +772,60 @@ export class AllInOneService {
     const doubled = await AllInOneService.double(n);
     const tripled = await AllInOneService.triple(n);
     return doubled + tripled;
+  }
+}
+
+/**
+ * Class that uses `this` in static step methods to reference the class itself.
+ * This tests that the class constructor is properly serialized when `this` is used.
+ */
+export class ChainableService {
+  /** The multiplier used by the multiply step */
+  static multiplier = 10;
+
+  /** Static step that uses `this` to access class properties */
+  static async multiplyByClassValue(
+    this: typeof ChainableService,
+    n: number
+  ): Promise<number> {
+    'use step';
+    // Use `this` to reference the class and access its static property
+    // `this` is the class constructor, so `this.multiplier` accesses the static property
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    return n * this.multiplier;
+  }
+
+  /** Static step that uses `this` to call another static method */
+  static async doubleAndMultiply(
+    this: typeof ChainableService,
+    n: number
+  ): Promise<number> {
+    'use step';
+    // Use `this` to access the static property on the class
+    // Note: We can't call another step from within a step, so we just reference a static property
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    return n * 2 * this.multiplier;
+  }
+
+  /** Static workflow that demonstrates `this` serialization with static methods */
+  static async processWithThis(n: number): Promise<{
+    multiplied: number;
+    doubledAndMultiplied: number;
+    sum: number;
+  }> {
+    'use workflow';
+    // When calling static methods, `this` is the class constructor (ChainableService)
+    // The class constructor should be serialized and passed to the step
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    const multiplied = await this.multiplyByClassValue(n);
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    const doubledAndMultiplied = await this.doubleAndMultiply(n);
+
+    return {
+      multiplied, // n * 10
+      doubledAndMultiplied, // n * 2 * 10 = n * 20
+      sum: multiplied + doubledAndMultiplied, // n * 10 + n * 20 = n * 30
+    };
   }
 }
 
