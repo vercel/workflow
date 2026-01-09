@@ -1,5 +1,13 @@
 # @workflow/docs-typecheck
 
+## 0.0.1-beta.3
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.44
+  - @workflow/ai@4.0.1-beta.44
+
 ## 0.0.1-beta.2
 
 ### Patch Changes
