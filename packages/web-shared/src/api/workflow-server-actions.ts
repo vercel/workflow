@@ -114,6 +114,35 @@ function extractDatabaseFromUrl(url: string | undefined): string | undefined {
 }
 
 /**
+ * Shorten a file path for display purposes.
+ * - Replaces home directory with ~
+ * - If path is still long, shows .../last-two-segments
+ */
+function shortenPath(filePath: string): string {
+  if (!filePath) return filePath;
+
+  let shortened = filePath;
+
+  // Replace home directory with ~
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  if (homeDir && shortened.startsWith(homeDir)) {
+    shortened = '~' + shortened.slice(homeDir.length);
+  }
+
+  // If still long (> 40 chars), abbreviate to show last meaningful segments
+  if (shortened.length > 40) {
+    const segments = shortened.split('/').filter(Boolean);
+    if (segments.length > 2) {
+      // Show .../<parent>/<name>
+      const lastTwo = segments.slice(-2).join('/');
+      shortened = '.../' + lastTwo;
+    }
+  }
+
+  return shortened;
+}
+
+/**
  * Build an EnvMap from server environment variables.
  * Used internally by getWorldFromEnv when no client EnvMap is provided
  * or when using environment-based configuration.
@@ -173,8 +202,9 @@ export async function getServerConfig(): Promise<ServerConfig> {
     effectiveBackend === 'local' ||
     effectiveBackend === '@workflow/world-local'
   ) {
-    displayInfo.dataDir =
-      process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data';
+    displayInfo.dataDir = shortenPath(
+      process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data'
+    );
   }
 
   return {

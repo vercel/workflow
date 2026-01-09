@@ -113,10 +113,13 @@ export function SettingsSidebar({
 
                   {/* Backend-specific display info */}
                   {displayInfo && (
-                    <div className="space-y-3 pt-2 border-t">
+                    <div className="space-y-3 pt-2 border-t overflow-hidden">
                       {displayInfo.dataDir && (
                         <ConfigRow label="Data Directory">
-                          <code className="text-xs bg-muted px-2 py-1 rounded">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.dataDir}
+                          >
                             {displayInfo.dataDir}
                           </code>
                         </ConfigRow>
@@ -124,7 +127,10 @@ export function SettingsSidebar({
 
                       {displayInfo.hostname && (
                         <ConfigRow label="Host">
-                          <code className="text-xs bg-muted px-2 py-1 rounded">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.hostname}
+                          >
                             {displayInfo.hostname}
                           </code>
                         </ConfigRow>
@@ -132,7 +138,10 @@ export function SettingsSidebar({
 
                       {displayInfo.database && (
                         <ConfigRow label="Database">
-                          <code className="text-xs bg-muted px-2 py-1 rounded">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.database}
+                          >
                             {displayInfo.database}
                           </code>
                         </ConfigRow>
@@ -148,7 +157,10 @@ export function SettingsSidebar({
 
                       {displayInfo.projectName && (
                         <ConfigRow label="Project">
-                          <code className="text-xs bg-muted px-2 py-1 rounded">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.projectName}
+                          >
                             {displayInfo.projectName}
                           </code>
                         </ConfigRow>
@@ -156,7 +168,10 @@ export function SettingsSidebar({
 
                       {displayInfo.teamName && (
                         <ConfigRow label="Team">
-                          <code className="text-xs bg-muted px-2 py-1 rounded">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.teamName}
+                          >
                             {displayInfo.teamName}
                           </code>
                         </ConfigRow>
@@ -191,9 +206,9 @@ function ConfigRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      {children}
+    <div className="flex items-center justify-between gap-2 min-w-0">
+      <span className="text-sm text-muted-foreground shrink-0">{label}</span>
+      <div className="min-w-0 overflow-hidden">{children}</div>
     </div>
   );
 }
