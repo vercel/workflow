@@ -1,4 +1,5 @@
 ---
+"workflow": patch
 "@workflow/core": patch
 ---
 
