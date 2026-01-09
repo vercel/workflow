@@ -24,6 +24,7 @@ const configParsers = {
   port: parseAsString.withDefault(DEFAULT_CONFIG.port || '3000'),
   dataDir: parseAsString.withDefault('./'),
   manifestPath: parseAsString,
+  postgresUrl: parseAsString,
 };
 
 // Create a serializer for config params
