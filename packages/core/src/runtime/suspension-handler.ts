@@ -114,6 +114,7 @@ async function processStep({
     {
       args: queueItem.args,
       closureVars: queueItem.closureVars,
+      thisVal: queueItem.thisVal,
     },
     global
   );

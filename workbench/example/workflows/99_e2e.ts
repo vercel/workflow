@@ -774,3 +774,33 @@ export class AllInOneService {
     return doubled + tripled;
   }
 }
+
+//////////////////////////////////////////////////////////
+// E2E test for `this` serialization with .call() and .apply()
+//////////////////////////////////////////////////////////
+
+/**
+ * A step function that uses `this` to access properties.
+ */
+async function multiplyByFactor(this: { factor: number }, value: number) {
+  'use step';
+  return value * this.factor;
+}
+
+/**
+ * Workflow that tests calling step functions with explicit `this` via .call() and .apply()
+ */
+export async function thisSerializationWorkflow(baseValue: number) {
+  'use workflow';
+  // Test .call() - multiply baseValue by 2
+  const result1 = await multiplyByFactor.call({ factor: 2 }, baseValue);
+
+  // Test .apply() - multiply result1 by 3
+  const result2 = await multiplyByFactor.apply({ factor: 3 }, [result1]);
+
+  // Test .call() again - multiply result2 by 5
+  const result3 = await multiplyByFactor.call({ factor: 5 }, result2);
+
+  // baseValue * 2 * 3 * 5 = baseValue * 30
+  return result3;
+}

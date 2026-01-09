@@ -1234,4 +1234,27 @@ describe('e2e', () => {
       expect(runData.output).toBe(50);
     }
   );
+
+  test(
+    'thisSerializationWorkflow - step function invoked with .call() and .apply()',
+    { timeout: 60_000 },
+    async () => {
+      // thisSerializationWorkflow(10) should:
+      // 1. multiplyByFactor.call({ factor: 2 }, 10) = 20
+      // 2. multiplyByFactor.apply({ factor: 3 }, [20]) = 60
+      // 3. multiplyByFactor.call({ factor: 5 }, 60) = 300
+      // Total: 10 * 2 * 3 * 5 = 300
+      const run = await triggerWorkflow('thisSerializationWorkflow', [10]);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(300);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(300);
+    }
+  );
 });

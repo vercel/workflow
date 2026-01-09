@@ -229,7 +229,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 `Step "${stepId}" has no "startedAt" timestamp`
               );
             }
-            // Hydrate the step input arguments and closure variables
+            // Hydrate the step input arguments, closure variables, and thisVal
             const ops: Promise<void>[] = [];
             const hydratedInput = hydrateStepArguments(
               step.input,
@@ -238,6 +238,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             );
 
             const args = hydratedInput.args;
+            const thisVal = hydratedInput.thisVal ?? null;
 
             span?.setAttributes({
               ...Attribute.StepArgumentsCount(args.length),
@@ -262,7 +263,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 ops,
                 closureVars: hydratedInput.closureVars,
               },
-              () => stepFn.apply(null, args)
+              () => stepFn.apply(thisVal, args)
             );
 
             // NOTE: None of the code from this point is guaranteed to run
