@@ -43,7 +43,6 @@ export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
 /**
  * Health check payload - used to verify that the queue pipeline
  * can deliver messages to workflow/step endpoints.
- * This bypasses Deployment Protection on Vercel.
  */
 export const HealthCheckPayloadSchema = z.object({
   __healthCheck: z.literal(true),
