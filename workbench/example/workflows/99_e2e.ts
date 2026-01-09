@@ -712,3 +712,65 @@ export async function errorFatalCatchable() {
     return { caught: true, isFatal: FatalError.is(e) };
   }
 }
+
+// ============================================================
+// STATIC METHOD STEP/WORKFLOW TESTS
+// ============================================================
+// Tests for static methods on classes with "use step" and "use workflow" directives.
+// Note: `this` serialization is not yet supported, so these methods do not use `this`.
+// ============================================================
+
+/**
+ * Service class with static step methods for math operations.
+ * These methods are transformed to be callable as workflow steps.
+ */
+export class MathService {
+  /** Static step: add two numbers */
+  static async add(a: number, b: number): Promise<number> {
+    'use step';
+    return a + b;
+  }
+
+  /** Static step: multiply two numbers */
+  static async multiply(a: number, b: number): Promise<number> {
+    'use step';
+    return a * b;
+  }
+}
+
+/**
+ * Workflow class with a static workflow method that uses static step methods.
+ */
+export class Calculator {
+  /** Static workflow: uses MathService static step methods */
+  static async calculate(x: number, y: number): Promise<number> {
+    'use workflow';
+    // Add x + y, then multiply by 2
+    const sum = await MathService.add(x, y);
+    const result = await MathService.multiply(sum, 2);
+    return result;
+  }
+}
+
+/**
+ * Alternative pattern: both step and workflow methods in the same class.
+ */
+export class AllInOneService {
+  static async double(n: number): Promise<number> {
+    'use step';
+    return n * 2;
+  }
+
+  static async triple(n: number): Promise<number> {
+    'use step';
+    return n * 3;
+  }
+
+  /** Static workflow: double(n) + triple(n) = 2n + 3n = 5n */
+  static async processNumber(n: number): Promise<number> {
+    'use workflow';
+    const doubled = await AllInOneService.double(n);
+    const tripled = await AllInOneService.triple(n);
+    return doubled + tripled;
+  }
+}

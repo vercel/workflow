@@ -190,7 +190,8 @@ pub struct StepTransform {
     declared_identifiers: HashSet<String>,
     // Track object property step functions for hoisting in step mode
     // (parent_var_name, prop_name, arrow_expr, span, parent_workflow_name)
-    object_property_step_functions: Vec<(String, String, ArrowExpr, swc_core::common::Span, String)>,
+    object_property_step_functions:
+        Vec<(String, String, ArrowExpr, swc_core::common::Span, String)>,
     // Track nested step functions inside workflow functions for hoisting in step mode
     // (fn_name, fn_expr, span, closure_vars, was_arrow, parent_workflow_name)
     nested_step_functions: Vec<(
@@ -212,6 +213,17 @@ pub struct StepTransform {
     current_var_context: Option<String>,
     // Track module-level imports to exclude from closure variables
     module_imports: HashSet<String>,
+    // Track the current class name for static method transformations
+    current_class_name: Option<String>,
+    // Track static method steps that need registration after the class declaration
+    // (class_name, method_name, step_id, span)
+    static_method_step_registrations: Vec<(String, String, String, swc_core::common::Span)>,
+    // Track static method workflows that need workflowId assignment and registration
+    // (class_name, method_name, workflow_id, span)
+    static_method_workflow_registrations: Vec<(String, String, String, swc_core::common::Span)>,
+    // Track static step methods to strip from class and assign as properties (workflow mode)
+    // (class_name, method_name, step_id)
+    static_step_methods_to_strip: Vec<(String, String, String)>,
 }
 
 // Structure to track variable names and their access patterns
@@ -1070,6 +1082,10 @@ impl StepTransform {
             object_property_workflow_conversions: Vec::new(),
             current_var_context: None,
             module_imports: HashSet::new(),
+            current_class_name: None,
+            static_method_step_registrations: Vec::new(),
+            static_method_workflow_registrations: Vec::new(),
+            static_step_methods_to_strip: Vec::new(),
         }
     }
 
@@ -1436,7 +1452,10 @@ impl StepTransform {
                                         let hoist_var_name = if let Some(ref workflow_name) =
                                             self.current_workflow_function_name
                                         {
-                                            format!("{}${}${}", workflow_name, parent_var_name, prop_key)
+                                            format!(
+                                                "{}${}${}",
+                                                workflow_name, parent_var_name, prop_key
+                                            )
                                         } else {
                                             format!("{}${}", parent_var_name, prop_key)
                                         };
@@ -1510,13 +1529,12 @@ impl StepTransform {
         match self.mode {
             TransformMode::Step => {
                 // In step mode, replace with reference to hoisted variable
-                let hoist_var_name = if let Some(ref workflow_name) =
-                    self.current_workflow_function_name
-                {
-                    format!("{}${}${}", workflow_name, parent_var_name, prop_key)
-                } else {
-                    format!("{}${}", parent_var_name, prop_key)
-                };
+                let hoist_var_name =
+                    if let Some(ref workflow_name) = self.current_workflow_function_name {
+                        format!("{}${}${}", workflow_name, parent_var_name, prop_key)
+                    } else {
+                        format!("{}${}", parent_var_name, prop_key)
+                    };
                 *kv_prop.value = Expr::Ident(Ident::new(
                     hoist_var_name.into(),
                     DUMMY_SP,
@@ -1671,7 +1689,10 @@ impl StepTransform {
                                 });
                             }
                             return true;
-                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use step") {
+                        } else if detect_similar_strings(
+                            &value.to_string_lossy().to_string(),
+                            "use step",
+                        ) {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *stmt_span,
                                 directive: value.to_string_lossy().to_string(),
@@ -1714,7 +1735,10 @@ impl StepTransform {
                                 });
                             }
                             return true;
-                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use workflow") {
+                        } else if detect_similar_strings(
+                            &value.to_string_lossy().to_string(),
+                            "use workflow",
+                        ) {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *stmt_span,
                                 directive: value.to_string_lossy().to_string(),
@@ -1762,7 +1786,10 @@ impl StepTransform {
                                     location: DirectiveLocation::Module,
                                 });
                             }
-                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use step") {
+                        } else if detect_similar_strings(
+                            &value.to_string_lossy().to_string(),
+                            "use step",
+                        ) {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *span,
                                 directive: value.to_string_lossy().to_string(),
@@ -1823,7 +1850,10 @@ impl StepTransform {
                                     location: DirectiveLocation::Module,
                                 });
                             }
-                        } else if detect_similar_strings(&value.to_string_lossy().to_string(), "use workflow") {
+                        } else if detect_similar_strings(
+                            &value.to_string_lossy().to_string(),
+                            "use workflow",
+                        ) {
                             emit_error(WorkflowErrorKind::MisspelledDirective {
                                 span: *span,
                                 directive: value.to_string_lossy().to_string(),
@@ -2756,14 +2786,14 @@ impl StepTransform {
                         .unwrap_or(fn_name_str);
                     // For auto-generated __default names (anonymous default exports),
                     // normalize to "default" for the workflow ID
-                    let id_name =
-                        if (actual_name == "__default" || actual_name.starts_with("__default$"))
-                            && fn_name_str == "default"
-                        {
-                            "default"
-                        } else {
-                            actual_name
-                        };
+                    let id_name = if (actual_name == "__default"
+                        || actual_name.starts_with("__default$"))
+                        && fn_name_str == "default"
+                    {
+                        "default"
+                    } else {
+                        actual_name
+                    };
                     let workflow_id = self.create_id(Some(id_name), DUMMY_SP, true);
                     format!("\"{}\":{{\"workflowId\":\"{}\"}}", fn_name_str, workflow_id)
                 })
@@ -3013,7 +3043,8 @@ impl VisitMut for StepTransform {
                         // Check what needs to be imported
                         let needs_register_import = !self.registration_calls.is_empty()
                             || !self.object_property_step_functions.is_empty()
-                            || !self.nested_step_functions.is_empty();
+                            || !self.nested_step_functions.is_empty()
+                            || !self.static_method_step_registrations.is_empty();
 
                         // Check if any nested steps have closure variables
                         let needs_closure_import = self
@@ -3218,26 +3249,29 @@ impl VisitMut for StepTransform {
                     let hoisting_info: Vec<_> = self
                         .object_property_step_functions
                         .iter()
-                        .map(|(parent_var, prop_name, arrow_expr, _span, workflow_name)| {
-                            let hoist_var_name = if !workflow_name.is_empty() {
-                                format!("{}${}${}", workflow_name, parent_var, prop_name)
-                            } else {
-                                format!("{}${}", parent_var, prop_name)
-                            };
-                            let wf_name = if workflow_name.is_empty() {
-                                None
-                            } else {
-                                Some(workflow_name.as_str())
-                            };
-                            let step_id =
-                                self.create_object_property_id(parent_var, prop_name, false, wf_name);
-                            (
-                                hoist_var_name,
-                                arrow_expr.clone(),
-                                step_id,
-                                parent_var.clone(),
-                            )
-                        })
+                        .map(
+                            |(parent_var, prop_name, arrow_expr, _span, workflow_name)| {
+                                let hoist_var_name = if !workflow_name.is_empty() {
+                                    format!("{}${}${}", workflow_name, parent_var, prop_name)
+                                } else {
+                                    format!("{}${}", parent_var, prop_name)
+                                };
+                                let wf_name = if workflow_name.is_empty() {
+                                    None
+                                } else {
+                                    Some(workflow_name.as_str())
+                                };
+                                let step_id = self.create_object_property_id(
+                                    parent_var, prop_name, false, wf_name,
+                                );
+                                (
+                                    hoist_var_name,
+                                    arrow_expr.clone(),
+                                    step_id,
+                                    parent_var.clone(),
+                                )
+                            },
+                        )
                         .collect();
 
                     // Now drain and process
@@ -3308,6 +3342,271 @@ impl VisitMut for StepTransform {
 
                     for call in self.registration_calls.drain(..) {
                         module.body.push(ModuleItem::Stmt(call));
+                    }
+
+                    // Add static method step registrations
+                    for (class_name, method_name, step_id, _span) in
+                        self.static_method_step_registrations.drain(..)
+                    {
+                        let registration_call = Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Call(CallExpr {
+                                span: DUMMY_SP,
+                                ctxt: SyntaxContext::empty(),
+                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+                                    "registerStepFunction".into(),
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                )))),
+                                args: vec![
+                                    // First argument: step ID
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                            span: DUMMY_SP,
+                                            value: step_id.into(),
+                                            raw: None,
+                                        }))),
+                                    },
+                                    // Second argument: ClassName.methodName
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Member(MemberExpr {
+                                            span: DUMMY_SP,
+                                            obj: Box::new(Expr::Ident(Ident::new(
+                                                class_name.into(),
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                            ))),
+                                            prop: MemberProp::Ident(IdentName::new(
+                                                method_name.into(),
+                                                DUMMY_SP,
+                                            )),
+                                        })),
+                                    },
+                                ],
+                                type_args: None,
+                            })),
+                        });
+                        module.body.push(ModuleItem::Stmt(registration_call));
+                    }
+                }
+
+                // Add static step method property assignments (workflow mode)
+                // These methods were stripped from the class and need to be assigned as properties
+                if matches!(self.mode, TransformMode::Workflow) {
+                    for (class_name, method_name, step_id) in
+                        self.static_step_methods_to_strip.drain(..)
+                    {
+                        // Create: ClassName.methodName = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id")
+                        let proxy_expr = Expr::Call(CallExpr {
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                                span: DUMMY_SP,
+                                obj: Box::new(Expr::Ident(Ident::new(
+                                    "globalThis".into(),
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                ))),
+                                prop: MemberProp::Computed(ComputedPropName {
+                                    span: DUMMY_SP,
+                                    expr: Box::new(Expr::Call(CallExpr {
+                                        span: DUMMY_SP,
+                                        ctxt: SyntaxContext::empty(),
+                                        callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                                            span: DUMMY_SP,
+                                            obj: Box::new(Expr::Ident(Ident::new(
+                                                "Symbol".into(),
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                            ))),
+                                            prop: MemberProp::Ident(IdentName::new(
+                                                "for".into(),
+                                                DUMMY_SP,
+                                            )),
+                                        }))),
+                                        args: vec![ExprOrSpread {
+                                            spread: None,
+                                            expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                                span: DUMMY_SP,
+                                                value: "WORKFLOW_USE_STEP".into(),
+                                                raw: None,
+                                            }))),
+                                        }],
+                                        type_args: None,
+                                    })),
+                                }),
+                            }))),
+                            args: vec![ExprOrSpread {
+                                spread: None,
+                                expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                    span: DUMMY_SP,
+                                    value: step_id.into(),
+                                    raw: None,
+                                }))),
+                            }],
+                            type_args: None,
+                        });
+
+                        let assignment = Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Assign(AssignExpr {
+                                span: DUMMY_SP,
+                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
+                                    MemberExpr {
+                                        span: DUMMY_SP,
+                                        obj: Box::new(Expr::Ident(Ident::new(
+                                            class_name.into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        ))),
+                                        prop: MemberProp::Ident(IdentName::new(
+                                            method_name.into(),
+                                            DUMMY_SP,
+                                        )),
+                                    },
+                                )),
+                                op: AssignOp::Assign,
+                                right: Box::new(proxy_expr),
+                            })),
+                        });
+                        module.body.push(ModuleItem::Stmt(assignment));
+                    }
+                }
+
+                // Add static method workflow registrations (workflowId and __private_workflows.set)
+                if matches!(self.mode, TransformMode::Workflow) {
+                    for (class_name, method_name, workflow_id, _span) in
+                        self.static_method_workflow_registrations.drain(..)
+                    {
+                        // Add ClassName.methodName.workflowId = "workflow_id"
+                        let workflow_id_assignment = Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Assign(AssignExpr {
+                                span: DUMMY_SP,
+                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
+                                    MemberExpr {
+                                        span: DUMMY_SP,
+                                        obj: Box::new(Expr::Member(MemberExpr {
+                                            span: DUMMY_SP,
+                                            obj: Box::new(Expr::Ident(Ident::new(
+                                                class_name.clone().into(),
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                            ))),
+                                            prop: MemberProp::Ident(IdentName::new(
+                                                method_name.clone().into(),
+                                                DUMMY_SP,
+                                            )),
+                                        })),
+                                        prop: MemberProp::Ident(IdentName::new(
+                                            "workflowId".into(),
+                                            DUMMY_SP,
+                                        )),
+                                    },
+                                )),
+                                op: AssignOp::Assign,
+                                right: Box::new(Expr::Lit(Lit::Str(Str {
+                                    span: DUMMY_SP,
+                                    value: workflow_id.clone().into(),
+                                    raw: None,
+                                }))),
+                            })),
+                        });
+                        module.body.push(ModuleItem::Stmt(workflow_id_assignment));
+
+                        // Add globalThis.__private_workflows.set("workflow_id", ClassName.methodName)
+                        let workflows_set_call = Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Call(CallExpr {
+                                span: DUMMY_SP,
+                                ctxt: SyntaxContext::empty(),
+                                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                                    span: DUMMY_SP,
+                                    obj: Box::new(Expr::Member(MemberExpr {
+                                        span: DUMMY_SP,
+                                        obj: Box::new(Expr::Ident(Ident::new(
+                                            "globalThis".into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        ))),
+                                        prop: MemberProp::Ident(IdentName::new(
+                                            "__private_workflows".into(),
+                                            DUMMY_SP,
+                                        )),
+                                    })),
+                                    prop: MemberProp::Ident(IdentName::new("set".into(), DUMMY_SP)),
+                                }))),
+                                args: vec![
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                            span: DUMMY_SP,
+                                            value: workflow_id.into(),
+                                            raw: None,
+                                        }))),
+                                    },
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Member(MemberExpr {
+                                            span: DUMMY_SP,
+                                            obj: Box::new(Expr::Ident(Ident::new(
+                                                class_name.into(),
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                            ))),
+                                            prop: MemberProp::Ident(IdentName::new(
+                                                method_name.into(),
+                                                DUMMY_SP,
+                                            )),
+                                        })),
+                                    },
+                                ],
+                                type_args: None,
+                            })),
+                        });
+                        module.body.push(ModuleItem::Stmt(workflows_set_call));
+                    }
+                } else if matches!(self.mode, TransformMode::Step | TransformMode::Client) {
+                    // For step/client mode, just add the workflowId assignment
+                    for (class_name, method_name, workflow_id, _span) in
+                        self.static_method_workflow_registrations.drain(..)
+                    {
+                        let workflow_id_assignment = Stmt::Expr(ExprStmt {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Assign(AssignExpr {
+                                span: DUMMY_SP,
+                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
+                                    MemberExpr {
+                                        span: DUMMY_SP,
+                                        obj: Box::new(Expr::Member(MemberExpr {
+                                            span: DUMMY_SP,
+                                            obj: Box::new(Expr::Ident(Ident::new(
+                                                class_name.into(),
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                            ))),
+                                            prop: MemberProp::Ident(IdentName::new(
+                                                method_name.into(),
+                                                DUMMY_SP,
+                                            )),
+                                        })),
+                                        prop: MemberProp::Ident(IdentName::new(
+                                            "workflowId".into(),
+                                            DUMMY_SP,
+                                        )),
+                                    },
+                                )),
+                                op: AssignOp::Assign,
+                                right: Box::new(Expr::Lit(Lit::Str(Str {
+                                    span: DUMMY_SP,
+                                    value: workflow_id.into(),
+                                    raw: None,
+                                }))),
+                            })),
+                        });
+                        module.body.push(ModuleItem::Stmt(workflow_id_assignment));
                     }
                 }
 
@@ -3859,19 +4158,20 @@ impl VisitMut for StepTransform {
                     if self.workflow_function_names.contains(&fn_name) {
                         items_to_insert.push((
                             i + 1,
-                            ModuleItem::Stmt(self.create_workflow_id_assignment(
-                                &fn_name,
-                                fn_decl.function.span,
-                            )),
+                            ModuleItem::Stmt(
+                                self.create_workflow_id_assignment(&fn_name, fn_decl.function.span),
+                            ),
                         ));
                         // In workflow mode, also register the workflow function
                         if self.mode == TransformMode::Workflow {
                             items_to_insert.push((
                                 i + 1,
-                                ModuleItem::Stmt(self.create_workflow_registration(
-                                    &fn_name,
-                                    fn_decl.function.span,
-                                )),
+                                ModuleItem::Stmt(
+                                    self.create_workflow_registration(
+                                        &fn_name,
+                                        fn_decl.function.span,
+                                    ),
+                                ),
                             ));
                         }
                     }
@@ -3923,8 +4223,7 @@ impl VisitMut for StepTransform {
         // Handle default workflow exports (all modes)
         // We need to: 1) find the export default position, 2) replace it with const declaration,
         // 3) add workflowId assignment, 4) add export default at the end
-        if !self.default_workflow_exports.is_empty()
-        {
+        if !self.default_workflow_exports.is_empty() {
             let default_workflows: Vec<_> = self.default_workflow_exports.drain(..).collect();
             let default_exports: Vec<_> = self.default_exports_to_replace.drain(..).collect();
 
@@ -4722,22 +5021,20 @@ impl VisitMut for StepTransform {
                                                     let error_expr = Expr::New(NewExpr {
                                                         span: DUMMY_SP,
                                                         ctxt: SyntaxContext::empty(),
-                                                        callee: Box::new(Expr::Ident(
-                                                            Ident::new(
-                                                                "Error".into(),
-                                                                DUMMY_SP,
-                                                                SyntaxContext::empty(),
-                                                            ),
-                                                        )),
+                                                        callee: Box::new(Expr::Ident(Ident::new(
+                                                            "Error".into(),
+                                                            DUMMY_SP,
+                                                            SyntaxContext::empty(),
+                                                        ))),
                                                         args: Some(vec![ExprOrSpread {
                                                             spread: None,
-                                                            expr: Box::new(Expr::Lit(
-                                                                Lit::Str(Str {
+                                                            expr: Box::new(Expr::Lit(Lit::Str(
+                                                                Str {
                                                                     span: DUMMY_SP,
                                                                     value: error_msg.into(),
                                                                     raw: None,
-                                                                }),
-                                                            )),
+                                                                },
+                                                            ))),
                                                         }]),
                                                         type_args: None,
                                                     });
@@ -4745,12 +5042,10 @@ impl VisitMut for StepTransform {
                                                         BlockStmtOrExpr::BlockStmt(BlockStmt {
                                                             span: DUMMY_SP,
                                                             ctxt: SyntaxContext::empty(),
-                                                            stmts: vec![Stmt::Throw(
-                                                                ThrowStmt {
-                                                                    span: DUMMY_SP,
-                                                                    arg: Box::new(error_expr),
-                                                                },
-                                                            )],
+                                                            stmts: vec![Stmt::Throw(ThrowStmt {
+                                                                span: DUMMY_SP,
+                                                                arg: Box::new(error_expr),
+                                                            })],
                                                         }),
                                                     );
 
@@ -5446,6 +5741,84 @@ impl VisitMut for StepTransform {
         prop.visit_mut_children_with(self);
     }
 
+    // Handle class declarations to track class name for static methods
+    fn visit_mut_class_decl(&mut self, class_decl: &mut ClassDecl) {
+        let class_name = class_decl.ident.sym.to_string();
+        let old_class_name = self.current_class_name.take();
+        self.current_class_name = Some(class_name.clone());
+
+        // Visit the class body (this populates static_step_methods_to_strip)
+        class_decl.class.visit_mut_with(self);
+
+        // In workflow mode, remove static step methods from the class body
+        if matches!(self.mode, TransformMode::Workflow) {
+            let methods_to_strip: Vec<_> = self
+                .static_step_methods_to_strip
+                .iter()
+                .filter(|(cn, _, _)| cn == &class_name)
+                .map(|(_, mn, _)| mn.clone())
+                .collect();
+
+            if !methods_to_strip.is_empty() {
+                class_decl.class.body.retain(|member| {
+                    if let ClassMember::Method(method) = member {
+                        if method.is_static {
+                            if let PropName::Ident(ident) = &method.key {
+                                let method_name = ident.sym.to_string();
+                                return !methods_to_strip.contains(&method_name);
+                            }
+                        }
+                    }
+                    true
+                });
+            }
+        }
+
+        // Restore previous class name
+        self.current_class_name = old_class_name;
+    }
+
+    // Handle class expressions to track class name for static methods
+    fn visit_mut_class_expr(&mut self, class_expr: &mut ClassExpr) {
+        let class_name = class_expr
+            .ident
+            .as_ref()
+            .map(|i| i.sym.to_string())
+            .unwrap_or_else(|| "AnonymousClass".to_string());
+        let old_class_name = self.current_class_name.take();
+        self.current_class_name = Some(class_name.clone());
+
+        // Visit the class body (this populates static_step_methods_to_strip)
+        class_expr.class.visit_mut_with(self);
+
+        // In workflow mode, remove static step methods from the class body
+        if matches!(self.mode, TransformMode::Workflow) {
+            let methods_to_strip: Vec<_> = self
+                .static_step_methods_to_strip
+                .iter()
+                .filter(|(cn, _, _)| cn == &class_name)
+                .map(|(_, mn, _)| mn.clone())
+                .collect();
+
+            if !methods_to_strip.is_empty() {
+                class_expr.class.body.retain(|member| {
+                    if let ClassMember::Method(method) = member {
+                        if method.is_static {
+                            if let PropName::Ident(ident) = &method.key {
+                                let method_name = ident.sym.to_string();
+                                return !methods_to_strip.contains(&method_name);
+                            }
+                        }
+                    }
+                    true
+                });
+            }
+        }
+
+        // Restore previous class name
+        self.current_class_name = old_class_name;
+    }
+
     // Handle class methods
     fn visit_mut_class_method(&mut self, method: &mut ClassMethod) {
         if !method.is_static {
@@ -5474,7 +5847,154 @@ impl VisitMut for StepTransform {
             }
         } else {
             // Static methods can be step/workflow functions
-            method.visit_mut_children_with(self);
+            let has_step = self.has_use_step_directive(&method.function.body);
+            let has_workflow = self.has_use_workflow_directive(&method.function.body);
+
+            if has_step || has_workflow {
+                // Validate async
+                if !method.function.is_async {
+                    let directive = if has_step { "use step" } else { "use workflow" };
+                    emit_error(WorkflowErrorKind::NonAsyncFunction {
+                        span: method.function.span,
+                        directive,
+                    });
+                    return;
+                }
+
+                // Get method name
+                let method_name = match &method.key {
+                    PropName::Ident(ident) => ident.sym.to_string(),
+                    PropName::Str(s) => s.value.to_string_lossy().to_string(),
+                    _ => {
+                        // Complex key - skip
+                        method.visit_mut_children_with(self);
+                        return;
+                    }
+                };
+
+                // Get class name (must be set by visit_mut_class)
+                let class_name = match &self.current_class_name {
+                    Some(name) => name.clone(),
+                    None => {
+                        // No class context - shouldn't happen, but fall back
+                        method.visit_mut_children_with(self);
+                        return;
+                    }
+                };
+
+                // Generate full qualified name: ClassName.methodName
+                let full_name = format!("{}.{}", class_name, method_name);
+
+                if has_step {
+                    self.step_function_names.insert(full_name.clone());
+
+                    match self.mode {
+                        TransformMode::Step => {
+                            // Remove directive
+                            self.remove_use_step_directive(&mut method.function.body);
+
+                            // Generate step ID
+                            let step_id =
+                                self.create_id(Some(&full_name), method.function.span, false);
+
+                            // Track for registration after class
+                            self.static_method_step_registrations.push((
+                                class_name.clone(),
+                                method_name.clone(),
+                                step_id,
+                                method.function.span,
+                            ));
+                        }
+                        TransformMode::Workflow => {
+                            // Generate step ID
+                            let step_id =
+                                self.create_id(Some(&full_name), method.function.span, false);
+
+                            // Track this method to be stripped from the class and assigned as a property
+                            self.static_step_methods_to_strip.push((
+                                class_name.clone(),
+                                method_name.clone(),
+                                step_id,
+                            ));
+                        }
+                        TransformMode::Client => {
+                            // Just remove directive, keep the function body
+                            self.remove_use_step_directive(&mut method.function.body);
+                        }
+                    }
+                } else if has_workflow {
+                    self.workflow_function_names.insert(full_name.clone());
+
+                    match self.mode {
+                        TransformMode::Workflow => {
+                            // Remove directive
+                            self.remove_use_workflow_directive(&mut method.function.body);
+
+                            // Generate workflow ID
+                            let workflow_id =
+                                self.create_id(Some(&full_name), method.function.span, true);
+
+                            // Track for registration after class
+                            self.static_method_workflow_registrations.push((
+                                class_name.clone(),
+                                method_name.clone(),
+                                workflow_id,
+                                method.function.span,
+                            ));
+                        }
+                        TransformMode::Step | TransformMode::Client => {
+                            // Remove directive and replace body with error
+                            if has_workflow {
+                                self.remove_use_workflow_directive(&mut method.function.body);
+                            }
+
+                            // Generate workflow ID
+                            let workflow_id =
+                                self.create_id(Some(&full_name), method.function.span, true);
+
+                            // Replace body with error throw
+                            method.function.body = Some(BlockStmt {
+                                span: DUMMY_SP,
+                                ctxt: SyntaxContext::empty(),
+                                stmts: vec![Stmt::Throw(ThrowStmt {
+                                    span: DUMMY_SP,
+                                    arg: Box::new(Expr::New(NewExpr {
+                                        span: DUMMY_SP,
+                                        ctxt: SyntaxContext::empty(),
+                                        callee: Box::new(Expr::Ident(Ident::new(
+                                            "Error".into(),
+                                            DUMMY_SP,
+                                            SyntaxContext::empty(),
+                                        ))),
+                                        args: Some(vec![ExprOrSpread {
+                                            spread: None,
+                                            expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                                span: DUMMY_SP,
+                                                value: format!(
+                                                    "You attempted to execute workflow {} function directly. To start a workflow, use start(workflow) from workflow/api",
+                                                    full_name
+                                                ).into(),
+                                                raw: None,
+                                            }))),
+                                        }]),
+                                        type_args: None,
+                                    })),
+                                })],
+                            });
+
+                            // Track for workflowId assignment
+                            self.static_method_workflow_registrations.push((
+                                class_name.clone(),
+                                method_name.clone(),
+                                workflow_id,
+                                method.function.span,
+                            ));
+                        }
+                    }
+                }
+            } else {
+                method.visit_mut_children_with(self);
+            }
         }
     }
 

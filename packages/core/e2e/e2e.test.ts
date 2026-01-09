@@ -1175,4 +1175,63 @@ describe('e2e', () => {
       expect(runData.output).toBe('pathsAliasHelper');
     }
   );
+
+  // ==================== STATIC METHOD STEP/WORKFLOW TESTS ====================
+  // Tests for static methods on classes with "use step" and "use workflow" directives.
+  // Note: `this` serialization is not yet supported, so these methods do not use `this`.
+
+  test(
+    'Calculator.calculate - static workflow method using static step methods from another class',
+    { timeout: 60_000 },
+    async () => {
+      // Calculator.calculate(5, 3) should:
+      // 1. MathService.add(5, 3) = 8
+      // 2. MathService.multiply(8, 2) = 16
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'Calculator.calculate',
+        },
+        [5, 3]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(16);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(16);
+    }
+  );
+
+  test(
+    'AllInOneService.processNumber - static workflow method using sibling static step methods',
+    { timeout: 60_000 },
+    async () => {
+      // AllInOneService.processNumber(10) should:
+      // 1. AllInOneService.double(10) = 20
+      // 2. AllInOneService.triple(10) = 30
+      // 3. return 20 + 30 = 50
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'AllInOneService.processNumber',
+        },
+        [10]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(50);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(50);
+    }
+  );
 });
