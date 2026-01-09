@@ -814,12 +814,16 @@ export class ChainableService {
     sum: number;
   }> {
     'use workflow';
-    // When calling static methods, `this` is the class constructor (ChainableService)
-    // The class constructor should be serialized and passed to the step
-    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
-    const multiplied = await this.multiplyByClassValue(n);
-    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
-    const doubledAndMultiplied = await this.doubleAndMultiply(n);
+    // When calling static methods via ClassName.method(), `this` inside the step
+    // will be the class constructor (ChainableService). The class constructor
+    // is serialized with its classId and passed to the step handler.
+    //
+    // NOTE: We use `ChainableService.method()` here instead of `this.method()` because
+    // the `this` argument is not currently passed through when invoking a workflow via
+    // `start()`. Workflows are executed as standalone functions, so `this` inside the
+    // workflow body is undefined. This could be revisited in the future if needed.
+    const multiplied = await ChainableService.multiplyByClassValue(n);
+    const doubledAndMultiplied = await ChainableService.doubleAndMultiply(n);
 
     return {
       multiplied, // n * 10
