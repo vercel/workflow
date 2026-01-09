@@ -150,11 +150,20 @@ async function startWebServer(webPort: number): Promise<boolean> {
 
     // Start the Next.js server WITHOUT detaching
     // This keeps it attached to the CLI process
+    //
+    // IMPORTANT: We need to clear WORKFLOW_TARGET_WORLD from the environment
+    // so the web UI starts in "dynamic mode" where config comes from query params.
+    // If WORKFLOW_TARGET_WORLD is set, the web UI enters "self-hosted mode" where
+    // the config is locked to the server's env vars and query params are ignored.
+    const serverEnv = { ...process.env };
+    delete serverEnv.WORKFLOW_TARGET_WORLD;
+
     serverProcess = spawn(command, args, {
       shell: true,
       cwd: packagePath,
       detached: false, // Keep attached so Ctrl+C works
       stdio: ['ignore', 'pipe', 'pipe'], // Pipe output so we can log it if needed
+      env: serverEnv,
     });
 
     // Register cleanup handlers to ensure server is killed on exit
