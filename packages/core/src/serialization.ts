@@ -10,8 +10,8 @@ import {
 import {
   getSerializationClass,
   getSerializationClassId,
-  getStepFunction,
-} from './private.js';
+} from './class-serialization.js';
+import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
 import {

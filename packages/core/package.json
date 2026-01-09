@@ -24,6 +24,7 @@
     },
     "./runtime": "./dist/runtime.js",
     "./private": "./dist/private.js",
+    "./class-serialization": "./dist/class-serialization.js",
     "./builtins": "./dist/builtins.js",
     "./serialization": "./dist/serialization.js",
     "./observability": {

@@ -2021,12 +2021,11 @@ impl StepTransform {
         }
     }
 
-    // Generate the import for registerStepFunction and registerSerializationClass (step mode)
+    // Generate the import for registerStepFunction and __private_getClosureVars (step mode)
     fn create_private_imports(
         &self,
         include_register: bool,
         include_closure_vars: bool,
-        include_class_serialization: bool,
     ) -> ModuleItem {
         let mut specifiers = vec![];
 
@@ -2056,8 +2055,27 @@ impl StepTransform {
             }));
         }
 
-        if include_class_serialization {
-            specifiers.push(ImportSpecifier::Named(ImportNamedSpecifier {
+        ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
+            span: DUMMY_SP,
+            specifiers,
+            src: Box::new(Str {
+                span: DUMMY_SP,
+                value: "workflow/internal/private".into(),
+                raw: None,
+            }),
+            type_only: false,
+            with: None,
+            phase: ImportPhase::Evaluation,
+        }))
+    }
+
+    // Generate the import for registerSerializationClass from a Node.js-free module (workflow mode)
+    // This is separate from create_private_imports to avoid pulling in Node.js dependencies
+    // (like async_hooks) in workflow bundles.
+    fn create_class_serialization_import(&self) -> ModuleItem {
+        ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
+            span: DUMMY_SP,
+            specifiers: vec![ImportSpecifier::Named(ImportNamedSpecifier {
                 span: DUMMY_SP,
                 local: Ident::new(
                     "registerSerializationClass".into(),
@@ -2066,15 +2084,10 @@ impl StepTransform {
                 ),
                 imported: None,
                 is_type_only: false,
-            }));
-        }
-
-        ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
-            span: DUMMY_SP,
-            specifiers,
+            })],
             src: Box::new(Str {
                 span: DUMMY_SP,
-                value: "workflow/internal/private".into(),
+                value: "workflow/internal/class-serialization".into(),
                 raw: None,
             }),
             type_only: false,
@@ -3056,14 +3069,11 @@ impl VisitMut for StepTransform {
                 match self.mode {
                     TransformMode::Workflow => {
                         // Check if we need to register classes for serialization (for `this` serialization)
+                        // Use the separate class-serialization import to avoid Node.js dependencies
                         let needs_class_serialization =
                             !self.classes_needing_serialization.is_empty();
                         if needs_class_serialization {
-                            imports_to_add.push(self.create_private_imports(
-                                false,
-                                false,
-                                needs_class_serialization,
-                            ));
+                            imports_to_add.push(self.create_class_serialization_import());
                         }
                     }
                     TransformMode::Step => {
@@ -3083,15 +3093,16 @@ impl VisitMut for StepTransform {
                         let needs_class_serialization =
                             !self.classes_needing_serialization.is_empty();
 
-                        if needs_register_import
-                            || needs_closure_import
-                            || needs_class_serialization
-                        {
+                        if needs_register_import || needs_closure_import {
                             imports_to_add.push(self.create_private_imports(
                                 needs_register_import,
                                 needs_closure_import,
-                                needs_class_serialization,
                             ));
+                        }
+
+                        // Add separate import for class serialization
+                        if needs_class_serialization {
+                            imports_to_add.push(self.create_class_serialization_import());
                         }
                     }
                     TransformMode::Client => {
@@ -3772,12 +3783,14 @@ impl VisitMut for StepTransform {
                         TransformMode::Step => {
                             let needs_class_serialization =
                                 !self.classes_needing_serialization.is_empty();
-                            if !self.registration_calls.is_empty() || needs_class_serialization {
+                            if !self.registration_calls.is_empty() {
                                 module_items.push(self.create_private_imports(
-                                    !self.registration_calls.is_empty(),
+                                    true,
                                     false,
-                                    needs_class_serialization,
                                 ));
+                            }
+                            if needs_class_serialization {
+                                module_items.push(self.create_class_serialization_import());
                             }
                         }
                         TransformMode::Client => {
