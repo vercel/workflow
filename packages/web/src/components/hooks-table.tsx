@@ -2,6 +2,7 @@
 
 import {
   cancelRun,
+  type EnvMap,
   getErrorMessage,
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
@@ -45,14 +46,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { worldConfigToEnvMap } from '@/lib/config';
-import type { WorldConfig } from '@/lib/config-world';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { TableSkeleton } from './display-utils/table-skeleton';
 
 interface HooksTableProps {
-  config: WorldConfig;
   runId?: string;
   onHookClick: (hookId: string, runId?: string) => void;
   selectedHookId?: string;
@@ -68,9 +66,11 @@ interface InvocationData {
  * HooksTable - Displays hooks with server-side pagination.
  * Uses the PaginatingTable pattern similar to RunsTable.
  * Fetches invocation counts in the background for each hook.
+ *
+ * World configuration is read from server-side environment variables.
+ * The env object passed to server actions is empty - the server uses process.env.
  */
 export function HooksTable({
-  config,
   runId,
   onHookClick,
   selectedHookId,
@@ -78,7 +78,8 @@ export function HooksTable({
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
-  const env = useMemo(() => worldConfigToEnvMap(config), [config]);
+  // Empty env object - server actions read from process.env
+  const env: EnvMap = useMemo(() => ({}), []);
 
   const {
     data,

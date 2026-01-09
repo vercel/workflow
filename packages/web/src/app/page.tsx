@@ -8,11 +8,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { WorkflowsList } from '@/components/workflows-list';
 import { buildUrlWithConfig } from '@/lib/config';
 import { useHookIdState, useSidebarState, useTabState } from '@/lib/url-state';
-import { useWorldConfig } from '@/lib/world-config-context';
+import { useServerConfig } from '@/lib/world-config-context';
 
 export default function Home() {
   const router = useRouter();
-  const { config } = useWorldConfig();
+  const { serverConfig } = useServerConfig();
   const [sidebar] = useSidebarState();
   const [hookId] = useHookIdState();
   const [tab, setTab] = useTabState();
@@ -20,28 +20,28 @@ export default function Home() {
   const selectedHookId = sidebar === 'hook' && hookId ? hookId : undefined;
 
   // Only show workflows tab for local backend
-  const isLocalBackend = config.backend === 'local';
+  const isLocalBackend =
+    serverConfig.backendId === 'local' ||
+    serverConfig.backendId === '@workflow/world-local';
 
   const handleRunClick = (runId: string, streamId?: string) => {
     if (!streamId) {
-      router.push(buildUrlWithConfig(`/run/${runId}`, config));
+      router.push(buildUrlWithConfig(`/run/${runId}`));
     } else {
-      router.push(
-        buildUrlWithConfig(`/run/${runId}/streams/${streamId}`, config)
-      );
+      router.push(buildUrlWithConfig(`/run/${runId}/streams/${streamId}`));
     }
   };
 
   const handleHookSelect = (hookId: string, runId?: string) => {
     if (hookId) {
       router.push(
-        buildUrlWithConfig(`/run/${runId}`, config, {
+        buildUrlWithConfig(`/run/${runId}`, {
           sidebar: 'hook',
           hookId,
         })
       );
     } else {
-      router.push(buildUrlWithConfig(`/run/${runId}`, config));
+      router.push(buildUrlWithConfig(`/run/${runId}`));
     }
   };
 
@@ -60,7 +60,7 @@ export default function Home() {
             title="Runs Error"
             description="Failed to load workflow runs. Please try refreshing the page."
           >
-            <RunsTable config={config} onRunClick={handleRunClick} />
+            <RunsTable onRunClick={handleRunClick} />
           </ErrorBoundary>
         </TabsContent>
         <TabsContent value="hooks">
@@ -69,7 +69,6 @@ export default function Home() {
             description="Failed to load hooks. Please try refreshing the page."
           >
             <HooksTable
-              config={config}
               onHookClick={handleHookSelect}
               selectedHookId={selectedHookId}
             />
@@ -81,7 +80,7 @@ export default function Home() {
               title="Workflows Error"
               description="Failed to load workflow graph data. Please try refreshing the page."
             >
-              <WorkflowsList config={config} />
+              <WorkflowsList />
             </ErrorBoundary>
           </TabsContent>
         )}

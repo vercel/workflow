@@ -1,6 +1,7 @@
 'use client';
 
 import { TooltipProvider } from '@radix-ui/react-tooltip';
+import type { ServerConfig } from '@workflow/web-shared/server';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ThemeProvider, useTheme } from 'next-themes';
@@ -9,23 +10,18 @@ import { ConnectionStatus } from '@/components/display-utils/connection-status';
 import { SettingsDropdown } from '@/components/settings-dropdown';
 import { Toaster } from '@/components/ui/sonner';
 import { buildUrlWithConfig } from '@/lib/config';
-import {
-  WorldConfigProvider,
-  useWorldConfig,
-  type HardcodedConfig,
-} from '@/lib/world-config-context';
+import { ServerConfigProvider } from '@/lib/world-config-context';
 import { Logo } from '../icons/logo';
 
 interface LayoutClientProps {
   children: React.ReactNode;
-  hardcodedConfig?: HardcodedConfig;
+  serverConfig: ServerConfig;
 }
 
 function LayoutContent({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { config } = useWorldConfig();
   const { setTheme } = useTheme();
 
   const id = searchParams.get('id');
@@ -71,19 +67,19 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
         let targetUrl: string;
         if (stepId) {
           // Open run with step sidebar
-          targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
+          targetUrl = buildUrlWithConfig(`/run/${runId}`, {
             sidebar: 'step',
             stepId,
           });
         } else if (hookId) {
           // Open run with hook sidebar
-          targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
+          targetUrl = buildUrlWithConfig(`/run/${runId}`, {
             sidebar: 'hook',
             hookId,
           });
         } else {
           // Just open the run
-          targetUrl = buildUrlWithConfig(`/run/${runId}`, config);
+          targetUrl = buildUrlWithConfig(`/run/${runId}`);
         }
         hasNavigatedRef.current = true;
         router.push(targetUrl);
@@ -100,30 +96,30 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 
     let targetUrl: string;
     if (resource === 'run') {
-      targetUrl = buildUrlWithConfig(`/run/${id}`, config);
+      targetUrl = buildUrlWithConfig(`/run/${id}`);
     } else if (resource === 'step' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
+      targetUrl = buildUrlWithConfig(`/run/${runId}`, {
         sidebar: 'step',
         stepId: id,
       });
     } else if (resource === 'stream' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
+      targetUrl = buildUrlWithConfig(`/run/${runId}`, {
         sidebar: 'stream',
         streamId: id,
       });
     } else if (resource === 'event' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
+      targetUrl = buildUrlWithConfig(`/run/${runId}`, {
         sidebar: 'event',
         eventId: id,
       });
     } else if (resource === 'hook' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
+      targetUrl = buildUrlWithConfig(`/run/${runId}`, {
         sidebar: 'hook',
         hookId: id,
       });
     } else if (resource === 'hook' && !runId) {
       // Hook without runId - go to home page with hook sidebar
-      targetUrl = buildUrlWithConfig('/', config, {
+      targetUrl = buildUrlWithConfig('/', {
         sidebar: 'hook',
         hookId: id,
       });
@@ -134,7 +130,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 
     hasNavigatedRef.current = true;
     router.push(targetUrl);
-  }, [resource, id, runId, stepId, hookId, router, config, pathname]);
+  }, [resource, id, runId, stepId, hookId, router, pathname]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -142,7 +138,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
         {/* Sticky Header */}
         <div className="sticky top-0 z-50 bg-background border-b px-6 py-4">
           <div className="flex items-center justify-between w-full">
-            <Link href={buildUrlWithConfig('/', config)}>
+            <Link href="/">
               <h1
                 className="flex items-center gap-2"
                 title="Workflow Observability"
@@ -151,7 +147,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
               </h1>
             </Link>
             <div className="ml-auto flex items-center gap-2">
-              <ConnectionStatus config={config} />
+              <ConnectionStatus />
               <SettingsDropdown />
             </div>
           </div>
@@ -165,7 +161,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function LayoutClient({ children, hardcodedConfig }: LayoutClientProps) {
+export function LayoutClient({ children, serverConfig }: LayoutClientProps) {
   return (
     <ThemeProvider
       attribute="class"
@@ -174,9 +170,9 @@ export function LayoutClient({ children, hardcodedConfig }: LayoutClientProps) {
       disableTransitionOnChange
       storageKey="workflow-theme"
     >
-      <WorldConfigProvider hardcodedConfig={hardcodedConfig}>
+      <ServerConfigProvider serverConfig={serverConfig}>
         <LayoutContent>{children}</LayoutContent>
-      </WorldConfigProvider>
+      </ServerConfigProvider>
     </ThemeProvider>
   );
 }

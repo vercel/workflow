@@ -22,20 +22,43 @@ import type {
   World,
 } from '@workflow/world';
 
+/**
+ * Environment variable map for world configuration.
+ *
+ * NOTE: This type is still exported for potential future use cases where
+ * dynamic world configuration at runtime may be needed. Currently, the
+ * @workflow/web package uses server-side environment variables exclusively
+ * and does not pass EnvMap from the client. The server actions still accept
+ * this parameter for backwards compatibility and future extensibility.
+ */
 export type EnvMap = Record<string, string | undefined>;
 
 /**
- * Configuration that can be hardcoded via environment variables.
- * When WORKFLOW_TARGET_WORLD is set, the web UI operates in "self-hosted mode"
- * where the world configuration is locked and cannot be changed via query params.
+ * Server configuration info that is safe to send to the client.
+ * This deliberately excludes sensitive data like connection strings and auth tokens.
  */
-export interface HardcodedConfig {
-  /** Whether the config is hardcoded (self-hosted mode) */
-  isHardcoded: boolean;
-  /** The hardcoded environment map (only set if isHardcoded is true) */
-  envMap?: EnvMap;
-  /** Human-readable backend name for display */
-  backendDisplayName?: string;
+export interface ServerConfig {
+  /** Whether the world is configured (WORKFLOW_TARGET_WORLD or default is set) */
+  isConfigured: boolean;
+  /** Human-readable backend name for display (e.g., "PostgreSQL", "Local", "Vercel") */
+  backendDisplayName: string;
+  /** The raw backend identifier (e.g., "@workflow/world-postgres", "local", "vercel") */
+  backendId: string;
+  /** Non-sensitive display info specific to the backend type */
+  displayInfo: {
+    /** For Vercel: the environment (production/preview) */
+    environment?: string;
+    /** For Vercel: the project name (not ID) */
+    projectName?: string;
+    /** For Vercel: the team name (not ID) */
+    teamName?: string;
+    /** For Postgres: just the hostname (no credentials or full URL) */
+    hostname?: string;
+    /** For Postgres: the database name */
+    database?: string;
+    /** For Local: the data directory path */
+    dataDir?: string;
+  };
 }
 
 /**
@@ -52,13 +75,48 @@ function getBackendDisplayName(targetWorld: string | undefined): string {
     case 'postgres':
       return 'PostgreSQL';
     default:
+      // For custom worlds, try to make a readable name
+      if (targetWorld.startsWith('@')) {
+        // Extract package name without scope for display
+        const parts = targetWorld.split('/');
+        return parts[parts.length - 1] || targetWorld;
+      }
       return targetWorld;
   }
 }
 
 /**
+ * Extract hostname from a database URL without exposing credentials.
+ */
+function extractHostnameFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Extract database name from a postgres URL.
+ */
+function extractDatabaseFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    // pathname is like "/dbname", so remove leading slash
+    const dbName = parsed.pathname?.slice(1);
+    return dbName || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Build an EnvMap from server environment variables.
- * Used by both getHardcodedConfig and getWorldFromEnv.
+ * Used internally by getWorldFromEnv when no client EnvMap is provided
+ * or when using environment-based configuration.
  */
 function buildEnvMapFromProcessEnv(): EnvMap {
   return {
@@ -75,30 +133,55 @@ function buildEnvMapFromProcessEnv(): EnvMap {
 }
 
 /**
- * Check if the web UI is running in self-hosted mode with hardcoded configuration.
+ * Get server configuration info that is safe to send to the client.
  *
- * In self-hosted mode, the world configuration is determined by server-side
- * environment variables and cannot be changed via query parameters or the UI.
- * This is useful when deploying the observability UI to work with a specific
- * world backend.
- *
- * Self-hosted mode is activated when WORKFLOW_TARGET_WORLD is set on the server.
+ * This returns display-only information about the current world configuration
+ * without exposing sensitive data like connection strings or auth tokens.
+ * The web UI uses this to show the current connection status.
  */
-export async function getHardcodedConfig(): Promise<HardcodedConfig> {
+export async function getServerConfig(): Promise<ServerConfig> {
   const targetWorld = process.env.WORKFLOW_TARGET_WORLD;
 
-  // If WORKFLOW_TARGET_WORLD is not set, we're in dynamic mode
-  if (!targetWorld) {
-    return { isHardcoded: false };
+  // Determine the effective backend
+  // Default behavior matches createWorld: vercel if VERCEL_DEPLOYMENT_ID is set, else local
+  let effectiveBackend = targetWorld;
+  if (!effectiveBackend) {
+    effectiveBackend = process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local';
   }
 
-  // Self-hosted mode: build envMap from server environment variables
-  const envMap = buildEnvMapFromProcessEnv();
+  const backendDisplayName = getBackendDisplayName(effectiveBackend);
+  const displayInfo: ServerConfig['displayInfo'] = {};
+
+  // Populate non-sensitive display info based on backend type
+  if (
+    effectiveBackend === 'vercel' ||
+    effectiveBackend === '@workflow/world-vercel'
+  ) {
+    displayInfo.environment = process.env.WORKFLOW_VERCEL_ENV || 'production';
+    // Note: We show the IDs as-is since they're not sensitive
+    // In a future enhancement, we could resolve these to actual names via Vercel API
+    displayInfo.projectName = process.env.WORKFLOW_VERCEL_PROJECT;
+    displayInfo.teamName = process.env.WORKFLOW_VERCEL_TEAM;
+  } else if (
+    effectiveBackend === '@workflow/world-postgres' ||
+    effectiveBackend === 'postgres'
+  ) {
+    const postgresUrl = process.env.WORKFLOW_POSTGRES_URL;
+    displayInfo.hostname = extractHostnameFromUrl(postgresUrl);
+    displayInfo.database = extractDatabaseFromUrl(postgresUrl);
+  } else if (
+    effectiveBackend === 'local' ||
+    effectiveBackend === '@workflow/world-local'
+  ) {
+    displayInfo.dataDir =
+      process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data';
+  }
 
   return {
-    isHardcoded: true,
-    envMap,
-    backendDisplayName: getBackendDisplayName(targetWorld),
+    isConfigured: true,
+    backendDisplayName,
+    backendId: effectiveBackend,
+    displayInfo,
   };
 }
 
@@ -133,29 +216,44 @@ export type ServerActionResult<T> =
   | { success: false; error: ServerActionError };
 
 /**
- * Cache for World instances keyed by envMap
+ * Cache for World instances keyed by envMap.
  *
- * IMPORTANT: This cache works under the assumption that if the UI is used to look at
- * different worlds, the user should pass all relevant variables via EnvMap, instead of
- * setting them directly on their Next.js instance. If environment variables are set
- * directly on process.env, the cached World may operate with incorrect environment
- * configuration.
+ * When using server-side environment variables (the recommended approach),
+ * there will typically only be one cached World instance since the env config
+ * doesn't change at runtime.
+ *
+ * The cache key is derived from the effective EnvMap to support potential
+ * future use cases where dynamic world switching may be needed.
  */
 const worldCache = new Map<string, World>();
 
 /**
- * Check if running in self-hosted mode (WORKFLOW_TARGET_WORLD is set on server).
- * This is a synchronous check used internally by getWorldFromEnv.
+ * Get or create a World instance based on configuration.
+ *
+ * Configuration priority:
+ * 1. If server-side environment variables are set (WORKFLOW_TARGET_WORLD, etc.),
+ *    those are used and the envMap parameter is ignored. This is the standard
+ *    mode used by the @workflow/web package.
+ *
+ * 2. If no server-side env vars are set but envMap is provided, the envMap
+ *    values are used. This mode is reserved for future use cases where
+ *    dynamic world configuration at runtime may be needed (e.g., a multi-tenant
+ *    observability dashboard).
+ *
+ * 3. If neither is set, createWorld() falls back to its default behavior
+ *    (vercel if VERCEL_DEPLOYMENT_ID is set, otherwise local).
+ *
+ * @param envMap - Optional environment map for dynamic configuration (reserved for future use)
  */
-function isHardcodedMode(): boolean {
-  return !!process.env.WORKFLOW_TARGET_WORLD;
-}
-
 function getWorldFromEnv(envMap: EnvMap) {
-  // In self-hosted mode, ignore the client-provided envMap and use server env vars
-  const effectiveEnvMap = isHardcodedMode()
-    ? buildEnvMapFromProcessEnv()
-    : envMap;
+  // Determine the effective configuration to use
+  // Priority: server env vars > provided envMap > defaults
+  const serverEnvMap = buildEnvMapFromProcessEnv();
+  const hasServerConfig = Object.values(serverEnvMap).some(
+    (v) => v !== undefined && v !== ''
+  );
+
+  const effectiveEnvMap = hasServerConfig ? serverEnvMap : envMap;
 
   // Generate stable cache key from envMap
   const sortedKeys = Object.keys(effectiveEnvMap).sort();
@@ -163,14 +261,12 @@ function getWorldFromEnv(envMap: EnvMap) {
   const cacheKey = JSON.stringify(Object.fromEntries(sortedEntries));
 
   // Check if we have a cached World for this configuration
-  // Note: This returns the cached World without re-setting process.env.
-  // See comment above worldCache for important usage assumptions.
   const cachedWorld = worldCache.get(cacheKey);
   if (cachedWorld) {
     return cachedWorld;
   }
 
-  // No cached World found, create a new one
+  // No cached World found, set environment variables and create a new one
   for (const [key, value] of Object.entries(effectiveEnvMap)) {
     if (value === undefined || value === null || value === '') {
       continue;

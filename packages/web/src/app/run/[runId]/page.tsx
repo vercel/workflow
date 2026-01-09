@@ -8,11 +8,9 @@ import {
   useHookIdState,
   useStepIdState,
 } from '@/lib/url-state';
-import { useWorldConfig } from '@/lib/world-config-context';
 
 export default function RunDetailPage() {
   const params = useParams();
-  const { config } = useWorldConfig();
   const [stepId] = useStepIdState();
   const [eventId] = useEventIdState();
   const [hookId] = useHookIdState();
@@ -25,7 +23,7 @@ export default function RunDetailPage() {
       title="Run Detail Error"
       description="Failed to load run details. Please try navigating back to the home page."
     >
-      <RunDetailView config={config} runId={runId} selectedId={selectedId} />
+      <RunDetailView runId={runId} selectedId={selectedId} />
     </ErrorBoundary>
   );
 }

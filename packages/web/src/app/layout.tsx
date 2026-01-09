@@ -3,7 +3,7 @@ import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
 import { connection } from 'next/server';
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
-import { getHardcodedConfig } from '@workflow/web-shared/server';
+import { getServerConfig } from '@workflow/web-shared/server';
 import { LayoutClient } from './layout-client';
 
 const geistSans = Geist({
@@ -31,8 +31,8 @@ export default async function RootLayout({
   // and move the config/search params code to server-compatible pattern
   await connection();
 
-  // Check if running in self-hosted mode with hardcoded config
-  const hardcodedConfig = await getHardcodedConfig();
+  // Get server configuration (display info only, no sensitive data)
+  const serverConfig = await getServerConfig();
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -40,9 +40,7 @@ export default async function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <NuqsAdapter>
-          <LayoutClient hardcodedConfig={hardcodedConfig}>
-            {children}
-          </LayoutClient>
+          <LayoutClient serverConfig={serverConfig}>{children}</LayoutClient>
         </NuqsAdapter>
       </body>
     </html>

@@ -1,107 +1,84 @@
 'use client';
 
-import { InfoIcon, Lock } from 'lucide-react';
+import { InfoIcon } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import type { WorkflowDataDirInfo, WorldConfig } from '@/lib/config-world';
-import { useDataDirInfo } from '@/lib/hooks';
-import { useWorldConfig } from '@/lib/world-config-context';
+import { useServerConfig } from '@/lib/world-config-context';
 
-interface ConnectionStatusProps {
-  config: WorldConfig;
-}
+/**
+ * Displays the current world connection status.
+ *
+ * This component shows information from the server configuration,
+ * which never includes sensitive data like connection strings or auth tokens.
+ */
+export function ConnectionStatus() {
+  const { serverConfig } = useServerConfig();
+  const { backendDisplayName, backendId, displayInfo } = serverConfig;
 
-const getConnectionInfo = (
-  backend: string,
-  config: WorldConfig,
-  dataDirInfo: WorkflowDataDirInfo | null | undefined,
-  isHardcoded: boolean,
-  backendDisplayName?: string
-): { provider: string; parts: string[] } => {
-  // In hardcoded mode, use the display name from server
-  if (isHardcoded && backendDisplayName) {
-    const parts: string[] = ['Configuration locked via environment variables'];
-    return { provider: backendDisplayName, parts };
-  }
+  // Build display parts from the server config
+  const parts: string[] = [];
 
-  if (backend === 'vercel') {
-    const parts: string[] = [];
-    if (config.env) parts.push(`env: ${config.env}`);
-    if (config.project) parts.push(`project: ${config.project}`);
-    if (config.team) parts.push(`team: ${config.team}`);
-
-    return { provider: 'Vercel', parts };
-  }
-
-  if (backend === 'local') {
-    // Local backend - show projectDir instead of raw dataDir
-    const parts: string[] = [];
-    if (dataDirInfo?.projectDir) {
-      parts.push(`project: ${dataDirInfo.projectDir}`);
+  if (backendId === 'vercel' || backendId === '@workflow/world-vercel') {
+    if (displayInfo.environment) {
+      parts.push(`environment: ${displayInfo.environment}`);
     }
-    if (config.port) parts.push(`port: ${config.port}`);
-
-    return { provider: 'Local', parts };
-  }
-
-  if (backend === 'postgres') {
-    const parts: string[] = [];
-    if (config.postgresUrl) {
-      // Only show host info, not credentials
-      try {
-        const url = new URL(config.postgresUrl);
-        parts.push(`host: ${url.hostname}`);
-        if (url.pathname && url.pathname !== '/') {
-          parts.push(`database: ${url.pathname.slice(1)}`);
-        }
-      } catch {
-        parts.push('Connection URL configured');
-      }
+    if (displayInfo.projectName) {
+      parts.push(`project: ${displayInfo.projectName}`);
     }
-    return { provider: 'PostgreSQL', parts };
+    if (displayInfo.teamName) {
+      parts.push(`team: ${displayInfo.teamName}`);
+    }
+  } else if (
+    backendId === '@workflow/world-postgres' ||
+    backendId === 'postgres'
+  ) {
+    if (displayInfo.hostname) {
+      parts.push(`host: ${displayInfo.hostname}`);
+    }
+    if (displayInfo.database) {
+      parts.push(`database: ${displayInfo.database}`);
+    }
+  } else if (backendId === 'local' || backendId === '@workflow/world-local') {
+    if (displayInfo.dataDir) {
+      parts.push(`data: ${displayInfo.dataDir}`);
+    }
   }
 
-  return { provider: config.backend || 'unknown', parts: [] };
-};
+  // Determine subtitle for display
+  let subString: string | undefined;
+  if (backendId === 'vercel' || backendId === '@workflow/world-vercel') {
+    subString = displayInfo.environment;
+  } else if (backendId === 'local' || backendId === '@workflow/world-local') {
+    subString = displayInfo.dataDir;
+  } else if (
+    backendId === '@workflow/world-postgres' ||
+    backendId === 'postgres'
+  ) {
+    subString = displayInfo.hostname;
+  }
 
-export function ConnectionStatus({ config }: ConnectionStatusProps) {
-  const { isHardcoded, backendDisplayName } = useWorldConfig();
-  const backend = config.backend || 'local';
-  const { data: dataDirInfo } = useDataDirInfo(config.dataDir);
-  const { provider, parts } = getConnectionInfo(
-    backend,
-    config,
-    dataDirInfo,
-    isHardcoded,
-    backendDisplayName
-  );
-  const subString =
-    backend === 'local'
-      ? dataDirInfo?.shortName
-      : backend === 'vercel'
-        ? config.env
-        : undefined;
   return (
     <div className="text-sm text-muted-foreground flex items-center gap-2">
-      {isHardcoded && <Lock className="w-3 h-3" />}
       <span className="font-medium">
-        Connected to: {provider} {subString ? `(${subString})` : ''}
+        Connected to: {backendDisplayName} {subString ? `(${subString})` : ''}
       </span>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <InfoIcon className="w-4 h-4" />
-        </TooltipTrigger>
-        <TooltipContent>
-          <div className="flex flex-col gap-1">
-            {parts.map((part) => (
-              <span key={part}>{part}</span>
-            ))}
-          </div>
-        </TooltipContent>
-      </Tooltip>
+      {parts.length > 0 && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <InfoIcon className="w-4 h-4 cursor-help" />
+          </TooltipTrigger>
+          <TooltipContent>
+            <div className="flex flex-col gap-1">
+              {parts.map((part) => (
+                <span key={part}>{part}</span>
+              ))}
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      )}
     </div>
   );
 }

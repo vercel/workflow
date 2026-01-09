@@ -52,10 +52,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { worldConfigToEnvMap } from '@/lib/config';
-import type { WorldConfig } from '@/lib/config-world';
 import { useDataDirInfo } from '@/lib/hooks';
 import { useTableSelection } from '@/lib/hooks/use-table-selection';
+import { useServerConfig } from '@/lib/world-config-context';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { SelectionBar } from './display-utils/selection-bar';
@@ -164,7 +163,6 @@ function LazyDropdownMenu({
 }
 
 interface RunsTableProps {
-  config: WorldConfig;
   onRunClick: (runId: string) => void;
 }
 
@@ -363,11 +361,15 @@ function FilterControls({
  * RunsTable - Displays workflow runs with server-side pagination.
  * Uses the PaginatingTable pattern: fetches data for each page as needed from the server.
  * The table and fetching behavior are intertwined - pagination controls trigger new API calls.
+ *
+ * World configuration is read from server-side environment variables.
+ * The env object passed to server actions is empty - the server uses process.env.
  */
-export function RunsTable({ config, onRunClick }: RunsTableProps) {
+export function RunsTable({ onRunClick }: RunsTableProps) {
   const searchParams = useSearchParams();
   const handleWorkflowFilter = useWorkflowFilter();
   const handleStatusFilter = useStatusFilter();
+  const { serverConfig } = useServerConfig();
 
   // Validate status parameter - only allow known valid statuses or 'all'
   const rawStatus = searchParams.get('status');
@@ -383,15 +385,18 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
-  const env = useMemo(() => worldConfigToEnvMap(config), [config]);
-  const isLocal = config.backend === 'local' || !config.backend;
+  // Empty env object - server actions read from process.env
+  const env: EnvMap = useMemo(() => ({}), []);
+  const isLocal =
+    serverConfig.backendId === 'local' ||
+    serverConfig.backendId === '@workflow/world-local';
   const { data: dataDirInfo, isLoading: dataDirInfoLoading } = useDataDirInfo(
-    config.dataDir
+    serverConfig.displayInfo.dataDir ?? ''
   );
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
-    config.backend?.includes('vercel') || false;
+    serverConfig.backendId?.includes('vercel') || false;
   // TODO: This is a workaround. We should be getting a list of valid workflow names
   // from the manifest.
   const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(

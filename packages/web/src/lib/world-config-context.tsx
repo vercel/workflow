@@ -1,124 +1,69 @@
 'use client';
 
-import type { EnvMap, HardcodedConfig } from '@workflow/web-shared/server';
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  type ReactNode,
-} from 'react';
-import type { WorldConfig } from './config-world';
-import { useQueryParamConfig, worldConfigToEnvMap } from './config';
+import type { ServerConfig } from '@workflow/web-shared/server';
+import { createContext, useContext, type ReactNode } from 'react';
 
-// Re-export HardcodedConfig for convenience
-export type { HardcodedConfig } from '@workflow/web-shared/server';
+// Re-export ServerConfig for convenience
+export type { ServerConfig } from '@workflow/web-shared/server';
 
-export interface WorldConfigContextValue {
-  /** The current world configuration */
-  config: WorldConfig;
-  /** The environment map derived from the config */
-  envMap: EnvMap;
-  /** Whether the config is hardcoded (self-hosted mode) */
-  isHardcoded: boolean;
-  /** Human-readable name of the backend (only set in hardcoded mode) */
-  backendDisplayName?: string;
-  /** Whether the config is still loading */
-  isLoading: boolean;
+/**
+ * Context value providing server configuration info to the UI.
+ *
+ * The web UI no longer supports dynamic world configuration via query params.
+ * Configuration is read from server-side environment variables, consistent
+ * with how the workflow runtime's createWorld() works.
+ *
+ * This context provides display-only information about the current configuration.
+ * Sensitive data like connection strings and auth tokens are never sent to the client.
+ */
+export interface ServerConfigContextValue {
+  /** Server configuration info (display-only, no sensitive data) */
+  serverConfig: ServerConfig;
 }
 
-const WorldConfigContext = createContext<WorldConfigContextValue | null>(null);
+const ServerConfigContext = createContext<ServerConfigContextValue | null>(
+  null
+);
 
-interface WorldConfigProviderProps {
+interface ServerConfigProviderProps {
   children: ReactNode;
-  /** Initial hardcoded config from server (if any) */
-  hardcodedConfig?: HardcodedConfig;
+  /** Server configuration fetched during SSR */
+  serverConfig: ServerConfig;
 }
 
 /**
- * Converts an EnvMap back to a WorldConfig for display purposes.
- * This is the inverse of worldConfigToEnvMap.
+ * Provider component that makes server configuration available to child components.
+ *
+ * The serverConfig should be fetched during server-side rendering using
+ * getServerConfig() from @workflow/web-shared/server.
  */
-function envMapToWorldConfig(envMap: EnvMap): WorldConfig {
-  const targetWorld = envMap.WORKFLOW_TARGET_WORLD;
-  let backend: string | undefined;
-
-  // Map target world back to backend ID
-  if (targetWorld === '@workflow/world-postgres') {
-    backend = 'postgres';
-  } else if (targetWorld === 'vercel' || targetWorld === 'local') {
-    backend = targetWorld;
-  } else {
-    backend = targetWorld;
-  }
-
-  return {
-    backend,
-    env: envMap.WORKFLOW_VERCEL_ENV,
-    authToken: envMap.WORKFLOW_VERCEL_AUTH_TOKEN,
-    project: envMap.WORKFLOW_VERCEL_PROJECT,
-    team: envMap.WORKFLOW_VERCEL_TEAM,
-    port: envMap.PORT,
-    manifestPath: envMap.WORKFLOW_MANIFEST_PATH,
-    dataDir: envMap.WORKFLOW_LOCAL_DATA_DIR || './',
-    postgresUrl: envMap.WORKFLOW_POSTGRES_URL,
-  };
-}
-
-export function WorldConfigProvider({
+export function ServerConfigProvider({
   children,
-  hardcodedConfig,
-}: WorldConfigProviderProps) {
-  const queryParamConfig = useQueryParamConfig();
-  const [isLoading, setIsLoading] = useState(!hardcodedConfig);
-
-  useEffect(() => {
-    // Once we have hardcodedConfig (or know we're in dynamic mode), stop loading
-    if (hardcodedConfig !== undefined) {
-      setIsLoading(false);
-    }
-  }, [hardcodedConfig]);
-
-  // Determine which config to use
-  const isHardcoded = hardcodedConfig?.isHardcoded ?? false;
-
-  // In hardcoded mode, derive config from the server's envMap
-  // In dynamic mode, use query params
-  const config =
-    isHardcoded && hardcodedConfig?.envMap
-      ? envMapToWorldConfig(hardcodedConfig.envMap)
-      : queryParamConfig;
-
-  // In hardcoded mode, use the server's envMap directly
-  // In dynamic mode, convert the query param config to envMap
-  const envMap =
-    isHardcoded && hardcodedConfig?.envMap
-      ? hardcodedConfig.envMap
-      : worldConfigToEnvMap(config);
-
-  const value: WorldConfigContextValue = {
-    config,
-    envMap,
-    isHardcoded,
-    backendDisplayName: hardcodedConfig?.backendDisplayName,
-    isLoading,
+  serverConfig,
+}: ServerConfigProviderProps) {
+  const value: ServerConfigContextValue = {
+    serverConfig,
   };
 
   return (
-    <WorldConfigContext.Provider value={value}>
+    <ServerConfigContext.Provider value={value}>
       {children}
-    </WorldConfigContext.Provider>
+    </ServerConfigContext.Provider>
   );
 }
 
 /**
- * Hook to access the world configuration context.
- * Returns the current config, envMap, and whether it's hardcoded.
+ * Hook to access the server configuration context.
+ *
+ * Returns display-only information about the current world configuration.
+ * This never includes sensitive data like connection strings or auth tokens.
  */
-export function useWorldConfig(): WorldConfigContextValue {
-  const context = useContext(WorldConfigContext);
+export function useServerConfig(): ServerConfigContextValue {
+  const context = useContext(ServerConfigContext);
   if (!context) {
-    throw new Error('useWorldConfig must be used within a WorldConfigProvider');
+    throw new Error(
+      'useServerConfig must be used within a ServerConfigProvider'
+    );
   }
   return context;
 }
