@@ -4,4 +4,6 @@
 "@workflow/cli": patch
 ---
 
-Add self-hosted mode: lock world config via WORKFLOW_TARGET_WORLD env var
+Use env variables instead of query params for world config (like WORKFLOW_TARGET_WORLD)
+
+**BREAKING CHANGE**: The OSS web UI is now locked to a single world and will not let you change world using query params
