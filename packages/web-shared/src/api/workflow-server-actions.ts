@@ -57,6 +57,24 @@ function getBackendDisplayName(targetWorld: string | undefined): string {
 }
 
 /**
+ * Build an EnvMap from server environment variables.
+ * Used by both getHardcodedConfig and getWorldFromEnv.
+ */
+function buildEnvMapFromProcessEnv(): EnvMap {
+  return {
+    WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
+    WORKFLOW_VERCEL_ENV: process.env.WORKFLOW_VERCEL_ENV,
+    WORKFLOW_VERCEL_AUTH_TOKEN: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+    WORKFLOW_VERCEL_PROJECT: process.env.WORKFLOW_VERCEL_PROJECT,
+    WORKFLOW_VERCEL_TEAM: process.env.WORKFLOW_VERCEL_TEAM,
+    PORT: process.env.PORT,
+    WORKFLOW_MANIFEST_PATH: process.env.WORKFLOW_MANIFEST_PATH,
+    WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
+    WORKFLOW_POSTGRES_URL: process.env.WORKFLOW_POSTGRES_URL,
+  };
+}
+
+/**
  * Check if the web UI is running in self-hosted mode with hardcoded configuration.
  *
  * In self-hosted mode, the world configuration is determined by server-side
@@ -75,17 +93,7 @@ export async function getHardcodedConfig(): Promise<HardcodedConfig> {
   }
 
   // Self-hosted mode: build envMap from server environment variables
-  const envMap: EnvMap = {
-    WORKFLOW_TARGET_WORLD: targetWorld,
-    WORKFLOW_VERCEL_ENV: process.env.WORKFLOW_VERCEL_ENV,
-    WORKFLOW_VERCEL_AUTH_TOKEN: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-    WORKFLOW_VERCEL_PROJECT: process.env.WORKFLOW_VERCEL_PROJECT,
-    WORKFLOW_VERCEL_TEAM: process.env.WORKFLOW_VERCEL_TEAM,
-    PORT: process.env.PORT,
-    WORKFLOW_MANIFEST_PATH: process.env.WORKFLOW_MANIFEST_PATH,
-    WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
-    WORKFLOW_POSTGRES_URL: process.env.WORKFLOW_POSTGRES_URL,
-  };
+  const envMap = buildEnvMapFromProcessEnv();
 
   return {
     isHardcoded: true,
@@ -143,27 +151,11 @@ function isHardcodedMode(): boolean {
   return !!process.env.WORKFLOW_TARGET_WORLD;
 }
 
-/**
- * Get the hardcoded envMap from server environment variables.
- * Only used when isHardcodedMode() returns true.
- */
-function getHardcodedEnvMap(): EnvMap {
-  return {
-    WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
-    WORKFLOW_VERCEL_ENV: process.env.WORKFLOW_VERCEL_ENV,
-    WORKFLOW_VERCEL_AUTH_TOKEN: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-    WORKFLOW_VERCEL_PROJECT: process.env.WORKFLOW_VERCEL_PROJECT,
-    WORKFLOW_VERCEL_TEAM: process.env.WORKFLOW_VERCEL_TEAM,
-    PORT: process.env.PORT,
-    WORKFLOW_MANIFEST_PATH: process.env.WORKFLOW_MANIFEST_PATH,
-    WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
-    WORKFLOW_POSTGRES_URL: process.env.WORKFLOW_POSTGRES_URL,
-  };
-}
-
 function getWorldFromEnv(envMap: EnvMap) {
   // In self-hosted mode, ignore the client-provided envMap and use server env vars
-  const effectiveEnvMap = isHardcodedMode() ? getHardcodedEnvMap() : envMap;
+  const effectiveEnvMap = isHardcodedMode()
+    ? buildEnvMapFromProcessEnv()
+    : envMap;
 
   // Generate stable cache key from envMap
   const sortedKeys = Object.keys(effectiveEnvMap).sort();

@@ -1,7 +1,6 @@
 'use client';
 
 import { TooltipProvider } from '@radix-ui/react-tooltip';
-import type { EnvMap } from '@workflow/web-shared/server';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ThemeProvider, useTheme } from 'next-themes';

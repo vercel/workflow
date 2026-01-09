@@ -83,9 +83,7 @@ export function ConnectionStatus({ config }: ConnectionStatusProps) {
       ? dataDirInfo?.shortName
       : backend === 'vercel'
         ? config.env
-        : backend === 'postgres'
-          ? 'database'
-          : undefined;
+        : undefined;
   return (
     <div className="text-sm text-muted-foreground flex items-center gap-2">
       {isHardcoded && <Lock className="w-3 h-3" />}

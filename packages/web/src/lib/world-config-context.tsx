@@ -1,6 +1,6 @@
 'use client';
 
-import type { EnvMap } from '@workflow/web-shared/server';
+import type { EnvMap, HardcodedConfig } from '@workflow/web-shared/server';
 import {
   createContext,
   useContext,
@@ -11,26 +11,8 @@ import {
 import type { WorldConfig } from './config-world';
 import { useQueryParamConfig, worldConfigToEnvMap } from './config';
 
-/**
- * Configuration mode for the web UI.
- * - 'dynamic': Config comes from query params and can be changed via UI
- * - 'hardcoded': Config is set via server env vars and cannot be changed
- */
-export type ConfigMode = 'dynamic' | 'hardcoded';
-
-/**
- * Configuration that can be hardcoded via environment variables.
- * When WORKFLOW_TARGET_WORLD is set, the web UI operates in "self-hosted mode"
- * where the world configuration is locked and cannot be changed via query params.
- */
-export interface HardcodedConfig {
-  /** Whether the config is hardcoded (self-hosted mode) */
-  isHardcoded: boolean;
-  /** The hardcoded environment map (only set if isHardcoded is true) */
-  envMap?: EnvMap;
-  /** Human-readable backend name for display */
-  backendDisplayName?: string;
-}
+// Re-export HardcodedConfig for convenience
+export type { HardcodedConfig } from '@workflow/web-shared/server';
 
 export interface WorldConfigContextValue {
   /** The current world configuration */
