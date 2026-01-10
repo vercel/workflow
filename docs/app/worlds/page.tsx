@@ -39,7 +39,7 @@ export default async function WorldsPage() {
         <section className="mt-[var(--fd-nav-height)] relative overflow-hidden px-4 pt-16 sm:pt-24 pb-16 text-center">
           {/* Globe backdrop */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <Globe className="w-[500px] h-[500px] sm:w-[600px] sm:h-[600px] opacity-20" />
+            <Globe className="w-full max-w-[1200px] opacity-30 translate-y-[30%]" />
           </div>
 
           {/* Content */}

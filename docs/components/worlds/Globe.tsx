@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import createGlobe, { type COBEOptions } from 'cobe';
 
 interface GlobeProps {
@@ -9,8 +9,10 @@ interface GlobeProps {
 
 export function Globe({ className }: GlobeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const pointerInteracting = useRef<number | null>(null);
   const pointerInteractionMovement = useRef(0);
+  const [size, setSize] = useState(1200);
 
   const updatePointerInteraction = useCallback((value: number | null) => {
     pointerInteracting.current = value;
@@ -27,22 +29,30 @@ export function Globe({ className }: GlobeProps) {
     }
   }, []);
 
+  // Track container width
   useEffect(() => {
-    let phi = 0;
-    let width = 0;
-
-    const onResize = () => {
-      if (canvasRef.current) {
-        width = canvasRef.current.offsetWidth;
+    const updateSize = () => {
+      if (containerRef.current) {
+        const width = containerRef.current.offsetWidth;
+        setSize(width);
       }
     };
-    window.addEventListener('resize', onResize);
-    onResize();
+
+    updateSize();
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
+
+  useEffect(() => {
+    if (!canvasRef.current || size === 0) return;
+
+    let phi = 0;
+    const canvasSize = size * 2; // For retina displays
 
     const globeConfig: COBEOptions = {
       devicePixelRatio: 2,
-      width: width * 2,
-      height: width * 2,
+      width: canvasSize,
+      height: canvasSize,
       phi: 0,
       theta: 0.3,
       dark: 1,
@@ -61,12 +71,12 @@ export function Globe({ className }: GlobeProps) {
         pointerInteractionMovement.current *= 0.95;
 
         state.phi = phi;
-        state.width = width * 2;
-        state.height = width * 2;
+        state.width = canvasSize;
+        state.height = canvasSize;
       },
     };
 
-    const globe = createGlobe(canvasRef.current!, globeConfig);
+    const globe = createGlobe(canvasRef.current, globeConfig);
 
     setTimeout(() => {
       if (canvasRef.current) {
@@ -76,19 +86,14 @@ export function Globe({ className }: GlobeProps) {
 
     return () => {
       globe.destroy();
-      window.removeEventListener('resize', onResize);
     };
-  }, []);
+  }, [size]);
 
   return (
-    <div className={className}>
+    <div ref={containerRef} className={className} style={{ aspectRatio: '1' }}>
       <canvas
         ref={canvasRef}
         className="w-full h-full opacity-0 transition-opacity duration-500 cursor-grab"
-        style={{
-          contain: 'layout paint size',
-          aspectRatio: '1',
-        }}
         onPointerDown={(e) => {
           updatePointerInteraction(e.clientX);
         }}
