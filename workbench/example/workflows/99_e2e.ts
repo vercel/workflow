@@ -13,12 +13,6 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-
-// Use Symbol.for() directly instead of importing from 'workflow' to avoid
-// pulling in server-side dependencies when this file is bundled for the client.
-// The SWC plugin recognizes these symbols by their string keys.
-const WORKFLOW_SERIALIZE = Symbol.for('workflow-serialize');
-const WORKFLOW_DESERIALIZE = Symbol.for('workflow-deserialize');
 import { getRun, start } from 'workflow/api';
 import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
 
@@ -874,8 +868,12 @@ export async function thisSerializationWorkflow(baseValue: number) {
 //////////////////////////////////////////////////////////
 
 /**
- * A custom class with user-defined serialization using WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE symbols.
+ * A custom class with user-defined serialization using Symbol.for() directly.
  * The SWC plugin detects these symbols and generates the classId and registration automatically.
+ *
+ * Note: We use Symbol.for() directly instead of importing WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE
+ * because the SWC plugin specifically looks for the `Symbol.for('workflow-serialize')` pattern
+ * in computed property names.
  */
 export class Point {
   constructor(
@@ -884,12 +882,12 @@ export class Point {
   ) {}
 
   /** Custom serialization - converts instance to plain object */
-  static [WORKFLOW_SERIALIZE](instance: Point) {
+  static [Symbol.for('workflow-serialize')](instance: Point) {
     return { x: instance.x, y: instance.y };
   }
 
   /** Custom deserialization - reconstructs instance from plain object */
-  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+  static [Symbol.for('workflow-deserialize')](data: { x: number; y: number }) {
     return new Point(data.x, data.y);
   }
 
