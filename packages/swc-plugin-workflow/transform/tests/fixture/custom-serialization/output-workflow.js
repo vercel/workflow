@@ -1,3 +1,4 @@
+import { registerSerializationClass } from "workflow/internal/class-serialization";
 // Class with custom serialization methods using symbols
 export class Point {
     constructor(x, y){
@@ -28,4 +29,4 @@ export class OnlySerialize {
         };
     }
 }
-Point.classId = "class//input.js//Point";
+registerSerializationClass("class//input.js//Point", Point);

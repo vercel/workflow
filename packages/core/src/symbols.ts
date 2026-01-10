@@ -43,3 +43,9 @@ export const WORKFLOW_SERIALIZE = Symbol.for('workflow-serialize');
  * @see WORKFLOW_SERIALIZE for usage example
  */
 export const WORKFLOW_DESERIALIZE = Symbol.for('workflow-deserialize');
+
+/**
+ * Symbol used to store the class registry on globalThis in workflow mode.
+ * This allows the deserializer to find classes by classId in the VM context.
+ */
+export const WORKFLOW_CLASS_REGISTRY = Symbol.for('workflow-class-registry');

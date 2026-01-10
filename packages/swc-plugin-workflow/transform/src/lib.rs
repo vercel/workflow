@@ -3202,8 +3202,12 @@ impl VisitMut for StepTransform {
 
                 match self.mode {
                     TransformMode::Workflow => {
-                        // In workflow mode, we just assign ClassName.classId = "..."
-                        // No imports needed - the property assignment happens without any function call
+                        // In workflow mode, we need the import for class serialization
+                        let needs_class_serialization =
+                            !self.classes_needing_serialization.is_empty();
+                        if needs_class_serialization {
+                            imports_to_add.push(self.create_class_serialization_import());
+                        }
                     }
                     TransformMode::Step => {
                         // Check what needs to be imported
@@ -3698,9 +3702,9 @@ impl VisitMut for StepTransform {
                         module.body.push(ModuleItem::Stmt(assignment));
                     }
 
-                    // Add classId property assignments for class serialization in workflow mode
-                    // This allows class constructors to be serialized when used as `this` in static method calls
-                    // In workflow mode, we just set ClassName.classId = "class//..." (no import needed)
+                    // Add class serialization registrations for workflow mode
+                    // This is now the same as step mode - using registerSerializationClass()
+                    // which sets both classId and registers in the globalThis Map
                     // Sort for deterministic output ordering
                     let mut sorted_classes: Vec<_> =
                         self.classes_needing_serialization.drain().collect();
@@ -3709,34 +3713,41 @@ impl VisitMut for StepTransform {
                         // Generate class ID: class//filename//ClassName
                         let class_id = naming::format_name("class", &self.filename, &class_name);
 
-                        // Create: ClassName.classId = "class//filename//ClassName"
-                        let class_id_assignment = Stmt::Expr(ExprStmt {
+                        // Create: registerSerializationClass("class//...", ClassName)
+                        let registration_call = Stmt::Expr(ExprStmt {
                             span: DUMMY_SP,
-                            expr: Box::new(Expr::Assign(AssignExpr {
+                            expr: Box::new(Expr::Call(CallExpr {
                                 span: DUMMY_SP,
-                                op: AssignOp::Assign,
-                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
-                                    MemberExpr {
-                                        span: DUMMY_SP,
-                                        obj: Box::new(Expr::Ident(Ident::new(
+                                ctxt: SyntaxContext::empty(),
+                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+                                    "registerSerializationClass".into(),
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                )))),
+                                args: vec![
+                                    // First argument: class ID
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                            span: DUMMY_SP,
+                                            value: class_id.into(),
+                                            raw: None,
+                                        }))),
+                                    },
+                                    // Second argument: ClassName
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Ident(Ident::new(
                                             class_name.into(),
                                             DUMMY_SP,
                                             SyntaxContext::empty(),
                                         ))),
-                                        prop: MemberProp::Ident(IdentName::new(
-                                            "classId".into(),
-                                            DUMMY_SP,
-                                        )),
                                     },
-                                )),
-                                right: Box::new(Expr::Lit(Lit::Str(Str {
-                                    span: DUMMY_SP,
-                                    value: class_id.into(),
-                                    raw: None,
-                                }))),
+                                ],
+                                type_args: None,
                             })),
                         });
-                        module.body.push(ModuleItem::Stmt(class_id_assignment));
+                        module.body.push(ModuleItem::Stmt(registration_call));
                     }
                 }
 
