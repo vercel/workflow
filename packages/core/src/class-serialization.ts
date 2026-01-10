@@ -15,12 +15,19 @@ const registeredClasses = new Map<string, Function>();
  * This allows class constructors to be deserialized by looking up the classId.
  * Called by the SWC plugin in step mode.
  *
- * Note: For serialization, the classId is read directly from the class's
- * `classId` property (set by the SWC plugin in workflow mode).
+ * Also sets the `classId` property on the class so the serializer can find it
+ * when serializing instances (e.g., step return values).
  */
 // biome-ignore lint/complexity/noBannedTypes: We need to use Function to represent class constructors
 export function registerSerializationClass(classId: string, cls: Function) {
   registeredClasses.set(classId, cls);
+  // Set classId on the class for serialization
+  Object.defineProperty(cls, 'classId', {
+    value: classId,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
 }
 
 /**
