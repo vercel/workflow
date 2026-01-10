@@ -11,6 +11,7 @@ export { createHook, createWebhook } from './create-hook.js';
 export { defineHook } from './define-hook.js';
 export { getWorkflowMetadata } from './get-workflow-metadata.js';
 export { getWritable } from './writable-stream.js';
+export { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '../symbols.js';
 
 // workflows can't use these functions, but we still need to provide
 // the export so bundling doesn't fail when step and workflow are in same file
