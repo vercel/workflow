@@ -37,5 +37,5 @@ export class Color {
         return new Color(data.r, data.g, data.b);
     }
 }
-Vector.classId = "class//input.js//Vector";
 Color.classId = "class//input.js//Color";
+Vector.classId = "class//input.js//Vector";

@@ -53,6 +53,6 @@ export class Triangle {
         return new Triangle(data.a, data.b, data.c);
     }
 }
+Circle.classId = "class//input.js//Circle";
 Rectangle.classId = "class//input.js//Rectangle";
 Triangle.classId = "class//input.js//Triangle";
-Circle.classId = "class//input.js//Circle";

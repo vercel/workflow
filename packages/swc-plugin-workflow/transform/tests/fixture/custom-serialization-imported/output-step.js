@@ -38,5 +38,5 @@ export class Color {
         return new Color(data.r, data.g, data.b);
     }
 }
-registerSerializationClass("class//input.js//Vector", Vector);
 registerSerializationClass("class//input.js//Color", Color);
+registerSerializationClass("class//input.js//Vector", Vector);

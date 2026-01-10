@@ -3570,7 +3570,11 @@ impl VisitMut for StepTransform {
                     // In step mode, we need:
                     // 1. registerSerializationClass(classId, ClassName) - for deserialization
                     // 2. ClassName.classId = "..." - for serialization (though not typically needed in step mode)
-                    for class_name in self.classes_needing_serialization.drain() {
+                    // Sort for deterministic output ordering
+                    let mut sorted_classes: Vec<_> =
+                        self.classes_needing_serialization.drain().collect();
+                    sorted_classes.sort();
+                    for class_name in sorted_classes {
                         // Generate class ID: class//filename//ClassName
                         let class_id = naming::format_name("class", &self.filename, &class_name);
 
@@ -3697,7 +3701,11 @@ impl VisitMut for StepTransform {
                     // Add classId property assignments for class serialization in workflow mode
                     // This allows class constructors to be serialized when used as `this` in static method calls
                     // In workflow mode, we just set ClassName.classId = "class//..." (no import needed)
-                    for class_name in self.classes_needing_serialization.drain() {
+                    // Sort for deterministic output ordering
+                    let mut sorted_classes: Vec<_> =
+                        self.classes_needing_serialization.drain().collect();
+                    sorted_classes.sort();
+                    for class_name in sorted_classes {
                         // Generate class ID: class//filename//ClassName
                         let class_id = naming::format_name("class", &self.filename, &class_name);
 

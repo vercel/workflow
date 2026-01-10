@@ -54,6 +54,6 @@ export class Triangle {
         return new Triangle(data.a, data.b, data.c);
     }
 }
-registerSerializationClass("class//input.js//Triangle", Triangle);
 registerSerializationClass("class//input.js//Circle", Circle);
 registerSerializationClass("class//input.js//Rectangle", Rectangle);
+registerSerializationClass("class//input.js//Triangle", Triangle);
