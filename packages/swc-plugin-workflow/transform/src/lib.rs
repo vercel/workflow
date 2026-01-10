@@ -227,6 +227,9 @@ pub struct StepTransform {
     // Track classes that need serialization registration (for `this` serialization in static methods)
     // Set of class names that have static step/workflow methods
     classes_needing_serialization: HashSet<String>,
+    // Track identifiers that are known to be WORKFLOW_SERIALIZE symbols
+    // (local name -> "workflow-serialize" or "workflow-deserialize")
+    serialization_symbol_identifiers: HashMap<String, String>,
 }
 
 // Structure to track variable names and their access patterns
@@ -1090,6 +1093,7 @@ impl StepTransform {
             static_method_workflow_registrations: Vec::new(),
             static_step_methods_to_strip: Vec::new(),
             classes_needing_serialization: HashSet::new(),
+            serialization_symbol_identifiers: HashMap::new(),
         }
     }
 
@@ -1142,6 +1146,19 @@ impl StepTransform {
                     Decl::Var(var_decl) => {
                         for declarator in &var_decl.decls {
                             self.collect_idents_from_pat(&declarator.name);
+                            // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+                            if let Pat::Ident(ident) = &declarator.name {
+                                if let Some(init) = &declarator.init {
+                                    if let Some(symbol_name) = self.extract_symbol_for_name(init) {
+                                        if symbol_name == "workflow-serialize"
+                                            || symbol_name == "workflow-deserialize"
+                                        {
+                                            self.serialization_symbol_identifiers
+                                                .insert(ident.id.sym.to_string(), symbol_name);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     Decl::Class(class_decl) => {
@@ -1159,6 +1176,21 @@ impl StepTransform {
                         Decl::Var(var_decl) => {
                             for declarator in &var_decl.decls {
                                 self.collect_idents_from_pat(&declarator.name);
+                                // Track exported const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+                                if let Pat::Ident(ident) = &declarator.name {
+                                    if let Some(init) = &declarator.init {
+                                        if let Some(symbol_name) =
+                                            self.extract_symbol_for_name(init)
+                                        {
+                                            if symbol_name == "workflow-serialize"
+                                                || symbol_name == "workflow-deserialize"
+                                            {
+                                                self.serialization_symbol_identifiers
+                                                    .insert(ident.id.sym.to_string(), symbol_name);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         Decl::Class(class_decl) => {
@@ -1184,8 +1216,29 @@ impl StepTransform {
                         for specifier in &import_decl.specifiers {
                             match specifier {
                                 ImportSpecifier::Named(named) => {
-                                    self.declared_identifiers
-                                        .insert(named.local.sym.to_string());
+                                    let local_name = named.local.sym.to_string();
+                                    self.declared_identifiers.insert(local_name.clone());
+
+                                    // Track imports of WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE
+                                    // These can be imported from 'workflow' or '@workflow/core' or re-exported
+                                    let imported_name = named
+                                        .imported
+                                        .as_ref()
+                                        .map(|i| match i {
+                                            ModuleExportName::Ident(id) => id.sym.to_string(),
+                                            ModuleExportName::Str(s) => {
+                                                s.value.to_string_lossy().to_string()
+                                            }
+                                        })
+                                        .unwrap_or_else(|| local_name.clone());
+
+                                    if imported_name == "WORKFLOW_SERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-serialize".to_string());
+                                    } else if imported_name == "WORKFLOW_DESERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-deserialize".to_string());
+                                    }
                                 }
                                 ImportSpecifier::Default(default) => {
                                     self.declared_identifiers
@@ -1947,9 +2000,10 @@ impl StepTransform {
         false
     }
 
-    /// Check if an expression is `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
-    fn is_workflow_serialization_symbol(&self, expr: &Expr, symbol_name: &str) -> bool {
-        // Pattern: Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+    /// Extract the symbol name from a `Symbol.for('...')` expression
+    /// Returns Some("workflow-serialize") or Some("workflow-deserialize") if it matches, None otherwise
+    fn extract_symbol_for_name(&self, expr: &Expr) -> Option<String> {
+        // Pattern: Symbol.for('...')
         if let Expr::Call(call) = expr {
             if let Callee::Expr(callee) = &call.callee {
                 if let Expr::Member(member) = &**callee {
@@ -1959,10 +2013,10 @@ impl StepTransform {
                             // Check: prop is `for`
                             if let MemberProp::Ident(prop) = &member.prop {
                                 if prop.sym.as_str() == "for" {
-                                    // Check: first argument is the expected symbol name
+                                    // Extract the first argument string
                                     if let Some(arg) = call.args.first() {
                                         if let Expr::Lit(Lit::Str(s)) = &*arg.expr {
-                                            return s.value == symbol_name;
+                                            return Some(s.value.to_string_lossy().to_string());
                                         }
                                     }
                                 }
@@ -1972,6 +2026,30 @@ impl StepTransform {
                 }
             }
         }
+        None
+    }
+
+    /// Check if an expression represents a workflow serialization symbol.
+    /// Supports multiple patterns:
+    /// 1. Direct: `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
+    /// 2. Identifier reference to an imported symbol: `WORKFLOW_SERIALIZE` (imported from 'workflow')
+    /// 3. Identifier reference to a local const: `const MY_SYM = Symbol.for('workflow-serialize')`
+    fn is_workflow_serialization_symbol(&self, expr: &Expr, symbol_name: &str) -> bool {
+        // Pattern 1: Direct Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+        if let Some(extracted_name) = self.extract_symbol_for_name(expr) {
+            return extracted_name == symbol_name;
+        }
+
+        // Pattern 2 & 3: Identifier reference to a known serialization symbol
+        if let Expr::Ident(ident) = expr {
+            if let Some(known_symbol) = self
+                .serialization_symbol_identifiers
+                .get(&ident.sym.to_string())
+            {
+                return known_symbol == symbol_name;
+            }
+        }
+
         false
     }
 
@@ -1983,7 +2061,7 @@ impl StepTransform {
         for member in &class.body {
             if let ClassMember::Method(method) = member {
                 if method.is_static {
-                    // Check for computed property name with Symbol.for(...)
+                    // Check for computed property name with Symbol.for(...) or identifier reference
                     if let PropName::Computed(computed) = &method.key {
                         if self
                             .is_workflow_serialization_symbol(&computed.expr, "workflow-serialize")
