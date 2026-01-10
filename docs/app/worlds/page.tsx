@@ -7,9 +7,9 @@ import { WorldCardSimple } from '@/components/worlds/WorldCardSimple';
 import { getWorldsData } from '@/lib/worlds-data';
 
 export const metadata: Metadata = {
-  title: 'Workflow Worlds - Backend Implementations',
+  title: 'Workflow Worlds',
   description:
-    'Explore official and community World implementations for Workflow. Compare compatibility, performance benchmarks, and find the right backend for your deployment.',
+    'The World abstraction allows workflows to run anywhere — locally, on Vercel, or on any cloud. The runtime, queues, and persistence are modular and entirely swappable.',
 };
 
 export default async function WorldsPage() {
