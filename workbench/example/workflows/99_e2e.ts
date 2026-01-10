@@ -12,9 +12,13 @@ import {
   type RequestWithResponse,
   RetryableError,
   sleep,
-  WORKFLOW_SERIALIZE,
-  WORKFLOW_DESERIALIZE,
 } from 'workflow';
+
+// Use Symbol.for() directly instead of importing from 'workflow' to avoid
+// pulling in server-side dependencies when this file is bundled for the client.
+// The SWC plugin recognizes these symbols by their string keys.
+const WORKFLOW_SERIALIZE = Symbol.for('workflow-serialize');
+const WORKFLOW_DESERIALIZE = Symbol.for('workflow-deserialize');
 import { getRun, start } from 'workflow/api';
 import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
 
@@ -777,93 +781,9 @@ export class AllInOneService {
   }
 }
 
-/**
- * Class that uses `this` in static step methods to reference the class itself.
- * This tests that the class constructor is properly serialized when `this` is used.
- */
-export class ChainableService {
-  /** The multiplier used by the multiply step */
-  static multiplier = 10;
-
-  /** Static step that uses `this` to access class properties */
-  static async multiplyByClassValue(
-    this: typeof ChainableService,
-    n: number
-  ): Promise<number> {
-    'use step';
-    // Use `this` to reference the class and access its static property
-    // `this` is the class constructor, so `this.multiplier` accesses the static property
-    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
-    return n * this.multiplier;
-  }
-
-  /** Static step that uses `this` to call another static method */
-  static async doubleAndMultiply(
-    this: typeof ChainableService,
-    n: number
-  ): Promise<number> {
-    'use step';
-    // Use `this` to access the static property on the class
-    // Note: We can't call another step from within a step, so we just reference a static property
-    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
-    return n * 2 * this.multiplier;
-  }
-
-  /** Static workflow that demonstrates `this` serialization with static methods */
-  static async processWithThis(n: number): Promise<{
-    multiplied: number;
-    doubledAndMultiplied: number;
-    sum: number;
-  }> {
-    'use workflow';
-    // When calling static methods via ClassName.method(), `this` inside the step
-    // will be the class constructor (ChainableService). The class constructor
-    // is serialized with its classId and passed to the step handler.
-    //
-    // NOTE: We use `ChainableService.method()` here instead of `this.method()` because
-    // the `this` argument is not currently passed through when invoking a workflow via
-    // `start()`. Workflows are executed as standalone functions, so `this` inside the
-    // workflow body is undefined. This could be revisited in the future if needed.
-    const multiplied = await ChainableService.multiplyByClassValue(n);
-    const doubledAndMultiplied = await ChainableService.doubleAndMultiply(n);
-
-    return {
-      multiplied, // n * 10
-      doubledAndMultiplied, // n * 2 * 10 = n * 20
-      sum: multiplied + doubledAndMultiplied, // n * 10 + n * 20 = n * 30
-    };
-  }
-}
-
-//////////////////////////////////////////////////////////
-// E2E test for `this` serialization with .call() and .apply()
-//////////////////////////////////////////////////////////
-
-/**
- * A step function that uses `this` to access properties.
- */
-async function multiplyByFactor(this: { factor: number }, value: number) {
-  'use step';
-  return value * this.factor;
-}
-
-/**
- * Workflow that tests calling step functions with explicit `this` via .call() and .apply()
- */
-export async function thisSerializationWorkflow(baseValue: number) {
-  'use workflow';
-  // Test .call() - multiply baseValue by 2
-  const result1 = await multiplyByFactor.call({ factor: 2 }, baseValue);
-
-  // Test .apply() - multiply result1 by 3
-  const result2 = await multiplyByFactor.apply({ factor: 3 }, [result1]);
-
-  // Test .call() again - multiply result2 by 5
-  const result3 = await multiplyByFactor.call({ factor: 5 }, result2);
-
-  // baseValue * 2 * 3 * 5 = baseValue * 30
-  return result3;
-}
+// NOTE: Tests for `this` serialization in step functions (ChainableService and
+// thisSerializationWorkflow) are disabled because the SWC plugin currently forbids
+// `this` usage in step functions. This restriction could be lifted in the future.
 
 //////////////////////////////////////////////////////////
 // Custom Serialization E2E Test
