@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import createGlobe, { type COBEOptions } from 'cobe';
+import { useTheme } from 'next-themes';
 
 interface GlobeProps {
   className?: string;
@@ -13,6 +14,7 @@ export function Globe({ className }: GlobeProps) {
   const pointerInteracting = useRef<number | null>(null);
   const pointerInteractionMovement = useRef(0);
   const [size, setSize] = useState(1200);
+  const { resolvedTheme } = useTheme();
 
   const updatePointerInteraction = useCallback((value: number | null) => {
     pointerInteracting.current = value;
@@ -48,6 +50,7 @@ export function Globe({ className }: GlobeProps) {
 
     let phi = 0;
     const canvasSize = size * 2; // For retina displays
+    const isDark = resolvedTheme === 'dark';
 
     const globeConfig: COBEOptions = {
       devicePixelRatio: 2,
@@ -55,13 +58,13 @@ export function Globe({ className }: GlobeProps) {
       height: canvasSize,
       phi: 0,
       theta: 0.3,
-      dark: 1,
-      diffuse: 3,
+      dark: isDark ? 1 : 0,
+      diffuse: isDark ? 3 : 1.2,
       mapSamples: 16000,
-      mapBrightness: 1.2,
-      baseColor: [0.4, 0.4, 0.4],
+      mapBrightness: isDark ? 1.2 : 6,
+      baseColor: isDark ? [0.4, 0.4, 0.4] : [1, 1, 1],
       markerColor: [0.251, 0.678, 1],
-      glowColor: [0.1, 0.1, 0.1],
+      glowColor: isDark ? [0.1, 0.1, 0.1] : [0.8, 0.8, 0.8],
       markers: [],
       onRender: (state) => {
         if (pointerInteracting.current === null) {
@@ -87,7 +90,7 @@ export function Globe({ className }: GlobeProps) {
     return () => {
       globe.destroy();
     };
-  }, [size]);
+  }, [size, resolvedTheme]);
 
   return (
     <div ref={containerRef} className={className} style={{ aspectRatio: '1' }}>
