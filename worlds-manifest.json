@@ -17,6 +17,7 @@
       "name": "Postgres",
       "description": "PostgreSQL-based world for multi-host deployments",
       "docs": "/docs/deploying/world/postgres-world",
+      "example": "https://github.com/vercel/workflow-examples/tree/main/postgres",
       "env": {
         "WORKFLOW_TARGET_WORLD": "@workflow/world-postgres",
         "WORKFLOW_POSTGRES_URL": "postgres://world:world@localhost:5432/world"

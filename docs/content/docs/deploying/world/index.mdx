@@ -2,42 +2,57 @@
 title: Worlds
 ---
 
-<Callout type="wip">
-
-This page is a work in progress.
-
-</Callout>
-
 The workflow `World` is an interface that abstracts how workflows and steps communicate with the outside world, letting you build custom adapters and reuse them across different environments, infrastructure, and hosting providers.
 
-## Choosing a World implementation
+<Callout>
+  **Looking for World implementations?** Check out the [Worlds Ecosystem](/worlds) page for a complete list of official and community worlds with compatibility status and performance benchmarks.
+</Callout>
 
-* By default, Workflow uses the [Local world](/docs/deploying/world/local-world) for easy local development.
-* When deployed on Vercel, Workflow switches to the [Vercel world](/docs/deploying/world/vercel-world).
+## What is a World?
 
-If you want to use a different World implementation, set the `WORKFLOW_TARGET_WORLD` environment variable to your desired World package's NPM name:
+A World implementation handles three core responsibilities:
+
+- **Workflow Storage** - Persisting workflow state and event logs across function invocations
+- **Step Execution** - Managing step function invocations with retries and error handling
+- **Message Passing** - Communication between the workflow orchestrator and step functions
+
+## Choosing a World
+
+By default, Workflow automatically selects the appropriate world:
+
+- **Local development**: Uses the [Local World](/worlds/local) for easy development with no external services
+- **Vercel deployment**: Automatically switches to the [Vercel World](/worlds/vercel) for production
+
+To use a different World implementation, set the `WORKFLOW_TARGET_WORLD` environment variable:
 
 ```bash
 export WORKFLOW_TARGET_WORLD=@my-namespace/my-npm-package
 export MY_WORLD_CONFIG=... # implementation-specific configuration
 ```
 
-## Built-in Worlds
+## Available Worlds
 
-Workflow DevKit provides two built-in world implementations:
+Visit the [Worlds Ecosystem](/worlds) page to explore:
 
-- [Local World](/docs/deploying/world/local-world) - Filesystem-based for local development
-- [Vercel World](/docs/deploying/world/vercel-world) - Production-ready for Vercel deployments
+- **Official Worlds** - Maintained by the Workflow team
+- **Community Worlds** - Community-contributed implementations for various backends
+- **Compatibility Status** - E2E test results for each world
+- **Performance Benchmarks** - Execution time comparisons
 
-## Community Worlds
+## Building a Custom World
 
-> These worlds are maintained by the community and tested in CI. See the [worlds-manifest.json](https://github.com/vercel/workflow/blob/main/worlds-manifest.json) for configuration details.
+Want to create your own World implementation? A World must implement the following interface:
 
-- [Turso](https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/turso) (`@workflow-worlds/turso`) - Turso/libSQL World for embedded or remote SQLite databases
-- [MongoDB](https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/mongodb) (`@workflow-worlds/mongodb`) - MongoDB World using native driver
-- [Redis](https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/redis) (`@workflow-worlds/redis`) - Redis World using BullMQ for queues, Redis Streams for output
+- Storage methods for runs, steps, hooks, and streams
+- Queue management for step execution
+- Authentication and authorization
 
-### Other Community Worlds
+See the [Local World](https://github.com/vercel/workflow/tree/main/packages/world-local) or [Postgres World](https://github.com/vercel/workflow/tree/main/packages/world-postgres) source code for reference implementations.
 
-- [Postgres World](/docs/deploying/world/postgres-world) - Reference implementation for a multi-host PostgreSQL backend world.
-- [Jazz World](https://github.com/garden-co/workflow-world-jazz) - A full World implementation built on top of [Jazz](https://jazz.tools)
+To add your World to the ecosystem:
+
+1. Implement the World interface
+2. Publish to npm
+3. Open a PR to add your world to [`worlds-manifest.json`](https://github.com/vercel/workflow/blob/main/worlds-manifest.json)
+
+Your world will then be automatically tested in CI and appear on the [Worlds Ecosystem](/worlds) page.

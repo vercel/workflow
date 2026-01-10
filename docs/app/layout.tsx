@@ -30,6 +30,10 @@ const links = [
     href: '/docs',
   },
   {
+    label: 'Worlds',
+    href: '/worlds',
+  },
+  {
     label: 'Examples',
     href: 'https://github.com/vercel/workflow-examples',
   },

@@ -2,170 +2,201 @@
 title: Postgres World
 ---
 
-The PostgreSQL world is a reference implementation of a [World](/docs/deploying/world) that's fully backed by PostgreSQL, including job processing (using [pg-boss](https://github.com/timgit/pg-boss)) and streaming (using PostgreSQL's NOTIFY and LISTEN).
+The Postgres World is a production-ready backend for self-hosted deployments. It uses PostgreSQL for durable storage and [pg-boss](https://github.com/timgit/pg-boss) for reliable job processing.
 
-This world is designed for long-running processes, so it can receive and dispatch events from a PostgreSQL database, and isn't meant to be deployed on serverless platforms like Vercel due to that nature.
-
-<Steps>
-
-<Step>
+Use the Postgres World when you need to deploy workflows on your own infrastructure outside of Vercel - such as a Docker container, Kubernetes cluster, or any cloud that supports long-running servers.
 
 ## Installation
 
-Install the `@workflow/world-postgres` package:
+Install the Postgres World package in your workflow project:
 
 ```package-install
 @workflow/world-postgres
 ```
 
-</Step>
+Configure the required environment variables to use the world and point it to your PostgreSQL database:
 
-<Step>
-
-## Add Environment Variables
-
-Add the following environment variables to your `.env` file required for workflows:
-
-```bash
+```bash title=".env"
 WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
-WORKFLOW_POSTGRES_URL="postgres://postgres:password@db.yourdb.co:5432/postgres"
-WORKFLOW_POSTGRES_JOB_PREFIX="workflow_"
-WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10
+WORKFLOW_POSTGRES_URL="postgres://user:password@host:5432/database"
 ```
 
-The world configuration is automatically read from environment variables:
-
-- `WORKFLOW_TARGET_WORLD` - Required, specifies which world implementation to use
-- `WORKFLOW_POSTGRES_URL` - PostgreSQL connection string (defaults to `postgres://world:world@localhost:5432/world`)
-- `WORKFLOW_POSTGRES_JOB_PREFIX` - Prefix for queue job names
-- `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` - Number of concurrent workers (defaults to `10` if not specified)
-
-
-</Step>
-
-<Step>
-
-## Set Up the Database Schema
-
-Run the setup script to create the required database tables:
+Run the migration script to create the necessary tables in your database. Ensure `WORKFLOW_POSTGRES_URL` is set when running this command:
 
 ```bash
-pnpm exec workflow-postgres-setup
+npx workflow-postgres-setup
 ```
 
-This will create the following tables in your PostgreSQL database:
+<Callout type="info">
+The migration is idempotent and can safely be run as a post-deployment lifecycle script.
+</Callout>
 
-- `workflow_runs` - Stores workflow execution state
-- `workflow_events` - Stores workflow events
-- `workflow_steps` - Stores workflow step state
-- `workflow_hooks` - Stores workflow hooks
-- `workflow_stream_chunks` - Stores streaming data
+## Starting the World
 
-You should see output like:
+To subscribe to the pg-boss queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
 
-```
-🔧 Setting up database schema...
-📍 Connection: postgres://postgres:****@db.yourcloudprovider.co:5432/postgres
-✅ Database schema created successfully!
-```
+<Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
 
-</Step>
+<Tab value="Next.js">
 
-<Step>
-
-## Initialize the PostgreSQL World
-
-Starting the PostgreSQL World will vary between different frameworks. The main idea is starting the PostgreSQL World on server startup.
-
-Here are some examples of what it might look like:
-
-### Next.js
-
-Create an `instrumentation.ts` file in your project root to initialize and start the world:
+Create an `instrumentation.ts` file in your project root:
 
 ```ts title="instrumentation.ts" lineNumbers
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "edge") {
-    // Dynamic import to avoid edge runtime bundling issues
-    console.log("Starting Postgres World...");
     const { getWorld } = await import("workflow/runtime");
     await getWorld().start?.();
-    console.log("Postgres World started");
   }
 }
 ```
 
-<Callout>
-  Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
+<Callout type="info">
+Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
 </Callout>
 
-### SvelteKit
+</Tab>
 
-Create a file `src/hooks.server.ts`:
+<Tab value="SvelteKit">
+
+Create a `src/hooks.server.ts` file:
 
 ```ts title="src/hooks.server.ts" lineNumbers
 import type { ServerInit } from "@sveltejs/kit";
 
 export const init: ServerInit = async () => {
-  if (process.env.WORKFLOW_TARGET_WORLD === "@workflow/world-postgres") {
-    // Dynamic import to avoid edge runtime bundling issues
-    const { getWorld } = await import("workflow/runtime");
-    console.log("Starting Postgres World...");
-    await getWorld().start?.();
-    console.log("Postgres World started");
-  }
+  const { getWorld } = await import("workflow/runtime");
+  await getWorld().start?.();
 };
 ```
 
-<Callout>
-  Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
+<Callout type="info">
+Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
 </Callout>
 
-### Nitro-based Apps
+</Tab>
 
-Create a plugin to start the PostgreSQL World. This will be invoked when the Nitro server starts.
+<Tab value="Nitro">
+
+Create a plugin to start the world on server initialization:
 
 ```ts title="plugins/start-pg-world.ts" lineNumbers
 import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
 
 export default defineNitroPlugin(async () => {
-  if (process.env.WORKFLOW_TARGET_WORLD === "@workflow/world-postgres") {
-    // Dynamic import to avoid edge runtime bundling issues
-    console.log("Starting Postgres World...");
-    const { getWorld } = await import("workflow/runtime");
-    await getWorld().start?.();
-    console.log("Postgres World started");
-  }
+  const { getWorld } = await import("workflow/runtime");
+  await getWorld().start?.();
 });
 ```
 
-Add the plugin to your `nitro.config.ts` file. This enables the plugin:
+Register the plugin in your config:
 
 ```ts title="nitro.config.ts"
 import { defineNitroConfig } from "nitropack";
 
 export default defineNitroConfig({
-  // ... your nitro config
   modules: ["workflow/nitro"],
   plugins: ["plugins/start-pg-world.ts"],
 });
 ```
 
-<Callout>
-  Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins)
+<Callout type="info">
+Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
 </Callout>
 
-</Step>
+</Tab>
 
-</Steps>
+</Tabs>
 
-## How it works
+<Callout type="info">
+The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
+</Callout>
 
-The Postgres World uses PostgreSQL as a durable backend for workflow execution:
+## Observability
 
-- **Job Queue**: Uses [pg-boss](https://github.com/timgit/pg-boss) for reliable job processing
-- **Event Streaming**: Leverages PostgreSQL's NOTIFY/LISTEN for real-time event distribution
-- **State Persistence**: All workflow state is stored in PostgreSQL tables
-- **Worker Management**: Supports configurable concurrent workers for job processing
+Use the `workflow` CLI to inspect workflows stored in PostgreSQL:
 
-This setup ensures that your workflows can survive application restarts and failures, with all state reliably persisted to your PostgreSQL database.
+```bash
+# Set your database URL
+export WORKFLOW_POSTGRES_URL="postgres://user:password@host:5432/database"
+
+# List workflow runs
+npx workflow inspect runs --backend @workflow/world-postgres
+
+# Launch the web UI
+npx workflow web --backend @workflow/world-postgres
+```
+
+If `WORKFLOW_POSTGRES_URL` is not set, the CLI defaults to `postgres://world:world@localhost:5432/world`.
+
+Learn more in the [Observability](/docs/observability) documentation.
+
+## Testing & Performance
+
+<WorldTestingPerformance />
+
+## Configuration
+
+All configuration options can be set via environment variables or programmatically via `createWorld()`.
+
+### `WORKFLOW_POSTGRES_URL` (required)
+
+PostgreSQL connection string. Falls back to `DATABASE_URL` if not set.
+
+Default: `postgres://world:world@localhost:5432/world`
+
+### `WORKFLOW_POSTGRES_JOB_PREFIX`
+
+Prefix for pg-boss queue job names. Useful when sharing a database between multiple applications.
+
+### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
+
+Number of concurrent workers polling for jobs. Default: `10`
+
+### Programmatic configuration
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript title="workflow.config.ts" lineNumbers
+import { createWorld } from "@workflow/world-postgres";
+
+const world = createWorld({
+  connectionString: "postgres://user:password@host:5432/database",
+  jobPrefix: "myapp_",
+  queueConcurrency: 20,
+});
+```
+
+## How It Works
+
+The Postgres World uses PostgreSQL as a durable backend:
+
+- **Storage** - Workflow runs, events, steps, and hooks are stored in PostgreSQL tables
+- **Job Queue** - [pg-boss](https://github.com/timgit/pg-boss) handles reliable job processing with retries
+- **Streaming** - PostgreSQL NOTIFY/LISTEN enables real-time event distribution
+
+This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).
+
+## Deployment
+
+Deploy your application to any cloud that supports long-running servers:
+
+- Docker containers
+- Kubernetes clusters
+- Virtual machines
+- Platform-as-a-Service providers (Railway, Render, Fly.io, etc.)
+
+Ensure your deployment has:
+1. Network access to your PostgreSQL database
+2. Environment variables configured correctly
+3. The `start()` function called on server initialization
+
+<Callout type="info">
+The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
+</Callout>
+
+## Limitations
+
+- **Requires long-running process** - Must call `start()` on server initialization; not compatible with serverless platforms
+- **PostgreSQL infrastructure** - Requires a PostgreSQL database (self-hosted or managed)
+- **Not compatible with Vercel** - Use the [Vercel World](/worlds/vercel) for Vercel deployments
+
+For local development, use the [Local World](/worlds/local) which requires no external services.

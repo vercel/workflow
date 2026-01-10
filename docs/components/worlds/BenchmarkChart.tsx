@@ -10,7 +10,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
-import type { WorldsStatus } from './types';
+import { formatTime, type WorldsStatus } from './types';
 
 interface BenchmarkChartProps {
   data: WorldsStatus;
@@ -104,7 +104,7 @@ export function BenchmarkChart({ data, benchmarkName }: BenchmarkChartProps) {
                     {metric ? (
                       <span>
                         {isFastest && '🥇 '}
-                        {metric.mean.toFixed(0)}ms
+                        {formatTime(metric.mean)}
                         {!isFastest && factor && (
                           <span className="text-muted-foreground text-xs ml-1">
                             ({factor.toFixed(1)}x)
@@ -179,7 +179,7 @@ export function BenchmarkBar({
             </div>
             <div className="w-20 text-right font-mono text-sm">
               {isFastest && '🥇 '}
-              {world.time.toFixed(0)}ms
+              {formatTime(world.time)}
             </div>
           </div>
         );
