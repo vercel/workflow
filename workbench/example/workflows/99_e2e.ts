@@ -12,9 +12,13 @@ import {
   type RequestWithResponse,
   RetryableError,
   sleep,
-  WORKFLOW_SERIALIZE,
-  WORKFLOW_DESERIALIZE,
 } from 'workflow';
+
+// Use Symbol.for() directly instead of importing from 'workflow' to avoid
+// pulling in server-side dependencies when this file is bundled for the client.
+// The SWC plugin recognizes these symbols by their string keys.
+const WORKFLOW_SERIALIZE = Symbol.for('workflow-serialize');
+const WORKFLOW_DESERIALIZE = Symbol.for('workflow-deserialize');
 import { getRun, start } from 'workflow/api';
 import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
 
