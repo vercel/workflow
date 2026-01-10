@@ -17,6 +17,8 @@ import {
   STREAM_NAME_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
+  WORKFLOW_DESERIALIZE,
+  WORKFLOW_SERIALIZE,
 } from './symbols.js';
 
 /**
@@ -227,6 +229,14 @@ export interface SerializableSpecial {
   Class: {
     classId: string;
   };
+  /**
+   * Custom serialized class instance.
+   * The class must have a `classId` property and be registered for deserialization.
+   */
+  CustomSerializable: {
+    classId: string; // Unique identifier for the class (used for lookup during deserialization)
+    data: unknown; // The serialized instance data
+  };
   Set: any[];
   StepFunction: {
     stepId: string;
@@ -347,6 +357,30 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       const classId = (value as any).classId;
       if (typeof classId !== 'string') return false;
       return { classId };
+    },
+    CustomSerializable: (value) => {
+      // Check if this is an instance of a class with custom serialization
+      if (value === null || typeof value !== 'object') return false;
+      const ctor = value.constructor;
+      if (!ctor || typeof ctor !== 'function') return false;
+
+      // Check if the class has a static WORKFLOW_SERIALIZE method
+      const serialize = ctor[WORKFLOW_SERIALIZE];
+      if (typeof serialize !== 'function') {
+        return false;
+      }
+
+      // Get the classId from the static class property (set by SWC plugin)
+      const classId = ctor.classId;
+      if (typeof classId !== 'string') {
+        throw new Error(
+          `Class "${ctor.name}" with ${String(WORKFLOW_SERIALIZE)} must have a static "classId" property.`
+        );
+      }
+
+      // Serialize the instance using the custom serializer
+      const data = serialize(value);
+      return { classId, data };
     },
     Set: (value) => value instanceof global.Set && Array.from(value),
     StepFunction: (value) => {
@@ -639,6 +673,29 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
         );
       }
       return cls;
+    },
+    CustomSerializable: (value) => {
+      const classId = value.classId;
+      const data = value.data;
+
+      // Look up the class by classId
+      const cls = getSerializationClass(classId);
+      if (!cls) {
+        throw new Error(
+          `Class "${classId}" not found. Make sure the class is registered with registerSerializationClass.`
+        );
+      }
+
+      // Get the deserializer from the class
+      const deserialize = (cls as any)[WORKFLOW_DESERIALIZE];
+      if (typeof deserialize !== 'function') {
+        throw new Error(
+          `Class "${classId}" does not have a static ${String(WORKFLOW_DESERIALIZE)} method.`
+        );
+      }
+
+      // Deserialize the instance using the custom deserializer
+      return deserialize(data);
     },
     Set: (value) => new global.Set(value),
     StepFunction: (value) => {

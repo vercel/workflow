@@ -38,3 +38,5 @@ export {
   getWritable,
   type WorkflowWritableStreamOptions,
 } from './step/writable-stream.js';
+export { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from './symbols.js';
+export { registerSerializationClass } from './class-serialization.js';

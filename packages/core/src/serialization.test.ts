@@ -2,6 +2,7 @@ import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import { getStepFunction, registerStepFunction } from './private.js';
+import { registerSerializationClass } from './class-serialization.js';
 import {
   dehydrateStepArguments,
   dehydrateStepReturnValue,
@@ -13,7 +14,12 @@ import {
   hydrateStepArguments,
   hydrateWorkflowArguments,
 } from './serialization.js';
-import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
+import {
+  STABLE_ULID,
+  STREAM_NAME_SYMBOL,
+  WORKFLOW_DESERIALIZE,
+  WORKFLOW_SERIALIZE,
+} from './symbols.js';
 import { createContext } from './vm/index.js';
 
 const mockRunId = 'wrun_mockidnumber0001';
@@ -995,5 +1001,269 @@ describe('step function serialization', () => {
 
     // Should return object with stepId
     expect(result).toEqual({ stepId: stepName });
+  });
+});
+
+describe('custom class serialization', () => {
+  const { globalThis: vmGlobalThis } = createContext({
+    seed: 'test',
+    fixedTimestamp: 1714857600000,
+  });
+
+  it('should serialize and deserialize a class with WORKFLOW_SERIALIZE/DESERIALIZE', () => {
+    class Point {
+      static classId = 'test/Point';
+
+      constructor(
+        public x: number,
+        public y: number
+      ) {}
+
+      static [WORKFLOW_SERIALIZE](instance: Point) {
+        return { x: instance.x, y: instance.y };
+      }
+
+      static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+        return new Point(data.x, data.y);
+      }
+    }
+
+    // Register the class for deserialization
+    registerSerializationClass('test/Point', Point);
+
+    const point = new Point(10, 20);
+    const serialized = dehydrateWorkflowArguments(point, [], mockRunId);
+
+    // Verify it serialized with the CustomSerializable type
+    expect(serialized).toBeDefined();
+    expect(Array.isArray(serialized)).toBe(true);
+    // Check that the serialized data contains the classId
+    expect(JSON.stringify(serialized)).toContain('test/Point');
+
+    // Hydrate it back
+    const hydrated = hydrateWorkflowArguments(serialized, vmGlobalThis);
+    expect(hydrated).toBeInstanceOf(Point);
+    expect(hydrated.x).toBe(10);
+    expect(hydrated.y).toBe(20);
+  });
+
+  it('should serialize nested custom serializable objects', () => {
+    class Vector {
+      static classId = 'test/Vector';
+
+      constructor(
+        public dx: number,
+        public dy: number
+      ) {}
+
+      static [WORKFLOW_SERIALIZE](instance: Vector) {
+        return { dx: instance.dx, dy: instance.dy };
+      }
+
+      static [WORKFLOW_DESERIALIZE](data: { dx: number; dy: number }) {
+        return new Vector(data.dx, data.dy);
+      }
+    }
+
+    // Register the class for deserialization
+    registerSerializationClass('test/Vector', Vector);
+
+    const data = {
+      name: 'test',
+      vector: new Vector(5, 10),
+      nested: {
+        anotherVector: new Vector(1, 2),
+      },
+    };
+
+    const serialized = dehydrateWorkflowArguments(data, [], mockRunId);
+    const hydrated = hydrateWorkflowArguments(serialized, vmGlobalThis);
+
+    expect(hydrated.name).toBe('test');
+    expect(hydrated.vector).toBeInstanceOf(Vector);
+    expect(hydrated.vector.dx).toBe(5);
+    expect(hydrated.vector.dy).toBe(10);
+    expect(hydrated.nested.anotherVector).toBeInstanceOf(Vector);
+    expect(hydrated.nested.anotherVector.dx).toBe(1);
+    expect(hydrated.nested.anotherVector.dy).toBe(2);
+  });
+
+  it('should serialize custom class in an array', () => {
+    class Item {
+      static classId = 'test/Item';
+
+      constructor(public id: string) {}
+
+      static [WORKFLOW_SERIALIZE](instance: Item) {
+        return { id: instance.id };
+      }
+
+      static [WORKFLOW_DESERIALIZE](data: { id: string }) {
+        return new Item(data.id);
+      }
+    }
+
+    // Register the class for deserialization
+    registerSerializationClass('test/Item', Item);
+
+    const items = [new Item('a'), new Item('b'), new Item('c')];
+
+    const serialized = dehydrateWorkflowArguments(items, [], mockRunId);
+    const hydrated = hydrateWorkflowArguments(serialized, vmGlobalThis);
+
+    expect(Array.isArray(hydrated)).toBe(true);
+    expect(hydrated).toHaveLength(3);
+    expect(hydrated[0]).toBeInstanceOf(Item);
+    expect(hydrated[0].id).toBe('a');
+    expect(hydrated[1]).toBeInstanceOf(Item);
+    expect(hydrated[1].id).toBe('b');
+    expect(hydrated[2]).toBeInstanceOf(Item);
+    expect(hydrated[2].id).toBe('c');
+  });
+
+  it('should work with step arguments', () => {
+    class Config {
+      static classId = 'test/Config';
+
+      constructor(
+        public setting: string,
+        public value: number
+      ) {}
+
+      static [WORKFLOW_SERIALIZE](instance: Config) {
+        return { setting: instance.setting, value: instance.value };
+      }
+
+      static [WORKFLOW_DESERIALIZE](data: { setting: string; value: number }) {
+        return new Config(data.setting, data.value);
+      }
+    }
+
+    // Register the class for deserialization
+    registerSerializationClass('test/Config', Config);
+
+    const config = new Config('maxRetries', 3);
+    const serialized = dehydrateStepArguments([config], globalThis);
+    const hydrated = hydrateStepArguments(
+      serialized,
+      [],
+      mockRunId,
+      globalThis
+    );
+
+    expect(Array.isArray(hydrated)).toBe(true);
+    expect(hydrated[0]).toBeInstanceOf(Config);
+    expect(hydrated[0].setting).toBe('maxRetries');
+    expect(hydrated[0].value).toBe(3);
+  });
+
+  it('should work with step return values', () => {
+    class Result {
+      static classId = 'test/Result';
+
+      constructor(
+        public success: boolean,
+        public data: string
+      ) {}
+
+      static [WORKFLOW_SERIALIZE](instance: Result) {
+        return { success: instance.success, data: instance.data };
+      }
+
+      static [WORKFLOW_DESERIALIZE](data: { success: boolean; data: string }) {
+        return new Result(data.success, data.data);
+      }
+    }
+
+    // Register the class for deserialization
+    registerSerializationClass('test/Result', Result);
+
+    const result = new Result(true, 'completed');
+    const serialized = dehydrateStepReturnValue(result, [], mockRunId);
+    // Step return values are hydrated with workflow revivers
+    const hydrated = hydrateWorkflowArguments(serialized, globalThis);
+
+    expect(hydrated).toBeInstanceOf(Result);
+    expect(hydrated.success).toBe(true);
+    expect(hydrated.data).toBe('completed');
+  });
+
+  it('should not serialize classes without WORKFLOW_SERIALIZE', () => {
+    class PlainClass {
+      constructor(public value: string) {}
+    }
+
+    const instance = new PlainClass('test');
+
+    // Should throw because PlainClass is not serializable
+    expect(() => dehydrateWorkflowArguments(instance, [], mockRunId)).toThrow();
+  });
+
+  it('should throw error when classId is missing', () => {
+    class NoClassId {
+      // Missing static classId!
+      constructor(public value: string) {}
+
+      static [WORKFLOW_SERIALIZE](instance: NoClassId) {
+        return { value: instance.value };
+      }
+
+      static [WORKFLOW_DESERIALIZE](data: { value: string }) {
+        return new NoClassId(data.value);
+      }
+    }
+
+    const instance = new NoClassId('test');
+
+    // Should throw with our specific error message about missing classId
+    let errorMessage = '';
+    try {
+      dehydrateWorkflowArguments(instance, [], mockRunId);
+    } catch (e: any) {
+      errorMessage = e.cause?.message || e.message;
+    }
+    expect(errorMessage).toMatch(/must have a static "classId" property/);
+  });
+
+  it('should serialize class with complex data types in payload', () => {
+    class ComplexData {
+      static classId = 'test/ComplexData';
+
+      constructor(
+        public items: Map<string, number>,
+        public created: Date
+      ) {}
+
+      static [WORKFLOW_SERIALIZE](instance: ComplexData) {
+        return { items: instance.items, created: instance.created };
+      }
+
+      static [WORKFLOW_DESERIALIZE](data: {
+        items: Map<string, number>;
+        created: Date;
+      }) {
+        return new ComplexData(data.items, data.created);
+      }
+    }
+
+    // Register the class for deserialization
+    registerSerializationClass('test/ComplexData', ComplexData);
+
+    const map = new Map([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    const date = new Date('2025-01-01T00:00:00.000Z');
+    const complex = new ComplexData(map, date);
+
+    const serialized = dehydrateWorkflowArguments(complex, [], mockRunId);
+    const hydrated = hydrateWorkflowArguments(serialized, globalThis);
+
+    expect(hydrated).toBeInstanceOf(ComplexData);
+    expect(hydrated.items).toBeInstanceOf(Map);
+    expect(hydrated.items.get('a')).toBe(1);
+    expect(hydrated.items.get('b')).toBe(2);
+    expect(hydrated.created).toBeInstanceOf(Date);
+    expect(hydrated.created.toISOString()).toBe('2025-01-01T00:00:00.000Z');
   });
 });

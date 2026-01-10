@@ -1947,6 +1947,62 @@ impl StepTransform {
         false
     }
 
+    /// Check if an expression is `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
+    fn is_workflow_serialization_symbol(&self, expr: &Expr, symbol_name: &str) -> bool {
+        // Pattern: Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+        if let Expr::Call(call) = expr {
+            if let Callee::Expr(callee) = &call.callee {
+                if let Expr::Member(member) = &**callee {
+                    // Check: obj is `Symbol`
+                    if let Expr::Ident(obj) = &*member.obj {
+                        if obj.sym.as_str() == "Symbol" {
+                            // Check: prop is `for`
+                            if let MemberProp::Ident(prop) = &member.prop {
+                                if prop.sym.as_str() == "for" {
+                                    // Check: first argument is the expected symbol name
+                                    if let Some(arg) = call.args.first() {
+                                        if let Expr::Lit(Lit::Str(s)) = &*arg.expr {
+                                            return s.value == symbol_name;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a class has custom serialization methods (both WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE)
+    fn has_custom_serialization_methods(&self, class: &Class) -> bool {
+        let mut has_serialize = false;
+        let mut has_deserialize = false;
+
+        for member in &class.body {
+            if let ClassMember::Method(method) = member {
+                if method.is_static {
+                    // Check for computed property name with Symbol.for(...)
+                    if let PropName::Computed(computed) = &method.key {
+                        if self
+                            .is_workflow_serialization_symbol(&computed.expr, "workflow-serialize")
+                        {
+                            has_serialize = true;
+                        } else if self.is_workflow_serialization_symbol(
+                            &computed.expr,
+                            "workflow-deserialize",
+                        ) {
+                            has_deserialize = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        has_serialize && has_deserialize
+    }
+
     // Remove "use step" directive from arrow function body
     fn remove_use_step_directive_arrow(&self, body: &mut BlockStmtOrExpr) {
         if let BlockStmtOrExpr::BlockStmt(body) = body {
@@ -3438,8 +3494,7 @@ impl VisitMut for StepTransform {
                     // 2. ClassName.classId = "..." - for serialization (though not typically needed in step mode)
                     for class_name in self.classes_needing_serialization.drain() {
                         // Generate class ID: class//filename//ClassName
-                        let class_id =
-                            naming::format_name("class", &self.filename, &class_name);
+                        let class_id = naming::format_name("class", &self.filename, &class_name);
 
                         // Create: registerSerializationClass("class//...", ClassName)
                         let registration_call = Stmt::Expr(ExprStmt {
@@ -3566,8 +3621,7 @@ impl VisitMut for StepTransform {
                     // In workflow mode, we just set ClassName.classId = "class//..." (no import needed)
                     for class_name in self.classes_needing_serialization.drain() {
                         // Generate class ID: class//filename//ClassName
-                        let class_id =
-                            naming::format_name("class", &self.filename, &class_name);
+                        let class_id = naming::format_name("class", &self.filename, &class_name);
 
                         // Create: ClassName.classId = "class//filename//ClassName"
                         let class_id_assignment = Stmt::Expr(ExprStmt {
@@ -3777,10 +3831,7 @@ impl VisitMut for StepTransform {
                             let needs_class_serialization =
                                 !self.classes_needing_serialization.is_empty();
                             if !self.registration_calls.is_empty() {
-                                module_items.push(self.create_private_imports(
-                                    true,
-                                    false,
-                                ));
+                                module_items.push(self.create_private_imports(true, false));
                             }
                             if needs_class_serialization {
                                 module_items.push(self.create_class_serialization_import());
@@ -5880,6 +5931,12 @@ impl VisitMut for StepTransform {
         let old_class_name = self.current_class_name.take();
         self.current_class_name = Some(class_name.clone());
 
+        // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
+        if self.has_custom_serialization_methods(&class_decl.class) {
+            self.classes_needing_serialization
+                .insert(class_name.clone());
+        }
+
         // Visit the class body (this populates static_step_methods_to_strip)
         class_decl.class.visit_mut_with(self);
 
@@ -5920,6 +5977,12 @@ impl VisitMut for StepTransform {
             .unwrap_or_else(|| "AnonymousClass".to_string());
         let old_class_name = self.current_class_name.take();
         self.current_class_name = Some(class_name.clone());
+
+        // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
+        if self.has_custom_serialization_methods(&class_expr.class) {
+            self.classes_needing_serialization
+                .insert(class_name.clone());
+        }
 
         // Visit the class body (this populates static_step_methods_to_strip)
         class_expr.class.visit_mut_with(self);
