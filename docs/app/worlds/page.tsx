@@ -7,7 +7,7 @@ import { WorldCardSimple } from '@/components/worlds/WorldCardSimple';
 import { getWorldsData } from '@/lib/worlds-data';
 
 export const metadata: Metadata = {
-  title: 'Workflow Worlds',
+  title: 'Worlds | Workflow DevKit',
   description:
     'The World abstraction allows workflows to run anywhere — locally, on Vercel, or on any cloud. The runtime, queues, and persistence are modular and entirely swappable.',
 };
