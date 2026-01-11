@@ -47,24 +47,34 @@ export function ConnectionStatus() {
     }
   }
 
-  // Determine subtitle for display
-  let subString: string | undefined;
-  if (backendId === 'vercel' || backendId === '@workflow/world-vercel') {
-    subString = displayInfo.environment;
-  } else if (backendId === 'local' || backendId === '@workflow/world-local') {
-    subString = displayInfo.dataDir;
+  // Format display string based on backend type
+  let displayString: string;
+  if (backendId === 'local' || backendId === '@workflow/world-local') {
+    displayString = `Local Dev: ${displayInfo.projectShortName || displayInfo.dataDir || 'Unknown'}`;
+  } else if (backendId === 'vercel' || backendId === '@workflow/world-vercel') {
+    const vercelInfo =
+      displayInfo.teamName && displayInfo.projectName
+        ? `${displayInfo.teamName}/${displayInfo.projectName}`
+        : displayInfo.projectName ||
+          displayInfo.teamName ||
+          displayInfo.environment ||
+          'Unknown';
+    displayString = `Connected to Vercel (${vercelInfo})`;
   } else if (
     backendId === '@workflow/world-postgres' ||
     backendId === 'postgres'
   ) {
-    subString = displayInfo.hostname;
+    const postgresInfo =
+      displayInfo.hostname || displayInfo.database || 'Unknown';
+    displayString = `Connected to Postgres (${postgresInfo})`;
+  } else {
+    // Fallback for other backends
+    displayString = `Connected to: ${backendDisplayName}`;
   }
 
   return (
     <div className="text-sm text-muted-foreground flex items-center gap-2">
-      <span className="font-medium">
-        Connected to: {backendDisplayName} {subString ? `(${subString})` : ''}
-      </span>
+      <span className="font-medium">{displayString}</span>
       {parts.length > 0 && (
         <Tooltip>
           <TooltipTrigger asChild>

@@ -13,6 +13,7 @@ import {
   getExternalRevivers,
 } from '@workflow/core/serialization';
 import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
   Event,
   Hook,
@@ -58,6 +59,8 @@ export interface ServerConfig {
     database?: string;
     /** For Local: the data directory path */
     dataDir?: string;
+    /** For Local: the short project name for display */
+    projectShortName?: string;
   };
 }
 
@@ -202,9 +205,17 @@ export async function getServerConfig(): Promise<ServerConfig> {
     effectiveBackend === 'local' ||
     effectiveBackend === '@workflow/world-local'
   ) {
-    displayInfo.dataDir = shortenPath(
-      process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data'
-    );
+    const dataDir = process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data';
+    displayInfo.dataDir = shortenPath(dataDir);
+    // Get the short project name for display
+    // We pass the current working directory to find the project, not the data dir itself
+    try {
+      const dataDirInfo = await findWorkflowDataDir(process.cwd());
+      displayInfo.projectShortName = dataDirInfo.shortName;
+    } catch {
+      // If we can't get the short name, fall back to a reasonable default
+      displayInfo.projectShortName = 'Unknown';
+    }
   }
 
   return {
