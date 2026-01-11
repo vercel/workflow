@@ -1,17 +1,19 @@
 import { ImageResponse } from 'next/og';
 import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
-export const runtime = 'edge';
+export const size = { width: 1200, height: 630 };
+export const contentType = 'image/png';
 
-export async function generateStaticParams() {
+export function generateStaticParams() {
   const ids = getWorldIds();
   return ids.map((id) => ({ id }));
 }
 
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export default async function Image({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const { id } = await params;
   const data = await getWorldData(id);
 
@@ -151,8 +153,7 @@ export async function GET(
       </div>
     </div>,
     {
-      width: 1200,
-      height: 630,
+      ...size,
     }
   );
 }
