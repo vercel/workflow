@@ -206,7 +206,8 @@ export default OutputSpecification;`}
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
 - The agent processes tool calls iteratively until completion or `maxSteps` is reached
 - **Default `maxSteps` is unlimited** - set a value to limit the number of LLM calls
-- The `stream()` method returns `{ messages, steps, experimental_output }` containing the full conversation history, step details, and optional structured output
+- The `stream()` method returns `{ messages, steps, experimental_output, uiMessages }` containing the full conversation history, step details, optional structured output, and optionally accumulated UI messages
+- Use `collectUIMessages: true` to accumulate `UIMessage[]` during streaming, useful for persisting conversation state without re-reading the stream
 - The `prepareStep` callback runs before each step and can modify model, messages, generation settings, tool choice, and context
 - Generation settings (temperature, maxOutputTokens, etc.) can be set on the constructor and overridden per-stream call
 - Use `activeTools` to limit which tools are available for a specific stream call
@@ -789,6 +790,48 @@ async function agentWithContext(userId: string) {
   });
 }
 ```
+
+### Collecting UI Messages
+
+Use `collectUIMessages` to accumulate `UIMessage[]` during streaming. This is useful when you need to persist the conversation without re-reading the run's output stream:
+
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessage, UIMessageChunk } from "ai";
+
+async function agentWithUIMessages(userMessage: string) {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    system: "You are a helpful assistant.",
+  });
+
+  const result = await agent.stream({
+    messages: [{ role: "user", content: userMessage }],
+    writable: getWritable<UIMessageChunk>(),
+    collectUIMessages: true, // [!code highlight]
+  });
+
+  // Access the accumulated UI messages
+  const uiMessages: UIMessage[] = result.uiMessages ?? []; // [!code highlight]
+
+  // Persist messages to a database
+  await saveConversation(uiMessages);
+
+  return result;
+}
+
+async function saveConversation(messages: UIMessage[]) {
+  "use step";
+  // Save to database...
+}
+```
+
+<Callout type="info">
+The `uiMessages` property is only available when `collectUIMessages` is set to `true`. When disabled, `uiMessages` is `undefined`.
+</Callout>
 
 ## See Also
 
