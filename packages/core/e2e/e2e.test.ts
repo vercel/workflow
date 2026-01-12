@@ -1081,8 +1081,8 @@ describe('e2e', () => {
       // - Vercel Deployment Protection bypass headers are available
       //
       // For production use on Vercel with Deployment Protection enabled, use the
-      // queue-based `world.healthCheck()` method instead, which bypasses protection
-      // by sending messages through the Queue infrastructure.
+      // queue-based `healthCheck(world, endpoint, options)` function instead, which
+      // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check
       const flowHealthUrl = new URL(
