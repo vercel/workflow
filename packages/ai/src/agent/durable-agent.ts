@@ -548,9 +548,10 @@ export interface DurableAgentStreamOptions<
   prepareStep?: PrepareStepCallback<TTools>;
 
   /**
-   * If true, collects UIMessage[] during streaming.
+   * If true, accumulates UIMessage[] during streaming.
    * The accumulated messages will be available in the `uiMessages` property of the result.
-   * This is useful when you need the final UIMessage representation after streaming completes.
+   * This is useful when you need the final UIMessage representation after streaming completes,
+   * without having to re-read the stream.
    *
    * @default false
    */
@@ -831,19 +832,24 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     const sendFinish = options.sendFinish ?? true;
     const preventClose = options.preventClose ?? false;
 
-    // Only call closeStream if there's something to do
-    if (sendFinish || !preventClose) {
-      // When using accumulator, write finish to the accumulator's writable first
-      // so it gets captured, then close the original stream
-      if (accumulator && sendFinish) {
+    // Handle stream closing with special care for accumulator
+    if (accumulator) {
+      // When using accumulator, we need to:
+      // 1. Write finish chunk through accumulator (if sendFinish is true) so it's captured
+      // 2. Close the accumulator's writable to signal completion
+      // 3. Handle the original stream's close separately (finish already forwarded through accumulator)
+      if (sendFinish) {
         await writeFinishChunk(effectiveWritable);
-        // Close the accumulator's writable to signal completion
-        await effectiveWritable.close();
-        // Now close the original stream (without sending finish again)
-        await closeStream(options.writable, preventClose, false);
-      } else {
-        await closeStream(options.writable, preventClose, sendFinish);
       }
+      // Always close the accumulator's writable so getMessages() can complete
+      await effectiveWritable.close();
+      // Now close the original stream (sendFinish=false since finish already written through accumulator)
+      if (!preventClose) {
+        await closeStream(options.writable, preventClose, false);
+      }
+    } else if (sendFinish || !preventClose) {
+      // No accumulator - use standard close logic
+      await closeStream(options.writable, preventClose, sendFinish);
     }
 
     // Use the final messages from the iterator, or fall back to original messages
