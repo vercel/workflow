@@ -726,6 +726,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         messages: options.messages as unknown as ModelMessage[],
         steps,
         experimental_output: undefined as OUTPUT,
+        uiMessages: undefined,
       };
     }
 

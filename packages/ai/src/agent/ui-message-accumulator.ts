@@ -5,7 +5,12 @@ import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
  * to a wrapped writable stream.
  *
  * This allows collecting the final UIMessage[] representation of a conversation
- * while still streaming chunks to the client in real-time.
+ * while still streaming chunks to the client in real-time, with minimal impact
+ * to the DurableAgent's streamTextIterator.
+ *
+ * This file might seem complicated, but it's the closest to the internal
+ * implementation that AI SDK uses to collect UIMessage[] for return to the
+ * onFinish callback on toUIMessageStreamResponse.
  */
 export class UIMessageAccumulator {
   private chunks: UIMessageChunk[] = [];
