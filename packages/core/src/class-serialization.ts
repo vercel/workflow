@@ -16,13 +16,11 @@ type ClassRegistry = Map<string, Function>;
  * This works isomorphically in both step mode (main context) and workflow mode (VM context).
  */
 function getRegistry(): ClassRegistry {
-  // biome-ignore lint/suspicious/noExplicitAny: accessing symbol on globalThis
   let registry = (globalThis as any)[WORKFLOW_CLASS_REGISTRY] as
     | ClassRegistry
     | undefined;
   if (!registry) {
     registry = new Map();
-    // biome-ignore lint/suspicious/noExplicitAny: setting symbol on globalThis
     (globalThis as any)[WORKFLOW_CLASS_REGISTRY] = registry;
   }
   return registry;

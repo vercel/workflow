@@ -234,7 +234,7 @@ export interface SerializableSpecial {
    * Custom serialized class instance.
    * The class must have a `classId` property and be registered for deserialization.
    */
-  CustomSerializable: {
+  Instance: {
     classId: string; // Unique identifier for the class (used for lookup during deserialization)
     data: unknown; // The serialized instance data
   };
@@ -359,7 +359,7 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       if (typeof classId !== 'string') return false;
       return { classId };
     },
-    CustomSerializable: (value) => {
+    Instance: (value) => {
       // Check if this is an instance of a class with custom serialization
       if (value === null || typeof value !== 'object') return false;
       const ctor = value.constructor;
@@ -675,7 +675,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
       }
       return cls;
     },
-    CustomSerializable: (value) => {
+    Instance: (value) => {
       const classId = value.classId;
       const data = value.data;
 

@@ -1,8 +1,8 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
-import { getStepFunction, registerStepFunction } from './private.js';
 import { registerSerializationClass } from './class-serialization.js';
+import { getStepFunction, registerStepFunction } from './private.js';
 import {
   dehydrateStepArguments,
   dehydrateStepReturnValue,
@@ -1034,7 +1034,7 @@ describe('custom class serialization', () => {
     const point = new Point(10, 20);
     const serialized = dehydrateWorkflowArguments(point, [], mockRunId);
 
-    // Verify it serialized with the CustomSerializable type
+    // Verify it serialized with the Instance type
     expect(serialized).toBeDefined();
     expect(Array.isArray(serialized)).toBe(true);
     // Check that the serialized data contains the classId
