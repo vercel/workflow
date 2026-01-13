@@ -8,28 +8,20 @@ import {
 
 // Hook schemas
 export const HookSchema = z.object({
-  /** The unique identifier of the workflow run this hook belongs to. */
   runId: z.string(),
-  /** The unique identifier of this hook within the workflow run. */
   hookId: z.string(),
-  /** The secret token used to reference this hook. */
   token: z.string(),
-  /** The owner ID (team or user) that owns this hook. */
   ownerId: z.string(),
-  /** The project ID this hook belongs to. */
   projectId: z.string(),
-  /** The environment (e.g., "production", "preview", "development") where this hook was created. */
   environment: z.string(),
-  /** Optional metadata associated with the hook, set when the hook was created. */
   metadata: zodJsonSchema.optional(),
-  /** The timestamp when this hook was created. */
   createdAt: z.coerce.date(),
 });
 
 /**
  * Represents a hook that can be used to resume a paused workflow run.
  */
-export type Hook = {
+export type Hook = z.infer<typeof HookSchema> & {
   /** The unique identifier of the workflow run this hook belongs to. */
   runId: string;
   /** The unique identifier of this hook within the workflow run. */
