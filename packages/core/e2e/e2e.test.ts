@@ -1072,9 +1072,18 @@ describe('e2e', () => {
   );
 
   test(
-    'health check endpoint - workflow and step endpoints respond to __health query parameter',
+    'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
     { timeout: 30_000 },
     async () => {
+      // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
+      // This approach requires direct HTTP access and works when:
+      // - Running locally (for port detection)
+      // - Vercel Deployment Protection bypass headers are available
+      //
+      // For production use on Vercel with Deployment Protection enabled, use the
+      // queue-based `healthCheck(world, endpoint, options)` function instead, which
+      // bypasses protection by sending messages through the Queue infrastructure.
+
       // Test the flow endpoint health check
       const flowHealthUrl = new URL(
         '/.well-known/workflow/v1/flow?__health',
@@ -1106,6 +1115,43 @@ describe('e2e', () => {
       expect(stepBody).toBe(
         'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
       );
+    }
+  );
+
+  test(
+    'health check (queue-based) - workflow and step endpoints respond to health check messages',
+    { timeout: 60_000 },
+    async () => {
+      // NOTE: This tests the queue-based health check using healthCheck() function.
+      // This approach bypasses Vercel Deployment Protection by sending messages
+      // through the Queue infrastructure rather than direct HTTP.
+      const url = new URL('/api/test-health-check', deploymentUrl);
+
+      // Test workflow endpoint health check
+      const workflowRes = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
+        body: JSON.stringify({ endpoint: 'workflow', timeout: 30000 }),
+      });
+      expect(workflowRes.status).toBe(200);
+      const workflowResult = await workflowRes.json();
+      expect(workflowResult.healthy).toBe(true);
+
+      // Test step endpoint health check
+      const stepRes = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
+        body: JSON.stringify({ endpoint: 'step', timeout: 30000 }),
+      });
+      expect(stepRes.status).toBe(200);
+      const stepResult = await stepRes.json();
+      expect(stepResult.healthy).toBe(true);
     }
   );
 

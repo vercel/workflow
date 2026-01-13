@@ -329,7 +329,7 @@ function initializeStartNode(
 
 /**
  * Add end node execution based on workflow run status
- * Handles all run statuses: pending, running, completed, failed, paused, cancelled
+ * Handles all run statuses: pending, running, completed, failed, cancelled
  */
 function addEndNodeExecution(
   run: WorkflowRun,
@@ -356,10 +356,6 @@ function addEndNodeExecution(
       break;
     case 'running':
       endNodeStatus = 'running';
-      break;
-    case 'paused':
-      // Paused is like running but waiting
-      endNodeStatus = 'pending';
       break;
     case 'pending':
     default:

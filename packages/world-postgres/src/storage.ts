@@ -187,57 +187,6 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       const resolveData = params?.resolveData ?? 'all';
       return filterRunData(parsed, resolveData);
     },
-    async pause(id, params) {
-      // TODO: we might want to guard this for only specific statuses
-      const [value] = await drizzle
-        .update(Schema.runs)
-        .set({ status: 'paused' })
-        .where(eq(runs.runId, id))
-        .returning();
-      if (!value) {
-        throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
-      }
-      const deserialized = deserializeRunError(compact(value));
-      const parsed = WorkflowRunSchema.parse(deserialized);
-      const resolveData = params?.resolveData ?? 'all';
-      return filterRunData(parsed, resolveData);
-    },
-    async resume(id, params) {
-      // Fetch current run to check if startedAt is already set
-      const [currentRun] = await drizzle
-        .select()
-        .from(runs)
-        .where(eq(runs.runId, id))
-        .limit(1);
-
-      if (!currentRun) {
-        throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
-      }
-
-      const updates: Partial<typeof runs._.inferInsert> = {
-        status: 'running',
-      };
-
-      // Only set startedAt the first time the run transitions to 'running'
-      if (!currentRun.startedAt) {
-        updates.startedAt = new Date();
-      }
-
-      const [value] = await drizzle
-        .update(Schema.runs)
-        .set(updates)
-        .where(and(eq(runs.runId, id), eq(runs.status, 'paused')))
-        .returning();
-      if (!value) {
-        throw new WorkflowAPIError(`Paused run not found: ${id}`, {
-          status: 404,
-        });
-      }
-      const deserialized = deserializeRunError(compact(value));
-      const parsed = WorkflowRunSchema.parse(deserialized);
-      const resolveData = params?.resolveData ?? 'all';
-      return filterRunData(parsed, resolveData);
-    },
     async list(params) {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;

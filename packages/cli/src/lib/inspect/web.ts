@@ -150,11 +150,15 @@ async function startWebServer(webPort: number): Promise<boolean> {
 
     // Start the Next.js server WITHOUT detaching
     // This keeps it attached to the CLI process
+    //
+    // The web UI reads world configuration from server-side environment variables.
+    // We pass through all WORKFLOW_* env vars to the spawned server process.
     serverProcess = spawn(command, args, {
       shell: true,
       cwd: packagePath,
       detached: false, // Keep attached so Ctrl+C works
       stdio: ['ignore', 'pipe', 'pipe'], // Pipe output so we can log it if needed
+      env: process.env, // Pass through all env vars including WORKFLOW_* config
     });
 
     // Register cleanup handlers to ensure server is killed on exit
@@ -216,8 +220,43 @@ async function startWebServer(webPort: number): Promise<boolean> {
 }
 
 /**
- * Launch the web UI with the specified configuration
- * This starts the server (if not running), opens the browser, then keeps the server running
+ * Build a URL for opening the local web UI.
+ *
+ * The web UI reads world configuration from server-side environment variables.
+ * Query params are only used for deep-linking to specific resources (resource/id, runId, etc.)
+ */
+function buildWebUIUrl(
+  hostUrl: string,
+  resource: string,
+  id: string | undefined,
+  flags: Record<string, any>
+): string {
+  const params = new URLSearchParams();
+
+  // Deep-linking params
+  params.set('resource', resource);
+  if (id) {
+    params.set('id', id);
+  }
+
+  // Optional deep-linking to specific run/step/hook
+  for (const flagName of ['runId', 'stepId', 'hookId'] as const) {
+    const value = flags[flagName];
+    if (value !== undefined && value !== '' && value !== false) {
+      params.set(flagName, String(value));
+    }
+  }
+
+  const queryString = params.toString();
+  return queryString ? `${hostUrl}?${queryString}` : hostUrl;
+}
+
+/**
+ * Launch the web UI with the specified configuration.
+ * This starts the server (if not running), opens the browser, then keeps the server running.
+ *
+ * World configuration is passed to the web server via environment variables.
+ * The web UI reads these from process.env on the server side, not from query params.
  */
 export async function launchWebUI(
   resource: string,
@@ -251,13 +290,6 @@ export async function launchWebUI(
       `Checking Vercel dashboard availability for team: ${teamSlug}, project: ${projectName}`
     );
 
-    // const dashboardAvailable = await checkVercelDashboardAvailable(
-    //   teamSlug,
-    //   projectName,
-    //   envVars.WORKFLOW_VERCEL_AUTH_TOKEN
-    // );
-
-    // if (dashboardAvailable) {
     const dashboardUrl = getVercelDashboardUrl(
       teamSlug,
       projectName,
@@ -282,21 +314,12 @@ export async function launchWebUI(
       logger.info(`Please open the link manually.`);
       return;
     }
-    // } else {
-    //   logger.warn(
-    //     chalk.yellow(
-    //       'Vercel dashboard is not available for this project. Falling back to local web UI.'
-    //     )
-    //   );
-    // }
   }
 
   // Fall back to local web UI
-  // Build URL with query params
-  const queryParams = envToQueryParams(resource, id, flags, envVars);
   const webPort = flags.webPort ?? 3456;
   const hostUrl = getHostUrl(webPort);
-  const url = `${hostUrl}?${queryParams.toString()}`;
+  const url = buildWebUIUrl(hostUrl, resource, id, flags);
 
   // Check if server is already running
   const alreadyRunning = await isServerRunning(hostUrl);
@@ -343,49 +366,4 @@ export async function launchWebUI(
       }
     });
   }
-}
-
-/**
- * Convert CLI flags to query parameters
- */
-function envToQueryParams(
-  resource: string,
-  id: string | undefined,
-  flags: Record<string, any>,
-  envVars: Record<string, string>
-): URLSearchParams {
-  const params = new URLSearchParams();
-  params.set('resource', resource);
-  if (id) {
-    params.set('id', id);
-  }
-
-  // Map relevant flags to query params
-  const envToQueryParamMappings: Record<string, string> = {
-    WORKFLOW_TARGET_WORLD: 'backend',
-    WORKFLOW_VERCEL_ENV: 'env',
-    WORKFLOW_VERCEL_AUTH_TOKEN: 'authToken',
-    WORKFLOW_VERCEL_PROJECT: 'project',
-    WORKFLOW_VERCEL_TEAM: 'team',
-    PORT: 'port',
-    WORKFLOW_LOCAL_DATA_DIR: 'dataDir',
-    WORKFLOW_MANIFEST_PATH: 'manifestPath',
-  };
-
-  for (const [envName, paramName] of Object.entries(envToQueryParamMappings)) {
-    const value = envVars[envName];
-    if (value !== undefined && value !== '' && value !== '0') {
-      params.set(paramName, String(value));
-    }
-  }
-  // We only take the runId/stepId/hookId flags directly, the rest are set via env vars,
-  // which are internally already influenced by the CLI flags
-  for (const flagName of ['runId', 'stepId', 'hookId'] as const) {
-    const value = flags[flagName];
-    if (value !== undefined && value !== '' && value !== false) {
-      params.set(flagName, String(value));
-    }
-  }
-
-  return params;
 }

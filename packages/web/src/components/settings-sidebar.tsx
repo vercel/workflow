@@ -1,94 +1,52 @@
-/** biome-ignore-all lint/correctness/useUniqueElementIds: <not relevant> */
 'use client';
 
-import { AlertCircle, AlertTriangle, Settings, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import {
+  Database,
+  Folder,
+  Globe,
+  Lock,
+  Server,
+  Settings,
+  X,
+} from 'lucide-react';
+import { useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { useQueryParamConfig, useUpdateConfigQueryParams } from '@/lib/config';
-import {
-  type ValidationError,
-  validateWorldConfig,
-  type WorldConfig,
-} from '@/lib/config-world';
-import { useDataDirInfo, useWorldsAvailability } from '@/lib/hooks';
+import { useServerConfig } from '@/lib/world-config-context';
 
 interface SettingsSidebarProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }
 
+/**
+ * Settings sidebar that displays read-only configuration information.
+ *
+ * The web UI no longer supports dynamic configuration via query params.
+ * All configuration is read from server-side environment variables.
+ * This sidebar shows the current configuration status without exposing
+ * sensitive data like connection strings or auth tokens.
+ */
 export function SettingsSidebar({
   open: controlledOpen,
   onOpenChange,
 }: SettingsSidebarProps = {}) {
-  const config = useQueryParamConfig();
-  const updateConfig = useUpdateConfigQueryParams();
-
+  const { serverConfig } = useServerConfig();
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
   const setIsOpen = onOpenChange || setInternalOpen;
-  const [localConfig, setLocalConfig] = useState<WorldConfig>(config);
-  const [errors, setErrors] = useState<ValidationError[]>([]);
-  const [isValidating, setIsValidating] = useState(false);
 
-  const { data: worldsAvailability = [], isLoading: isLoadingWorlds } =
-    useWorldsAvailability();
-  const { data: dataDirInfo } = useDataDirInfo(localConfig.dataDir);
+  const { backendDisplayName, backendId, displayInfo } = serverConfig;
 
-  const backend = localConfig.backend || 'local';
-  const isLocal = backend === 'local';
-  const isPostgres = backend === 'postgres';
-
-  // Update local config when query params change
-  useEffect(() => {
-    setLocalConfig(config);
-  }, [config]);
-
-  const handleValidateAndApply = async () => {
-    setIsValidating(true);
-    try {
-      const validationErrors = await validateWorldConfig(localConfig);
-      setErrors(validationErrors);
-
-      if (validationErrors.length === 0) {
-        updateConfig(localConfig);
-        setIsOpen(false);
-      }
-    } catch (error) {
-      console.error('Validation error:', error);
-      setErrors([
-        {
-          field: 'general',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
-      ]);
-    } finally {
-      setIsValidating(false);
-    }
-  };
-
-  const handleInputChange = (field: keyof WorldConfig, value: string) => {
-    setLocalConfig((prev) => ({ ...prev, [field]: value }));
-    // Clear errors for this field when user types
-    setErrors((prev) => prev.filter((e) => e.field !== field));
-  };
-
-  const getFieldError = (field: string) => {
-    return errors.find((e) => e.field === field)?.message;
-  };
-
-  const hasChanges =
-    JSON.stringify(localConfig) !== JSON.stringify(config) || errors.length > 0;
+  // Determine icon based on backend type
+  const BackendIcon =
+    backendId === 'local' || backendId === '@workflow/world-local'
+      ? Folder
+      : backendId === 'vercel' || backendId === '@workflow/world-vercel'
+        ? Globe
+        : backendId === '@workflow/world-postgres' || backendId === 'postgres'
+          ? Database
+          : Server;
 
   return (
     <>
@@ -127,264 +85,130 @@ export function SettingsSidebar({
                 </Button>
               </div>
 
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="backend">Backend</Label>
-                  <Select
-                    value={localConfig.backend || 'local'}
-                    onValueChange={(value) =>
-                      handleInputChange('backend', value)
-                    }
-                  >
-                    <SelectTrigger id="backend">
-                      <SelectValue placeholder="Select backend" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {isLoadingWorlds ? (
-                        <SelectItem value="loading" disabled>
-                          Loading worlds...
-                        </SelectItem>
-                      ) : worldsAvailability.length > 0 ? (
-                        worldsAvailability.map((world) => (
-                          <SelectItem key={world.id} value={world.id}>
-                            {world.displayName}
-                          </SelectItem>
-                        ))
-                      ) : (
-                        <>
-                          <SelectItem value="local">Local</SelectItem>
-                          <SelectItem value="vercel">Vercel</SelectItem>
-                          <SelectItem value="postgres">PostgreSQL</SelectItem>
-                        </>
-                      )}
-                    </SelectContent>
-                  </Select>
-                  {/* Show warning if selected world is not installed */}
-                  {(() => {
-                    const selectedWorld = worldsAvailability.find(
-                      (w) => w.id === backend
-                    );
-                    if (selectedWorld && !selectedWorld.isInstalled) {
-                      return (
-                        <div className="flex items-start gap-2 p-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400">
-                          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                          <div className="text-xs">
-                            <p className="font-medium">Package not installed</p>
-                            <p className="mt-1 text-muted-foreground">
-                              Run:{' '}
-                              <code className="bg-muted px-1 py-0.5 rounded">
-                                {selectedWorld.installCommand}
-                              </code>
-                            </p>
-                          </div>
-                        </div>
-                      );
-                    }
-                    return null;
-                  })()}
-                </div>
+              <div className="space-y-6">
+                {/* Environment-based configuration notice */}
+                <Alert className="!bg-blue-500/10 !border-blue-500/20">
+                  <Lock className="h-4 w-4" />
+                  <AlertTitle>Environment Configuration</AlertTitle>
+                  <AlertDescription>
+                    Configuration is set via server environment variables. Use
+                    the CLI or environment variables to configure the world
+                    backend.
+                  </AlertDescription>
+                </Alert>
 
-                {isLocal && (
-                  <>
-                    <div className="space-y-2">
-                      <Label htmlFor="port">Port</Label>
-                      <Input
-                        id="port"
-                        value={localConfig.port || ''}
-                        onChange={(e) =>
-                          handleInputChange('port', e.target.value)
-                        }
-                        placeholder="3001"
-                        className={
-                          getFieldError('port') ? 'border-destructive' : ''
-                        }
-                      />
-                      {getFieldError('port') && (
-                        <p className="text-sm text-destructive break-words">
-                          {getFieldError('port')}
-                        </p>
-                      )}
+                {/* Backend info card */}
+                <div className="rounded-lg border p-4 space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-primary/10">
+                      <BackendIcon className="h-5 w-5 text-primary" />
                     </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="dataDir">Data Directory</Label>
-                      <Input
-                        id="dataDir"
-                        value={localConfig.dataDir || ''}
-                        onChange={(e) =>
-                          handleInputChange('dataDir', e.target.value)
-                        }
-                        placeholder="Path to your project directory"
-                        className={
-                          getFieldError('dataDir') ? 'border-destructive' : ''
-                        }
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Path to your project or its workflow data directory.
-                        Relative paths allowed. Leave empty to search current
-                        directory.
+                    <div>
+                      <h3 className="font-semibold">{backendDisplayName}</h3>
+                      <p className="text-sm text-muted-foreground">
+                        World Backend
                       </p>
                     </div>
+                  </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="manifestPath">Manifest Path</Label>
-                      <Input
-                        id="manifestPath"
-                        value={localConfig.manifestPath || ''}
-                        onChange={(e) =>
-                          handleInputChange('manifestPath', e.target.value)
-                        }
-                        placeholder="app/.well-known/workflow/v1/manifest.json"
-                        className={
-                          getFieldError('manifestPath')
-                            ? 'border-destructive'
-                            : ''
-                        }
-                      />
-                      {getFieldError('manifestPath') && (
-                        <p className="text-sm text-destructive break-words">
-                          {getFieldError('manifestPath')}
-                        </p>
+                  {/* Backend-specific display info */}
+                  {displayInfo && (
+                    <div className="space-y-3 pt-2 border-t overflow-hidden">
+                      {displayInfo.dataDir && (
+                        <ConfigRow label="Data Directory">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.dataDir}
+                          >
+                            {displayInfo.dataDir}
+                          </code>
+                        </ConfigRow>
                       )}
-                      <p className="text-xs text-muted-foreground">
-                        Path to the workflow manifest file. Leave empty to use
-                        default locations.
-                      </p>
-                    </div>
-                  </>
-                )}
 
-                {isPostgres && (
-                  <>
-                    <div className="space-y-2">
-                      <Label htmlFor="postgresUrl">Connection URL</Label>
-                      <Input
-                        id="postgresUrl"
-                        value={localConfig.postgresUrl || ''}
-                        onChange={(e) =>
-                          handleInputChange('postgresUrl', e.target.value)
-                        }
-                        placeholder="postgres://user:pass@host:5432/db"
-                        className={
-                          getFieldError('postgresUrl')
-                            ? 'border-destructive'
-                            : ''
-                        }
-                      />
-                      {getFieldError('postgresUrl') && (
-                        <p className="text-sm text-destructive">
-                          {getFieldError('postgresUrl')}
-                        </p>
+                      {displayInfo.hostname && (
+                        <ConfigRow label="Host">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.hostname}
+                          >
+                            {displayInfo.hostname}
+                          </code>
+                        </ConfigRow>
+                      )}
+
+                      {displayInfo.database && (
+                        <ConfigRow label="Database">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.database}
+                          >
+                            {displayInfo.database}
+                          </code>
+                        </ConfigRow>
+                      )}
+
+                      {displayInfo.environment && (
+                        <ConfigRow label="Environment">
+                          <span className="text-sm capitalize">
+                            {displayInfo.environment}
+                          </span>
+                        </ConfigRow>
+                      )}
+
+                      {displayInfo.projectName && (
+                        <ConfigRow label="Project">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.projectName}
+                          >
+                            {displayInfo.projectName}
+                          </code>
+                        </ConfigRow>
+                      )}
+
+                      {displayInfo.teamName && (
+                        <ConfigRow label="Team">
+                          <code
+                            className="text-xs bg-muted px-2 py-1 rounded truncate max-w-[200px]"
+                            title={displayInfo.teamName}
+                          >
+                            {displayInfo.teamName}
+                          </code>
+                        </ConfigRow>
                       )}
                     </div>
-                  </>
-                )}
-
-                {!isLocal && !isPostgres && (
-                  <>
-                    <div className="space-y-2">
-                      <Label htmlFor="env">Environment</Label>
-                      <Input
-                        id="env"
-                        value={localConfig.env || 'production'}
-                        onChange={(e) =>
-                          handleInputChange('env', e.target.value)
-                        }
-                        placeholder="production or preview"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="authToken">Auth Token</Label>
-                      <Input
-                        id="authToken"
-                        type="password"
-                        value={localConfig.authToken || ''}
-                        onChange={(e) =>
-                          handleInputChange('authToken', e.target.value)
-                        }
-                        placeholder="Vercel auth token"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="project">Project ID</Label>
-                      <Input
-                        id="project"
-                        value={localConfig.project || ''}
-                        onChange={(e) =>
-                          handleInputChange('project', e.target.value)
-                        }
-                        placeholder="prj_..."
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="team">Team ID</Label>
-                      <Input
-                        id="team"
-                        value={localConfig.team || ''}
-                        onChange={(e) =>
-                          handleInputChange('team', e.target.value)
-                        }
-                        placeholder="team_..."
-                      />
-                    </div>
-                  </>
-                )}
-
-                {errors.length > 0 && (
-                  <Alert
-                    variant="destructive"
-                    className="!bg-destructive/10 !border-destructive"
-                  >
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Configuration Error</AlertTitle>
-                    <AlertDescription>
-                      <ul className="list-disc list-inside space-y-1">
-                        {errors.map((error, idx) => (
-                          <li key={`error-${idx}`} className="break-words">
-                            {error.field !== 'general' && (
-                              <strong>{error.field}:</strong>
-                            )}{' '}
-                            {error.message}
-                          </li>
-                        ))}
-                      </ul>
-                    </AlertDescription>
-                  </Alert>
-                )}
-                <div className="flex flex-col gap-2 pt-4">
-                  <Button
-                    onClick={handleValidateAndApply}
-                    disabled={
-                      isValidating ||
-                      !hasChanges ||
-                      worldsAvailability.some(
-                        (w) => w.id === backend && !w.isInstalled
-                      )
-                    }
-                    className="w-full"
-                  >
-                    {isValidating ? 'Validating...' : 'Apply Configuration'}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setLocalConfig(config);
-                      setErrors([]);
-                      setIsOpen(false);
-                    }}
-                    className="w-full"
-                  >
-                    Cancel
-                  </Button>
+                  )}
                 </div>
+
+                {/* Close button */}
+                <Button
+                  variant="outline"
+                  onClick={() => setIsOpen(false)}
+                  className="w-full"
+                >
+                  Close
+                </Button>
               </div>
             </div>
           </div>
         </>
       )}
     </>
+  );
+}
+
+/** Helper component for displaying config rows */
+function ConfigRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 min-w-0">
+      <span className="text-sm text-muted-foreground shrink-0">{label}</span>
+      <div className="min-w-0 overflow-hidden">{children}</div>
+    </div>
   );
 }

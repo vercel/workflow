@@ -486,8 +486,8 @@ try {
 Stream locks acquired in a step only apply within that step, not across other steps. This enables multiple writers to write to the same stream concurrently.
 </Callout>
 
-<Callout type="info">
-If a lock is not released, the step process cannot terminate. Even though the step returns and the workflow continues, the underlying process will remain active until it times out.
+<Callout type="warn">
+If a lock is not released, the step function's HTTP request cannot terminate. Even though the step returns and the workflow continues, the underlying request will remain active until it times out—wasting compute resources unnecessarily.
 </Callout>
 
 **Close streams when done:**

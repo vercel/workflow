@@ -1193,8 +1193,7 @@
   --span-secondary: var(--ds-green-900);
 }
 
-.spanCancelled,
-.spanPaused {
+.spanCancelled {
   --span-background: var(--ds-amber-200);
   --span-border: var(--ds-amber-500);
   --span-line: var(--ds-amber-400);

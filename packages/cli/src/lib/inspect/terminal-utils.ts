@@ -130,7 +130,6 @@ export const formatStatus = (status: string, abbreviated: boolean): string => {
     failed: 'F',
     cancelled: 'X',
     pending: 'P',
-    paused: 'W', // W for "waiting"
   };
 
   return abbrevMap[status.toLowerCase()] || status.charAt(0).toUpperCase();

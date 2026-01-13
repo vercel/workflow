@@ -37,8 +37,6 @@ export function StatusBadge({
         return 'bg-yellow-500';
       case 'pending':
         return 'bg-gray-400';
-      case 'paused':
-        return 'bg-orange-500';
       default:
         return 'bg-gray-400';
     }

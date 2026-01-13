@@ -367,18 +367,6 @@ export function createStorage(basedir: string): Storage {
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         return filterRunData(run, resolveData);
       },
-
-      async pause(id, params) {
-        const run = await this.update(id, { status: 'paused' });
-        const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-        return filterRunData(run, resolveData);
-      },
-
-      async resume(id, params) {
-        const run = await this.update(id, { status: 'running' });
-        const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-        return filterRunData(run, resolveData);
-      },
     },
 
     steps: {

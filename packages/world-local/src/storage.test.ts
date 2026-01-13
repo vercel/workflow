@@ -275,36 +275,6 @@ describe('Storage', () => {
         expect(cancelled.completedAt).toBeInstanceOf(Date);
       });
     });
-
-    describe('pause', () => {
-      it('should pause a run', async () => {
-        const created = await storage.runs.create({
-          deploymentId: 'deployment-123',
-          workflowName: 'test-workflow',
-          input: [],
-        });
-
-        const paused = await storage.runs.pause(created.runId);
-
-        expect(paused.status).toBe('paused');
-      });
-    });
-
-    describe('resume', () => {
-      it('should resume a paused run', async () => {
-        const created = await storage.runs.create({
-          deploymentId: 'deployment-123',
-          workflowName: 'test-workflow',
-          input: [],
-        });
-
-        await storage.runs.pause(created.runId);
-        const resumed = await storage.runs.resume(created.runId);
-
-        expect(resumed.status).toBe('running');
-        expect(resumed.startedAt).toBeInstanceOf(Date);
-      });
-    });
   });
 
   describe('steps', () => {

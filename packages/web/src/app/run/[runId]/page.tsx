@@ -3,7 +3,6 @@
 import { ErrorBoundary } from '@workflow/web-shared';
 import { useParams } from 'next/navigation';
 import { RunDetailView } from '@/components/run-detail-view';
-import { useQueryParamConfig } from '@/lib/config';
 import {
   useEventIdState,
   useHookIdState,
@@ -12,7 +11,6 @@ import {
 
 export default function RunDetailPage() {
   const params = useParams();
-  const config = useQueryParamConfig();
   const [stepId] = useStepIdState();
   const [eventId] = useEventIdState();
   const [hookId] = useHookIdState();
@@ -25,7 +23,7 @@ export default function RunDetailPage() {
       title="Run Detail Error"
       description="Failed to load run details. Please try navigating back to the home page."
     >
-      <RunDetailView config={config} runId={runId} selectedId={selectedId} />
+      <RunDetailView runId={runId} selectedId={selectedId} />
     </ErrorBoundary>
   );
 }

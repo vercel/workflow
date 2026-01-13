@@ -6,6 +6,7 @@ import {
   type EnvMap,
   type Event,
   getErrorMessage,
+  reenqueueRun,
   useWorkflowRuns,
 } from '@workflow/web-shared';
 import { fetchEvents, fetchRun } from '@workflow/web-shared/server';
@@ -20,6 +21,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   XCircle,
+  Zap,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -52,10 +54,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { worldConfigToEnvMap } from '@/lib/config';
-import type { WorldConfig } from '@/lib/config-world';
 import { useDataDirInfo } from '@/lib/hooks';
 import { useTableSelection } from '@/lib/hooks/use-table-selection';
+import { useServerConfig } from '@/lib/world-config-context';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { SelectionBar } from './display-utils/selection-bar';
@@ -70,13 +71,11 @@ function RunActionsDropdownContentInner({
   runId,
   runStatus,
   onSuccess,
-  showDebugActions,
 }: {
   env: EnvMap;
   runId: string;
   runStatus: WorkflowRunStatus | undefined;
   onSuccess: () => void;
-  showDebugActions: boolean;
 }) {
   const [events, setEvents] = useState<Event[] | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
@@ -115,7 +114,6 @@ function RunActionsDropdownContentInner({
       eventsLoading={isLoading}
       stopPropagation
       callbacks={{ onSuccess }}
-      showDebugActions={showDebugActions}
     />
   );
 }
@@ -126,13 +124,11 @@ function LazyDropdownMenu({
   runId,
   runStatus,
   onSuccess,
-  showDebugActions,
 }: {
   env: EnvMap;
   runId: string;
   runStatus: WorkflowRunStatus | undefined;
   onSuccess: () => void;
-  showDebugActions: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -155,7 +151,6 @@ function LazyDropdownMenu({
             runId={runId}
             runStatus={runStatus}
             onSuccess={onSuccess}
-            showDebugActions={showDebugActions}
           />
         </DropdownMenuContent>
       )}
@@ -164,7 +159,6 @@ function LazyDropdownMenu({
 }
 
 interface RunsTableProps {
-  config: WorldConfig;
   onRunClick: (runId: string) => void;
 }
 
@@ -173,7 +167,6 @@ const statusMap: Record<WorkflowRunStatus, { label: string; color: string }> = {
   running: { label: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
   completed: { label: 'Completed', color: 'bg-green-600 dark:bg-green-400' },
   failed: { label: 'Failed', color: 'bg-red-600 dark:bg-red-400' },
-  paused: { label: 'Paused', color: 'bg-yellow-600 dark:bg-yellow-400' },
   cancelled: { label: 'Cancelled', color: 'bg-gray-600 dark:bg-gray-400' },
 };
 
@@ -363,11 +356,15 @@ function FilterControls({
  * RunsTable - Displays workflow runs with server-side pagination.
  * Uses the PaginatingTable pattern: fetches data for each page as needed from the server.
  * The table and fetching behavior are intertwined - pagination controls trigger new API calls.
+ *
+ * World configuration is read from server-side environment variables.
+ * The env object passed to server actions is empty - the server uses process.env.
  */
-export function RunsTable({ config, onRunClick }: RunsTableProps) {
+export function RunsTable({ onRunClick }: RunsTableProps) {
   const searchParams = useSearchParams();
   const handleWorkflowFilter = useWorkflowFilter();
   const handleStatusFilter = useStatusFilter();
+  const { serverConfig } = useServerConfig();
 
   // Validate status parameter - only allow known valid statuses or 'all'
   const rawStatus = searchParams.get('status');
@@ -378,20 +375,22 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       ? (rawStatus as WorkflowRunStatus | 'all')
       : undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';
-  const showDebugActions = searchParams.get('debug') === '1';
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
-  const env = useMemo(() => worldConfigToEnvMap(config), [config]);
-  const isLocal = config.backend === 'local' || !config.backend;
+  // Empty env object - server actions read from process.env
+  const env: EnvMap = useMemo(() => ({}), []);
+  const isLocal =
+    serverConfig.backendId === 'local' ||
+    serverConfig.backendId === '@workflow/world-local';
   const { data: dataDirInfo, isLoading: dataDirInfoLoading } = useDataDirInfo(
-    config.dataDir
+    serverConfig.displayInfo.dataDir ?? ''
   );
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
-    config.backend?.includes('vercel') || false;
+    serverConfig.backendId?.includes('vercel') || false;
   // TODO: This is a workaround. We should be getting a list of valid workflow names
   // from the manifest.
   const [seenWorkflowNames, setSeenWorkflowNames] = useState<Set<string>>(
@@ -420,8 +419,9 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
 
   const runs = data.data ?? [];
 
-  // Bulk cancel state
+  // Bulk action states
   const [isBulkCancelling, setIsBulkCancelling] = useState(false);
+  const [isBulkReenqueuing, setIsBulkReenqueuing] = useState(false);
 
   const isLocalAndHasMissingData =
     isLocal &&
@@ -496,6 +496,43 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
       setIsBulkCancelling(false);
     }
   }, [env, cancellableSelectedRuns, isBulkCancelling, selection, onReload]);
+
+  const handleBulkReenqueue = useCallback(async () => {
+    if (isBulkReenqueuing || selectedRuns.length === 0) return;
+
+    setIsBulkReenqueuing(true);
+    try {
+      const results = await Promise.allSettled(
+        selectedRuns.map((run) => reenqueueRun(env, run.runId))
+      );
+
+      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.filter((r) => r.status === 'rejected').length;
+
+      if (failed === 0) {
+        toast.success(
+          `Re-enqueued ${succeeded} run${succeeded !== 1 ? 's' : ''}`
+        );
+      } else if (succeeded === 0) {
+        toast.error(
+          `Failed to re-enqueue ${failed} run${failed !== 1 ? 's' : ''}`
+        );
+      } else {
+        toast.warning(
+          `Re-enqueued ${succeeded} run${succeeded !== 1 ? 's' : ''}, ${failed} failed`
+        );
+      }
+
+      selection.clearSelection();
+      onReload();
+    } catch (err) {
+      toast.error('Failed to re-enqueue runs', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    } finally {
+      setIsBulkReenqueuing(false);
+    }
+  }, [env, selectedRuns, isBulkReenqueuing, selection, onReload]);
 
   const toggleSortOrder = () => {
     setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
@@ -670,7 +707,6 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
                           runId={run.runId}
                           runStatus={run.status}
                           onSuccess={onReload}
-                          showDebugActions={showDebugActions}
                         />
                       </TableCell>
                     </TableRow>
@@ -711,26 +747,50 @@ export function RunsTable({ config, onRunClick }: RunsTableProps) {
         onClearSelection={selection.clearSelection}
         itemLabel="runs"
         actions={
-          hasCancellableSelection && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
-              onClick={handleBulkCancel}
-              disabled={isBulkCancelling}
-            >
-              {isBulkCancelling ? (
-                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-              ) : (
-                <XCircle className="h-4 w-4 mr-1" />
-              )}
-              Cancel{' '}
-              {cancellableSelectedRuns.length !== selection.selectionCount
-                ? `${cancellableSelectedRuns.length} `
-                : ''}
-              {isBulkCancelling ? 'cancelling...' : ''}
-            </Button>
-          )
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+                  onClick={handleBulkReenqueue}
+                  disabled={isBulkReenqueuing || selectedRuns.length === 0}
+                >
+                  {isBulkReenqueuing ? (
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                  ) : (
+                    <Zap className="h-4 w-4 mr-1" />
+                  )}
+                  {isBulkReenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Re-enqueue the workflow orchestration layer for selected runs.
+                Useful if workflows appear stuck.
+              </TooltipContent>
+            </Tooltip>
+            {hasCancellableSelection && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+                onClick={handleBulkCancel}
+                disabled={isBulkCancelling}
+              >
+                {isBulkCancelling ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <XCircle className="h-4 w-4 mr-1" />
+                )}
+                Cancel{' '}
+                {cancellableSelectedRuns.length !== selection.selectionCount
+                  ? `${cancellableSelectedRuns.length} `
+                  : ''}
+                {isBulkCancelling ? 'cancelling...' : ''}
+              </Button>
+            )}
+          </>
         }
       />
     </div>

@@ -12,8 +12,6 @@ import {
   createWorkflowRun,
   getWorkflowRun,
   listWorkflowRuns,
-  pauseWorkflowRun,
-  resumeWorkflowRun,
   updateWorkflowRun,
 } from './runs.js';
 import {
@@ -33,8 +31,6 @@ export function createStorage(config?: APIConfig): Storage {
       update: (id, data) => updateWorkflowRun(id, data, config),
       list: (params) => listWorkflowRuns(params, config),
       cancel: (id, params) => cancelWorkflowRun(id, params, config),
-      pause: (id, params) => pauseWorkflowRun(id, params, config),
-      resume: (id, params) => resumeWorkflowRun(id, params, config),
     },
     steps: {
       create: (runId, data) => createStep(runId, data, config),

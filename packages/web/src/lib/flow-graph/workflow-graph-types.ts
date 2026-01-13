@@ -124,13 +124,7 @@ export interface EdgeTraversal {
 
 export interface WorkflowRunExecution {
   runId: string;
-  status:
-    | 'pending'
-    | 'running'
-    | 'completed'
-    | 'failed'
-    | 'paused'
-    | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   nodeExecutions: Map<string, StepExecution[]>; // nodeId -> array of executions (for retries)
   edgeTraversals: Map<string, EdgeTraversal>; // edgeId -> traversal info
   currentNode?: string; // for running workflows

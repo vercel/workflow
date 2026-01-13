@@ -1,5 +1,40 @@
 # @workflow/cli
 
+## 4.0.1-beta.44
+
+### Patch Changes
+
+- [#747](https://github.com/vercel/workflow/pull/747) [`3fb57e1`](https://github.com/vercel/workflow/commit/3fb57e14c8bd3948599625bdf911b88db5842320) Thanks [@pranaygp](https://github.com/pranaygp)! - Use env variables instead of query params for world config (like WORKFLOW_TARGET_WORLD)
+
+  **BREAKING CHANGE**: The OSS web UI is now locked to a single world and will not let you change world using query params
+
+- Updated dependencies [[`3fb57e1`](https://github.com/vercel/workflow/commit/3fb57e14c8bd3948599625bdf911b88db5842320)]:
+  - @workflow/web@4.0.1-beta.26
+
+## 4.0.1-beta.43
+
+### Patch Changes
+
+- [#751](https://github.com/vercel/workflow/pull/751) [`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the unused paused/resumed run events and states
+
+  - Remove `run_paused` and `run_resumed` event types
+  - Remove `paused` status from `WorkflowRunStatus`
+  - Remove `PauseWorkflowRunParams` and `ResumeWorkflowRunParams` types
+  - Remove `pauseWorkflowRun` and `resumeWorkflowRun` functions from world-vercel
+
+- [#744](https://github.com/vercel/workflow/pull/744) [`e7de61f`](https://github.com/vercel/workflow/commit/e7de61f8b88ad7c710208ef599872085fb7b6d32) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `--localUi` CLI flag to use local web UI instead of Vercel dashboard
+
+- [#722](https://github.com/vercel/workflow/pull/722) [`05ecfbc`](https://github.com/vercel/workflow/commit/05ecfbcc11508defc7ccd0a8b67839eaef631e71) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ensure npm pre-release version update checks work for post-GA release pre-releases
+
+- Updated dependencies [[`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167)]:
+  - @workflow/world@4.0.1-beta.12
+  - @workflow/world-local@4.0.1-beta.25
+  - @workflow/world-vercel@4.0.1-beta.26
+  - @workflow/web@4.0.1-beta.25
+  - @workflow/core@4.0.1-beta.36
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/builders@4.0.1-beta.36
+
 ## 4.0.1-beta.42
 
 ### Patch Changes

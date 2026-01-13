@@ -38,10 +38,21 @@ export const StepInvokePayloadSchema = z.object({
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
 export type StepInvokePayload = z.infer<typeof StepInvokePayloadSchema>;
+export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
+
+/**
+ * Health check payload - used to verify that the queue pipeline
+ * can deliver messages to workflow/step endpoints.
+ */
+export const HealthCheckPayloadSchema = z.object({
+  __healthCheck: z.literal(true),
+  correlationId: z.string(),
+});
 
 export const QueuePayloadSchema = z.union([
   WorkflowInvokePayloadSchema,
   StepInvokePayloadSchema,
+  HealthCheckPayloadSchema,
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 

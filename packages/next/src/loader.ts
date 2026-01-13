@@ -1,6 +1,33 @@
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
 
+type DecoratorOptions = import('@workflow/builders').DecoratorOptions;
+
+// Cache decorator options per working directory to avoid reading tsconfig for every file
+const decoratorOptionsCache = new Map<string, Promise<DecoratorOptions>>();
+
+async function getDecoratorOptions(
+  workingDir: string
+): Promise<DecoratorOptions> {
+  const cached = decoratorOptionsCache.get(workingDir);
+  if (cached) {
+    return cached;
+  }
+
+  const promise = (async (): Promise<DecoratorOptions> => {
+    // Dynamic import to handle ESM module from CommonJS context
+    // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
+    const { getDecoratorOptionsForDirectory } = (await eval(
+      'import("@workflow/builders")'
+    )) as typeof import('@workflow/builders');
+
+    return getDecoratorOptionsForDirectory(workingDir);
+  })();
+
+  decoratorOptionsCache.set(workingDir, promise);
+  return promise;
+}
+
 // This loader applies the "use workflow"/"use step"
 // client transformation
 export default async function workflowLoader(
@@ -63,6 +90,9 @@ export default async function workflowLoader(
     relativeFilename = normalizedFilepath.split('/').pop() || 'unknown.ts';
   }
 
+  // Get decorator options from tsconfig (cached per working directory)
+  const decoratorOptions = await getDecoratorOptions(workingDir);
+
   // Transform with SWC
   const result = await transform(normalizedSource, {
     filename: relativeFilename,
@@ -72,10 +102,12 @@ export default async function workflowLoader(
           ? {
               syntax: 'typescript',
               tsx: filename.endsWith('.tsx'),
+              decorators: decoratorOptions.decorators,
             }
           : {
               syntax: 'ecmascript',
               jsx: filename.endsWith('.jsx'),
+              decorators: decoratorOptions.decorators,
             }),
       },
       target: 'es2022',
@@ -88,6 +120,8 @@ export default async function workflowLoader(
         react: {
           runtime: 'preserve',
         },
+        legacyDecorator: decoratorOptions.legacyDecorator,
+        decoratorMetadata: decoratorOptions.decoratorMetadata,
       },
     },
     minify: false,

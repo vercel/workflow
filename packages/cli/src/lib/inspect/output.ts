@@ -101,7 +101,6 @@ const STATUS_COLORS: Record<
   failed: chalk.red,
   cancelled: chalk.strikethrough.yellow,
   pending: chalk.blue,
-  paused: chalk.yellow,
 };
 
 const isStreamId = (value: string) => {
@@ -116,7 +115,6 @@ const showStatusLegend = () => {
     'failed',
     'cancelled',
     'pending',
-    'paused',
   ];
 
   const legendItems = statuses.map((status) => {

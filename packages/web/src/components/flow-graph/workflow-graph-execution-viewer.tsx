@@ -72,8 +72,7 @@ type StatusBadgeStatus =
   | 'running'
   | 'completed'
   | 'failed'
-  | 'cancelled'
-  | 'paused';
+  | 'cancelled';
 function mapToStatusBadgeStatus(
   status: StepExecution['status']
 ): StatusBadgeStatus {

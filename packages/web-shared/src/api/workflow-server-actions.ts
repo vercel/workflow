@@ -22,7 +22,198 @@ import type {
   World,
 } from '@workflow/world';
 
+/**
+ * Environment variable map for world configuration.
+ *
+ * NOTE: This type is still exported for potential future use cases where
+ * dynamic world configuration at runtime may be needed. Currently, the
+ * @workflow/web package uses server-side environment variables exclusively
+ * and does not pass EnvMap from the client. The server actions still accept
+ * this parameter for backwards compatibility and future extensibility.
+ */
 export type EnvMap = Record<string, string | undefined>;
+
+/**
+ * Server configuration info that is safe to send to the client.
+ * This deliberately excludes sensitive data like connection strings and auth tokens.
+ */
+export interface ServerConfig {
+  /** Whether the world is configured (WORKFLOW_TARGET_WORLD or default is set) */
+  isConfigured: boolean;
+  /** Human-readable backend name for display (e.g., "PostgreSQL", "Local", "Vercel") */
+  backendDisplayName: string;
+  /** The raw backend identifier (e.g., "@workflow/world-postgres", "local", "vercel") */
+  backendId: string;
+  /** Non-sensitive display info specific to the backend type */
+  displayInfo: {
+    /** For Vercel: the environment (production/preview) */
+    environment?: string;
+    /** For Vercel: the project name (not ID) */
+    projectName?: string;
+    /** For Vercel: the team name (not ID) */
+    teamName?: string;
+    /** For Postgres: just the hostname (no credentials or full URL) */
+    hostname?: string;
+    /** For Postgres: the database name */
+    database?: string;
+    /** For Local: the data directory path */
+    dataDir?: string;
+  };
+}
+
+/**
+ * Map from WORKFLOW_TARGET_WORLD value to human-readable display name
+ */
+function getBackendDisplayName(targetWorld: string | undefined): string {
+  if (!targetWorld) return 'Local';
+  switch (targetWorld) {
+    case 'local':
+      return 'Local';
+    case 'vercel':
+      return 'Vercel';
+    case '@workflow/world-postgres':
+    case 'postgres':
+      return 'PostgreSQL';
+    default:
+      // For custom worlds, try to make a readable name
+      if (targetWorld.startsWith('@')) {
+        // Extract package name without scope for display
+        const parts = targetWorld.split('/');
+        return parts[parts.length - 1] || targetWorld;
+      }
+      return targetWorld;
+  }
+}
+
+/**
+ * Extract hostname from a database URL without exposing credentials.
+ */
+function extractHostnameFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Extract database name from a postgres URL.
+ */
+function extractDatabaseFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    // pathname is like "/dbname", so remove leading slash
+    const dbName = parsed.pathname?.slice(1);
+    return dbName || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Shorten a file path for display purposes.
+ * - Replaces home directory with ~
+ * - If path is still long, shows .../last-two-segments
+ */
+function shortenPath(filePath: string): string {
+  if (!filePath) return filePath;
+
+  let shortened = filePath;
+
+  // Replace home directory with ~
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  if (homeDir && shortened.startsWith(homeDir)) {
+    shortened = '~' + shortened.slice(homeDir.length);
+  }
+
+  // If still long (> 40 chars), abbreviate to show last meaningful segments
+  if (shortened.length > 40) {
+    const segments = shortened.split('/').filter(Boolean);
+    if (segments.length > 2) {
+      // Show .../<parent>/<name>
+      const lastTwo = segments.slice(-2).join('/');
+      shortened = '.../' + lastTwo;
+    }
+  }
+
+  return shortened;
+}
+
+/**
+ * Build an EnvMap from server environment variables.
+ * Used internally by getWorldFromEnv when no client EnvMap is provided
+ * or when using environment-based configuration.
+ */
+function buildEnvMapFromProcessEnv(): EnvMap {
+  return {
+    WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
+    WORKFLOW_VERCEL_ENV: process.env.WORKFLOW_VERCEL_ENV,
+    WORKFLOW_VERCEL_AUTH_TOKEN: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+    WORKFLOW_VERCEL_PROJECT: process.env.WORKFLOW_VERCEL_PROJECT,
+    WORKFLOW_VERCEL_TEAM: process.env.WORKFLOW_VERCEL_TEAM,
+    PORT: process.env.PORT,
+    WORKFLOW_MANIFEST_PATH: process.env.WORKFLOW_MANIFEST_PATH,
+    WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
+    WORKFLOW_POSTGRES_URL: process.env.WORKFLOW_POSTGRES_URL,
+  };
+}
+
+/**
+ * Get server configuration info that is safe to send to the client.
+ *
+ * This returns display-only information about the current world configuration
+ * without exposing sensitive data like connection strings or auth tokens.
+ * The web UI uses this to show the current connection status.
+ */
+export async function getServerConfig(): Promise<ServerConfig> {
+  const targetWorld = process.env.WORKFLOW_TARGET_WORLD;
+
+  // Determine the effective backend
+  // Default behavior matches createWorld: vercel if VERCEL_DEPLOYMENT_ID is set, else local
+  let effectiveBackend = targetWorld;
+  if (!effectiveBackend) {
+    effectiveBackend = process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local';
+  }
+
+  const backendDisplayName = getBackendDisplayName(effectiveBackend);
+  const displayInfo: ServerConfig['displayInfo'] = {};
+
+  // Populate non-sensitive display info based on backend type
+  if (
+    effectiveBackend === 'vercel' ||
+    effectiveBackend === '@workflow/world-vercel'
+  ) {
+    displayInfo.environment = process.env.WORKFLOW_VERCEL_ENV || 'production';
+    // Note: We show the IDs as-is since they're not sensitive
+    // In a future enhancement, we could resolve these to actual names via Vercel API
+    displayInfo.projectName = process.env.WORKFLOW_VERCEL_PROJECT;
+    displayInfo.teamName = process.env.WORKFLOW_VERCEL_TEAM;
+  } else if (
+    effectiveBackend === '@workflow/world-postgres' ||
+    effectiveBackend === 'postgres'
+  ) {
+    const postgresUrl = process.env.WORKFLOW_POSTGRES_URL;
+    displayInfo.hostname = extractHostnameFromUrl(postgresUrl);
+    displayInfo.database = extractDatabaseFromUrl(postgresUrl);
+  } else if (
+    effectiveBackend === 'local' ||
+    effectiveBackend === '@workflow/world-local'
+  ) {
+    displayInfo.dataDir = shortenPath(
+      process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data'
+    );
+  }
+
+  return {
+    isConfigured: true,
+    backendDisplayName,
+    backendId: effectiveBackend,
+    displayInfo,
+  };
+}
 
 export interface PaginatedResult<T> {
   data: T[];
@@ -55,32 +246,58 @@ export type ServerActionResult<T> =
   | { success: false; error: ServerActionError };
 
 /**
- * Cache for World instances keyed by envMap
+ * Cache for World instances keyed by envMap.
  *
- * IMPORTANT: This cache works under the assumption that if the UI is used to look at
- * different worlds, the user should pass all relevant variables via EnvMap, instead of
- * setting them directly on their Next.js instance. If environment variables are set
- * directly on process.env, the cached World may operate with incorrect environment
- * configuration.
+ * When using server-side environment variables (the recommended approach),
+ * there will typically only be one cached World instance since the env config
+ * doesn't change at runtime.
+ *
+ * The cache key is derived from the effective EnvMap to support potential
+ * future use cases where dynamic world switching may be needed.
  */
 const worldCache = new Map<string, World>();
 
+/**
+ * Get or create a World instance based on configuration.
+ *
+ * Configuration priority:
+ * 1. If server-side environment variables are set (WORKFLOW_TARGET_WORLD, etc.),
+ *    those are used and the envMap parameter is ignored. This is the standard
+ *    mode used by the @workflow/web package.
+ *
+ * 2. If no server-side env vars are set but envMap is provided, the envMap
+ *    values are used. This mode is reserved for future use cases where
+ *    dynamic world configuration at runtime may be needed (e.g., a multi-tenant
+ *    observability dashboard).
+ *
+ * 3. If neither is set, createWorld() falls back to its default behavior
+ *    (vercel if VERCEL_DEPLOYMENT_ID is set, otherwise local).
+ *
+ * @param envMap - Optional environment map for dynamic configuration (reserved for future use)
+ */
 function getWorldFromEnv(envMap: EnvMap) {
+  // Determine the effective configuration to use
+  // Priority: server env vars > provided envMap > defaults
+  const serverEnvMap = buildEnvMapFromProcessEnv();
+  const hasServerConfig = Object.values(serverEnvMap).some(
+    (v) => v !== undefined && v !== ''
+  );
+
+  const effectiveEnvMap = hasServerConfig ? serverEnvMap : envMap;
+
   // Generate stable cache key from envMap
-  const sortedKeys = Object.keys(envMap).sort();
-  const sortedEntries = sortedKeys.map((key) => [key, envMap[key]]);
+  const sortedKeys = Object.keys(effectiveEnvMap).sort();
+  const sortedEntries = sortedKeys.map((key) => [key, effectiveEnvMap[key]]);
   const cacheKey = JSON.stringify(Object.fromEntries(sortedEntries));
 
   // Check if we have a cached World for this configuration
-  // Note: This returns the cached World without re-setting process.env.
-  // See comment above worldCache for important usage assumptions.
   const cachedWorld = worldCache.get(cacheKey);
   if (cachedWorld) {
     return cachedWorld;
   }
 
-  // No cached World found, create a new one
-  for (const [key, value] of Object.entries(envMap)) {
+  // No cached World found, set environment variables and create a new one
+  for (const [key, value] of Object.entries(effectiveEnvMap)) {
     if (value === undefined || value === null || value === '') {
       continue;
     }

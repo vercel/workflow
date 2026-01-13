@@ -275,36 +275,6 @@ describe('Storage (Postgres integration)', () => {
         expect(cancelled.completedAt).toBeInstanceOf(Date);
       });
     });
-
-    describe('pause', () => {
-      it('should pause a run', async () => {
-        const created = await runs.create({
-          deploymentId: 'deployment-123',
-          workflowName: 'test-workflow',
-          input: [],
-        });
-
-        const paused = await runs.pause(created.runId);
-
-        expect(paused.status).toBe('paused');
-      });
-    });
-
-    describe('resume', () => {
-      it('should resume a paused run', async () => {
-        const created = await runs.create({
-          deploymentId: 'deployment-123',
-          workflowName: 'test-workflow',
-          input: [],
-        });
-
-        await runs.pause(created.runId);
-        const resumed = await runs.resume(created.runId);
-
-        expect(resumed.status).toBe('running');
-        expect(resumed.startedAt).toBeInstanceOf(Date);
-      });
-    });
   });
 
   describe('steps', () => {
