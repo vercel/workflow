@@ -118,6 +118,29 @@ For advanced use cases like HTTPS or custom hostnames, you can override the enti
 export WORKFLOW_LOCAL_BASE_URL=https://local.example.com:3000
 ```
 
+**Nuxt / Nitro runtime config (optional):**
+
+If you're using Nuxt / Nitro and are running your app behind a reverse proxy, tunnel, custom hostname, or non-standard port, configure the origin via runtime config. Add this to your `nuxt.config.ts` or `nitro.config.ts`:
+
+```typescript title="nuxt.config.ts" lineNumbers
+export default defineNuxtConfig({
+  modules: ["workflow/nuxt"],
+  runtimeConfig: {
+    // Server-only runtime config: this is internal queue traffic, not for the browser.
+    workflow: {
+      // Full origin (recommended)
+      baseUrl: "https://local.example.com:4443",
+      // Or build it from parts:
+      // protocol: "https",
+      // host: "local.example.com",
+      // port: 4443,
+    },
+  },
+});
+```
+
+This works because Nuxt exposes runtime config via `useRuntimeConfig()` on the server, and the `workflow/nitro` integration uses it to set `WORKFLOW_LOCAL_BASE_URL` for local queue traffic. See Nuxt docs: `https://nuxt.com/docs/4.x/guide/going-further/runtime-config`.
+
 **Programmatically:**
 
 {/* @skip-typecheck: incomplete code sample */}

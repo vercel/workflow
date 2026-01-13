@@ -8,6 +8,7 @@ const getDataDirFromEnv = () => {
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
 
 const getBaseUrlFromEnv = () => {
+  // Primary Workflow env var (documented)
   return process.env.WORKFLOW_LOCAL_BASE_URL;
 };
 
@@ -32,8 +33,11 @@ export const config = once<Config>(() => {
  * 4. Auto-detected port via getPort (detect actual listening port)
  */
 export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
-  if (config.baseUrl) {
-    return config.baseUrl;
+  // Allow resolving from env even if caller didn't pass merged config.
+  // (createLocalWorld() merges env config, but some callers use resolveBaseUrl directly.)
+  const envBaseUrl = getBaseUrlFromEnv();
+  if (config.baseUrl || envBaseUrl) {
+    return config.baseUrl ?? envBaseUrl!;
   }
 
   if (typeof config.port === 'number') {
