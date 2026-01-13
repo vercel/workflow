@@ -14,7 +14,7 @@ export interface Hook {
   runId: string;
   /** The unique identifier of this hook within the workflow run. */
   hookId: string;
-  /** The secret token used to resume this hook. */
+  /** The secret token used to reference this hook. */
   token: string;
   /** The owner ID (team or user) that owns this hook. */
   ownerId: string;
@@ -28,7 +28,7 @@ export interface Hook {
   createdAt: Date;
 }
 
-// Hook schema for validation
+// Hook schemas
 export const HookSchema: z.ZodType<Hook> = z.object({
   runId: z.string(),
   hookId: z.string(),
