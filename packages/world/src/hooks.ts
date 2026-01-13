@@ -14,7 +14,7 @@ export interface Hook {
   runId: string;
   /** The unique identifier of this hook within the workflow run. */
   hookId: string;
-  /** The secret token used to resume this hook. */
+  /** The secret token used to reference this hook. */
   token: string;
   /** The owner ID (team or user) that owns this hook. */
   ownerId: string;
