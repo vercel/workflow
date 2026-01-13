@@ -64,7 +64,7 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
     const reader = stream.getReader({ mode: 'byob' });
     reader.releaseLock();
     return 'bytes';
-  } catch { }
+  } catch {}
 }
 
 export function getSerializeStream(
@@ -202,8 +202,8 @@ export interface SerializableSpecial {
   Int32Array: string; // base64 string
   Map: [any, any][];
   ReadableStream:
-  | { name: string; type?: 'bytes'; startIndex?: number }
-  | { bodyInit: any };
+    | { name: string; type?: 'bytes'; startIndex?: number }
+    | { bodyInit: any };
   RegExp: { source: string; flags: string };
   Request: {
     method: string;
@@ -224,7 +224,7 @@ export interface SerializableSpecial {
     body: Response['body'];
     redirected: boolean;
   };
-  SerializableClass: {
+  Class: {
     classId: string;
   };
   Set: any[];
@@ -340,7 +340,7 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
         redirected: value.redirected,
       };
     },
-    SerializableClass: (value) => {
+    Class: (value) => {
       // Check if this is a class constructor with a classId property
       // (set by the SWC plugin for classes with static step/workflow methods)
       if (typeof value !== 'function') return false;
@@ -630,7 +630,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     },
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
-    SerializableClass: (value) => {
+    Class: (value) => {
       const classId = value.classId;
       const cls = getSerializationClass(classId);
       if (!cls) {
