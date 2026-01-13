@@ -1,5 +1,13 @@
 # @workflow/world
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- [#743](https://github.com/vercel/workflow/pull/743) [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `HealthCheckPayloadSchema`
+
+- [#772](https://github.com/vercel/workflow/pull/772) [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add typedoc comments to `Hook` interface
+
 ## 4.0.1-beta.12
 
 ### Patch Changes

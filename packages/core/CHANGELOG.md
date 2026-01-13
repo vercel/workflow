@@ -1,5 +1,23 @@
 # @workflow/core
 
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- [#743](https://github.com/vercel/workflow/pull/743) [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add queue-based health check feature
+
+- [#773](https://github.com/vercel/workflow/pull/773) [`3dd5b27`](https://github.com/vercel/workflow/commit/3dd5b2708de56e63c9dce9b3f2eafea63b0e3936) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Make `resumeHook()` accept a `Hook` object or string
+
+- [#776](https://github.com/vercel/workflow/pull/776) [`49f650c`](https://github.com/vercel/workflow/commit/49f650c3a79e7b9b501cb602e3c12b75a3c4fffc) Thanks [@Timer](https://github.com/Timer)! - Fix race condition where step would stay pending forever if process crashed between database write and queue write
+
+- [#678](https://github.com/vercel/workflow/pull/678) [`39e5774`](https://github.com/vercel/workflow/commit/39e5774de2a4c8b6a18574aa4edaf79e9f0d655e) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix stream serialization to resolve when user releases lock instead of waiting for stream to close. This prevents Vercel functions from hanging when users incrementally write to streams within steps (e.g., `await writer.write(data); writer.releaseLock()`). Uses a polling approach to detect when the stream lock is released and all pending writes are flushed.
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66)]:
+  - @workflow/world@4.0.1-beta.13
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/world-local@4.0.1-beta.26
+  - @workflow/world-vercel@4.0.1-beta.27
+
 ## 4.0.1-beta.36
 
 ### Patch Changes
