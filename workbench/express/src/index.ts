@@ -5,6 +5,7 @@ import {
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { getWorld, healthCheck } from 'workflow/runtime';
 import { allWorkflows } from '../_workflows.js';
 
 const app = express();
@@ -199,6 +200,30 @@ app.get('/api/trigger', async (req, res) => {
     );
     return res.status(500).json({
       error: 'Internal server error',
+    });
+  }
+});
+
+app.post('/api/test-health-check', async (req, res) => {
+  // This route tests the queue-based health check functionality
+  try {
+    const { endpoint = 'workflow', timeout = 30000 } = req.body;
+
+    console.log(
+      `Testing queue-based health check for endpoint: ${endpoint}, timeout: ${timeout}ms`
+    );
+
+    const world = getWorld();
+    const result = await healthCheck(world, endpoint, { timeout });
+
+    console.log(`Health check result:`, result);
+
+    return res.json(result);
+  } catch (error) {
+    console.error('Health check test failed:', error);
+    return res.status(500).json({
+      healthy: false,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 });

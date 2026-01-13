@@ -10,6 +10,7 @@ export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
 export type * from './queue.js';
 export {
+  HealthCheckPayloadSchema,
   MessageId,
   QueuePayloadSchema,
   QueuePrefix,

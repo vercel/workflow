@@ -1,0 +1,174 @@
+---
+title: getHookByToken
+---
+
+Retrieves a hook by its unique token, returning the associated workflow run information and any metadata that was set when the hook was created. This function is useful for inspecting hook details before deciding whether to resume a workflow.
+
+<Callout type="warn">
+`getHookByToken` is a runtime function that must be called from outside a workflow function.
+</Callout>
+
+```typescript lineNumbers
+import { getHookByToken } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { token } = await request.json();
+  const hook = await getHookByToken(token);
+  console.log("Hook belongs to run:", hook.runId);
+}
+```
+
+## API Signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { getHookByToken } from "workflow/api";
+export default getHookByToken;`}
+showSections={["parameters"]}
+/>
+
+### Returns
+
+Returns a `Promise<Hook>` that resolves to:
+
+<TSDoc
+definition={`
+import type { Hook } from "@workflow/world";
+export default Hook;`}
+showSections={["returns"]}
+/>
+
+## Examples
+
+### Basic Hook Lookup
+
+Retrieve hook information before resuming:
+
+```typescript lineNumbers
+import { getHookByToken, resumeHook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { token, data } = await request.json();
+
+  try {
+    // First, get the hook to inspect its metadata
+    const hook = await getHookByToken(token); // [!code highlight]
+
+    console.log("Resuming workflow run:", hook.runId);
+    console.log("Hook metadata:", hook.metadata);
+
+    // Then resume the hook with the payload
+    await resumeHook(token, data);
+
+    return Response.json({
+      success: true,
+      runId: hook.runId
+    });
+  } catch (error) {
+    return new Response("Hook not found", { status: 404 });
+  }
+}
+```
+
+### Validating Hook Before Resume
+
+Use `getHookByToken` to validate hook ownership or metadata before resuming:
+
+```typescript lineNumbers
+import { getHookByToken, resumeHook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { token, userId, data } = await request.json();
+
+  try {
+    const hook = await getHookByToken(token); // [!code highlight]
+
+    // Validate that the hook metadata matches the user
+    if (hook.metadata?.allowedUserId !== userId) {
+      return Response.json(
+        { error: "Unauthorized to resume this hook" },
+        { status: 403 }
+      );
+    }
+
+    await resumeHook(token, data);
+    return Response.json({ success: true, runId: hook.runId });
+  } catch (error) {
+    return Response.json({ error: "Hook not found" }, { status: 404 });
+  }
+}
+```
+
+### Checking Hook Environment
+
+Verify the hook belongs to the expected environment:
+
+```typescript lineNumbers
+import { getHookByToken, resumeHook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { token, data } = await request.json();
+  const expectedEnv = process.env.VERCEL_ENV || "development";
+
+  try {
+    const hook = await getHookByToken(token); // [!code highlight]
+
+    if (hook.environment !== expectedEnv) {
+      return Response.json(
+        { error: `Hook belongs to ${hook.environment} environment` },
+        { status: 400 }
+      );
+    }
+
+    await resumeHook(token, data);
+    return Response.json({ runId: hook.runId });
+  } catch (error) {
+    return Response.json({ error: "Hook not found" }, { status: 404 });
+  }
+}
+```
+
+### Logging Hook Information
+
+Log hook details for debugging or auditing:
+
+```typescript lineNumbers
+import { getHookByToken, resumeHook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token");
+
+  if (!token) {
+    return Response.json({ error: "Missing token" }, { status: 400 });
+  }
+
+  try {
+    const hook = await getHookByToken(token); // [!code highlight]
+
+    // Log for auditing
+    console.log({
+      action: "hook_resume",
+      runId: hook.runId,
+      hookId: hook.hookId,
+      projectId: hook.projectId,
+      createdAt: hook.createdAt,
+    });
+
+    const body = await request.json();
+    await resumeHook(token, body);
+
+    return Response.json({ success: true });
+  } catch (error) {
+    return Response.json({ error: "Hook not found" }, { status: 404 });
+  }
+}
+```
+
+## Related Functions
+
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with a payload.
+- [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper.

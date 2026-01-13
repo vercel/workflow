@@ -16,6 +16,8 @@ import { parseWorkflowName } from './parse-name.js';
 import {
   getAllWorkflowRunEvents,
   getQueueOverhead,
+  handleHealthCheckMessage,
+  parseHealthCheckPayload,
   withHealthCheck,
 } from './runtime/helpers.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
@@ -37,6 +39,12 @@ import { runWorkflow } from './workflow.js';
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
+export {
+  type HealthCheckEndpoint,
+  type HealthCheckOptions,
+  type HealthCheckResult,
+  healthCheck,
+} from './runtime/helpers.js';
 export {
   getHookByToken,
   resumeHook,
@@ -234,6 +242,16 @@ export function workflowEntrypoint(
   const handler = getWorldHandlers().createQueueHandler(
     '__wkf_workflow_',
     async (message_, metadata) => {
+      // Check if this is a health check message
+      // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
+      // They only write a simple status response to a stream and do not expose sensitive data.
+      // The stream name includes a unique correlationId that must be known by the caller.
+      const healthCheck = parseHealthCheckPayload(message_);
+      if (healthCheck) {
+        await handleHealthCheckMessage(healthCheck, 'workflow');
+        return;
+      }
+
       const {
         runId,
         traceCarrier: traceContext,
