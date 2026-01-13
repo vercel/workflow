@@ -1,5 +1,4 @@
 import type { Span } from '@opentelemetry/api';
-import { waitUntil } from '@vercel/functions';
 import { WorkflowAPIError } from '@workflow/errors';
 import type { World } from '@workflow/world';
 import type {
@@ -111,7 +110,6 @@ async function processStep({
   workflowStartedAt,
   global,
 }: ProcessStepParams): Promise<void> {
-  const ops: Promise<void>[] = [];
   const dehydratedInput = dehydrateStepArguments(
     {
       args: queueItem.args,
@@ -142,15 +140,6 @@ async function processStep({
       throw err;
     }
   }
-
-  waitUntil(
-    Promise.all(ops).catch((opErr) => {
-      // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-      const isAbortError =
-        opErr?.name === 'AbortError' || opErr?.name === 'ResponseAborted';
-      if (!isAbortError) throw opErr;
-    })
-  );
 
   // Always write to queue, even if step already existed. The idempotency key
   // ensures duplicate queue writes are safely deduplicated by the queue service.
