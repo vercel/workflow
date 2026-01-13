@@ -12,16 +12,17 @@ import { WORKFLOW_CLASS_REGISTRY } from './symbols.js';
 type ClassRegistry = Map<string, Function>;
 
 /**
- * Get or create the class registry on globalThis.
+ * Get or create the class registry on the given global object.
  * This works isomorphically in both step mode (main context) and workflow mode (VM context).
+ *
+ * @param global - The global object to use. Defaults to globalThis, but can be a VM's global.
  */
-function getRegistry(): ClassRegistry {
-  let registry = (globalThis as any)[WORKFLOW_CLASS_REGISTRY] as
-    | ClassRegistry
-    | undefined;
+function getRegistry(global: Record<string, any> = globalThis): ClassRegistry {
+  const g = global as any;
+  let registry = g[WORKFLOW_CLASS_REGISTRY] as ClassRegistry | undefined;
   if (!registry) {
     registry = new Map();
-    (globalThis as any)[WORKFLOW_CLASS_REGISTRY] = registry;
+    g[WORKFLOW_CLASS_REGISTRY] = registry;
   }
   return registry;
 }
@@ -48,8 +49,27 @@ export function registerSerializationClass(classId: string, cls: Function) {
 
 /**
  * Find a registered class constructor by ID (used during deserialization)
+ *
+ * @param classId - The class ID to look up
+ * @param global - The global object to check first. Defaults to globalThis.
+ *                 If the class is not found and `global` differs from `globalThis`,
+ *                 it will also check `globalThis` as a fallback.
  */
-// biome-ignore lint/complexity/noBannedTypes: We need to use Function to represent class constructors
-export function getSerializationClass(classId: string): Function | undefined {
-  return getRegistry().get(classId);
+export function getSerializationClass(
+  classId: string,
+  global: Record<string, any> = globalThis
+  // biome-ignore lint/complexity/noBannedTypes: We need to use Function to represent class constructors
+): Function | undefined {
+  // Check the provided global first
+  const cls = getRegistry(global).get(classId);
+  if (cls) return cls;
+
+  // Fallback: check globalThis if it differs from the provided global
+  // This handles the case where classes are registered in the host context
+  // but deserialization happens in a VM context
+  if (global !== globalThis) {
+    return getRegistry(globalThis).get(classId);
+  }
+
+  return undefined;
 }

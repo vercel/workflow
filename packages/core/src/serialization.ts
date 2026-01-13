@@ -17,7 +17,6 @@ import {
   STREAM_NAME_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
-  WORKFLOW_CLASS_REGISTRY,
   WORKFLOW_DESERIALIZE,
   WORKFLOW_SERIALIZE,
 } from './symbols.js';
@@ -680,17 +679,9 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
       const data = value.data;
 
       // Look up the class by classId from the registry
-      let cls = getSerializationClass(classId);
-
-      // Fallback: check globalThis registry (for workflow VM context)
-      // In workflow mode, classes are registered on globalThis[WORKFLOW_CLASS_REGISTRY] (a Map)
-      // instead of the module-level registry (since the VM has a separate context)
-      if (!cls) {
-        const registry = global[WORKFLOW_CLASS_REGISTRY as unknown as string] as
-          | Map<string, Function>
-          | undefined;
-        cls = registry?.get(classId);
-      }
+      // Pass the global object to support VM contexts where classes are registered
+      // on the VM's global rather than the host's globalThis
+      const cls = getSerializationClass(classId, global);
 
       if (!cls) {
         throw new Error(
