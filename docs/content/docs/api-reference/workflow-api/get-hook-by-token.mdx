@@ -11,9 +11,11 @@ Retrieves a hook by its unique token, returning the associated workflow run info
 ```typescript lineNumbers
 import { getHookByToken } from "workflow/api";
 
-const token = "hook_abc123..."; // The hook token to look up
-const hook = await getHookByToken(token);
-console.log("Hook belongs to run:", hook.runId);
+export async function POST(request: Request) {
+  const { token } = await request.json();
+  const hook = await getHookByToken(token);
+  console.log("Hook belongs to run:", hook.runId);
+}
 ```
 
 ## API Signature
