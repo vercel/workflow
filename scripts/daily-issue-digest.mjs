@@ -250,29 +250,31 @@ async function main() {
   });
 
   const content = buildSlackPayload({ repoFullName, issues });
-  const channel = process.env.SLACK_ISSUE_SUMMARY_CHANNEL_ID;
-  const message = { channel, ...content };
+  
+  if (wantsPrint || wantsPost) {
+    const channel = requireEnv('SLACK_ISSUE_SUMMARY_CHANNEL_ID');
+    const message = { channel, ...content };
 
-  if (wantsPrint) {
-    console.log(JSON.stringify(message));
-  }
+    if (wantsPrint) {
+      console.log(JSON.stringify(message));
+    }
 
-  if (wantsPost) {
-    const slackToken = requireEnv('SLACK_BOT_TOKEN');
-    const realChannel = requireEnv('SLACK_ISSUE_SUMMARY_CHANNEL_ID');
-    const result = await postToSlack({
-      token: slackToken,
-      message: { ...message, channel: realChannel },
-    });
+    if (wantsPost) {
+      const slackToken = requireEnv('SLACK_BOT_TOKEN');
+      const result = await postToSlack({
+        token: slackToken,
+        message,
+      });
 
-    console.log(
-      JSON.stringify({
-        ok: true,
-        channel: result.channel,
-        ts: result.ts,
-        message: 'posted',
-      })
-    );
+      console.log(
+        JSON.stringify({
+          ok: true,
+          channel: result.channel,
+          ts: result.ts,
+          message: 'posted',
+        })
+      );
+    }
   }
 }
 
