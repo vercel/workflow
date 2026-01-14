@@ -234,31 +234,30 @@ async function main() {
   const releaseNotes = runReleaseNotes();
   const content = buildSlackPayload(releaseNotes);
 
-  if (wantsPrint || wantsPost) {
-    const channel = requireEnv('SLACK_RELEASE_CHANNEL_ID');
-    const message = { channel, ...content };
+  const channel = process.env.SLACK_RELEASE_CHANNEL_ID;
+  const message = { channel, ...content };
 
-    if (wantsPrint) {
-      console.log(JSON.stringify(message));
-    }
+  if (wantsPrint) {
+    console.log(JSON.stringify(message));
+  }
 
-    if (wantsPost) {
-      const token = requireEnv('SLACK_BOT_TOKEN');
-      const result = await postToSlack({
-        token,
-        message,
-      });
+  if (wantsPost) {
+    const token = requireEnv('SLACK_BOT_TOKEN');
+    const realChannel = requireEnv('SLACK_RELEASE_CHANNEL_ID');
+    const result = await postToSlack({
+      token,
+      message: { ...message, channel: realChannel },
+    });
 
-      // Print a tiny confirmation that won't leak secrets.
-      console.log(
-        JSON.stringify({
-          ok: true,
-          channel: result.channel,
-          ts: result.ts,
-          message: 'posted',
-        })
-      );
-    }
+    // Print a tiny confirmation that won't leak secrets.
+    console.log(
+      JSON.stringify({
+        ok: true,
+        channel: result.channel,
+        ts: result.ts,
+        message: 'posted',
+      })
+    );
   }
 }
 
