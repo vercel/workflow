@@ -97,20 +97,14 @@ jobs:
       - name: Post release notes to Slack
         if: steps.changesets.outputs.published == 'true'
         env:
-          # Prefer a dedicated release webhook if present, but allow reuse of a generic Slack webhook secret.
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
         run: |
-          if [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "Missing Slack webhook secret: set SLACK_RELEASE_WEBHOOK_URL (preferred) or SLACK_WEBHOOK_URL"
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
+            echo "Missing Slack secrets: SLACK_BOT_TOKEN and/or SLACK_CHANNEL_ID"
             exit 1
           fi
 
-          # Generate Slack Block Kit payload (chunked to Slack limits)
-          node scripts/generate-release-slack-payload.mjs > slack-payload.json
-
-          # Post to Slack via incoming webhook
-          curl -fsS -X POST \
-            -H 'Content-type: application/json' \
-            --data-binary @slack-payload.json \
-            "$SLACK_WEBHOOK_URL"
+          # Post to Slack via chat.postMessage (payload is chunked to Slack limits)
+          node scripts/generate-release-slack-payload.mjs --post
