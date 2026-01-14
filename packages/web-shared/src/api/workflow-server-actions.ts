@@ -403,7 +403,8 @@ async function getWorldFromEnv(_userEnvMap: EnvMap): Promise<World> {
   );
 
   // For the vercel world specifically, we do _not_ cache the world,
-  // as it can be a multi-tenant environment.
+  // as it can be a multi-tenant environment, and we instantiate the world
+  // directly to avoid having to set process.env.
   if (isVercelWorld) {
     return createVercelWorld({
       baseUrl: process.env.WORKFLOW_VERCEL_BACKEND_URL,
