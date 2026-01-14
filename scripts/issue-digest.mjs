@@ -232,6 +232,8 @@ function buildSlackPayload({
   } else {
     const issueLines = issues.map((issue) => {
       const num = issue.number;
+      const issueUrl =
+        issue.html_url || `https://github.com/${repoFullName}/issues/${num}`;
       const titleText = String(issue.title ?? '')
         .replace(/\s+/g, ' ')
         .trim();
@@ -239,10 +241,12 @@ function buildSlackPayload({
       const dateText = createdAt ? formatShortDateUTC(createdAt) : '';
       const commentsSince = issue._commentsSinceInterval ?? 0;
       const thumbsUp = countThumbsUp(issue);
+      const author = issue.user?.login || 'unknown';
 
       // Example:
-      // #777 - Jan 3 - 5 :speech_balloon: - 8 :thumbsup: - My Issue Title
-      return `#${num} - ${dateText} - ${commentsSince} :speech_balloon: - ${thumbsUp} :thumbsup: - ${titleText}`.trim();
+      // Jan 12 - 3 :speech_balloon: / 0 :thumbsup: - <...|#777> by someGitAuthor - Streaming timeouts
+      const issueRef = `<${issueUrl}|#${num}>`;
+      return `${dateText} - ${commentsSince} :speech_balloon: / ${thumbsUp} :thumbsup: - ${issueRef} by ${author} - ${titleText}`.trim();
     });
 
     const chunks = chunkByLines(

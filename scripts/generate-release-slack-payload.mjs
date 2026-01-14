@@ -119,10 +119,10 @@ function parsePackageHeader(line) {
 
 function parseReleaseItem(item) {
   const prMatch = item.match(/\[#(\d+)\]\([^)]+\)/);
-  const prNumber = prMatch?.[1] ? `#${prMatch[1]}` : null;
+  const prNumber = prMatch?.[1] ? Number(prMatch[1]) : null;
 
   const authorMatch = item.match(/@([A-Za-z0-9-]+)/);
-  const author = authorMatch?.[1] ? `@${authorMatch[1]}` : null;
+  const author = authorMatch?.[1] ? authorMatch[1] : null;
 
   // Summary is whatever comes after " - " (release-notes generator ensures this shape)
   const summary = item.includes(' - ')
@@ -133,8 +133,8 @@ function parseReleaseItem(item) {
 }
 
 function toPkgPrefix(pkgName) {
-  if (!pkgName) return '[@workflow]';
-  return `[@${pkgName.replace(/^@/, '')}]`;
+  if (!pkgName) return '@workflow';
+  return pkgName;
 }
 
 function parseReleaseBodyToLines(body) {
@@ -149,9 +149,9 @@ function parseReleaseBodyToLines(body) {
     const line = raw.trim();
     if (!line) continue;
 
-    const pkg = parsePackageHeader(line);
-    if (pkg) {
-      currentPkg = pkg;
+    const pkgHeader = parsePackageHeader(line);
+    if (pkgHeader) {
+      currentPkg = pkgHeader;
       continue;
     }
 
@@ -159,8 +159,16 @@ function parseReleaseBodyToLines(body) {
     const item = line.slice(2).trim();
     const { prNumber, author, summary } = parseReleaseItem(item);
 
-    const prefix = toPkgPrefix(currentPkg);
-    const parts = [prefix, prNumber, author, '-', summary].filter(Boolean);
+    const pkgName = toPkgPrefix(currentPkg);
+    const prLink =
+      prNumber != null
+        ? `<https://github.com/${GITHUB_REPO}/pull/${prNumber}|#${prNumber}>`
+        : null;
+    const authorText = author ? `by \`${author}\`` : null;
+
+    // Example:
+    // - @workflow/core <...|#754> by `SomeUser` - summary of change
+    const parts = [pkgName, prLink, authorText, '-', summary].filter(Boolean);
     out.push(`- ${parts.join(' ')}`.replace(/\s+-\s+/, ' - '));
   }
 
