@@ -1,5 +1,14 @@
 # @workflow/next
 
+## 4.0.1-beta.43
+
+### Patch Changes
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`a2fc53a`](https://github.com/vercel/workflow/commit/a2fc53a0dc2df0648ae9e7fd59aae044a612ebcb)]:
+  - @workflow/swc-plugin@4.0.1-beta.13
+  - @workflow/core@4.0.1-beta.38
+  - @workflow/builders@4.0.1-beta.38
+
 ## 4.0.1-beta.42
 
 ### Patch Changes

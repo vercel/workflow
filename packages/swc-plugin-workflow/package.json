@@ -1,6 +1,6 @@
 {
   "name": "@workflow/swc-plugin",
-  "version": "4.0.1-beta.12",
+  "version": "4.0.1-beta.13",
   "description": "SWC plugin for transforming Workflow DevKit code",
   "license": "Apache-2.0",
   "type": "module",

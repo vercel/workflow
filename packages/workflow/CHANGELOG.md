@@ -1,5 +1,22 @@
 # workflow
 
+## 4.0.1-beta.46
+
+### Patch Changes
+
+- [#754](https://github.com/vercel/workflow/pull/754) [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for serializing `this` when invoking step functions
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290)]:
+  - @workflow/nitro@4.0.1-beta.42
+  - @workflow/core@4.0.1-beta.38
+  - @workflow/nuxt@4.0.1-beta.31
+  - @workflow/astro@4.0.0-beta.21
+  - @workflow/cli@4.0.1-beta.46
+  - @workflow/next@4.0.1-beta.43
+  - @workflow/rollup@4.0.0-beta.7
+  - @workflow/sveltekit@4.0.0-beta.36
+  - @workflow/typescript-plugin@4.0.1-beta.4
+
 ## 4.0.1-beta.45
 
 ### Patch Changes

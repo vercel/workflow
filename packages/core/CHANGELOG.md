@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- [#754](https://github.com/vercel/workflow/pull/754) [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for serializing `this` when invoking step functions
+
 ## 4.0.1-beta.37
 
 ### Patch Changes
