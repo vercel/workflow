@@ -24,12 +24,10 @@ export function ThemeDropdown() {
       <Tooltip>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="icon" aria-label="Theme">
-              {isDark ? (
-                <Moon className="h-[1.1rem] w-[1.1rem]" />
-              ) : (
-                <Sun className="h-[1.1rem] w-[1.1rem]" />
-              )}
+            <Button variant="outline" aria-label="Theme">
+              <Moon className="h-[1.1rem] w-[1.1rem]" />
+              /
+              <Sun className="h-[1.1rem] w-[1.1rem]" />
             </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
