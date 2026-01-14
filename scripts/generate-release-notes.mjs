@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 /**
- * NOTE: This file was AI-generated (with human review) to help automate GitHub Releases.
- *
  * This script generates consolidated release notes for GitHub releases.
  * It aggregates changes from all package CHANGELOGs into a single release note
  * for the main `workflow` package.
