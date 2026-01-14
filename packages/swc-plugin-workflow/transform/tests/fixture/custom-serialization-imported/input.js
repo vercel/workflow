@@ -1,5 +1,5 @@
-// Test custom serialization with imported symbols from 'workflow'
-import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from 'workflow';
+// Test custom serialization with imported symbols from '@workflow/serde'
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 
 // Class using imported symbols
 export class Vector {
@@ -19,7 +19,7 @@ export class Vector {
 }
 
 // Class using renamed imports
-import { WORKFLOW_SERIALIZE as WS, WORKFLOW_DESERIALIZE as WD } from 'workflow';
+import { WORKFLOW_SERIALIZE as WS, WORKFLOW_DESERIALIZE as WD } from '@workflow/serde';
 
 export class Color {
   constructor(r, g, b) {

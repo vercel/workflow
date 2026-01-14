@@ -531,6 +531,9 @@ importers:
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
+      '@workflow/serde':
+        specifier: workspace:*
+        version: link:../serde
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
@@ -775,6 +778,15 @@ importers:
       rollup:
         specifier: ^4.53.2
         version: 4.53.2
+
+  packages/serde:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.19.0
+      '@workflow/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
 
   packages/sveltekit:
     dependencies:

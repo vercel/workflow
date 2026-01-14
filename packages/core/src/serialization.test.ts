@@ -1,5 +1,6 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
+import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { describe, expect, it } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { getStepFunction, registerStepFunction } from './private.js';
@@ -14,12 +15,7 @@ import {
   hydrateStepArguments,
   hydrateWorkflowArguments,
 } from './serialization.js';
-import {
-  STABLE_ULID,
-  STREAM_NAME_SYMBOL,
-  WORKFLOW_DESERIALIZE,
-  WORKFLOW_SERIALIZE,
-} from './symbols.js';
+import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
 
 const mockRunId = 'wrun_mockidnumber0001';

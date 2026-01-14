@@ -1220,7 +1220,7 @@ impl StepTransform {
                                     self.declared_identifiers.insert(local_name.clone());
 
                                     // Track imports of WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE
-                                    // These can be imported from 'workflow' or '@workflow/core' or re-exported
+                                    // These can be imported from '@workflow/serde' or re-exported
                                     let imported_name = named
                                         .imported
                                         .as_ref()
@@ -2032,7 +2032,7 @@ impl StepTransform {
     /// Check if an expression represents a workflow serialization symbol.
     /// Supports multiple patterns:
     /// 1. Direct: `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
-    /// 2. Identifier reference to an imported symbol: `WORKFLOW_SERIALIZE` (imported from 'workflow')
+    /// 2. Identifier reference to an imported symbol: `WORKFLOW_SERIALIZE` (imported from '@workflow/serde')
     /// 3. Identifier reference to a local const: `const MY_SYM = Symbol.for('workflow-serialize')`
     fn is_workflow_serialization_symbol(&self, expr: &Expr, symbol_name: &str) -> bool {
         // Pattern 1: Direct Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')

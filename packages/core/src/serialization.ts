@@ -1,4 +1,5 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
+import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { getSerializationClass } from './class-serialization.js';
@@ -17,8 +18,6 @@ import {
   STREAM_NAME_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
-  WORKFLOW_DESERIALIZE,
-  WORKFLOW_SERIALIZE,
 } from './symbols.js';
 
 /**
