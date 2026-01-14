@@ -33,7 +33,6 @@ export const setupCliWorld = async (
     json: boolean;
     verbose: boolean;
     backend: string;
-    observabilityCwd: string;
     env: string;
     authToken: string;
     project: string;
@@ -89,7 +88,6 @@ export const setupCliWorld = async (
   writeEnvVars({
     DEBUG: flags.verbose ? '1' : '',
     WORKFLOW_TARGET_WORLD: flags.backend,
-    WORKFLOW_OBSERVABILITY_CWD: flags.observabilityCwd,
     WORKFLOW_VERCEL_ENV: flags.env,
     WORKFLOW_VERCEL_AUTH_TOKEN: flags.authToken,
     WORKFLOW_VERCEL_PROJECT: flags.project,
