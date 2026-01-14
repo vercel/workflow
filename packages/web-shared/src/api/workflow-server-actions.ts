@@ -22,6 +22,7 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
+import { createVercelWorld } from '@workflow/world-vercel';
 
 /**
  * Environment variable map for world configuration.
@@ -39,8 +40,6 @@ export type EnvMap = Record<string, string | undefined>;
  * This deliberately excludes sensitive data like connection strings and auth tokens.
  */
 export interface ServerConfig {
-  /** Whether the world is configured (WORKFLOW_TARGET_WORLD or default is set) */
-  isConfigured: boolean;
   /** Human-readable backend name for display (e.g., "PostgreSQL", "Local", "Vercel") */
   backendDisplayName: string;
   /** The raw backend identifier (e.g., "@workflow/world-postgres", "local", "vercel") */
@@ -147,21 +146,20 @@ function shortenPath(filePath: string): string {
 
 /**
  * Build an EnvMap from server environment variables.
- * Used internally by getWorldFromEnv when no client EnvMap is provided
- * or when using environment-based configuration.
+ * Used for world initialization, falling back to user-provided environment variables.
  */
 function buildEnvMapFromProcessEnv(): EnvMap {
-  return {
-    WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
-    WORKFLOW_VERCEL_ENV: process.env.WORKFLOW_VERCEL_ENV,
-    WORKFLOW_VERCEL_AUTH_TOKEN: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-    WORKFLOW_VERCEL_PROJECT: process.env.WORKFLOW_VERCEL_PROJECT,
-    WORKFLOW_VERCEL_TEAM: process.env.WORKFLOW_VERCEL_TEAM,
+  const env: EnvMap = {
     PORT: process.env.PORT,
-    WORKFLOW_MANIFEST_PATH: process.env.WORKFLOW_MANIFEST_PATH,
-    WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
-    WORKFLOW_POSTGRES_URL: process.env.WORKFLOW_POSTGRES_URL,
   };
+  // TODO: It would be nice to allow web-shared access to the world-manifest, and use that
+  // to document relevant environment variables per world.
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('WORKFLOW_')) {
+      env[key] = value;
+    }
+  }
+  return env;
 }
 
 /**
@@ -219,7 +217,6 @@ export async function getServerConfig(): Promise<ServerConfig> {
   }
 
   return {
-    isConfigured: true,
     backendDisplayName,
     backendId: effectiveBackend,
     displayInfo,
@@ -286,20 +283,39 @@ const worldCache = new Map<string, World>();
  *
  * @param envMap - Optional environment map for dynamic configuration (reserved for future use)
  */
-function getWorldFromEnv(envMap: EnvMap) {
-  // Determine the effective configuration to use
-  // Priority: server env vars > provided envMap > defaults
+function getWorldFromEnv(userEnvMap: EnvMap) {
   const serverEnvMap = buildEnvMapFromProcessEnv();
-  const hasServerConfig = Object.values(serverEnvMap).some(
-    (v) => v !== undefined && v !== ''
-  );
 
-  const effectiveEnvMap = hasServerConfig ? serverEnvMap : envMap;
+  // Priority: server env vars > provided envMap > defaults
+  // Important: server env takes precedence over user-provided envMap.
+  // This ensures a server with configured environment can not be overwritten by a user.
+  // This is a safety mechanism for self-hosted UIs.
+  const effectiveEnvMap = { ...userEnvMap, ...serverEnvMap };
+  const targetWorld = effectiveEnvMap.WORKFLOW_TARGET_WORLD;
 
   // Generate stable cache key from envMap
   const sortedKeys = Object.keys(effectiveEnvMap).sort();
   const sortedEntries = sortedKeys.map((key) => [key, effectiveEnvMap[key]]);
   const cacheKey = JSON.stringify(Object.fromEntries(sortedEntries));
+  const isVercelWorld =
+    targetWorld && ['vercel', '@workflow/world-vercel'].includes(targetWorld);
+
+  // For the vercel world specifically, we do _not_ want to cache the world,
+  // as it can be a multi-tenant environment. We also skip writing user variables to
+  // the process.env, as additional safety against cross-env pollution.
+  const skipCache = isVercelWorld;
+  if (skipCache) {
+    return createVercelWorld({
+      baseUrl: process.env.WORKFLOW_VERCEL_BACKEND_URL,
+      skipProxy: process.env.WORKFLOW_VERCEL_SKIP_PROXY === 'true',
+      token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+      projectConfig: {
+        environment: process.env.WORKFLOW_VERCEL_ENV,
+        projectId: process.env.WORKFLOW_VERCEL_PROJECT,
+        teamId: process.env.WORKFLOW_VERCEL_TEAM,
+      },
+    });
+  }
 
   // Check if we have a cached World for this configuration
   const cachedWorld = worldCache.get(cacheKey);

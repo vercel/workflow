@@ -1005,6 +1005,9 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
+      '@workflow/world-vercel':
+        specifier: workspace:*
+        version: link:../world-vercel
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1

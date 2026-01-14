@@ -85,7 +85,6 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    let targetUrl: string;
     if (resource === 'run') {
       router.push(`/run/${id}`);
     } else if (resource === 'step' && runId) {
