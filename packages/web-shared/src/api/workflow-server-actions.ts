@@ -35,6 +35,17 @@ import { createVercelWorld } from '@workflow/world-vercel';
  */
 export type EnvMap = Record<string, string | undefined>;
 
+export interface PublicDbUriInfo {
+  /** Name of the WORKFLOW_* env var that contained the URI */
+  key: string;
+  /** URL protocol without the trailing ":" (e.g. "postgres", "mongodb", "redis") */
+  protocol: string;
+  /** Sanitized hostname (no credentials) */
+  hostname?: string;
+  /** Sanitized database name if derivable from the URI (e.g. pathname) */
+  database?: string;
+}
+
 /**
  * Public configuration info that is safe to send to the client.
  *
@@ -47,6 +58,11 @@ export interface PublicServerConfig {
   backendDisplayName: string;
   /** The raw backend identifier (e.g., "@workflow/world-postgres", "local", "vercel") */
   backendId: string;
+  /**
+   * Sanitized DB URI hints, derived from WORKFLOW_* vars that look like DB URIs.
+   * This is safe to show because it contains no credentials.
+   */
+  publicDbUris?: PublicDbUriInfo[];
   /** Safe, whitelisted, env-derived values (varies by backend) */
   publicEnv:
     | {
@@ -124,6 +140,76 @@ function getObservabilityCwd(): string {
 }
 
 /**
+ * Extract hostname from a database URL without exposing credentials.
+ */
+function extractHostnameFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Extract database name from a URL where pathname is like "/dbname".
+ * (Works for postgres/mongodb-style URLs; returns undefined when not applicable.)
+ */
+function extractDatabaseFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    const dbName = parsed.pathname?.slice(1);
+    return dbName || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const KNOWN_DB_URI_ENV_KEYS = new Set<string>([
+  // Official
+  'WORKFLOW_POSTGRES_URL',
+  // Community (from worlds-manifest.json)
+  'WORKFLOW_TURSO_DATABASE_URL',
+  'WORKFLOW_MONGODB_URI',
+  'WORKFLOW_REDIS_URI',
+]);
+
+function looksLikeDbUriEnvKey(key: string): boolean {
+  return KNOWN_DB_URI_ENV_KEYS.has(key) || /_(URL|URI)$/.test(key);
+}
+
+function collectPublicDbUris(): PublicDbUriInfo[] {
+  const entries = Object.entries(process.env).filter(([key, value]) => {
+    if (!key.startsWith('WORKFLOW_')) return false;
+    if (!looksLikeDbUriEnvKey(key)) return false;
+    if (!value) return false;
+    // Quick prefilter: require some scheme-like content
+    return value.includes(':');
+  });
+
+  const results: PublicDbUriInfo[] = [];
+  for (const [key, value] of entries) {
+    try {
+      const parsed = new URL(value as string);
+      const protocol = (parsed.protocol || '').replace(':', '');
+      // Skip file-based DB URIs: hostname is empty and not useful for UI.
+      if (protocol === 'file') continue;
+      const hostname = extractHostnameFromUrl(value);
+      const database = extractDatabaseFromUrl(value);
+      // If we can't even derive a hostname, don't include the entry.
+      if (!hostname) continue;
+      results.push({ key, protocol, hostname, database });
+    } catch {
+      // Not a parseable URL; ignore.
+    }
+  }
+
+  return results;
+}
+
+/**
  * Get public configuration info that is safe to send to the client.
  *
  * This is the ONLY server action that intentionally exposes env-derived data,
@@ -132,12 +218,15 @@ function getObservabilityCwd(): string {
 export async function getPublicServerConfig(): Promise<PublicServerConfig> {
   const backendId = getEffectiveBackendId();
   const backendDisplayName = getBackendDisplayName(backendId);
+  const publicDbUris = collectPublicDbUris();
+  const withDbUris = publicDbUris.length > 0 ? { publicDbUris } : {};
 
   // Whitelist public env vars by backend.
   if (backendId === 'vercel' || backendId === '@workflow/world-vercel') {
     return {
       backendDisplayName,
       backendId,
+      ...withDbUris,
       publicEnv: {
         kind: 'vercel',
         environment: process.env.WORKFLOW_VERCEL_ENV || 'production',
@@ -152,6 +241,7 @@ export async function getPublicServerConfig(): Promise<PublicServerConfig> {
     return {
       backendDisplayName,
       backendId,
+      ...withDbUris,
       publicEnv: { kind: 'postgres' },
     };
   }
@@ -162,6 +252,7 @@ export async function getPublicServerConfig(): Promise<PublicServerConfig> {
     return {
       backendDisplayName,
       backendId,
+      ...withDbUris,
       publicEnv: {
         kind: 'local',
         port: process.env.PORT,
@@ -176,6 +267,7 @@ export async function getPublicServerConfig(): Promise<PublicServerConfig> {
   return {
     backendDisplayName,
     backendId,
+    ...withDbUris,
     publicEnv: { kind: 'custom' },
   };
 }

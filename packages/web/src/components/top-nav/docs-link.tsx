@@ -1,6 +1,7 @@
 'use client';
 
 import { ArrowUpRight } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import {
   Tooltip,
   TooltipContent,
@@ -11,15 +12,17 @@ export function DocsLink() {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <a
-          href="https://useworkflow.dev/docs/observability"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-accent transition-colors"
-        >
-          <span>Docs</span>
-          <ArrowUpRight className="h-4 w-4" />
-        </a>
+        <Button asChild variant="outline" size="sm">
+          <a
+            href="https://useworkflow.dev/docs/observability"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="gap-1"
+          >
+            <span>Docs</span>
+            <ArrowUpRight className="h-4 w-4" />
+          </a>
+        </Button>
       </TooltipTrigger>
       <TooltipContent>Open docs</TooltipContent>
     </Tooltip>
