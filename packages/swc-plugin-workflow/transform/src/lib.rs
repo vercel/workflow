@@ -6677,6 +6677,9 @@ impl VisitMut for StepTransform {
                             step_id,
                             method.function.span,
                         ));
+
+                        // Visit children to process nested step functions
+                        method.visit_mut_children_with(self);
                     }
                     TransformMode::Workflow => {
                         // Remove directive for consistency with other modes
@@ -6688,10 +6691,15 @@ impl VisitMut for StepTransform {
                             method_name.clone(),
                             step_id,
                         ));
+                        // Note: No need to visit children in Workflow mode since the method body
+                        // will be stripped and replaced with a proxy call
                     }
                     TransformMode::Client => {
                         // Just remove directive, keep the function body
                         self.remove_use_step_directive(&mut method.function.body);
+
+                        // Visit children to process nested step functions
+                        method.visit_mut_children_with(self);
                     }
                 }
             } else {
@@ -6760,6 +6768,9 @@ impl VisitMut for StepTransform {
                                 step_id,
                                 method.function.span,
                             ));
+
+                            // Visit children to process nested step functions
+                            method.visit_mut_children_with(self);
                         }
                         TransformMode::Workflow => {
                             // Remove directive for consistency with other modes
@@ -6775,10 +6786,15 @@ impl VisitMut for StepTransform {
                                 method_name.clone(),
                                 step_id,
                             ));
+                            // Note: No need to visit children in Workflow mode since the method body
+                            // will be stripped and replaced with a proxy call
                         }
                         TransformMode::Client => {
                             // Just remove directive, keep the function body
                             self.remove_use_step_directive(&mut method.function.body);
+
+                            // Visit children to process nested step functions
+                            method.visit_mut_children_with(self);
                         }
                     }
                 } else if has_workflow {
@@ -6800,9 +6816,13 @@ impl VisitMut for StepTransform {
                                 workflow_id,
                                 method.function.span,
                             ));
+
+                            // Visit children to process nested step functions
+                            method.visit_mut_children_with(self);
                         }
                         TransformMode::Step | TransformMode::Client => {
                             // Remove directive and replace body with error
+                            // No need to visit children since the body is replaced
                             self.remove_use_workflow_directive(&mut method.function.body);
 
                             // Generate workflow ID
