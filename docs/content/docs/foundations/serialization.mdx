@@ -120,7 +120,7 @@ By default, custom class instances cannot be serialized because the serializatio
 
 ### Basic Example
 
-<!-- @expect-error:2351 -->
+{/* @expect-error:2351 */}
 
 ```typescript title="workflows/custom-class.ts" lineNumbers
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
@@ -145,7 +145,7 @@ class Point {
 
 Once you've implemented these methods, instances of your class can be passed between workflow and step functions:
 
-<!-- @expect-error:2351 -->
+{/* @expect-error:2351 */}
 
 ```typescript title="workflows/geometry.ts" lineNumbers
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
@@ -197,7 +197,7 @@ Both methods must be implemented as **static** methods on the class. Instance me
 
 Custom serialization works with nested objects and other serializable types:
 
-<!-- @expect-error:2351 -->
+{/* @expect-error:2351 */}
 
 ```typescript title="workflows/complex-class.ts" lineNumbers
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
