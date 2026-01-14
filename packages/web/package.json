@@ -27,8 +27,7 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "next": "16.0.10",
-    "shiki": "3.13.0"
+    "next": "16.0.10"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
@@ -59,6 +58,7 @@
     "nuqs": "^2.2.5",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "shiki": "3.13.0",
     "sonner": "2.0.7",
     "swr": "2.3.6",
     "tailwind-merge": "2.5.5",
