@@ -168,6 +168,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
                   <Logo />
                 </h1>
               </Link>
+              <div className="h-6 w-px bg-border" aria-hidden="true" />
               <ConnectionStatus />
             </div>
             <div className="ml-auto flex items-center gap-2">
