@@ -20,7 +20,7 @@
  *
  *   SLACK_BOT_TOKEN   - Slack Bot User OAuth Token (starts with "xoxb-..."),
  *                      used to call `chat.postMessage`
- *   SLACK_CHANNEL_ID  - Slack Channel ID (e.g. "C0123456789")
+ *   SLACK_RELEASE_CHANNEL_ID  - Slack Channel ID (e.g. "C0123456789")
  *
  * Example output (when run with `--print`):
  *
@@ -227,7 +227,7 @@ async function main() {
         '  node scripts/generate-release-slack-payload.mjs --print',
         '  node scripts/generate-release-slack-payload.mjs --post',
         '',
-        'Env (for --post): SLACK_BOT_TOKEN, SLACK_CHANNEL_ID',
+        'Env (for --post): SLACK_BOT_TOKEN, SLACK_RELEASE_CHANNEL_ID',
       ].join('\n')
     );
     return;
@@ -236,7 +236,7 @@ async function main() {
   const releaseNotes = runReleaseNotes();
   const content = buildSlackPayload(releaseNotes);
 
-  const channel = process.env.SLACK_CHANNEL_ID;
+  const channel = process.env.SLACK_RELEASE_CHANNEL_ID;
   const message = { channel, ...content };
 
   if (wantsPrint) {
@@ -245,7 +245,7 @@ async function main() {
 
   if (wantsPost) {
     const token = requireEnv('SLACK_BOT_TOKEN');
-    const realChannel = requireEnv('SLACK_CHANNEL_ID');
+    const realChannel = requireEnv('SLACK_RELEASE_CHANNEL_ID');
     const result = await postToSlack({
       token,
       message: { ...message, channel: realChannel },
