@@ -10,8 +10,8 @@ name: Daily Issue Digest
 on:
   workflow_dispatch:
   schedule:
-    # Daily at 12:00 UTC
-    - cron: "0 12 * * *"
+    # Weekly on Thursday at 12:00 UTC
+    - cron: "0 12 * * 4"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -53,4 +53,4 @@ jobs:
             exit 1
           fi
 
-          node scripts/daily-issue-digest.mjs --post
+          node scripts/issue-digest.mjs --post

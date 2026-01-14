@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Daily issue digest for `vercel/workflow`.
+ * Issue digest for `vercel/workflow`.
  *
  * This intentionally mirrors the existing Slack posting approach used by
  * `scripts/generate-release-slack-payload.mjs`: a small Node script that calls
@@ -8,10 +8,10 @@
  *
  * Usage:
  *   # Print the Slack API payload JSON to stdout (no network call)
- *   node scripts/daily-issue-digest.mjs --print
+ *   node scripts/issue-digest.mjs --print
  *
  *   # Post to Slack via Web API (requires env vars below)
- *   node scripts/daily-issue-digest.mjs --post
+ *   node scripts/issue-digest.mjs --post
  *
  * Environment variables:
  *   GITHUB_TOKEN - GitHub token with access to read issues (GitHub Actions: `${{ github.token }}`)
@@ -224,8 +224,8 @@ async function main() {
     console.log(
       [
         'Usage:',
-        '  node scripts/daily-issue-digest.mjs --print',
-        '  node scripts/daily-issue-digest.mjs --post',
+        '  node scripts/issue-digest.mjs --print',
+        '  node scripts/issue-digest.mjs --post',
         '',
         'Env (for --post): SLACK_BOT_TOKEN, SLACK_ISSUE_SUMMARY_CHANNEL_ID, GITHUB_TOKEN',
       ].join('\n')
@@ -250,7 +250,7 @@ async function main() {
   });
 
   const content = buildSlackPayload({ repoFullName, issues });
-  
+
   if (wantsPrint || wantsPost) {
     const channel = requireEnv('SLACK_ISSUE_SUMMARY_CHANNEL_ID');
     const message = { channel, ...content };
