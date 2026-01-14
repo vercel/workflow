@@ -5,7 +5,7 @@
 # `ISSUE_DIGEST_REPO` e.g. `vercel/workflow`
 # `DIGEST_INTERVAL_DAYS` e.g. `7`
 
-name: Daily Issue Digest
+name: Issue Digest
 
 on:
   workflow_dispatch:
