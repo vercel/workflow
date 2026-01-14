@@ -18,12 +18,14 @@ import {
   type StreamTextOnStepFinishCallback,
   type ToolChoice,
   type ToolSet,
+  type UIMessage,
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
 import type { CompatibleLanguageModel } from './types.js';
+import { UIMessageAccumulator } from './ui-message-accumulator.js';
 
 // Re-export for consumers
 export type { CompatibleLanguageModel } from './types.js';
@@ -544,6 +546,16 @@ export interface DurableAgentStreamOptions<
    * ```
    */
   prepareStep?: PrepareStepCallback<TTools>;
+
+  /**
+   * If true, accumulates UIMessage[] during streaming.
+   * The accumulated messages will be available in the `uiMessages` property of the result.
+   * This is useful when you need the final UIMessage representation after streaming completes,
+   * without having to re-read the stream.
+   *
+   * @default false
+   */
+  collectUIMessages?: boolean;
 }
 
 /**
@@ -568,6 +580,12 @@ export interface DurableAgentStreamResult<
    * Only available when `experimental_output` is specified.
    */
   experimental_output: OUTPUT;
+
+  /**
+   * The accumulated UI messages from the stream.
+   * Only available when `collectUIMessages` is set to `true` in the stream options.
+   */
+  uiMessages?: UIMessage[];
 }
 
 /**
@@ -708,13 +726,20 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         messages: options.messages as unknown as ModelMessage[],
         steps,
         experimental_output: undefined as OUTPUT,
+        uiMessages: undefined,
       };
     }
+
+    // Set up UIMessage accumulator if requested
+    const accumulator = options.collectUIMessages
+      ? new UIMessageAccumulator(options.writable)
+      : null;
+    const effectiveWritable = accumulator?.writable ?? options.writable;
 
     const iterator = streamTextIterator({
       model: this.model,
       tools: effectiveTools as ToolSet,
-      writable: options.writable,
+      writable: effectiveWritable,
       prompt: modelPrompt,
       stopConditions: options.stopWhen,
       maxSteps: options.maxSteps,
@@ -808,8 +833,23 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     const sendFinish = options.sendFinish ?? true;
     const preventClose = options.preventClose ?? false;
 
-    // Only call closeStream if there's something to do
-    if (sendFinish || !preventClose) {
+    // Handle stream closing with special care for accumulator
+    if (accumulator) {
+      // When using accumulator, we need to:
+      // 1. Write finish chunk through accumulator (if sendFinish is true) so it's captured
+      // 2. Close the accumulator's writable to signal completion
+      // 3. Handle the original stream's close separately (finish already forwarded through accumulator)
+      if (sendFinish) {
+        await writeFinishChunk(effectiveWritable);
+      }
+      // Always close the accumulator's writable so getMessages() can complete
+      await effectiveWritable.close();
+      // Now close the original stream (sendFinish=false since finish already written through accumulator)
+      if (!preventClose) {
+        await closeStream(options.writable, preventClose, false);
+      }
+    } else if (sendFinish || !preventClose) {
+      // No accumulator - use standard close logic
       await closeStream(options.writable, preventClose, sendFinish);
     }
 
@@ -857,10 +897,16 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       throw encounteredError;
     }
 
+    // Collect accumulated UI messages if requested
+    const uiMessages = accumulator
+      ? await accumulator.getMessages()
+      : undefined;
+
     return {
       messages: messages as ModelMessage[],
       steps,
       experimental_output: experimentalOutput,
+      uiMessages,
     };
   }
 }
@@ -881,6 +927,17 @@ function filterTools<TTools extends ToolSet>(
   return filtered;
 }
 
+async function writeFinishChunk(writable: WritableStream<UIMessageChunk>) {
+  'use step';
+
+  const writer = writable.getWriter();
+  try {
+    await writer.write({ type: 'finish' });
+  } finally {
+    writer.releaseLock();
+  }
+}
+
 async function closeStream(
   writable: WritableStream<UIMessageChunk>,
   preventClose?: boolean,
@@ -890,12 +947,7 @@ async function closeStream(
 
   // Conditionally write the finish chunk
   if (sendFinish) {
-    const writer = writable.getWriter();
-    try {
-      await writer.write({ type: 'finish' });
-    } finally {
-      writer.releaseLock();
-    }
+    await writeFinishChunk(writable);
   }
 
   // Conditionally close the stream

@@ -52,7 +52,18 @@ app.post('/api/trigger', async (req, res) => {
   if (!workflowFn) {
     return res.status(400).send('No workflow query parameter provided');
   }
-  const workflow = workflows[workflowFn as keyof typeof workflows];
+
+  // Handle static method lookups (e.g., "Calculator.calculate")
+  let workflow: unknown;
+  if (workflowFn.includes('.')) {
+    const [className, methodName] = workflowFn.split('.');
+    const cls = workflows[className as keyof typeof workflows];
+    if (cls && typeof cls === 'function') {
+      workflow = (cls as Record<string, unknown>)[methodName];
+    }
+  } else {
+    workflow = workflows[workflowFn as keyof typeof workflows];
+  }
   if (!workflow) {
     return res.status(400).send('Workflow not found');
   }

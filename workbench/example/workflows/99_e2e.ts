@@ -1,4 +1,5 @@
 // Test path alias resolution - imports a helper from outside the workbench directory
+/** biome-ignore-all lint/complexity/noStaticOnlyClass: <explanation> */
 import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
@@ -711,4 +712,153 @@ export async function errorFatalCatchable() {
   } catch (e: any) {
     return { caught: true, isFatal: FatalError.is(e) };
   }
+}
+
+// ============================================================
+// STATIC METHOD STEP/WORKFLOW TESTS
+// ============================================================
+// Tests for static methods on classes with "use step" and "use workflow" directives.
+// ============================================================
+
+/**
+ * Service class with static step methods for math operations.
+ * These methods are transformed to be callable as workflow steps.
+ */
+export class MathService {
+  /** Static step: add two numbers */
+  static async add(a: number, b: number): Promise<number> {
+    'use step';
+    return a + b;
+  }
+
+  /** Static step: multiply two numbers */
+  static async multiply(a: number, b: number): Promise<number> {
+    'use step';
+    return a * b;
+  }
+}
+
+/**
+ * Workflow class with a static workflow method that uses static step methods.
+ */
+export class Calculator {
+  /** Static workflow: uses MathService static step methods */
+  static async calculate(x: number, y: number): Promise<number> {
+    'use workflow';
+    // Add x + y, then multiply by 2
+    const sum = await MathService.add(x, y);
+    const result = await MathService.multiply(sum, 2);
+    return result;
+  }
+}
+
+/**
+ * Alternative pattern: both step and workflow methods in the same class.
+ */
+export class AllInOneService {
+  static async double(n: number): Promise<number> {
+    'use step';
+    return n * 2;
+  }
+
+  static async triple(n: number): Promise<number> {
+    'use step';
+    return n * 3;
+  }
+
+  /** Static workflow: double(n) + triple(n) = 2n + 3n = 5n */
+  static async processNumber(n: number): Promise<number> {
+    'use workflow';
+    const doubled = await AllInOneService.double(n);
+    const tripled = await AllInOneService.triple(n);
+    return doubled + tripled;
+  }
+}
+
+/**
+ * Class that uses `this` in static step methods to reference the class itself.
+ * This tests that the class constructor is properly serialized when `this` is used.
+ */
+export class ChainableService {
+  /** The multiplier used by the multiply step */
+  static multiplier = 10;
+
+  /** Static step that uses `this` to access class properties */
+  static async multiplyByClassValue(
+    this: typeof ChainableService,
+    n: number
+  ): Promise<number> {
+    'use step';
+    // Use `this` to reference the class and access its static property
+    // `this` is the class constructor, so `this.multiplier` accesses the static property
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    return n * this.multiplier;
+  }
+
+  /** Static step that uses `this` to call another static method */
+  static async doubleAndMultiply(
+    this: typeof ChainableService,
+    n: number
+  ): Promise<number> {
+    'use step';
+    // Use `this` to access the static property on the class
+    // Note: We can't call another step from within a step, so we just reference a static property
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    return n * 2 * this.multiplier;
+  }
+
+  /** Static workflow that demonstrates `this` serialization with static methods */
+  static async processWithThis(n: number): Promise<{
+    multiplied: number;
+    doubledAndMultiplied: number;
+    sum: number;
+  }> {
+    'use workflow';
+    // When calling static methods via ClassName.method(), `this` inside the step
+    // will be the class constructor (ChainableService). The class constructor
+    // is serialized with its classId and passed to the step handler.
+    //
+    // NOTE: We use `ChainableService.method()` here instead of `this.method()` because
+    // the `this` argument is not currently passed through when invoking a workflow via
+    // `start()`. Workflows are executed as standalone functions, so `this` inside the
+    // workflow body is undefined. This could be revisited in the future if needed.
+    const multiplied = await ChainableService.multiplyByClassValue(n);
+    const doubledAndMultiplied = await ChainableService.doubleAndMultiply(n);
+
+    return {
+      multiplied, // n * 10
+      doubledAndMultiplied, // n * 2 * 10 = n * 20
+      sum: multiplied + doubledAndMultiplied, // n * 10 + n * 20 = n * 30
+    };
+  }
+}
+
+//////////////////////////////////////////////////////////
+// E2E test for `this` serialization with .call() and .apply()
+//////////////////////////////////////////////////////////
+
+/**
+ * A step function that uses `this` to access properties.
+ */
+async function multiplyByFactor(this: { factor: number }, value: number) {
+  'use step';
+  return value * this.factor;
+}
+
+/**
+ * Workflow that tests calling step functions with explicit `this` via .call() and .apply()
+ */
+export async function thisSerializationWorkflow(baseValue: number) {
+  'use workflow';
+  // Test .call() - multiply baseValue by 2
+  const result1 = await multiplyByFactor.call({ factor: 2 }, baseValue);
+
+  // Test .apply() - multiply result1 by 3
+  const result2 = await multiplyByFactor.apply({ factor: 3 }, [result1]);
+
+  // Test .call() again - multiply result2 by 5
+  const result3 = await multiplyByFactor.call({ factor: 5 }, result2);
+
+  // baseValue * 2 * 3 * 5 = baseValue * 30
+  return result3;
 }

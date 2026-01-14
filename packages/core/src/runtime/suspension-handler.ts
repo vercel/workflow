@@ -1,5 +1,4 @@
 import type { Span } from '@opentelemetry/api';
-import { waitUntil } from '@vercel/functions';
 import { WorkflowAPIError } from '@workflow/errors';
 import type { World } from '@workflow/world';
 import type {
@@ -91,6 +90,17 @@ interface ProcessStepParams {
 
 /**
  * Processes a single step by creating it in the database and queueing execution.
+ *
+ * IMPORTANT: The queue write MUST always happen, even if the step already exists.
+ * This handles the case where:
+ *   1. Step is written to workflow database
+ *   2. Process crashes, times out, or fails before queue write completes
+ *   3. Upstream retry occurs
+ *   4. Step already exists in database (409 conflict)
+ *
+ * If we skipped the queue write on 409, the step would sit "pending" forever
+ * with 0 attempts. The queue write uses an idempotency key (correlation ID),
+ * so duplicate queue writes are safely deduplicated by the queue service.
  */
 async function processStep({
   queueItem,
@@ -100,56 +110,55 @@ async function processStep({
   workflowStartedAt,
   global,
 }: ProcessStepParams): Promise<void> {
-  const ops: Promise<void>[] = [];
   const dehydratedInput = dehydrateStepArguments(
     {
       args: queueItem.args,
       closureVars: queueItem.closureVars,
+      thisVal: queueItem.thisVal,
     },
     global
   );
 
+  // The stepId to use for the queue message. This will be the correlation ID
+  // regardless of whether we created a new step or the step already existed.
+  const stepId = queueItem.correlationId;
+
   try {
-    const step = await world.steps.create(runId, {
+    await world.steps.create(runId, {
       stepId: queueItem.correlationId,
       stepName: queueItem.stepName,
       input: dehydratedInput as Serializable,
     });
-
-    waitUntil(
-      Promise.all(ops).catch((opErr) => {
-        // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
-        const isAbortError =
-          opErr?.name === 'AbortError' || opErr?.name === 'ResponseAborted';
-        if (!isAbortError) throw opErr;
-      })
-    );
-
-    await queueMessage(
-      world,
-      `__wkf_step_${queueItem.stepName}`,
-      {
-        workflowName,
-        workflowRunId: runId,
-        workflowStartedAt,
-        stepId: step.stepId,
-        traceCarrier: await serializeTraceCarrier(),
-        requestedAt: new Date(),
-      },
-      {
-        idempotencyKey: queueItem.correlationId,
-      }
-    );
   } catch (err) {
     if (WorkflowAPIError.is(err) && err.status === 409) {
-      // Step already exists, so we can skip it
+      // Step already exists - this is expected on retries. We still need to
+      // proceed with the queue write below to ensure the step gets executed.
+      // See function comment above for details on why this is critical.
       console.warn(
-        `Step "${queueItem.stepName}" with correlation ID "${queueItem.correlationId}" already exists, skipping: ${err.message}`
+        `Step "${queueItem.stepName}" with correlation ID "${queueItem.correlationId}" already exists, proceeding with queue write`
       );
-      return;
+    } else {
+      throw err;
     }
-    throw err;
   }
+
+  // Always write to queue, even if step already existed. The idempotency key
+  // ensures duplicate queue writes are safely deduplicated by the queue service.
+  await queueMessage(
+    world,
+    `__wkf_step_${queueItem.stepName}`,
+    {
+      workflowName,
+      workflowRunId: runId,
+      workflowStartedAt,
+      stepId,
+      traceCarrier: await serializeTraceCarrier(),
+      requestedAt: new Date(),
+    },
+    {
+      idempotencyKey: queueItem.correlationId,
+    }
+  );
 }
 
 interface ProcessWaitParams {

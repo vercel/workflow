@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- [#737](https://github.com/vercel/workflow/pull/737) [`adb9312`](https://github.com/vercel/workflow/commit/adb93121fc0d4790e949f79eec1c375af207bf13) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Tidy up wake-up and re-enqueue controls
+
 ## 4.0.1-beta.26
 
 ### Patch Changes

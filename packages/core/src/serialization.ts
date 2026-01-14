@@ -1,6 +1,7 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
+import { getSerializationClass } from './class-serialization.js';
 import {
   createFlushableState,
   flushablePipe,
@@ -223,6 +224,9 @@ export interface SerializableSpecial {
     body: Response['body'];
     redirected: boolean;
   };
+  Class: {
+    classId: string;
+  };
   Set: any[];
   StepFunction: {
     stepId: string;
@@ -335,6 +339,14 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
         body: value.body,
         redirected: value.redirected,
       };
+    },
+    Class: (value) => {
+      // Check if this is a class constructor with a classId property
+      // (set by the SWC plugin for classes with static step/workflow methods)
+      if (typeof value !== 'function') return false;
+      const classId = (value as any).classId;
+      if (typeof classId !== 'string') return false;
+      return { classId };
     },
     Set: (value) => value instanceof global.Set && Array.from(value),
     StepFunction: (value) => {
@@ -618,6 +630,16 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     },
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
+    Class: (value) => {
+      const classId = value.classId;
+      const cls = getSerializationClass(classId);
+      if (!cls) {
+        throw new Error(
+          `Class "${classId}" not found. Make sure the class is registered with registerSerializationClass.`
+        );
+      }
+      return cls;
+    },
     Set: (value) => new global.Set(value),
     StepFunction: (value) => {
       const stepId = value.stepId;

@@ -12,7 +12,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
     stepName: string,
     closureVarsFn?: () => Record<string, Serializable>
   ) {
-    const stepFunction = (...args: Args): Promise<Result> => {
+    // Use a regular function (not arrow) so we can capture `this` when invoked as a method
+    const stepFunction = function (
+      this: unknown,
+      ...args: Args
+    ): Promise<Result> {
       const { promise, resolve, reject } = withResolvers<Result>();
 
       const correlationId = `step_${ctx.generateUlid()}`;
@@ -23,6 +27,12 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         stepName,
         args,
       };
+
+      // Capture `this` value for method invocations (e.g., MyClass.method())
+      // Only include if `this` is defined and not the global object
+      if (this !== undefined && this !== null && this !== globalThis) {
+        queueItem.thisVal = this as Serializable;
+      }
 
       // Invoke the closure variables function to get the closure scope
       const closureVars = closureVarsFn?.();

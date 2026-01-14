@@ -1175,4 +1175,121 @@ describe('e2e', () => {
       expect(runData.output).toBe('pathsAliasHelper');
     }
   );
+
+  // ==================== STATIC METHOD STEP/WORKFLOW TESTS ====================
+  // Tests for static methods on classes with "use step" and "use workflow" directives.
+
+  test(
+    'Calculator.calculate - static workflow method using static step methods from another class',
+    { timeout: 60_000 },
+    async () => {
+      // Calculator.calculate(5, 3) should:
+      // 1. MathService.add(5, 3) = 8
+      // 2. MathService.multiply(8, 2) = 16
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'Calculator.calculate',
+        },
+        [5, 3]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(16);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(16);
+    }
+  );
+
+  test(
+    'AllInOneService.processNumber - static workflow method using sibling static step methods',
+    { timeout: 60_000 },
+    async () => {
+      // AllInOneService.processNumber(10) should:
+      // 1. AllInOneService.double(10) = 20
+      // 2. AllInOneService.triple(10) = 30
+      // 3. return 20 + 30 = 50
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'AllInOneService.processNumber',
+        },
+        [10]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(50);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(50);
+    }
+  );
+
+  test(
+    'ChainableService.processWithThis - static step methods using `this` to reference the class',
+    { timeout: 60_000 },
+    async () => {
+      // ChainableService.processWithThis(5) should:
+      // - ChainableService.multiplyByClassValue(5) uses `this.multiplier` (10) -> 5 * 10 = 50
+      // - ChainableService.doubleAndMultiply(5) uses `this.multiplier` (10) -> 5 * 2 * 10 = 100
+      // - sum = 50 + 100 = 150
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'ChainableService.processWithThis',
+        },
+        [5]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toEqual({
+        multiplied: 50, // 5 * 10
+        doubledAndMultiplied: 100, // 5 * 2 * 10
+        sum: 150, // 50 + 100
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        multiplied: 50,
+        doubledAndMultiplied: 100,
+        sum: 150,
+      });
+    }
+  );
+
+  test(
+    'thisSerializationWorkflow - step function invoked with .call() and .apply()',
+    { timeout: 60_000 },
+    async () => {
+      // thisSerializationWorkflow(10) should:
+      // 1. multiplyByFactor.call({ factor: 2 }, 10) = 20
+      // 2. multiplyByFactor.apply({ factor: 3 }, [20]) = 60
+      // 3. multiplyByFactor.call({ factor: 5 }, 60) = 300
+      // Total: 10 * 2 * 3 * 5 = 300
+      const run = await triggerWorkflow('thisSerializationWorkflow', [10]);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(300);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(300);
+    }
+  );
 });

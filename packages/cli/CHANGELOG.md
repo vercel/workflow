@@ -1,5 +1,30 @@
 # @workflow/cli
 
+## 4.0.1-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`a2fc53a`](https://github.com/vercel/workflow/commit/a2fc53a0dc2df0648ae9e7fd59aae044a612ebcb)]:
+  - @workflow/swc-plugin@4.0.1-beta.13
+  - @workflow/core@4.0.1-beta.38
+  - @workflow/builders@4.0.1-beta.38
+  - @workflow/web@4.0.1-beta.27
+
+## 4.0.1-beta.45
+
+### Patch Changes
+
+- [#765](https://github.com/vercel/workflow/pull/765) [`44dfafe`](https://github.com/vercel/workflow/commit/44dfafe3fcf0c5aa56beb86f6d428894b22d0b0c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read .env and .env.local files on startup
+
+- Updated dependencies [[`adb9312`](https://github.com/vercel/workflow/commit/adb93121fc0d4790e949f79eec1c375af207bf13), [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`3dd5b27`](https://github.com/vercel/workflow/commit/3dd5b2708de56e63c9dce9b3f2eafea63b0e3936), [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66), [`49f650c`](https://github.com/vercel/workflow/commit/49f650c3a79e7b9b501cb602e3c12b75a3c4fffc), [`39e5774`](https://github.com/vercel/workflow/commit/39e5774de2a4c8b6a18574aa4edaf79e9f0d655e)]:
+  - @workflow/web@4.0.1-beta.27
+  - @workflow/core@4.0.1-beta.37
+  - @workflow/world@4.0.1-beta.13
+  - @workflow/builders@4.0.1-beta.37
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/world-local@4.0.1-beta.26
+  - @workflow/world-vercel@4.0.1-beta.27
+
 ## 4.0.1-beta.44
 
 ### Patch Changes
