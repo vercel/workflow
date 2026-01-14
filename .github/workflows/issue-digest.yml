@@ -2,8 +2,8 @@
 # Adapted from next.js implementation: https://github.com/vercel/next.js/blob/canary/.github/workflows/
 # The workflow uses GitHub Actions' built-in `github.token` for `GITHUB_TOKEN` and requires `issues: read` permission.
 # Optional configuration:
-# `ISSUE_DIGEST_REPO` (default: `vercel/workflow`)
-# `ISSUE_DIGEST_COUNT` (default: `10`, max: `25`)
+# `ISSUE_DIGEST_REPO` e.g. `vercel/workflow`
+# `ISSUE_DIGEST_COUNT` e.g `10`
 
 name: Daily Issue Digest
 
@@ -37,16 +37,11 @@ jobs:
         env:
           # Provided automatically by GitHub Actions; permissions above must allow issues:read.
           GITHUB_TOKEN: ${{ github.token }}
-
           # Reused by the existing release Slack integration.
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-
           # New secret for this workflow.
           SLACK_ISSUE_SUMMARY_CHANNEL_ID: ${{ secrets.SLACK_ISSUE_SUMMARY_CHANNEL_ID }}
 
-          # Configurable, but defaults are already correct for this repo.
-          ISSUE_DIGEST_REPO: vercel/workflow
-          ISSUE_DIGEST_COUNT: "10"
         run: |
           if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_ISSUE_SUMMARY_CHANNEL_ID" ]; then
             echo "Missing Slack secrets: SLACK_BOT_TOKEN and/or SLACK_ISSUE_SUMMARY_CHANNEL_ID"

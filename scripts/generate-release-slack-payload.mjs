@@ -128,13 +128,10 @@ function buildSlackPayload({ tag, title, body }) {
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `New release: ${title}`, emoji: true },
-    },
-    {
-      type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Release:* <${releaseUrl}|${tag}>`,
+        text: `:rocket: New release: <${releaseUrl}|${title}>`,
+        emoji: true,
       },
     },
   ];

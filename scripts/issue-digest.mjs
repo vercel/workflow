@@ -21,7 +21,7 @@
  *
  * Optional:
  *   ISSUE_DIGEST_REPO  - repo to query in `owner/repo` form (default: "vercel/workflow")
- *   ISSUE_DIGEST_COUNT - number of issues to include (default: "10")
+ *   ISSUE_DIGEST_COUNT - number of issues to include
  */
 
 const SLACK_API_URL = 'https://slack.com/api/chat.postMessage';
@@ -238,7 +238,7 @@ async function main() {
   const count = clampInt(process.env.ISSUE_DIGEST_COUNT ?? '10', {
     min: 1,
     max: 25,
-    fallback: 10,
+    fallback: 5,
   });
 
   const ghToken = requireEnv('GITHUB_TOKEN');
