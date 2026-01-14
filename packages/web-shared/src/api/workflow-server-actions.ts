@@ -226,22 +226,22 @@ function getAllowedEnvKeysForBackend(backendId: string): string[] {
   );
 }
 
-/**
- * Determines whether to hide an env value, based on a best-effort guess
- * at whether it's sensitive. Note that for all known worlds, we have an explicit
- * whitelist, and this is just here to help smooth integration of third-party worlds,
- * before they get added to our whitelist (also see /worlds-manifest.json).
- */
-function isSensitiveEnvKey(key: string): boolean {
-  // URLs/URIs often embed credentials; treat as sensitive by default except the backend URL.
-  if (
-    (key.endsWith('_URL') || key.endsWith('_URI')) &&
-    key !== 'WORKFLOW_VERCEL_BACKEND_URL'
-  ) {
-    return true;
-  }
-  return /TOKEN|SECRET|PASSWORD|API_KEY/i.test(key);
-}
+// Keep this list in sync with `worlds-manifest.json` env + credentialsNote.
+//
+// IMPORTANT: This is intentionally explicit (no heuristics). We only redact values for env
+// vars that are known + whitelisted and that we *know* contain secrets/credentials.
+const WORLD_SENSITIVE_ENV_KEYS = new Set<string>([
+  // Official
+  'WORKFLOW_POSTGRES_URL',
+  'WORKFLOW_VERCEL_AUTH_TOKEN',
+
+  // Community
+  'WORKFLOW_TURSO_DATABASE_URL',
+  'WORKFLOW_MONGODB_URI',
+  'WORKFLOW_REDIS_URI',
+  'JAZZ_API_KEY',
+  'JAZZ_WORKER_SECRET',
+]);
 
 function isSet(value: string | undefined): value is string {
   return value !== undefined && value !== null && value !== '';
@@ -296,7 +296,7 @@ function collectAllowedEnv(allowedKeys: string[]): {
     const value = process.env[key];
     if (!isSet(value)) continue;
 
-    if (isSensitiveEnvKey(key)) {
+    if (WORLD_SENSITIVE_ENV_KEYS.has(key)) {
       sensitiveEnvKeys.push(key);
       const derived = deriveDbInfoForKey(key, value);
       if (derived) Object.assign(derivedDisplayInfo, derived);
