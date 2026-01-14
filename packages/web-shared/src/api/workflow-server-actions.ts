@@ -138,6 +138,29 @@ function getObservabilityCwd(): string {
 }
 
 /**
+ * Ensure local-world env is derived consistently when running `packages/web` directly.
+ *
+ * Without this, the UI may *display* a dataDir detected from WORKFLOW_OBSERVABILITY_CWD,
+ * while the actual World reads from `WORKFLOW_LOCAL_DATA_DIR` (defaulting to `.workflow-data`
+ * under the web package cwd), resulting in "no runs" even though data exists.
+ */
+async function ensureLocalWorldDataDirEnv(): Promise<void> {
+  if (process.env.WORKFLOW_LOCAL_DATA_DIR) return;
+
+  const cwd = getObservabilityCwd();
+  const info = await findWorkflowDataDir(cwd);
+
+  // Prefer a discovered workflow-data directory (e.g. `.next/workflow-data`).
+  if (info.dataDir) {
+    process.env.WORKFLOW_LOCAL_DATA_DIR = info.dataDir;
+    return;
+  }
+
+  // Fall back to a canonical location under the target project directory.
+  process.env.WORKFLOW_LOCAL_DATA_DIR = path.resolve(cwd, '.workflow-data');
+}
+
+/**
  * Extract hostname from a database URL without exposing credentials.
  */
 function extractHostnameFromUrl(url: string | undefined): string | undefined {
@@ -314,7 +337,7 @@ const worldCache = new Map<string, World>();
  * The @workflow/web UI should always pass `{}` for envMap.
  * We intentionally do not trust or apply client-provided env.
  */
-function getWorldFromEnv(_userEnvMap: EnvMap) {
+async function getWorldFromEnv(_userEnvMap: EnvMap): Promise<World> {
   const backendId = getEffectiveBackendId();
   const isVercelWorld = ['vercel', '@workflow/world-vercel'].includes(
     backendId
@@ -333,6 +356,11 @@ function getWorldFromEnv(_userEnvMap: EnvMap) {
         teamId: process.env.WORKFLOW_VERCEL_TEAM,
       },
     });
+  }
+
+  // Ensure local-world reads from the same project directory the UI is inspecting.
+  if (backendId === 'local' || backendId === '@workflow/world-local') {
+    await ensureLocalWorldDataDirEnv();
   }
 
   // Cache key derived ONLY from WORKFLOW_* env vars.
@@ -481,7 +509,7 @@ export async function fetchRuns(
     status,
   } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.runs.list({
       ...(workflowName ? { workflowName } : {}),
       ...(status ? { status: status } : {}),
@@ -511,7 +539,7 @@ export async function fetchRun(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<WorkflowRun>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData });
     const hydratedRun = hydrate(run as WorkflowRun);
     return createResponse(hydratedRun);
@@ -537,7 +565,7 @@ export async function fetchSteps(
 ): Promise<ServerActionResult<PaginatedResult<Step>>> {
   const { cursor, sortOrder = 'asc', limit = 100 } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.steps.list({
       runId,
       pagination: { cursor, limit, sortOrder },
@@ -570,7 +598,7 @@ export async function fetchStep(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<Step>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const step = await world.steps.get(runId, stepId, { resolveData });
     const hydratedStep = hydrate(step as Step);
     return createResponse(hydratedStep);
@@ -597,7 +625,7 @@ export async function fetchEvents(
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   const { cursor, sortOrder = 'asc', limit = 1000 } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.events.list({
       runId,
       pagination: { cursor, limit, sortOrder },
@@ -635,7 +663,7 @@ export async function fetchEventsByCorrelationId(
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.events.listByCorrelationId({
       correlationId,
       pagination: { cursor, limit, sortOrder },
@@ -672,7 +700,7 @@ export async function fetchHooks(
 ): Promise<ServerActionResult<PaginatedResult<Hook>>> {
   const { runId, cursor, sortOrder = 'desc', limit = 10 } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.hooks.list({
       ...(runId ? { runId } : {}),
       pagination: { cursor, limit, sortOrder },
@@ -701,7 +729,7 @@ export async function fetchHook(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<Hook>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const hook = await world.hooks.get(hookId, { resolveData });
     return createResponse(hydrate(hook as Hook));
   } catch (error) {
@@ -720,7 +748,7 @@ export async function cancelRun(
   runId: string
 ): Promise<ServerActionResult<void>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     await world.runs.cancel(runId);
     return createResponse(undefined);
   } catch (error) {
@@ -738,7 +766,7 @@ export async function recreateRun(
   runId: string
 ): Promise<ServerActionResult<string>> {
   try {
-    const world = getWorldFromEnv({ ...worldEnv });
+    const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const hydratedRun = hydrate(run as WorkflowRun);
     const deploymentId = run.deploymentId;
@@ -766,7 +794,7 @@ export async function reenqueueRun(
   runId: string
 ): Promise<ServerActionResult<void>> {
   try {
-    const world = getWorldFromEnv({ ...worldEnv });
+    const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const deploymentId = run.deploymentId;
 
@@ -816,7 +844,7 @@ export async function wakeUpRun(
   options?: StopSleepOptions
 ): Promise<ServerActionResult<StopSleepResult>> {
   try {
-    const world = getWorldFromEnv({ ...worldEnv });
+    const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const deploymentId = run.deploymentId;
 
@@ -906,7 +934,7 @@ export async function resumeHook(
 ): Promise<ServerActionResult<ResumeHookResult>> {
   try {
     // Initialize the world so resumeHookRuntime can access it
-    getWorldFromEnv({ ...worldEnv });
+    await getWorldFromEnv({ ...worldEnv });
 
     const hook = await resumeHookRuntime(token, payload);
 
@@ -927,7 +955,7 @@ export async function readStreamServerAction(
   startIndex?: number
 ): Promise<ReadableStream<unknown> | ServerActionError> {
   try {
-    const world = getWorldFromEnv(env);
+    const world = await getWorldFromEnv(env);
     // We should probably use getRun().getReadable() instead, to make the UI
     // more consistent with runtime behavior, and also expose a "replay" and "startIndex",
     // feature, to allow for testing World behavior.
@@ -958,7 +986,7 @@ export async function fetchStreams(
   runId: string
 ): Promise<ServerActionResult<string[]>> {
   try {
-    const world = getWorldFromEnv(env);
+    const world = await getWorldFromEnv(env);
     const streams = await world.listStreamsByRunId(runId);
     return createResponse(streams);
   } catch (error) {
