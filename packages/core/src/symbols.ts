@@ -20,8 +20,6 @@ export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
  * import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
  *
  * class MyClass {
- *   static classId = 'myapp/MyClass';
- *
  *   constructor(public value: string) {}
  *
  *   static [WORKFLOW_SERIALIZE](instance: MyClass) {
