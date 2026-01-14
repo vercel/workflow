@@ -455,6 +455,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
 
   const onReload = useCallback(() => {
     setLastRefreshTime(() => new Date());
+    setHasLoadedOnce(false);
     reload();
   }, [reload]);
 
@@ -555,7 +556,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     if (isLocalAndHasMissingData) {
       const interval = setInterval(() => {
         onReload();
-      }, 3000);
+      }, 5000);
       return () => clearInterval(interval);
     }
   }, [isLocalAndHasMissingData, onReload]);
