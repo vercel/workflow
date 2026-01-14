@@ -68,38 +68,61 @@ function getDbTooltipParts(
   );
 }
 
+function getLocalDisplayString(
+  publicEnv: ServerConfigValue['publicEnv']
+): string {
+  const localLabel =
+    publicEnv.kind === 'local' ? publicEnv.shortName : 'Unknown';
+  return `Local Dev: ${localLabel}`;
+}
+
+function getVercelDisplayString(
+  publicEnv: ServerConfigValue['publicEnv']
+): string {
+  if (publicEnv.kind !== 'vercel') {
+    return 'Connected to Vercel (Unknown)';
+  }
+
+  let vercelInfo: string;
+  if (publicEnv.teamId && publicEnv.projectId) {
+    vercelInfo = `${publicEnv.teamId}/${publicEnv.projectId}`;
+  } else {
+    vercelInfo =
+      publicEnv.projectId ||
+      publicEnv.teamId ||
+      publicEnv.environment ||
+      'Unknown';
+  }
+
+  return `Connected to Vercel (${vercelInfo})`;
+}
+
+function getPostgresDisplayString(
+  publicDbUris: ServerConfigValue['publicDbUris']
+): string {
+  const postgresInfo = publicDbUris?.find(
+    (x) => x.key === 'WORKFLOW_POSTGRES_URL'
+  );
+  if (!postgresInfo?.hostname) return 'Connected to Postgres';
+  const suffix = postgresInfo.database ? `/${postgresInfo.database}` : '';
+  return `Connected to Postgres (${postgresInfo.hostname}${suffix})`;
+}
+
 function getDisplayString(config: ServerConfigValue): string {
   const { backendDisplayName, backendId, publicDbUris, publicEnv } = config;
-
-  if (backendId === 'local' || backendId === '@workflow/world-local') {
-    const localLabel =
-      publicEnv.kind === 'local' ? publicEnv.shortName : 'Unknown';
-    return `Local Dev: ${localLabel}`;
+  switch (backendId) {
+    case 'local':
+    case '@workflow/world-local':
+      return getLocalDisplayString(publicEnv);
+    case 'vercel':
+    case '@workflow/world-vercel':
+      return getVercelDisplayString(publicEnv);
+    case 'postgres':
+    case '@workflow/world-postgres':
+      return getPostgresDisplayString(publicDbUris);
+    default:
+      return `Connected to: ${backendDisplayName}`;
   }
-
-  if (backendId === 'vercel' || backendId === '@workflow/world-vercel') {
-    const vercelInfo =
-      publicEnv.kind === 'vercel'
-        ? publicEnv.teamId && publicEnv.projectId
-          ? `${publicEnv.teamId}/${publicEnv.projectId}`
-          : publicEnv.projectId ||
-            publicEnv.teamId ||
-            publicEnv.environment ||
-            'Unknown'
-        : 'Unknown';
-    return `Connected to Vercel (${vercelInfo})`;
-  }
-
-  if (backendId === '@workflow/world-postgres' || backendId === 'postgres') {
-    const postgresInfo = publicDbUris?.find(
-      (x) => x.key === 'WORKFLOW_POSTGRES_URL'
-    );
-    if (!postgresInfo?.hostname) return 'Connected to Postgres';
-    const suffix = postgresInfo.database ? `/${postgresInfo.database}` : '';
-    return `Connected to Postgres (${postgresInfo.hostname}${suffix})`;
-  }
-
-  return `Connected to: ${backendDisplayName}`;
 }
 
 /**
@@ -123,10 +146,12 @@ export function ConnectionStatus() {
     parts.length > 0 || dbParts.length > 0 || showLocalMisconfigWarning;
 
   const content = (
-    <div className="h-9 px-3 rounded-md border bg-background text-sm text-muted-foreground flex items-center">
+    <div className="h-10 px-3 rounded-md border bg-background text-sm text-muted-foreground flex items-center">
       <span className="font-medium">{displayString}</span>
     </div>
   );
+
+  // TODO: Based on queue or HTTP health check, show a live status icon.
 
   if (!hasTooltip) {
     return content;
