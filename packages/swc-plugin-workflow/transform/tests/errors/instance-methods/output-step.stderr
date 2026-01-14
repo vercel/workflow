@@ -1,16 +1,8 @@
-  x Instance methods cannot be marked with "use step". Only static methods, functions, and object methods are supported.
-   ,-[input.js:3:1]
- 2 |       // Error: instance methods can't have directives
- 3 | ,->   async instanceMethod() {
- 4 | |       'use step';
- 5 | |       return 'not allowed';
- 6 | `->   }
-   `----
   x Instance methods cannot be marked with "use workflow". Only static methods, functions, and object methods are supported.
     ,-[input.js:9:1]
-  8 |       // Error: instance methods can't have workflow directive either
+  8 |       // Error: instance methods can't have "use workflow" directive
   9 | ,->   async anotherInstance() {
  10 | |       'use workflow';
- 11 | |       return 'also not allowed';
+ 11 | |       return 'not allowed';
  12 | `->   }
     `----

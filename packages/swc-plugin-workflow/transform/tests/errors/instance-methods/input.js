@@ -1,17 +1,17 @@
 export class TestClass {
-  // Error: instance methods can't have directives
+  // OK: instance methods can have "use step" directive
   async instanceMethod() {
     'use step';
+    return 'allowed';
+  }
+
+  // Error: instance methods can't have "use workflow" directive
+  async anotherInstance() {
+    'use workflow';
     return 'not allowed';
   }
 
-  // Error: instance methods can't have workflow directive either
-  async anotherInstance() {
-    'use workflow';
-    return 'also not allowed';
-  }
-
-  // This is ok - static methods can have directives
+  // OK: static methods can have directives
   static async staticMethod() {
     'use step';
     return 'allowed';

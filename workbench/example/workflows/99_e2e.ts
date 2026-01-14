@@ -1147,3 +1147,84 @@ export async function crossContextSerdeWorkflow() {
     arraySum: { x: arraySum.x, y: arraySum.y, z: arraySum.z },
   };
 }
+
+//////////////////////////////////////////////////////////
+// Instance Method Step Tests
+//////////////////////////////////////////////////////////
+
+/**
+ * A class with instance methods that are marked as steps.
+ * This tests the new "use step" support for instance methods.
+ * The class uses custom serialization so the `this` value can be
+ * serialized across the workflow/step boundary.
+ */
+export class Counter {
+  constructor(public value: number) {}
+
+  /** Custom serialization - converts instance to plain object */
+  static [Symbol.for('workflow-serialize')](instance: Counter) {
+    return { value: instance.value };
+  }
+
+  /** Custom deserialization - reconstructs instance from plain object */
+  static [Symbol.for('workflow-deserialize')](data: { value: number }) {
+    return new Counter(data.value);
+  }
+
+  /**
+   * Instance method step: adds the given amount to the counter's value.
+   * The `this` context (the Counter instance) is serialized and passed
+   * to the step handler, then deserialized before the method is called.
+   */
+  async add(amount: number): Promise<number> {
+    'use step';
+    return this.value + amount;
+  }
+
+  /**
+   * Instance method step: multiplies the counter's value by the given factor.
+   */
+  async multiply(factor: number): Promise<number> {
+    'use step';
+    return this.value * factor;
+  }
+
+  /**
+   * Instance method step: returns an object with both the original and computed values.
+   * This tests that `this` is correctly preserved through the step execution.
+   */
+  async describe(label: string): Promise<{ label: string; value: number }> {
+    'use step';
+    return { label, value: this.value };
+  }
+}
+
+/**
+ * Workflow that tests instance method steps.
+ * Creates Counter instances and calls their instance methods as steps.
+ * The `this` context (the Counter instance) should be serialized and
+ * correctly restored when the step executes.
+ */
+export async function instanceMethodStepWorkflow(initialValue: number) {
+  'use workflow';
+
+  // Create a Counter instance
+  const counter = new Counter(initialValue);
+
+  // Call instance method steps
+  const added = await counter.add(10);
+  const multiplied = await counter.multiply(3);
+  const description = await counter.describe('test counter');
+
+  // Create another counter to verify different instances work
+  const counter2 = new Counter(100);
+  const added2 = await counter2.add(50);
+
+  return {
+    initialValue,
+    added, // initialValue + 10
+    multiplied, // initialValue * 3
+    description, // { label: 'test counter', value: initialValue }
+    added2, // 100 + 50 = 150
+  };
+}
