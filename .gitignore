@@ -31,3 +31,6 @@ target
 .next
 
 .DS_Store
+
+# bd (beads) local state
+.beads/
