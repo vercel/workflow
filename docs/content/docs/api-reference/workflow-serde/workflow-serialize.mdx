@@ -1,0 +1,64 @@
+---
+title: WORKFLOW_SERIALIZE
+---
+
+A symbol used to define custom serialization for user-defined class instances. The static method should accept an instance and return serializable data.
+
+## Usage
+
+<!-- @expect-error:2351 -->
+
+```typescript lineNumbers
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+class Point {
+  constructor(public x: number, public y: number) {}
+
+  static [WORKFLOW_SERIALIZE](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+}
+```
+
+## API Signature
+
+```typescript
+static [WORKFLOW_SERIALIZE](instance: T): SerializableData
+```
+
+### Parameters
+
+<TSDoc
+definition={`
+interface Parameters {
+  /**
+   * The class instance to serialize.
+   */
+  instance: T;
+}
+export default Parameters;`}
+/>
+
+### Returns
+
+The method should return serializable data. This can be:
+
+- Primitives (`string`, `number`, `boolean`, `null`, `undefined`, `bigint`)
+- Plain objects with serializable values
+- Arrays of serializable values
+- Built-in serializable types (`Date`, `Map`, `Set`, `RegExp`, `URL`, etc.)
+- Other custom classes that implement serialization
+
+## Requirements
+
+<Callout type="warn">
+The method must be implemented as a **static** method on the class. Instance methods are not supported.
+</Callout>
+
+- Both `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented together
+- The returned data must itself be serializable
+- The SWC compiler plugin automatically detects and registers classes that implement these symbols

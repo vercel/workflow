@@ -114,6 +114,119 @@ export async function fetch(...args: Parameters<typeof globalThis.fetch>) {
 
 This allows you to make HTTP requests directly in workflow functions while maintaining deterministic replay behavior through automatic caching.
 
+## Custom Class Serialization
+
+By default, custom class instances cannot be serialized because the serialization system doesn't know how to reconstruct them. You can make your classes serializable by implementing two static methods using special symbols from the `@workflow/serde` package.
+
+### Basic Example
+
+<!-- @expect-error:2351 -->
+
+```typescript title="workflows/custom-class.ts" lineNumbers
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+class Point {
+  constructor(
+    public x: number,
+    public y: number
+  ) {}
+
+  // Define how to serialize an instance to plain data
+  static [WORKFLOW_SERIALIZE](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  // Define how to reconstruct an instance from plain data
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+}
+```
+
+Once you've implemented these methods, instances of your class can be passed between workflow and step functions:
+
+<!-- @expect-error:2351 -->
+
+```typescript title="workflows/geometry.ts" lineNumbers
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+class Point {
+  constructor(public x: number, public y: number) {}
+  static [WORKFLOW_SERIALIZE](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+}
+
+export async function geometryWorkflow() {
+  "use workflow";
+
+  const point = new Point(10, 20);
+  const doubled = await doublePoint(point); // Point is serialized automatically
+
+  console.log(doubled.x, doubled.y); // 20, 40
+  return doubled;
+}
+
+async function doublePoint(point: Point) {
+  "use step";
+  return new Point(point.x * 2, point.y * 2); // Returns a new Point instance
+}
+```
+
+### How It Works
+
+1. **`WORKFLOW_SERIALIZE`**: A static method that receives a class instance and returns serializable data (primitives, plain objects, arrays, etc.)
+
+2. **`WORKFLOW_DESERIALIZE`**: A static method that receives the serialized data and returns a new class instance
+
+3. **Automatic Registration**: The SWC compiler plugin automatically detects classes that implement these symbols and registers them for serialization
+
+### Requirements
+
+<Callout type="warn">
+Both methods must be implemented as **static** methods on the class. Instance methods are not supported.
+</Callout>
+
+- The data returned by `WORKFLOW_SERIALIZE` must itself be serializable (primitives, plain objects, arrays, or other serializable types including other custom classes)
+- Both symbols must be implemented together - a class with only one will not be serializable
+
+### Complex Example
+
+Custom serialization works with nested objects and other serializable types:
+
+<!-- @expect-error:2351 -->
+
+```typescript title="workflows/complex-class.ts" lineNumbers
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+class Order {
+  constructor(
+    public id: string,
+    public items: Map<string, number>,
+    public createdAt: Date
+  ) {}
+
+  static [WORKFLOW_SERIALIZE](instance: Order) {
+    return {
+      id: instance.id,
+      items: instance.items, // Map is serializable
+      createdAt: instance.createdAt, // Date is serializable
+    };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data: {
+    id: string;
+    items: Map<string, number>;
+    createdAt: Date;
+  }) {
+    return new Order(data.id, data.items, data.createdAt);
+  }
+}
+```
+
 ## Pass-by-Value Semantics
 
 **Parameters are passed by value, not by reference.** Steps receive deserialized copies of data. Mutations inside a step won't affect the original in the workflow.

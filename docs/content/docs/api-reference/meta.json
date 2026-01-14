@@ -1,4 +1,4 @@
 {
   "title": "API Reference",
-  "pages": ["...", "workflow-ai"]
+  "pages": ["...", "workflow-serde", "workflow-ai"]
 }

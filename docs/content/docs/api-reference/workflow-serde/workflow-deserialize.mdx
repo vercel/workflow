@@ -1,0 +1,59 @@
+---
+title: WORKFLOW_DESERIALIZE
+---
+
+A symbol used to define custom deserialization for user-defined class instances. The static method should accept serialized data and return a new class instance.
+
+## Usage
+
+<!-- @expect-error:2351 -->
+
+```typescript lineNumbers
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+class Point {
+  constructor(public x: number, public y: number) {}
+
+  static [WORKFLOW_SERIALIZE](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+}
+```
+
+## API Signature
+
+```typescript
+static [WORKFLOW_DESERIALIZE](data: SerializableData): T
+```
+
+### Parameters
+
+<TSDoc
+definition={`
+interface Parameters {
+  /**
+   * The serialized data to reconstruct into a class instance.
+   * This is the same data that was returned by WORKFLOW_SERIALIZE.
+   */
+  data: SerializableData;
+}
+export default Parameters;`}
+/>
+
+### Returns
+
+The method should return a new instance of the class, reconstructed from the serialized data.
+
+## Requirements
+
+<Callout type="warn">
+The method must be implemented as a **static** method on the class. Instance methods are not supported.
+</Callout>
+
+- Both `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented together
+- The method receives the exact data that was returned by `WORKFLOW_SERIALIZE`
+- If `WORKFLOW_SERIALIZE` returns complex types (like `Map` or `Date`), they will be properly deserialized before being passed to this method

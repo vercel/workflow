@@ -1,0 +1,52 @@
+---
+title: "@workflow/serde"
+---
+
+Serialization symbols for custom class serialization in Workflow DevKit.
+
+## Installation
+
+```package-install
+npm i @workflow/serde
+```
+
+## Overview
+
+By default, Workflow DevKit can serialize standard JavaScript types like primitives, objects, arrays, `Date`, `Map`, `Set`, and more. However, custom class instances are not serializable by default because the serialization system doesn't know how to reconstruct them.
+
+The `@workflow/serde` package provides two symbols that allow you to define custom serialization and deserialization logic for your classes, enabling them to be passed between workflow and step functions.
+
+## Symbols
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-serde/workflow-serialize" title="WORKFLOW_SERIALIZE">
+        Symbol for defining how to serialize a class instance to plain data.
+    </Card>
+    <Card href="/docs/api-reference/workflow-serde/workflow-deserialize" title="WORKFLOW_DESERIALIZE">
+        Symbol for defining how to reconstruct a class instance from plain data.
+    </Card>
+</Cards>
+
+## Quick Example
+
+<!-- @expect-error:2351 -->
+
+```typescript lineNumbers
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+class Point {
+  constructor(public x: number, public y: number) {}
+
+  static [WORKFLOW_SERIALIZE](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+}
+```
+
+<Callout>
+For a complete guide on custom class serialization, see the [Serialization documentation](/docs/foundations/serialization#custom-class-serialization).
+</Callout>
