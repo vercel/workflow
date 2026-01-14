@@ -32,7 +32,6 @@ function getLocalTooltipParts(
   return [
     ...(publicEnv.port ? [`port: ${publicEnv.port}`] : []),
     ...(publicEnv.dataDirPath ? [`dataDir: ${publicEnv.dataDirPath}`] : []),
-    `projectDir: ${publicEnv.projectDir}`,
   ];
 }
 
@@ -94,7 +93,7 @@ function getVercelDisplayString(
       'Unknown';
   }
 
-  return `Connected to Vercel (${vercelInfo})`;
+  return `Connected to Vercel ${publicEnv.environment ?? 'production'} (${vercelInfo})`;
 }
 
 function getPostgresDisplayString(

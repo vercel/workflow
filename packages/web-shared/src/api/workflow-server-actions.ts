@@ -85,8 +85,6 @@ export interface PublicServerConfig {
          * This is safe to show, but UIs should prefer displaying shortName.
          */
         dataDirPath?: string;
-        /** Absolute path to the project directory (best-effort) */
-        projectDir: string;
         /** Short display name derived from projectDir */
         shortName: string;
       }
@@ -257,7 +255,6 @@ export async function getPublicServerConfig(): Promise<PublicServerConfig> {
         kind: 'local',
         port: process.env.PORT,
         dataDirPath: dataDirInfo.dataDir,
-        projectDir: dataDirInfo.projectDir,
         shortName: dataDirInfo.shortName,
       },
     };
