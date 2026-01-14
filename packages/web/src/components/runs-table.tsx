@@ -383,8 +383,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const isLocal =
     serverConfig.backendId === 'local' ||
     serverConfig.backendId === '@workflow/world-local';
-  const localInfo =
-    serverConfig.publicEnv.kind === 'local' ? serverConfig.publicEnv : null;
+  const localDataDirPath = serverConfig.displayInfo?.['local.dataDirPath'];
+  const localShortName = serverConfig.displayInfo?.['local.shortName'];
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
@@ -422,7 +422,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const [isBulkReenqueuing, setIsBulkReenqueuing] = useState(false);
 
   const isLocalAndHasMissingData =
-    isLocal && (!localInfo?.dataDirPath || !data?.data?.length);
+    isLocal && (!localDataDirPath || !data?.data?.length);
 
   // Track seen workflow names from loaded data
   useEffect(() => {
@@ -581,9 +581,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   }, [lastRefreshTime, onReload]);
 
   const localDirText = (
-    <code className="font-mono">
-      {localInfo?.shortName || 'current directory'}
-    </code>
+    <code className="font-mono">{localShortName || 'current directory'}</code>
   );
 
   return (

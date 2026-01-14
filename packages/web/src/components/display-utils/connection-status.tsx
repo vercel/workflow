@@ -9,119 +9,74 @@ import { useServerConfig } from '@/lib/world-config-context';
 
 type ServerConfigValue = ReturnType<typeof useServerConfig>['serverConfig'];
 
-function getVercelTooltipParts(
-  backendId: string,
-  publicEnv: ServerConfigValue['publicEnv']
-): string[] {
-  if (backendId !== 'vercel' && backendId !== '@workflow/world-vercel')
-    return [];
-  if (publicEnv.kind !== 'vercel') return [];
-  return [
-    ...(publicEnv.environment ? [`environment: ${publicEnv.environment}`] : []),
-    ...(publicEnv.projectId ? [`project: ${publicEnv.projectId}`] : []),
-    ...(publicEnv.teamId ? [`team: ${publicEnv.teamId}`] : []),
-  ];
+function getLocalShortName(displayInfo: ServerConfigValue['displayInfo']) {
+  return displayInfo?.['local.shortName'];
 }
 
-function getLocalTooltipParts(
-  backendId: string,
-  publicEnv: ServerConfigValue['publicEnv']
-): string[] {
-  if (backendId !== 'local' && backendId !== '@workflow/world-local') return [];
-  if (publicEnv.kind !== 'local') return [];
-  return [
-    ...(publicEnv.port ? [`port: ${publicEnv.port}`] : []),
-    ...(publicEnv.dataDirPath ? [`dataDir: ${publicEnv.dataDirPath}`] : []),
-  ];
+function _getLocalDataDirPath(displayInfo: ServerConfigValue['displayInfo']) {
+  return displayInfo?.['local.dataDirPath'];
 }
 
 function getShowLocalMisconfigWarning(
   backendId: string,
-  publicEnv: ServerConfigValue['publicEnv']
+  displayInfo: ServerConfigValue['displayInfo']
 ): boolean {
   return (
     (backendId === 'local' || backendId === '@workflow/world-local') &&
-    publicEnv.kind === 'local' &&
-    publicEnv.shortName === 'packages/web'
+    getLocalShortName(displayInfo) === 'packages/web'
   );
-}
-
-function getBasicTooltipParts(
-  backendId: string,
-  publicEnv: ServerConfigValue['publicEnv']
-): string[] {
-  return [
-    ...getVercelTooltipParts(backendId, publicEnv),
-    ...getLocalTooltipParts(backendId, publicEnv),
-  ];
-}
-
-function getDbTooltipParts(
-  publicDbUris: ServerConfigValue['publicDbUris']
-): string[] {
-  return (
-    publicDbUris?.map((info) => {
-      const dbSuffix = info.database ? `/${info.database}` : '';
-      return `${info.key}: ${info.protocol}://${info.hostname}${dbSuffix}`;
-    }) ?? []
-  );
-}
-
-function getLocalDisplayString(
-  publicEnv: ServerConfigValue['publicEnv']
-): string {
-  const localLabel =
-    publicEnv.kind === 'local' ? publicEnv.shortName : 'Unknown';
-  return `Local Dev: ${localLabel}`;
 }
 
 function getVercelDisplayString(
   publicEnv: ServerConfigValue['publicEnv']
 ): string {
-  if (publicEnv.kind !== 'vercel') {
-    return 'Connected to Vercel (Unknown)';
-  }
-
-  let vercelInfo: string;
-  if (publicEnv.teamId && publicEnv.projectId) {
-    vercelInfo = `${publicEnv.teamId}/${publicEnv.projectId}`;
-  } else {
-    vercelInfo =
-      publicEnv.projectId ||
-      publicEnv.teamId ||
-      publicEnv.environment ||
-      'Unknown';
-  }
-
-  return `Connected to Vercel ${publicEnv.environment ?? 'production'} (${vercelInfo})`;
+  const env = publicEnv.WORKFLOW_VERCEL_ENV || 'production';
+  const team = publicEnv.WORKFLOW_VERCEL_TEAM;
+  const project = publicEnv.WORKFLOW_VERCEL_PROJECT;
+  const vercelInfo =
+    team && project ? `${team}/${project}` : project || team || 'Unknown';
+  return `Connected to Vercel ${env} (${vercelInfo})`;
 }
 
 function getPostgresDisplayString(
-  publicDbUris: ServerConfigValue['publicDbUris']
+  displayInfo: ServerConfigValue['displayInfo']
 ): string {
-  const postgresInfo = publicDbUris?.find(
-    (x) => x.key === 'WORKFLOW_POSTGRES_URL'
-  );
-  if (!postgresInfo?.hostname) return 'Connected to Postgres';
-  const suffix = postgresInfo.database ? `/${postgresInfo.database}` : '';
-  return `Connected to Postgres (${postgresInfo.hostname}${suffix})`;
+  const host = displayInfo?.['derived.WORKFLOW_POSTGRES_URL.hostname'];
+  const db = displayInfo?.['derived.WORKFLOW_POSTGRES_URL.database'];
+  if (!host) return 'Connected to Postgres';
+  return `Connected to Postgres (${host}${db ? `/${db}` : ''})`;
 }
 
 function getDisplayString(config: ServerConfigValue): string {
-  const { backendDisplayName, backendId, publicDbUris, publicEnv } = config;
+  const { backendDisplayName, backendId, displayInfo, publicEnv } = config;
   switch (backendId) {
     case 'local':
     case '@workflow/world-local':
-      return getLocalDisplayString(publicEnv);
+      return `Local Dev: ${getLocalShortName(displayInfo) || 'Unknown'}`;
     case 'vercel':
     case '@workflow/world-vercel':
       return getVercelDisplayString(publicEnv);
     case 'postgres':
     case '@workflow/world-postgres':
-      return getPostgresDisplayString(publicDbUris);
+      return getPostgresDisplayString(displayInfo);
     default:
       return `Connected to: ${backendDisplayName}`;
   }
+}
+
+function renderKeyValueTable(rows: Array<{ key: string; value: string }>) {
+  return (
+    <div className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-1">
+      {rows.map(({ key, value }) => (
+        <div key={key} className="contents">
+          <div className="font-mono text-xs text-muted-foreground">{key}</div>
+          <div className="font-mono text-xs text-foreground break-all">
+            {value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /**
@@ -133,16 +88,21 @@ function getDisplayString(config: ServerConfigValue): string {
 export function ConnectionStatus() {
   const { serverConfig } = useServerConfig();
   const displayString = getDisplayString(serverConfig);
-  const { backendId, publicEnv } = serverConfig;
+  const { backendId } = serverConfig;
   const showLocalMisconfigWarning = getShowLocalMisconfigWarning(
     backendId,
-    publicEnv
+    serverConfig.displayInfo
   );
-  const parts = getBasicTooltipParts(backendId, publicEnv);
-  const dbParts = getDbTooltipParts(serverConfig.publicDbUris);
+
+  const publicEnvEntries = Object.entries(serverConfig.publicEnv).sort(
+    ([a], [b]) => a.localeCompare(b)
+  );
+  const sensitiveKeys = [...serverConfig.sensitiveEnvKeys].sort();
 
   const hasTooltip =
-    parts.length > 0 || dbParts.length > 0 || showLocalMisconfigWarning;
+    publicEnvEntries.length > 0 ||
+    sensitiveKeys.length > 0 ||
+    showLocalMisconfigWarning;
 
   const content = (
     <div className="text-md whitespace-nowrap">
@@ -160,7 +120,7 @@ export function ConnectionStatus() {
     <Tooltip>
       <TooltipTrigger asChild>{content}</TooltipTrigger>
       <TooltipContent>
-        <div className="flex flex-col gap-1 max-w-[520px]">
+        <div className="flex flex-col gap-2 max-w-[640px]">
           {showLocalMisconfigWarning && (
             <div className="mb-2">
               <div className="font-medium text-foreground">
@@ -182,9 +142,11 @@ export function ConnectionStatus() {
               </div>
             </div>
           )}
-          {[...parts, ...dbParts].map((part) => (
-            <span key={part}>{part}</span>
-          ))}
+
+          {renderKeyValueTable([
+            ...publicEnvEntries.map(([key, value]) => ({ key, value })),
+            ...sensitiveKeys.map((key) => ({ key, value: '*****' })),
+          ])}
         </div>
       </TooltipContent>
     </Tooltip>

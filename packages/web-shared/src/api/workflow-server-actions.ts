@@ -35,17 +35,6 @@ import { createVercelWorld } from '@workflow/world-vercel';
  */
 export type EnvMap = Record<string, string | undefined>;
 
-export interface PublicDbUriInfo {
-  /** Name of the WORKFLOW_* env var that contained the URI */
-  key: string;
-  /** URL protocol without the trailing ":" (e.g. "postgres", "mongodb", "redis") */
-  protocol: string;
-  /** Sanitized hostname (no credentials) */
-  hostname?: string;
-  /** Sanitized database name if derivable from the URI (e.g. pathname) */
-  database?: string;
-}
-
 /**
  * Public configuration info that is safe to send to the client.
  *
@@ -59,41 +48,22 @@ export interface PublicServerConfig {
   /** The raw backend identifier (e.g., "@workflow/world-postgres", "local", "vercel") */
   backendId: string;
   /**
-   * Sanitized DB URI hints, derived from WORKFLOW_* vars that look like DB URIs.
-   * This is safe to show because it contains no credentials.
+   * Safe, whitelisted, env-derived values.
+   *
+   * Keys MUST match the canonical environment variable names (e.g. "WORKFLOW_VERCEL_PROJECT").
+   * This keeps configuration naming consistent across CLI + web + docs.
    */
-  publicDbUris?: PublicDbUriInfo[];
-  /** Safe, whitelisted, env-derived values (varies by backend) */
-  publicEnv:
-    | {
-        kind: 'vercel';
-        /** teamId/teamSlug (whichever WORKFLOW_VERCEL_TEAM is set to) */
-        teamId?: string;
-        /** projectId/projectName (whichever WORKFLOW_VERCEL_PROJECT is set to) */
-        projectId?: string;
-        environment?: string;
-      }
-    | {
-        kind: 'local';
-        /**
-         * Next.js server port (useful when self-hosting or reverse proxying).
-         * Note: This is NOT the workflow app port; it's the web UI server port.
-         */
-        port?: string;
-        /**
-         * Absolute path to the workflow data directory if it exists.
-         * This is safe to show, but UIs should prefer displaying shortName.
-         */
-        dataDirPath?: string;
-        /** Short display name derived from projectDir */
-        shortName: string;
-      }
-    | {
-        kind: 'postgres';
-      }
-    | {
-        kind: 'custom';
-      };
+  publicEnv: Record<string, string>;
+  /**
+   * Keys for env vars that are allowed/known but considered sensitive.
+   * The server will NOT return their values; UIs should display `*****`.
+   */
+  sensitiveEnvKeys: string[];
+  /**
+   * Additional safe, derived info for display (never contains secrets).
+   * These keys are not env var names; they are UI-friendly derived fields.
+   */
+  displayInfo?: Record<string, string>;
 }
 
 /**
@@ -188,46 +158,159 @@ function extractDatabaseFromUrl(url: string | undefined): string | undefined {
   }
 }
 
-const KNOWN_DB_URI_ENV_KEYS = new Set<string>([
+// Keep this list in sync with `worlds-manifest.json` env + credentialsNote.
+const WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD: Record<string, string[]> = {
   // Official
-  'WORKFLOW_POSTGRES_URL',
-  // Community (from worlds-manifest.json)
-  'WORKFLOW_TURSO_DATABASE_URL',
-  'WORKFLOW_MONGODB_URI',
-  'WORKFLOW_REDIS_URI',
-]);
+  local: [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_LOCAL_DATA_DIR',
+    'WORKFLOW_MANIFEST_PATH',
+    'WORKFLOW_OBSERVABILITY_CWD',
+    'PORT',
+  ],
+  '@workflow/world-local': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_LOCAL_DATA_DIR',
+    'WORKFLOW_MANIFEST_PATH',
+    'WORKFLOW_OBSERVABILITY_CWD',
+    'PORT',
+  ],
+  postgres: ['WORKFLOW_TARGET_WORLD', 'WORKFLOW_POSTGRES_URL'],
+  '@workflow/world-postgres': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_POSTGRES_URL',
+  ],
+  vercel: [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_VERCEL_ENV',
+    'WORKFLOW_VERCEL_TEAM',
+    'WORKFLOW_VERCEL_PROJECT',
+    'WORKFLOW_VERCEL_BACKEND_URL',
+    'WORKFLOW_VERCEL_SKIP_PROXY',
+    'WORKFLOW_VERCEL_AUTH_TOKEN',
+  ],
+  '@workflow/world-vercel': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_VERCEL_ENV',
+    'WORKFLOW_VERCEL_TEAM',
+    'WORKFLOW_VERCEL_PROJECT',
+    'WORKFLOW_VERCEL_BACKEND_URL',
+    'WORKFLOW_VERCEL_SKIP_PROXY',
+    'WORKFLOW_VERCEL_AUTH_TOKEN',
+  ],
 
-function looksLikeDbUriEnvKey(key: string): boolean {
-  return KNOWN_DB_URI_ENV_KEYS.has(key) || /_(URL|URI)$/.test(key);
+  // Community (from worlds-manifest.json)
+  '@workflow-worlds/starter': ['WORKFLOW_TARGET_WORLD'],
+  '@workflow-worlds/turso': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_TURSO_DATABASE_URL',
+  ],
+  '@workflow-worlds/mongodb': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_MONGODB_URI',
+    'WORKFLOW_MONGODB_DATABASE_NAME',
+  ],
+  '@workflow-worlds/redis': ['WORKFLOW_TARGET_WORLD', 'WORKFLOW_REDIS_URI'],
+  'workflow-world-jazz': [
+    'WORKFLOW_TARGET_WORLD',
+    // credentialsNote:
+    'JAZZ_API_KEY',
+    'JAZZ_WORKER_ACCOUNT',
+    'JAZZ_WORKER_SECRET',
+  ],
+};
+
+function getAllowedEnvKeysForBackend(backendId: string): string[] {
+  return (
+    WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD[backendId] ?? ['WORKFLOW_TARGET_WORLD']
+  );
 }
 
-function collectPublicDbUris(): PublicDbUriInfo[] {
-  const entries = Object.entries(process.env).filter(([key, value]) => {
-    if (!key.startsWith('WORKFLOW_')) return false;
-    if (!looksLikeDbUriEnvKey(key)) return false;
-    if (!value) return false;
-    // Quick prefilter: require some scheme-like content
-    return value.includes(':');
-  });
+/**
+ * Determines whether to hide an env value, based on a best-effort guess
+ * at whether it's sensitive. Note that for all known worlds, we have an explicit
+ * whitelist, and this is just here to help smooth integration of third-party worlds,
+ * before they get added to our whitelist (also see /worlds-manifest.json).
+ */
+function isSensitiveEnvKey(key: string): boolean {
+  // URLs/URIs often embed credentials; treat as sensitive by default except the backend URL.
+  if (
+    (key.endsWith('_URL') || key.endsWith('_URI')) &&
+    key !== 'WORKFLOW_VERCEL_BACKEND_URL'
+  ) {
+    return true;
+  }
+  return /TOKEN|SECRET|PASSWORD|API_KEY/i.test(key);
+}
 
-  const results: PublicDbUriInfo[] = [];
-  for (const [key, value] of entries) {
-    try {
-      const parsed = new URL(value as string);
-      const protocol = (parsed.protocol || '').replace(':', '');
-      // Skip file-based DB URIs: hostname is empty and not useful for UI.
-      if (protocol === 'file') continue;
-      const hostname = extractHostnameFromUrl(value);
-      const database = extractDatabaseFromUrl(value);
-      // If we can't even derive a hostname, don't include the entry.
-      if (!hostname) continue;
-      results.push({ key, protocol, hostname, database });
-    } catch {
-      // Not a parseable URL; ignore.
+function isSet(value: string | undefined): value is string {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function deriveDbInfoForKey(
+  key: string,
+  value: string
+): Record<string, string> | null {
+  // Only attempt for URL-like strings.
+  if (!value.includes(':')) return null;
+  try {
+    const parsed = new URL(value);
+    const protocol = (parsed.protocol || '').replace(':', '');
+    // file: URIs are not useful for hostname/db display
+    if (protocol === 'file') return null;
+    const hostname = extractHostnameFromUrl(value);
+    const database = extractDatabaseFromUrl(value);
+    const out: Record<string, string> = {};
+    if (hostname) out[`derived.${key}.hostname`] = hostname;
+    if (database) out[`derived.${key}.database`] = database;
+    if (protocol) out[`derived.${key}.protocol`] = protocol;
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getLocalDisplayInfo(): Promise<Record<string, string>> {
+  const cwd = getObservabilityCwd();
+  const dataDirInfo = await findWorkflowDataDir(cwd);
+  const out: Record<string, string> = {
+    'local.shortName': dataDirInfo.shortName,
+    'local.projectDir': dataDirInfo.projectDir,
+  };
+  if (dataDirInfo.dataDir) {
+    out['local.dataDirPath'] = dataDirInfo.dataDir;
+  }
+  return out;
+}
+
+function collectAllowedEnv(allowedKeys: string[]): {
+  publicEnv: Record<string, string>;
+  sensitiveEnvKeys: string[];
+  derivedDisplayInfo: Record<string, string>;
+} {
+  const publicEnv: Record<string, string> = {};
+  const sensitiveEnvKeys: string[] = [];
+  const derivedDisplayInfo: Record<string, string> = {};
+
+  for (const key of allowedKeys) {
+    const value = process.env[key];
+    if (!isSet(value)) continue;
+
+    if (isSensitiveEnvKey(key)) {
+      sensitiveEnvKeys.push(key);
+      const derived = deriveDbInfoForKey(key, value);
+      if (derived) Object.assign(derivedDisplayInfo, derived);
+      continue;
     }
+
+    publicEnv[key] = value;
   }
 
-  return results;
+  return {
+    publicEnv,
+    sensitiveEnvKeys: Array.from(new Set(sensitiveEnvKeys)).sort(),
+    derivedDisplayInfo,
+  };
 }
 
 /**
@@ -239,57 +322,33 @@ function collectPublicDbUris(): PublicDbUriInfo[] {
 export async function getPublicServerConfig(): Promise<PublicServerConfig> {
   const backendId = getEffectiveBackendId();
   const backendDisplayName = getBackendDisplayName(backendId);
-  const publicDbUris = collectPublicDbUris();
-  const withDbUris = publicDbUris.length > 0 ? { publicDbUris } : {};
+  const allowedKeys = getAllowedEnvKeysForBackend(backendId);
 
-  // Whitelist public env vars by backend.
-  if (backendId === 'vercel' || backendId === '@workflow/world-vercel') {
-    return {
-      backendDisplayName,
-      backendId,
-      ...withDbUris,
-      publicEnv: {
-        kind: 'vercel',
-        environment: process.env.WORKFLOW_VERCEL_ENV || 'production',
-        projectId: process.env.WORKFLOW_VERCEL_PROJECT,
-        teamId: process.env.WORKFLOW_VERCEL_TEAM,
-      },
-    };
-  }
+  const { publicEnv, sensitiveEnvKeys, derivedDisplayInfo } =
+    collectAllowedEnv(allowedKeys);
 
-  if (backendId === '@workflow/world-postgres' || backendId === 'postgres') {
-    // No safe postgres vars to expose.
-    return {
-      backendDisplayName,
-      backendId,
-      ...withDbUris,
-      publicEnv: { kind: 'postgres' },
-    };
-  }
-
+  const displayInfo: Record<string, string> = { ...derivedDisplayInfo };
   if (backendId === 'local' || backendId === '@workflow/world-local') {
-    const cwd = getObservabilityCwd();
-    const dataDirInfo = await findWorkflowDataDir(cwd);
-    return {
-      backendDisplayName,
-      backendId,
-      ...withDbUris,
-      publicEnv: {
-        kind: 'local',
-        port: process.env.PORT,
-        dataDirPath: dataDirInfo.dataDir,
-        shortName: dataDirInfo.shortName,
-      },
-    };
+    Object.assign(displayInfo, await getLocalDisplayInfo());
   }
 
-  // Custom backend: expose no env-derived values.
-  return {
+  const config: PublicServerConfig = {
     backendDisplayName,
     backendId,
-    ...withDbUris,
-    publicEnv: { kind: 'custom' },
+    publicEnv,
+    sensitiveEnvKeys,
+    displayInfo: Object.keys(displayInfo).length ? displayInfo : undefined,
   };
+
+  // Provide defaults for commonly expected keys without revealing extra secrets.
+  if (
+    (backendId === 'vercel' || backendId === '@workflow/world-vercel') &&
+    !publicEnv.WORKFLOW_VERCEL_ENV
+  ) {
+    config.publicEnv.WORKFLOW_VERCEL_ENV = 'production';
+  }
+
+  return config;
 }
 
 export interface PaginatedResult<T> {
