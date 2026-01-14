@@ -142,14 +142,17 @@ function buildSlackPayload({ repoFullName, issues }) {
         .replace(/\s+/g, ' ')
         .trim();
       const comments = issue.comments ?? 0;
-      const login = issue.user?.login ? `@${issue.user.login}` : 'unknown';
+      const userLogin = issue.user?.login;
+      const authorText = userLogin
+        ? `Author: <https://github.com/${userLogin}|@${userLogin}>`
+        : 'Author: unknown';
       const created = issue.created_at
         ? new Date(issue.created_at).toISOString().slice(0, 10)
         : '';
 
       const metaParts = [
         `Comments: ${comments}`,
-        `Author: <https://github.com/${login.replace(/^@/, '')}|${login}>`,
+        authorText,
         created ? `Created: ${created}` : null,
       ].filter(Boolean);
 
