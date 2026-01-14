@@ -6,17 +6,28 @@ Observability Web UI Package bundled in the [Workflow DevKit](https://useworkflo
 
 While this UI is bundled with the Workflow CLI, you can also self-host it.
 
-There are two supported approaches:
+There are multiple approaches:
 
-1. **Clone this repo and deploy as a normal Next.js app** (for contributors / customization)
-2. **Deploy the published `@workflow/web` package** (prebuilt `.next` output)
+1. Run `npx workflow web --noBrowser` on a server
+2. Clone this repo and deploy as a normal Next.js app
+3. Deploy the published `@workflow/web` package
 
-### Option 1: Clone and deploy
+All options require the environment to be configured with the right environment variables for the World you're using.
+
+### Option 1: Run with the CLI
+
+```bash
+npx workflow web --noBrowser
+```
+
+This will start the web UI on the default port `3456`.
+
+### Option 2: Clone and deploy
 
 - Build and deploy like any Next.js app.
 - Configure the backend via environment variables (same variables the CLI writes).
 
-### Option 2: Deploy the published `@workflow/web` package
+### Option 3: Deploy the published `@workflow/web` package
 
 The published `@workflow/web` package contains a prebuilt `.next` directory and `package.json`.
 You can install it and run `next start` from the package directory.
