@@ -9,7 +9,6 @@ import { useEffect, useRef } from 'react';
 import { ConnectionStatus } from '@/components/display-utils/connection-status';
 import { SettingsDropdown } from '@/components/settings-dropdown';
 import { Toaster } from '@/components/ui/sonner';
-import { buildUrlWithConfig } from '@/lib/config';
 import { ServerConfigProvider } from '@/lib/world-config-context';
 import { Logo } from '../icons/logo';
 
@@ -64,25 +63,17 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     if (!resource) {
       if (runId) {
         // If we have a runId, open that run's detail view
-        let targetUrl: string;
         if (stepId) {
           // Open run with step sidebar
-          targetUrl = buildUrlWithConfig(`/run/${runId}`, {
-            sidebar: 'step',
-            stepId,
-          });
+          router.push(`/run/${runId}?sidebar=step&stepId=${stepId}`);
         } else if (hookId) {
           // Open run with hook sidebar
-          targetUrl = buildUrlWithConfig(`/run/${runId}`, {
-            sidebar: 'hook',
-            hookId,
-          });
+          router.push(`/run/${runId}?sidebar=hook&hookId=${hookId}`);
         } else {
           // Just open the run
-          targetUrl = buildUrlWithConfig(`/run/${runId}`);
+          router.push(`/run/${runId}`);
         }
         hasNavigatedRef.current = true;
-        router.push(targetUrl);
         return;
       }
       // No resource and no direct params, nothing to do
@@ -96,40 +87,24 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 
     let targetUrl: string;
     if (resource === 'run') {
-      targetUrl = buildUrlWithConfig(`/run/${id}`);
+      router.push(`/run/${id}`);
     } else if (resource === 'step' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, {
-        sidebar: 'step',
-        stepId: id,
-      });
+      router.push(`/run/${runId}?sidebar=step&stepId=${id}`);
     } else if (resource === 'stream' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, {
-        sidebar: 'stream',
-        streamId: id,
-      });
+      router.push(`/run/${runId}?sidebar=stream&streamId=${id}`);
     } else if (resource === 'event' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, {
-        sidebar: 'event',
-        eventId: id,
-      });
+      router.push(`/run/${runId}?sidebar=event&eventId=${id}`);
     } else if (resource === 'hook' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, {
-        sidebar: 'hook',
-        hookId: id,
-      });
+      router.push(`/run/${runId}?sidebar=hook&hookId=${id}`);
     } else if (resource === 'hook' && !runId) {
       // Hook without runId - go to home page with hook sidebar
-      targetUrl = buildUrlWithConfig('/', {
-        sidebar: 'hook',
-        hookId: id,
-      });
+      router.push(`/?sidebar=hook&hookId=${id}`);
     } else {
       console.warn(`Can't deep-link to ${resource} ${id}.`);
       return;
     }
 
     hasNavigatedRef.current = true;
-    router.push(targetUrl);
   }, [resource, id, runId, stepId, hookId, router, pathname]);
 
   return (

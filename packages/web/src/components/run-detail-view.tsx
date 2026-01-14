@@ -50,7 +50,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { buildUrlWithConfig } from '@/lib/config';
 import { mapRunToExecution } from '@/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
 import { useServerConfig } from '@/lib/world-config-context';
@@ -284,7 +283,7 @@ export function RunDetailView({
         description: `Run ID: ${newRunId}`,
       });
       // Navigate to the new run
-      router.push(buildUrlWithConfig(`/run/${newRunId}`));
+      router.push(`/run/${newRunId}`);
     } catch (err) {
       console.error('Failed to re-run workflow:', err);
       toast.error('Failed to start new run', {
@@ -364,7 +363,7 @@ export function RunDetailView({
             <BreadcrumbList>
               <BreadcrumbItem>
                 <BreadcrumbLink asChild>
-                  <Link href={buildUrlWithConfig('/')}>Runs</Link>
+                  <Link href="/">Runs</Link>
                 </BreadcrumbLink>
               </BreadcrumbItem>
               <BreadcrumbSeparator />
