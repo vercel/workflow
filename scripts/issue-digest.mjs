@@ -214,7 +214,6 @@ function buildSlackPayload({
 }) {
   const shownCount = issues.length;
   const title = `Top ${shownCount} issues (last ${digestIntervalDays}d) in ${repoFullName}`;
-  const now = new Date().toUTCString();
 
   const blocks = [
     {
@@ -285,12 +284,6 @@ function buildSlackPayload({
       },
     });
   }
-
-  blocks.push({ type: 'divider' });
-  blocks.push({
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: `Last updated: ${now}` }],
-  });
 
   return { text: title, blocks };
 }
