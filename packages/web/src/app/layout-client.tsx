@@ -1,20 +1,21 @@
 'use client';
 
 import { TooltipProvider } from '@radix-ui/react-tooltip';
-import type { ServerConfig } from '@workflow/web-shared/server';
+import type { PublicServerConfig } from '@workflow/web-shared/server';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ThemeProvider, useTheme } from 'next-themes';
 import { useEffect, useRef } from 'react';
 import { ConnectionStatus } from '@/components/display-utils/connection-status';
-import { SettingsDropdown } from '@/components/settings-dropdown';
+import { ThemeDropdown } from '@/components/theme-dropdown';
+import { DocsLink } from '@/components/top-nav/docs-link';
 import { Toaster } from '@/components/ui/sonner';
 import { ServerConfigProvider } from '@/lib/world-config-context';
 import { Logo } from '../icons/logo';
 
 interface LayoutClientProps {
   children: React.ReactNode;
-  serverConfig: ServerConfig;
+  serverConfig: PublicServerConfig;
 }
 
 function LayoutContent({ children }: { children: React.ReactNode }) {
@@ -122,7 +123,8 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             </Link>
             <div className="ml-auto flex items-center gap-2">
               <ConnectionStatus />
-              <SettingsDropdown />
+              <ThemeDropdown />
+              <DocsLink />
             </div>
           </div>
         </div>

@@ -54,7 +54,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { useDataDirInfo } from '@/lib/hooks';
 import { useTableSelection } from '@/lib/hooks/use-table-selection';
 import { useServerConfig } from '@/lib/world-config-context';
 import { CopyableText } from './display-utils/copyable-text';
@@ -384,9 +383,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const isLocal =
     serverConfig.backendId === 'local' ||
     serverConfig.backendId === '@workflow/world-local';
-  const { data: dataDirInfo, isLoading: dataDirInfoLoading } = useDataDirInfo(
-    serverConfig.displayInfo.dataDir ?? ''
-  );
+  const localInfo =
+    serverConfig.publicEnv.kind === 'local' ? serverConfig.publicEnv : null;
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
@@ -424,9 +422,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const [isBulkReenqueuing, setIsBulkReenqueuing] = useState(false);
 
   const isLocalAndHasMissingData =
-    isLocal &&
-    (!dataDirInfo?.dataDir || !data?.data?.length) &&
-    !dataDirInfoLoading;
+    isLocal && (!localInfo?.dataDirPath || !data?.data?.length);
 
   // Track seen workflow names from loaded data
   useEffect(() => {
@@ -586,7 +582,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
 
   const localDirText = (
     <code className="font-mono">
-      {dataDirInfo?.shortName || 'current directory'}
+      {localInfo?.shortName || 'current directory'}
     </code>
   );
 
