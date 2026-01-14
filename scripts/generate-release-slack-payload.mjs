@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 /**
- * NOTE: This file was AI-generated (with human review) to help automate CI release notifications.
- *
  * Generate and/or post a Slack message for the latest Workflow release.
  *
  * It reuses the existing release-note generator (`scripts/generate-release-notes.mjs`)
