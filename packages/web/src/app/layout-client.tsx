@@ -7,7 +7,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ThemeProvider, useTheme } from 'next-themes';
 import { useEffect, useRef } from 'react';
 import { ConnectionStatus } from '@/components/display-utils/connection-status';
-import { ThemeDropdown } from '@/components/theme-dropdown';
+import { ThemePicker } from '@/components/theme-dropdown';
 import { DocsLink } from '@/components/top-nav/docs-link';
 import { Toaster } from '@/components/ui/sonner';
 import { ServerConfigProvider } from '@/lib/world-config-context';
@@ -172,7 +172,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
               <ConnectionStatus />
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <ThemeDropdown />
+              <ThemePicker />
               <DocsLink />
             </div>
           </div>

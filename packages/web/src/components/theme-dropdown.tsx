@@ -4,7 +4,7 @@ import { Monitor, Moon, Sun } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 
-export function ThemeDropdown() {
+export function ThemePicker() {
   const { theme, setTheme } = useTheme();
   const currentTheme = theme || 'system';
 
@@ -17,7 +17,7 @@ export function ThemeDropdown() {
         { value: 'light', icon: <Sun className="h-4 w-4" /> },
         { value: 'dark', icon: <Moon className="h-4 w-4" /> },
       ]}
-      className="h-10"
+      className="h-8"
     />
   );
 }

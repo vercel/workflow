@@ -146,7 +146,7 @@ export function ConnectionStatus() {
     parts.length > 0 || dbParts.length > 0 || showLocalMisconfigWarning;
 
   const content = (
-    <div className="text-sm text-muted-foreground whitespace-nowrap">
+    <div className="text-md whitespace-nowrap">
       <span className="font-medium">{displayString}</span>
     </div>
   );
