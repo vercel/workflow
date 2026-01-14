@@ -21,7 +21,12 @@
  *   {
  *     "tag": "workflow@4.0.1-beta.46",
  *     "title": "workflow@4.0.1-beta.46",
- *     "body": "## @workflow/core@4.0.1-beta.46\n\n- [#123](https://github.com/vercel/workflow/pull/123) [`abc1234`](https://github.com/vercel/workflow/commit/abc1234) @someone - Fix thing\n\n## @workflow/cli@4.0.1-beta.46\n\n- [`def5678`](https://github.com/vercel/workflow/commit/def5678) - Improve other thing"
+ *     "body": """
+ *              ## @workflow/core@4.0.1-beta.46
+ *              - [#123](https://github.com/vercel/workflow/pull/123) [`abc1234`](https://github.com/vercel/workflow/commit/abc1234) @someone - Fix thing
+ *              ## @workflow/cli@4.0.1-beta.46
+ *              - [`def5678`](https://github.com/vercel/workflow/commit/def5678) - Improve other thing"
+ *             """
  *   }
  */
 

@@ -236,7 +236,7 @@ async function main() {
   const releaseNotes = runReleaseNotes();
   const content = buildSlackPayload(releaseNotes);
 
-  const channel = process.env.SLACK_CHANNEL_ID || 'C0123456789';
+  const channel = process.env.SLACK_CHANNEL_ID;
   const message = { channel, ...content };
 
   if (wantsPrint) {
