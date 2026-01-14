@@ -1,4 +1,4 @@
-# @vercel/workflow-nitro
+# @workflow/nitro
 
 ## 4.0.1-beta.42
 
