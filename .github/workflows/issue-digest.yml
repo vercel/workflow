@@ -1,9 +1,9 @@
-# CI CRON job that runs a daily issue digest to Slack.
+# CI CRON job that sends an issue digest to Slack.
 # Adapted from next.js implementation: https://github.com/vercel/next.js/blob/canary/.github/workflows/
 # The workflow uses GitHub Actions' built-in `github.token` for `GITHUB_TOKEN` and requires `issues: read` permission.
 # Optional configuration:
 # `ISSUE_DIGEST_REPO` e.g. `vercel/workflow`
-# `ISSUE_DIGEST_COUNT` e.g `10`
+# `DIGEST_INTERVAL_DAYS` e.g. `7`
 
 name: Daily Issue Digest
 

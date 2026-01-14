@@ -79,18 +79,6 @@ function runReleaseNotes() {
   return JSON.parse(stdout);
 }
 
-function toSlackMrkdwn(body) {
-  // Convert `## heading` to `*heading*` for Slack.
-  return body
-    .split('\n')
-    .map((line) => {
-      if (line.startsWith('## ')) return `*${line.slice(3)}*`;
-      return line;
-    })
-    .join('\n')
-    .trim();
-}
-
 function chunkByLines(text, limit) {
   const lines = text.split('\n');
   const chunks = [];
@@ -121,34 +109,94 @@ function chunkByLines(text, limit) {
   return chunks.filter((c) => c.trim().length > 0);
 }
 
+function parsePackageHeader(line) {
+  const headerMatch = line.match(/^##\s+(.+)$/);
+  if (!headerMatch) return null;
+  const header = headerMatch[1].trim();
+  // Strip version suffix from the header: "@workflow/core@1.2.3" -> "@workflow/core"
+  return header.split('@').slice(0, -1).join('@') || header;
+}
+
+function parseReleaseItem(item) {
+  const prMatch = item.match(/\[#(\d+)\]\([^)]+\)/);
+  const prNumber = prMatch?.[1] ? `#${prMatch[1]}` : null;
+
+  const authorMatch = item.match(/@([A-Za-z0-9-]+)/);
+  const author = authorMatch?.[1] ? `@${authorMatch[1]}` : null;
+
+  // Summary is whatever comes after " - " (release-notes generator ensures this shape)
+  const summary = item.includes(' - ')
+    ? item.split(' - ').slice(1).join(' - ').trim()
+    : item;
+
+  return { prNumber, author, summary };
+}
+
+function toPkgPrefix(pkgName) {
+  if (!pkgName) return '[@workflow]';
+  return `[@${pkgName.replace(/^@/, '')}]`;
+}
+
+function parseReleaseBodyToLines(body) {
+  const text = (body || '').trim();
+  if (!text) return [];
+
+  const lines = text.split('\n');
+  let currentPkg = null;
+  const out = [];
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const pkg = parsePackageHeader(line);
+    if (pkg) {
+      currentPkg = pkg;
+      continue;
+    }
+
+    if (!line.startsWith('- ')) continue;
+    const item = line.slice(2).trim();
+    const { prNumber, author, summary } = parseReleaseItem(item);
+
+    const prefix = toPkgPrefix(currentPkg);
+    const parts = [prefix, prNumber, author, '-', summary].filter(Boolean);
+    out.push(`- ${parts.join(' ')}`.replace(/\s+-\s+/, ' - '));
+  }
+
+  // Fallback: if we couldn't parse anything (e.g. "dependency updates"), just return the raw text.
+  if (out.length === 0) {
+    return chunkByLines(text, SLACK_SECTION_TEXT_LIMIT).map((c) => `- ${c}`);
+  }
+
+  return out;
+}
+
 function buildSlackPayload({ tag, title, body }) {
   const releaseUrl = `https://github.com/${GITHUB_REPO}/releases/tag/${encodeURIComponent(tag)}`;
-  const mrkdwn = toSlackMrkdwn(body || '');
+  const pkgLines = parseReleaseBodyToLines(body);
 
+  // Slack "header" blocks only support plain_text, so use a section for link formatting.
   const blocks = [
     {
-      type: 'header',
+      type: 'section',
       text: {
         type: 'mrkdwn',
         text: `:rocket: New release: <${releaseUrl}|${title}>`,
-        emoji: true,
       },
     },
+    { type: 'divider' },
   ];
 
-  if (mrkdwn) {
-    const chunks = chunkByLines(mrkdwn, SLACK_SECTION_TEXT_LIMIT);
+  if (pkgLines.length > 0) {
+    const chunks = chunkByLines(pkgLines.join('\n'), SLACK_SECTION_TEXT_LIMIT);
 
     for (const chunk of chunks) {
-      // Keep a few blocks for header/links/truncation notice.
-      if (blocks.length >= SLACK_BLOCK_LIMIT - 1) break;
-      blocks.push({
-        type: 'section',
-        text: { type: 'mrkdwn', text: chunk },
-      });
+      if (blocks.length >= SLACK_BLOCK_LIMIT - 2) break;
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: chunk } });
     }
 
-    if (chunks.length > 0 && blocks.length >= SLACK_BLOCK_LIMIT - 1) {
+    if (chunks.length > 0 && blocks.length >= SLACK_BLOCK_LIMIT - 2) {
       blocks.push({
         type: 'section',
         text: {
@@ -167,10 +215,7 @@ function buildSlackPayload({ tag, title, body }) {
     });
   }
 
-  return {
-    text: `New release: ${title} (${tag})`,
-    blocks,
-  };
+  return { text: `New release: ${title} (${tag})`, blocks };
 }
 
 function parseArgs(argv) {

@@ -28,6 +28,9 @@ const SLACK_API_URL = 'https://slack.com/api/chat.postMessage';
 const SLACK_SECTION_TEXT_LIMIT = 2900; // Slack section text limit is 3000 chars; keep buffer.
 const SLACK_BLOCK_LIMIT = 50;
 
+const ISSUE_LIMIT = 10;
+const DEFAULT_DIGEST_INTERVAL_DAYS = 7;
+
 function parseArgs(argv) {
   const args = new Set(argv.slice(2));
   const wantsPost = args.has('--post');
@@ -97,14 +100,16 @@ async function fetchLatestIssues({ owner, repo, count, token }) {
   url.searchParams.set('direction', 'desc');
   url.searchParams.set('per_page', String(perPage));
 
-  const res = await fetch(url, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'workflow-issue-digest',
-    },
-  });
+  const headers = {
+    // Include reactions payload for issues (`reactions.total_count`, `reactions['+1']`, etc).
+    Accept:
+      'application/vnd.github+json, application/vnd.github.squirrel-girl-preview+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'workflow-issue-digest',
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(url, { headers });
 
   const json = await res.json().catch(() => null);
   if (!res.ok) {
@@ -117,8 +122,98 @@ async function fetchLatestIssues({ owner, repo, count, token }) {
   return onlyIssues.slice(0, count);
 }
 
-function buildSlackPayload({ repoFullName, issues }) {
-  const title = `Top ${issues.length} latest issues in ${repoFullName}`;
+function formatShortDateUTC(date) {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(date);
+}
+
+function daysAgoUTC(now, created) {
+  const ms = now.getTime() - created.getTime();
+  if (ms <= 0) return 0;
+  return Math.floor(ms / (24 * 60 * 60 * 1000));
+}
+
+function countEmojiReactionsOnIssue(issue) {
+  const reactions = issue?.reactions;
+  if (!reactions || typeof reactions !== 'object') return 0;
+  const total = reactions.total_count;
+  return Number.isFinite(total) ? total : 0;
+}
+
+function countThumbsUp(issue) {
+  const reactions = issue?.reactions;
+  if (!reactions || typeof reactions !== 'object') return 0;
+  const n = reactions['+1'];
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function fetchCommentsSince({
+  owner,
+  repo,
+  issueNumber,
+  sinceISO,
+  token,
+}) {
+  const baseUrl = new URL(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`
+  );
+  baseUrl.searchParams.set('since', sinceISO);
+  baseUrl.searchParams.set('per_page', '100');
+
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'workflow-issue-digest',
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let total = 0;
+  for (let page = 1; page <= 10; page++) {
+    const url = new URL(baseUrl);
+    url.searchParams.set('page', String(page));
+
+    const res = await fetch(url, { headers });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = json?.message ? `: ${json.message}` : '';
+      throw new Error(
+        `GitHub API error (${res.status} ${res.statusText}) fetching comments for #${issueNumber}${msg}`
+      );
+    }
+
+    const pageItems = Array.isArray(json) ? json : [];
+    total += pageItems.length;
+    if (pageItems.length < 100) break;
+  }
+
+  return total;
+}
+
+function scoreIssue({
+  intervalDays,
+  createdAtDaysAgo,
+  commentsSinceInterval,
+  emojiReactions,
+}) {
+  return (
+    intervalDays -
+    createdAtDaysAgo +
+    2 * commentsSinceInterval +
+    0.5 * emojiReactions
+  );
+}
+
+function buildSlackPayload({
+  repoFullName,
+  issues,
+  digestIntervalDays,
+  totalEligible,
+}) {
+  const shownCount = issues.length;
+  const title = `Top ${shownCount} issues (last ${digestIntervalDays}d) in ${repoFullName}`;
   const now = new Date().toUTCString();
 
   const blocks = [
@@ -137,30 +232,21 @@ function buildSlackPayload({ repoFullName, issues }) {
   } else {
     const issueLines = issues.map((issue) => {
       const num = issue.number;
-      const url = issue.html_url;
-      const textTitle = String(issue.title ?? '')
+      const titleText = String(issue.title ?? '')
         .replace(/\s+/g, ' ')
         .trim();
-      const comments = issue.comments ?? 0;
-      const userLogin = issue.user?.login;
-      const authorText = userLogin
-        ? `Author: <https://github.com/${userLogin}|@${userLogin}>`
-        : 'Author: unknown';
-      const created = issue.created_at
-        ? new Date(issue.created_at).toISOString().slice(0, 10)
-        : '';
+      const createdAt = issue.created_at ? new Date(issue.created_at) : null;
+      const dateText = createdAt ? formatShortDateUTC(createdAt) : '';
+      const commentsSince = issue._commentsSinceInterval ?? 0;
+      const thumbsUp = countThumbsUp(issue);
 
-      const metaParts = [
-        `Comments: ${comments}`,
-        authorText,
-        created ? `Created: ${created}` : null,
-      ].filter(Boolean);
-
-      return `*<${url}|#${num}>* ${textTitle}\n${metaParts.join(' • ')}`;
+      // Example:
+      // #777 - Jan 3 - 5 :speech_balloon: - 8 :thumbsup: - My Issue Title
+      return `#${num} - ${dateText} - ${commentsSince} :speech_balloon: - ${thumbsUp} :thumbsup: - ${titleText}`.trim();
     });
 
     const chunks = chunkByLines(
-      issueLines.join('\n\n'),
+      issueLines.join('\n'),
       SLACK_SECTION_TEXT_LIMIT
     );
 
@@ -183,6 +269,17 @@ function buildSlackPayload({ repoFullName, issues }) {
         },
       });
     }
+  }
+
+  if (totalEligible > ISSUE_LIMIT) {
+    const remaining = totalEligible - ISSUE_LIMIT;
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `…and *${remaining}* more issues created in the last ${digestIntervalDays} days.`,
+      },
+    });
   }
 
   blocks.push({ type: 'divider' });
@@ -235,21 +332,80 @@ async function main() {
 
   const repoFullName = process.env.ISSUE_DIGEST_REPO || 'vercel/workflow';
   const { owner, repo } = parseRepo(repoFullName);
-  const count = clampInt(process.env.ISSUE_DIGEST_COUNT ?? '10', {
-    min: 1,
-    max: 25,
-    fallback: 5,
-  });
 
-  const ghToken = requireEnv('GITHUB_TOKEN');
-  const issues = await fetchLatestIssues({
+  const digestIntervalDays = clampInt(
+    process.env.DIGEST_INTERVAL_DAYS ?? String(DEFAULT_DIGEST_INTERVAL_DAYS),
+    { min: 1, max: 30, fallback: DEFAULT_DIGEST_INTERVAL_DAYS }
+  );
+
+  // Token is optional locally (public repo), but workflow will provide `${{ github.token }}`.
+  const ghToken = process.env.GITHUB_TOKEN;
+
+  // Over-fetch so scoring has enough candidates even after filtering to the interval.
+  const candidateIssues = await fetchLatestIssues({
     owner,
     repo,
-    count,
+    count: Math.max(ISSUE_LIMIT * 4, 50),
     token: ghToken,
   });
 
-  const content = buildSlackPayload({ repoFullName, issues });
+  const now = new Date();
+  const sinceDate = new Date(
+    now.getTime() - digestIntervalDays * 24 * 60 * 60 * 1000
+  );
+  const sinceISO = sinceDate.toISOString();
+
+  const eligible = candidateIssues.filter((issue) => {
+    if (!issue?.created_at) return false;
+    const created = new Date(issue.created_at);
+    return created >= sinceDate;
+  });
+
+  // For scoring we need comments since interval + reaction emoji count.
+  const enriched = [];
+  for (const issue of eligible) {
+    const created = new Date(issue.created_at);
+    const createdAtDaysAgo = daysAgoUTC(now, created);
+    const commentsSinceInterval = await fetchCommentsSince({
+      owner,
+      repo,
+      issueNumber: issue.number,
+      sinceISO,
+      token: ghToken,
+    });
+    const emojiReactions = countEmojiReactionsOnIssue(issue);
+    const points = scoreIssue({
+      intervalDays: digestIntervalDays,
+      createdAtDaysAgo,
+      commentsSinceInterval,
+      emojiReactions,
+    });
+
+    enriched.push({
+      ...issue,
+      _points: points,
+      _createdAtDaysAgo: createdAtDaysAgo,
+      _commentsSinceInterval: commentsSinceInterval,
+      _emojiReactions: emojiReactions,
+    });
+  }
+
+  enriched.sort((a, b) => {
+    if (b._points !== a._points) return b._points - a._points;
+    const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
+    const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
+    if (bCreated !== aCreated) return bCreated - aCreated;
+    return (b._commentsSinceInterval ?? 0) - (a._commentsSinceInterval ?? 0);
+  });
+
+  const top = enriched.slice(0, ISSUE_LIMIT);
+
+  const content = buildSlackPayload({
+    repoFullName,
+    issues: top,
+    digestIntervalDays,
+    totalEligible: enriched.length,
+  });
 
   if (wantsPrint || wantsPost) {
     const channel = requireEnv('SLACK_ISSUE_SUMMARY_CHANNEL_ID');
