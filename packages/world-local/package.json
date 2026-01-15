@@ -35,6 +35,7 @@
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "async-sema": "3.1.1",
+    "semver": "^7.7.3",
     "ulid": "3.0.1",
     "undici": "6.22.0",
     "zod": "catalog:"
@@ -43,6 +44,7 @@
     "@opentelemetry/api": "1.9.0",
     "@types/ms": "0.7.34",
     "@types/node": "catalog:",
+    "@types/semver": "^7.5.8",
     "@workflow/tsconfig": "workspace:*",
     "genversion": "3.2.0",
     "ms": "2.1.3",

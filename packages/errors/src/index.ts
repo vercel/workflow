@@ -233,6 +233,31 @@ export class WorkflowRunCancelledError extends WorkflowError {
 }
 
 /**
+ * Thrown when attempting to operate on a workflow run that requires a newer World version.
+ *
+ * This error occurs when a run was created with a newer spec version than the
+ * current World implementation supports. Users should upgrade their @workflow packages.
+ */
+export class RunNotSupportedError extends WorkflowError {
+  readonly runVersion: string;
+  readonly worldVersion: string;
+
+  constructor(runVersion: string, worldVersion: string) {
+    super(
+      `Run requires spec version ${runVersion}, but world is version ${worldVersion}. ` +
+        `Please upgrade @workflow packages.`
+    );
+    this.name = 'RunNotSupportedError';
+    this.runVersion = runVersion;
+    this.worldVersion = worldVersion;
+  }
+
+  static is(value: unknown): value is RunNotSupportedError {
+    return isError(value) && value.name === 'RunNotSupportedError';
+  }
+}
+
+/**
  * A fatal error is an error that cannot be retried.
  * It will cause the step to fail and the error will
  * be bubbled up to the workflow logic.

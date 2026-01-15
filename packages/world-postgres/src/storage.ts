@@ -1,4 +1,4 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
 import type {
   Event,
   EventResult,
@@ -14,10 +14,13 @@ import type {
 import {
   EventSchema,
   HookSchema,
+  isLegacyVersion,
   StepSchema,
+  version,
   WorkflowRunSchema,
 } from '@workflow/world';
 import { and, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
+import semver from 'semver';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
@@ -167,17 +170,101 @@ function map<T, R>(obj: T | null | undefined, fn: (v: T) => R): undefined | R {
   return obj ? fn(obj) : undefined;
 }
 
+/**
+ * Handle events for legacy runs (pre-event-sourcing, specVersion < 4.1).
+ * Legacy runs use different behavior:
+ * - run_cancelled: Skip event storage, directly update run
+ * - wait_completed: Store event only (no entity mutation)
+ * - Other events: Throw error (not supported for legacy runs)
+ */
+async function handleLegacyEventPostgres(
+  drizzle: Drizzle,
+  runId: string,
+  eventId: string,
+  data: any,
+  currentRun: { status: string; specVersion: string | null },
+  params?: { resolveData?: ResolveData }
+): Promise<EventResult> {
+  const resolveData = params?.resolveData ?? 'all';
+
+  switch (data.eventType) {
+    case 'run_cancelled': {
+      // Legacy: Skip event storage, directly update run to cancelled
+      const now = new Date();
+
+      // Update run status to cancelled
+      await drizzle
+        .update(Schema.runs)
+        .set({
+          status: 'cancelled',
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(Schema.runs.runId, runId));
+
+      // Delete all hooks for this run
+      await drizzle.delete(Schema.hooks).where(eq(Schema.hooks.runId, runId));
+
+      // Fetch updated run for return value
+      const [updatedRun] = await drizzle
+        .select()
+        .from(Schema.runs)
+        .where(eq(Schema.runs.runId, runId))
+        .limit(1);
+
+      // Return without event (legacy behavior skips event storage)
+      return {
+        run: updatedRun
+          ? filterRunData(deserializeRunError(compact(updatedRun)), resolveData)
+          : undefined,
+      };
+    }
+
+    case 'wait_completed': {
+      // Legacy: Store event only (no entity mutation)
+      const [insertedEvent] = await drizzle
+        .insert(Schema.events)
+        .values({
+          runId,
+          eventId,
+          correlationId: data.correlationId,
+          eventType: data.eventType,
+          eventData: 'eventData' in data ? data.eventData : undefined,
+        })
+        .returning({ createdAt: Schema.events.createdAt });
+
+      const event = EventSchema.parse({
+        ...data,
+        ...insertedEvent,
+        runId,
+        eventId,
+      });
+      return { event: filterEventData(event, resolveData) };
+    }
+
+    default:
+      throw new Error(
+        `Event type '${data.eventType}' not supported for legacy runs ` +
+          `(specVersion: ${currentRun.specVersion || 'undefined'}). ` +
+          `Please upgrade @workflow packages.`
+      );
+  }
+}
+
 export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
   const ulid = monotonicFactory();
   const { events } = Schema;
 
   // Prepared statements for validation queries (performance optimization)
-  const getRunStatus = drizzle
-    .select({ status: Schema.runs.status })
+  const getRunForValidation = drizzle
+    .select({
+      status: Schema.runs.status,
+      specVersion: Schema.runs.specVersion,
+    })
     .from(Schema.runs)
     .where(eq(Schema.runs.runId, sql.placeholder('runId')))
     .limit(1)
-    .prepare('events_get_run_status');
+    .prepare('events_get_run_for_validation');
 
   const getStepForValidation = drizzle
     .select({
@@ -237,17 +324,45 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Skip run validation for step_completed and step_retrying - they only operate
       // on running steps, and running steps are always allowed to modify regardless
       // of run state. This optimization saves database queries per step event.
-      let currentRun: { status: string } | null = null;
+      let currentRun: { status: string; specVersion: string | null } | null =
+        null;
       const skipRunValidationEvents = ['step_completed', 'step_retrying'];
       if (
         data.eventType !== 'run_created' &&
         !skipRunValidationEvents.includes(data.eventType)
       ) {
         // Use prepared statement for better performance
-        const [runValue] = await getRunStatus.execute({
+        const [runValue] = await getRunForValidation.execute({
           runId: effectiveRunId,
         });
         currentRun = runValue ?? null;
+      }
+
+      // ============================================================
+      // VERSION COMPATIBILITY: Check run spec version
+      // ============================================================
+      // For events that have fetched the run, check version compatibility.
+      // Skip for run_created (no existing run) and runtime events (step_completed, step_retrying).
+      if (currentRun) {
+        // Check if run requires a newer world version
+        if (
+          currentRun.specVersion &&
+          semver.gt(currentRun.specVersion, version)
+        ) {
+          throw new RunNotSupportedError(currentRun.specVersion, version);
+        }
+
+        // Route to legacy handler for pre-event-sourcing runs
+        if (isLegacyVersion(currentRun.specVersion ?? undefined)) {
+          return handleLegacyEventPostgres(
+            drizzle,
+            effectiveRunId,
+            eventId,
+            data,
+            currentRun,
+            params
+          );
+        }
       }
 
       // Run terminal state validation
@@ -388,6 +503,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           workflowName: string;
           input: any[];
           executionContext?: Record<string, any>;
+          specVersion?: string;
         };
         const [runValue] = await drizzle
           .insert(Schema.runs)
@@ -395,6 +511,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             runId: effectiveRunId,
             deploymentId: eventData.deploymentId,
             workflowName: eventData.workflowName,
+            // Always use current world version (world sets its own version)
+            specVersion: version,
             input: eventData.input as SerializedContent,
             executionContext: eventData.executionContext as
               | SerializedContent

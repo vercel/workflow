@@ -1,5 +1,5 @@
 ---
-"@workflow/world": patch
+"@workflow/world": minor
 ---
 
 **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`

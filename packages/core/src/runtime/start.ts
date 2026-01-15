@@ -120,7 +120,8 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       // Get the server-generated runId from the event response
-      const runId = result.event.runId;
+      // Note: run_created is always event-sourced (no existing run to check version)
+      const runId = result.event!.runId;
       resolveRunId(runId);
 
       waitUntil(

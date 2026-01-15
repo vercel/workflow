@@ -84,7 +84,8 @@ export async function handleSuspension({
           // Check if the world returned a hook_conflict event instead of hook_created
           // The hook_conflict event is stored in the event log and will be replayed
           // on the next workflow invocation, causing the hook's promise to reject
-          if (result.event.eventType === 'hook_conflict') {
+          // Note: hook events always create an event (legacy runs throw, not return undefined)
+          if (result.event!.eventType === 'hook_conflict') {
             hasHookConflict = true;
           }
         } catch (err) {

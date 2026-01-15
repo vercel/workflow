@@ -328,11 +328,12 @@ export interface CreateEventParams {
 /**
  * Result of creating an event. Includes the created event and optionally
  * the entity that was created or updated as a result of the event, with any updates applied to it.
-
+ *
+ * Note: `event` is optional to support legacy runs where event storage is skipped.
  */
 export interface EventResult {
-  /** The created event */
-  event: Event;
+  /** The created event (optional for legacy compatibility) */
+  event?: Event;
   /** The workflow run entity (for run_* events) */
   run?: import('./runs.js').WorkflowRun;
   /** The step entity (for step_* events) */

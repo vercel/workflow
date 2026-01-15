@@ -363,7 +363,8 @@ export function workflowEntrypoint(
               for (const waitEvent of waitsToComplete) {
                 const result = await world.events.create(runId, waitEvent);
                 // Add the event to the events array so the workflow can see it
-                events.push(result.event);
+                // Note: wait_completed always creates an event (even for legacy runs)
+                events.push(result.event!);
               }
 
               const result = await runWorkflow(

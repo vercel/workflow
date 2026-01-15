@@ -1135,10 +1135,17 @@ importers:
         version: link:../tsconfig
 
   packages/world:
+    dependencies:
+      semver:
+        specifier: ^7.7.3
+        version: 7.7.3
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@types/semver':
+        specifier: ^7.5.8
+        version: 7.7.1
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -1166,6 +1173,9 @@ importers:
       async-sema:
         specifier: 3.1.1
         version: 3.1.1
+      semver:
+        specifier: ^7.7.3
+        version: 7.7.3
       ulid:
         specifier: 3.0.1
         version: 3.0.1
@@ -1185,6 +1195,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@types/semver':
+        specifier: ^7.5.8
+        version: 7.7.1
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -1227,6 +1240,9 @@ importers:
       postgres:
         specifier: 3.4.7
         version: 3.4.7
+      semver:
+        specifier: ^7.7.3
+        version: 7.7.3
       ulid:
         specifier: 3.0.1
         version: 3.0.1
@@ -1240,6 +1256,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@types/semver':
+        specifier: ^7.5.8
+        version: 7.7.1
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
