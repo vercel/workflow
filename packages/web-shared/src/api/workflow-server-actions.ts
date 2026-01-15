@@ -822,7 +822,7 @@ export async function cancelRun(
     await world.events.create(runId, { eventType: 'run_cancelled' });
     return createResponse(undefined);
   } catch (error) {
-    return createServerActionError<void>(error, 'world.runs.cancel', {
+    return createServerActionError<void>(error, 'world.events.create', {
       runId,
     });
   }

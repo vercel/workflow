@@ -245,7 +245,7 @@ export class RunNotSupportedError extends WorkflowError {
   constructor(runSpecVersion: number, worldSpecVersion: number) {
     super(
       `Run requires spec version ${runSpecVersion}, but world supports version ${worldSpecVersion}. ` +
-        `Please upgrade @workflow packages.`
+        `Please upgrade 'workflow' package.`
     );
     this.name = 'RunNotSupportedError';
     this.runSpecVersion = runSpecVersion;

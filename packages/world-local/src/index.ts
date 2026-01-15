@@ -1,5 +1,4 @@
 import type { World } from '@workflow/world';
-import { version } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
 import { initDataDir } from './init.js';
@@ -35,7 +34,6 @@ export function createLocalWorld(args?: Partial<Config>): World {
     : {};
   const mergedConfig = { ...config.value, ...definedArgs };
   return {
-    specVersion: version,
     ...createQueue(mergedConfig),
     ...createStorage(mergedConfig.dataDir),
     ...createStreamer(mergedConfig.dataDir),

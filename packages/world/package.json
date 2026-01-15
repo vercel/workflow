@@ -18,16 +18,15 @@
     "directory": "packages/world"
   },
   "scripts": {
-    "build": "genversion --es6 src/version.ts && tsc",
-    "dev": "genversion --es6 src/version.ts && tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist src/version.ts"
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist"
   },
   "peerDependencies": {
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "genversion": "3.2.0",
     "zod": "catalog:",
     "@workflow/tsconfig": "workspace:*"
   },

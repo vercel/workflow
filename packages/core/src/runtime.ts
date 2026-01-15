@@ -336,7 +336,7 @@ export function workflowEntrypoint(
               // Load all events into memory before running
               const events = await getAllWorkflowRunEvents(workflowRun.runId);
 
-              // Check for any elapsed waits and batch create wait_completed events
+              // Check for any elapsed waits and create wait_completed events
               const now = Date.now();
 
               // Pre-compute completed correlation IDs for O(n) lookup instead of O(n²)

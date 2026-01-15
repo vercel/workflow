@@ -1,5 +1,4 @@
 import type { Storage, World } from '@workflow/world';
-import { version } from '@workflow/world';
 import PgBoss from 'pg-boss';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
@@ -43,7 +42,6 @@ export function createWorld(
   const streamer = createStreamer(postgres, drizzle);
 
   return {
-    specVersion: version,
     ...storage,
     ...streamer,
     ...queue,

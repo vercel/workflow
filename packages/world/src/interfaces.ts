@@ -116,22 +116,6 @@ export interface Storage {
  */
 export interface World extends Queue, Storage, Streamer {
   /**
-   * The spec version of this World implementation.
-   * Used for backwards compatibility when operating on runs from different versions.
-   *
-   * @example
-   * ```ts
-   * import { version } from '@workflow/world';
-   *
-   * const world: World = {
-   *   specVersion: version,
-   *   // ...other World properties
-   * };
-   * ```
-   */
-  readonly specVersion: string;
-
-  /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.
    */

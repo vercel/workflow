@@ -56,7 +56,7 @@ function deserializeStep(wireStep: z.infer<typeof StepWireSchema>): Step {
   };
 
   // Deserialize error to StructuredError
-  const errorSource = errorRef ?? error;
+  const errorSource = error ?? errorRef;
   if (errorSource) {
     if (typeof errorSource === 'string') {
       try {
