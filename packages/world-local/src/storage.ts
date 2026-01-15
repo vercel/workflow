@@ -254,6 +254,7 @@ async function handleLegacyEvent(
         runId,
         eventId,
         createdAt: now,
+        specVersion: SPEC_VERSION_CURRENT,
       };
       const compositeKey = `${runId}-${eventId}`;
       const eventPath = path.join(basedir, 'events', `${compositeKey}.json`);
@@ -465,6 +466,7 @@ export function createStorage(basedir: string): Storage {
               runId: effectiveRunId,
               eventId,
               createdAt: now,
+              specVersion: SPEC_VERSION_CURRENT,
             };
             const compositeKey = `${effectiveRunId}-${eventId}`;
             const eventPath = path.join(
@@ -575,6 +577,7 @@ export function createStorage(basedir: string): Storage {
           runId: effectiveRunId,
           eventId,
           createdAt: now,
+          specVersion: SPEC_VERSION_CURRENT,
         };
 
         // Track entity created/updated for EventResult
@@ -752,6 +755,7 @@ export function createStorage(basedir: string): Storage {
             completedAt: undefined,
             createdAt: now,
             updatedAt: now,
+            specVersion: SPEC_VERSION_CURRENT,
           };
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           const stepPath = path.join(
@@ -897,6 +901,7 @@ export function createStorage(basedir: string): Storage {
               runId: effectiveRunId,
               eventId,
               createdAt: now,
+              specVersion: SPEC_VERSION_CURRENT,
             };
 
             // Store the conflict event
@@ -930,6 +935,7 @@ export function createStorage(basedir: string): Storage {
             projectId: 'local-project',
             environment: 'local',
             createdAt: now,
+            specVersion: SPEC_VERSION_CURRENT,
           };
           const hookPath = path.join(
             basedir,

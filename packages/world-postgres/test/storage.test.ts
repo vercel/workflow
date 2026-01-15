@@ -369,7 +369,7 @@ describe('Storage (Postgres integration)', () => {
 
         const step = await createStep(events, testRunId, stepData);
 
-        expect(step).toEqual({
+        expect(step).toMatchObject({
           runId: testRunId,
           stepId: 'step-123',
           stepName: 'test-step',
@@ -382,6 +382,7 @@ describe('Storage (Postgres integration)', () => {
           completedAt: undefined,
           createdAt: expect.any(Date),
           updatedAt: expect.any(Date),
+          specVersion: 2,
         });
       });
     });

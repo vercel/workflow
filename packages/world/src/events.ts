@@ -292,6 +292,7 @@ export const EventSchema = AllEventsSchema.and(
     runId: z.string(),
     eventId: z.string(),
     createdAt: z.coerce.date(),
+    specVersion: z.number().optional(),
   })
 );
 

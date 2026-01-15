@@ -40,6 +40,7 @@ export const StepSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
   retryAfter: z.coerce.date().optional(),
+  specVersion: z.number().optional(),
 });
 
 // Inferred types

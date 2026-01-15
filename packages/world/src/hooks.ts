@@ -16,6 +16,7 @@ export const HookSchema = z.object({
   environment: z.string(),
   metadata: zodJsonSchema.optional(),
   createdAt: z.coerce.date(),
+  specVersion: z.number().optional(),
 });
 
 /**
@@ -38,6 +39,8 @@ export type Hook = z.infer<typeof HookSchema> & {
   metadata?: unknown;
   /** The timestamp when this hook was created. */
   createdAt: Date;
+  /** The spec version when this hook was created. */
+  specVersion?: number;
 };
 
 // Request types

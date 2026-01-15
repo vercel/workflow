@@ -213,6 +213,7 @@ async function handleLegacyEventPostgres(
           correlationId: data.correlationId,
           eventType: data.eventType,
           eventData: 'eventData' in data ? data.eventData : undefined,
+          specVersion: SPEC_VERSION_CURRENT,
         })
         .returning({ createdAt: Schema.events.createdAt });
 
@@ -377,6 +378,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               correlationId: data.correlationId,
               eventType: data.eventType,
               eventData: 'eventData' in data ? data.eventData : undefined,
+              specVersion: SPEC_VERSION_CURRENT,
             })
             .returning({ createdAt: Schema.events.createdAt });
 
@@ -615,6 +617,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             input: eventData.input as SerializedContent,
             status: 'pending',
             attempt: 0,
+            specVersion: SPEC_VERSION_CURRENT,
           })
           .onConflictDoNothing()
           .returning();
@@ -808,6 +811,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               correlationId: data.correlationId,
               eventType: 'hook_conflict',
               eventData: conflictEventData,
+              specVersion: SPEC_VERSION_CURRENT,
             })
             .returning({ createdAt: events.createdAt });
 
@@ -846,6 +850,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             ownerId: '', // TODO: get from context
             projectId: '', // TODO: get from context
             environment: '', // TODO: get from context
+            specVersion: SPEC_VERSION_CURRENT,
           })
           .onConflictDoNothing()
           .returning();
@@ -870,6 +875,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           correlationId: data.correlationId,
           eventType: data.eventType,
           eventData: 'eventData' in data ? data.eventData : undefined,
+          specVersion: SPEC_VERSION_CURRENT,
         })
         .returning({ createdAt: events.createdAt });
       if (!value) {
