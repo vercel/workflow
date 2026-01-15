@@ -119,9 +119,14 @@ export async function start<TArgs extends unknown[], TResult>(
         },
       });
 
-      // Get the server-generated runId from the event response
-      // Note: run_created is always event-sourced (no existing run to check version)
-      const runId = result.event!.runId;
+      // Assert that the run was created
+      if (!result.run) {
+        throw new WorkflowRuntimeError(
+          "Missing 'run' in server response for 'run_created' event"
+        );
+      }
+
+      const runId = result.run.runId;
       resolveRunId(runId);
 
       waitUntil(
@@ -135,7 +140,7 @@ export async function start<TArgs extends unknown[], TResult>(
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
-        ...Attribute.WorkflowRunStatus('pending'),
+        ...Attribute.WorkflowRunStatus(result.run.status),
         ...Attribute.DeploymentId(deploymentId),
       });
 

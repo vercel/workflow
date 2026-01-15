@@ -2,6 +2,7 @@ import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
+  WorkflowRuntimeError,
 } from '@workflow/errors';
 import {
   type Event,
@@ -296,7 +297,7 @@ export function workflowEntrypoint(
                 });
                 // Use the run entity from the event response (no extra get call needed)
                 if (!result.run) {
-                  throw new Error(
+                  throw new WorkflowRuntimeError(
                     `Event creation for 'run_started' did not return the run entity for run \"${runId}\"`
                   );
                 }
@@ -306,7 +307,7 @@ export function workflowEntrypoint(
               // At this point, the workflow is "running" and `startedAt` should
               // definitely be set.
               if (!workflowRun.startedAt) {
-                throw new Error(
+                throw new WorkflowRuntimeError(
                   `Workflow run "${runId}" has no "startedAt" timestamp`
                 );
               }
@@ -363,7 +364,6 @@ export function workflowEntrypoint(
               for (const waitEvent of waitsToComplete) {
                 const result = await world.events.create(runId, waitEvent);
                 // Add the event to the events array so the workflow can see it
-                // Note: wait_completed always creates an event (even for legacy runs)
                 events.push(result.event!);
               }
 
