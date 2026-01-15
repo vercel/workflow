@@ -1023,7 +1023,13 @@ async function executeTool(
   }
 
   try {
-    const toolResult = await tool.execute(parsedInput, {
+    // Extract execute function to avoid binding `this` to the tool object.
+    // If we called `tool.execute(...)` directly, JavaScript would bind `this`
+    // to `tool`, which contains non-serializable properties like `inputSchema`.
+    // When the execute function is a workflow step (marked with 'use step'),
+    // the step system captures `this` for serialization, causing failures.
+    const { execute } = tool;
+    const toolResult = await execute(parsedInput, {
       toolCallId: toolCall.toolCallId,
       // Pass the conversation messages to the tool so it has context about the conversation
       messages,
