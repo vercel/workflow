@@ -1,121 +1,18 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Storage, WorkflowRun, Step, Hook } from '@workflow/world';
-import {
-  EventSchema,
-  HookSchema,
-  StepSchema,
-  WorkflowRunSchema,
-} from '@workflow/world';
+import type { Storage } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createStorage } from './storage.js';
-
-// Helper functions to create entities through events.create
-async function createRun(
-  storage: Storage,
-  data: {
-    deploymentId: string;
-    workflowName: string;
-    input: unknown[];
-    executionContext?: Record<string, unknown>;
-  }
-): Promise<WorkflowRun> {
-  const result = await storage.events.create(null, {
-    eventType: 'run_created',
-    eventData: data,
-  });
-  if (!result.run) {
-    throw new Error('Expected run to be created');
-  }
-  return result.run;
-}
-
-async function updateRun(
-  storage: Storage,
-  runId: string,
-  eventType: 'run_started' | 'run_completed' | 'run_failed',
-  eventData?: Record<string, unknown>
-): Promise<WorkflowRun> {
-  const result = await storage.events.create(runId, {
-    eventType,
-    eventData,
-  });
-  if (!result.run) {
-    throw new Error('Expected run to be updated');
-  }
-  return result.run;
-}
-
-async function createStep(
-  storage: Storage,
-  runId: string,
-  data: {
-    stepId: string;
-    stepName: string;
-    input: unknown[];
-  }
-): Promise<Step> {
-  const result = await storage.events.create(runId, {
-    eventType: 'step_created',
-    correlationId: data.stepId,
-    eventData: { stepName: data.stepName, input: data.input },
-  });
-  if (!result.step) {
-    throw new Error('Expected step to be created');
-  }
-  return result.step;
-}
-
-async function updateStep(
-  storage: Storage,
-  runId: string,
-  stepId: string,
-  eventType: 'step_started' | 'step_completed' | 'step_failed',
-  eventData?: Record<string, unknown>
-): Promise<Step> {
-  const result = await storage.events.create(runId, {
-    eventType,
-    correlationId: stepId,
-    eventData,
-  });
-  if (!result.step) {
-    throw new Error('Expected step to be updated');
-  }
-  return result.step;
-}
-
-async function createHook(
-  storage: Storage,
-  runId: string,
-  data: {
-    hookId: string;
-    token: string;
-    metadata?: unknown;
-  }
-): Promise<Hook> {
-  const result = await storage.events.create(runId, {
-    eventType: 'hook_created',
-    correlationId: data.hookId,
-    eventData: { token: data.token, metadata: data.metadata },
-  });
-  if (!result.hook) {
-    throw new Error('Expected hook to be created');
-  }
-  return result.hook;
-}
-
-async function disposeHook(
-  storage: Storage,
-  runId: string,
-  hookId: string
-): Promise<void> {
-  await storage.events.create(runId, {
-    eventType: 'hook_disposed',
-    correlationId: hookId,
-  });
-}
+import {
+  createHook,
+  createRun,
+  createStep,
+  disposeHook,
+  updateRun,
+  updateStep,
+} from './test-helpers.js';
 
 describe('Storage', () => {
   let testDir: string;
