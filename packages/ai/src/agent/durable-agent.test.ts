@@ -1125,7 +1125,8 @@ describe('DurableAgent', () => {
           timestamp: new Date(),
         },
         warnings: [],
-      };
+        // We're missing some properties that aren't relevant for the test
+      } as unknown as StepResult<any>;
       const mockMessages: LanguageModelV2Prompt = [
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
       ];
@@ -1296,7 +1297,8 @@ describe('DurableAgent', () => {
           timestamp: new Date(),
         },
         warnings: [],
-      };
+        // We're missing some properties that aren't relevant for the test
+      } as unknown as StepResult<any>;
       const finalMessages: LanguageModelV2Prompt = [
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
         { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] },
