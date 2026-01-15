@@ -193,6 +193,15 @@ Both methods must be implemented as **static** methods on the class. Instance me
 - The data returned by `WORKFLOW_SERIALIZE` must itself be serializable (primitives, plain objects, arrays, or other serializable types including other custom classes)
 - Both symbols must be implemented together - a class with only one will not be serializable
 
+<Callout type="warn">
+The `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` methods run inside the workflow context and are subject to the same constraints as `"use workflow"` functions. This means:
+- No Node.js-specific APIs (like `fs`, `path`, `crypto`, etc.)
+- No non-deterministic operations (like `Math.random()` or `Date.now()`)
+- No external network calls
+
+Keep these methods simple and focused on data transformation only.
+</Callout>
+
 ### Complex Example
 
 Custom serialization works with nested objects and other serializable types:

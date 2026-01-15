@@ -62,3 +62,12 @@ The method must be implemented as a **static** method on the class. Instance met
 - Both `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented together
 - The returned data must itself be serializable
 - The SWC compiler plugin automatically detects and registers classes that implement these symbols
+
+<Callout type="warn">
+This method runs inside the workflow context and is subject to the same constraints as `"use workflow"` functions:
+- No Node.js-specific APIs (like `fs`, `path`, `crypto`, etc.)
+- No non-deterministic operations (like `Math.random()` or `Date.now()`)
+- No external network calls
+
+Keep this method simple and focused on extracting data from the instance.
+</Callout>

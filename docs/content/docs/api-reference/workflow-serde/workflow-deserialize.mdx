@@ -57,3 +57,12 @@ The method must be implemented as a **static** method on the class. Instance met
 - Both `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented together
 - The method receives the exact data that was returned by `WORKFLOW_SERIALIZE`
 - If `WORKFLOW_SERIALIZE` returns complex types (like `Map` or `Date`), they will be properly deserialized before being passed to this method
+
+<Callout type="warn">
+This method runs inside the workflow context and is subject to the same constraints as `"use workflow"` functions:
+- No Node.js-specific APIs (like `fs`, `path`, `crypto`, etc.)
+- No non-deterministic operations (like `Math.random()` or `Date.now()`)
+- No external network calls
+
+Keep this method simple and focused on reconstructing the instance from the provided data.
+</Callout>
