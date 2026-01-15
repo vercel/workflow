@@ -394,29 +394,36 @@ const worldCache = new Map<string, World>();
  * Get or create a World instance based on configuration.
  *
  * The @workflow/web UI should always pass `{}` for envMap.
- * We intentionally do not trust or apply client-provided env.
  */
-async function getWorldFromEnv(_userEnvMap: EnvMap): Promise<World> {
+async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
   const backendId = getEffectiveBackendId();
   const isVercelWorld = ['vercel', '@workflow/world-vercel'].includes(
     backendId
   );
 
-  // For the vercel world specifically, we do _not_ cache the world,
-  // as it can be a multi-tenant environment, and we instantiate the world
-  // directly to avoid having to set process.env.
+  // For the vercel world specifically, we do not cache the world,
+  // and allow user-provided env, as it can be a multi-tenant environment,
+  // and we instantiate the world per-user directly to avoid having to set
+  // process.env.
   if (isVercelWorld) {
     return createVercelWorld({
-      baseUrl: process.env.WORKFLOW_VERCEL_BACKEND_URL,
-      skipProxy: process.env.WORKFLOW_VERCEL_SKIP_PROXY === 'true',
-      token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+      token:
+        userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
+        process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
       projectConfig: {
-        environment: process.env.WORKFLOW_VERCEL_ENV,
-        projectId: process.env.WORKFLOW_VERCEL_PROJECT,
-        teamId: process.env.WORKFLOW_VERCEL_TEAM,
+        environment:
+          userEnvMap.WORKFLOW_VERCEL_ENV || process.env.WORKFLOW_VERCEL_ENV,
+        projectId:
+          userEnvMap.WORKFLOW_VERCEL_PROJECT ||
+          process.env.WORKFLOW_VERCEL_PROJECT,
+        teamId:
+          userEnvMap.WORKFLOW_VERCEL_TEAM || process.env.WORKFLOW_VERCEL_TEAM,
       },
     });
   }
+
+  // For other worlds, we intentionally do not trust or apply client-provided env,
+  // to avoid potential security risks in self-hosted scenarios.
 
   // Ensure local-world reads from the same project directory the UI is inspecting.
   if (backendId === 'local' || backendId === '@workflow/world-local') {
@@ -835,6 +842,7 @@ export async function recreateRun(
       hydratedRun.input,
       {
         deploymentId,
+        world,
       }
     );
     return createResponse(newRun.runId);

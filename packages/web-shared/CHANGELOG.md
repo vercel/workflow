@@ -1,5 +1,15 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.42
+
+### Patch Changes
+
+- [#774](https://github.com/vercel/workflow/pull/774) [`abdca8f`](https://github.com/vercel/workflow/commit/abdca8fd526f3c83c7da7b96a0522f9552e2bd2f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve display of configuration information. Fix opening of Vercel backend when using `--localUi`. Fix world caching in multi-tenant environments. Fix flicker in run table when refreshing. Improve contributor experience by adding `--observabilityCwd` flag to easily iterate on web UI from another directory. Polish navbar UI.
+
+- [#783](https://github.com/vercel/workflow/pull/783) [`125d0a6`](https://github.com/vercel/workflow/commit/125d0a666e3bb899609c55fd6f358bc6d61463d3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix unsafe access of requestId in UI worker for trace viewer
+
+- [#787](https://github.com/vercel/workflow/pull/787) [`7ff6a05`](https://github.com/vercel/workflow/commit/7ff6a05cf9ffd91300b081ec1dfa9cf3cf278ed0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow passing user env variables to vercel backend in o11y UI
+
 ## 4.0.1-beta.41
 
 ### Patch Changes
