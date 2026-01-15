@@ -394,7 +394,6 @@ const worldCache = new Map<string, World>();
  * Get or create a World instance based on configuration.
  *
  * The @workflow/web UI should always pass `{}` for envMap.
- * We intentionally do not trust or apply client-provided env.
  */
 async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
   const backendId = getEffectiveBackendId();
@@ -402,9 +401,10 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
     backendId
   );
 
-  // For the vercel world specifically, we do _not_ cache the world,
-  // as it can be a multi-tenant environment, and we instantiate the world
-  // directly to avoid having to set process.env.
+  // For the vercel world specifically, we do not cache the world,
+  // and allow user-provided env, as it can be a multi-tenant environment,
+  // and we instantiate the world per-user directly to avoid having to set
+  // process.env.
   if (isVercelWorld) {
     return createVercelWorld({
       token:
@@ -421,6 +421,9 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
       },
     });
   }
+
+  // For other worlds, we intentionally do not trust or apply client-provided env,
+  // to avoid potential security risks in self-hosted scenarios.
 
   // Ensure local-world reads from the same project directory the UI is inspecting.
   if (backendId === 'local' || backendId === '@workflow/world-local') {
