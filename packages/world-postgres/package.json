@@ -37,11 +37,11 @@
     "./migrations/*.sql": "./src/drizzle/migrations/*.sql"
   },
   "scripts": {
-    "build": "genversion --es6 src/version.ts && tsc && chmod +x bin/setup.js",
-    "dev": "genversion --es6 src/version.ts && tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist src/version.ts",
+    "build": "tsc && chmod +x bin/setup.js",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
     "test": "vitest run",
-    "typecheck": "genversion --es6 src/version.ts && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "db:push": "node dist/cli.js"
   },
   "dependencies": {
@@ -64,7 +64,6 @@
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world-testing": "workspace:*",
     "drizzle-kit": "0.31.6",
-    "genversion": "3.2.0",
     "vitest": "catalog:"
   },
   "keywords": [],

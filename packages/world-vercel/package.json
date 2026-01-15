@@ -23,11 +23,11 @@
     }
   },
   "scripts": {
-    "build": "genversion --es6 src/version.ts && tsc",
-    "dev": "genversion --es6 src/version.ts && tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist src/version.ts",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
     "test": "vitest",
-    "typecheck": "genversion --es6 src/version.ts && tsc --noEmit"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@vercel/oidc": "catalog:",
@@ -39,7 +39,6 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "genversion": "3.2.0",
     "vitest": "catalog:"
   }
 }
