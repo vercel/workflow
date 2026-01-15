@@ -1,7 +1,7 @@
 import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import type { WorkflowInvokePayload } from '@workflow/world';
+import type { WorkflowInvokePayload, World } from '@workflow/world';
 import { Run } from '../runtime.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
@@ -19,6 +19,12 @@ export interface StartOptions {
    * Only set this if you are doing something advanced and know what you are doing.
    */
   deploymentId?: string;
+
+  /**
+   * The world to use for the workflow run creation,
+   * by default the world is inferred from the environment variables.
+   */
+  world?: World;
 }
 
 /**
@@ -86,7 +92,7 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
-      const world = getWorld();
+      const world = opts?.world ?? getWorld();
       const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
       const ops: Promise<void>[] = [];
       const { promise: runIdPromise, resolve: resolveRunId } =

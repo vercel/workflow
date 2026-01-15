@@ -842,6 +842,7 @@ export async function recreateRun(
       hydratedRun.input,
       {
         deploymentId,
+        world,
       }
     );
     return createResponse(newRun.runId);
