@@ -275,7 +275,10 @@ export async function* streamTextIterator({
       lastStepUIChunks = stepUIChunks;
 
       // Aggregate UIChunks from this step (may include tool output chunks later)
-      let allStepUIChunks = [...allAccumulatedUIChunks, ...stepUIChunks];
+      let allStepUIChunks = [
+        ...allAccumulatedUIChunks,
+        ...(stepUIChunks ?? []),
+      ];
 
       // Normalize finishReason - AI SDK v6 returns { unified, raw }, v5 returns a string
       const finishReason = normalizeFinishReason(finish?.finishReason);
@@ -320,7 +323,10 @@ export async function* streamTextIterator({
         if (collectUIChunks && toolOutputChunks.length > 0) {
           allStepUIChunks = [...(allStepUIChunks ?? []), ...toolOutputChunks];
           // Also accumulate for future steps
-          allAccumulatedUIChunks = [...allAccumulatedUIChunks, ...toolOutputChunks];
+          allAccumulatedUIChunks = [
+            ...allAccumulatedUIChunks,
+            ...toolOutputChunks,
+          ];
         }
 
         conversationPrompt.push({
@@ -387,7 +393,10 @@ export async function* streamTextIterator({
 
   // Yield the final step if it wasn't already yielded (tool-calls steps are yielded inside the loop)
   if (lastStep && !lastStepWasToolCalls) {
-    const finalUIChunks = [...allAccumulatedUIChunks, ...(lastStepUIChunks ?? [])];
+    const finalUIChunks = [
+      ...allAccumulatedUIChunks,
+      ...(lastStepUIChunks ?? []),
+    ];
     yield {
       toolCalls: [],
       messages: conversationPrompt,
