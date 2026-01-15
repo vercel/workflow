@@ -9,6 +9,7 @@ import type {
   ResolveData,
   Step,
   Storage,
+  StructuredError,
   WorkflowRun,
 } from '@workflow/world';
 import {
@@ -27,87 +28,64 @@ import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
 
 /**
- * Deserialize error JSON string (or legacy flat fields) into a StructuredError object
- * Handles backwards compatibility:
- * - If error is a JSON string with {message, stack, code} → parse into StructuredError
- * - If error is a plain string → treat as error message
- * - If errorStack/errorCode exist (legacy) → combine into StructuredError
+ * Parse legacy errorJson (text column with JSON-stringified StructuredError).
+ * Used for backwards compatibility when reading from deprecated error column.
+ */
+function parseErrorJson(errorJson: string | null): StructuredError | null {
+  if (!errorJson) return null;
+  try {
+    const parsed = JSON.parse(errorJson);
+    if (typeof parsed === 'object' && parsed.message !== undefined) {
+      return {
+        message: parsed.message,
+        stack: parsed.stack,
+        code: parsed.code,
+      };
+    }
+    // Not a structured error object, treat as plain string
+    return { message: String(parsed) };
+  } catch {
+    // Not JSON, treat as plain string error message
+    return { message: errorJson };
+  }
+}
+
+/**
+ * Deserialize run data, handling legacy error fields.
+ * The error field should already be deserialized from CBOR or fallback to errorJson.
+ * This function only handles very old legacy fields (errorStack, errorCode).
  */
 function deserializeRunError(run: any): WorkflowRun {
-  const { error, errorStack, errorCode, ...rest } = run;
+  const { errorStack, errorCode, ...rest } = run;
 
-  if (!error && !errorStack && !errorCode) {
-    return run as WorkflowRun;
+  // If no legacy fields, return as-is (error is already a StructuredError or undefined)
+  if (!errorStack && !errorCode) {
+    return rest as WorkflowRun;
   }
 
-  // Try to parse as structured error JSON
-  if (error) {
-    try {
-      const parsed = JSON.parse(error);
-      if (typeof parsed === 'object' && parsed.message !== undefined) {
-        return {
-          ...rest,
-          error: {
-            message: parsed.message,
-            stack: parsed.stack,
-            code: parsed.code,
-          },
-        } as WorkflowRun;
-      }
-    } catch {
-      // Not JSON, treat as plain string
-    }
-  }
-
-  // Backwards compatibility: handle legacy separate fields or plain string error
+  // Very old legacy: separate errorStack/errorCode fields
+  const existingError = rest.error as StructuredError | undefined;
   return {
     ...rest,
     error: {
-      message: error || '',
-      stack: errorStack,
-      code: errorCode,
+      message: existingError?.message || '',
+      stack: existingError?.stack || errorStack,
+      code: existingError?.code || errorCode,
     },
   } as WorkflowRun;
 }
 
 /**
- * Deserialize step data, mapping DB columns to interface fields:
- * - `error` (DB column) → `error` (Step interface, parsed from JSON)
- * - `startedAt` (DB column) → `startedAt` (Step interface)
+ * Deserialize step data, mapping DB columns to interface fields.
+ * The error field should already be deserialized from CBOR or fallback to errorJson.
  */
 function deserializeStepError(step: any): Step {
-  const { error, startedAt, ...rest } = step;
+  const { startedAt, ...rest } = step;
 
-  const result: any = {
+  return {
     ...rest,
-    // Map startedAt to startedAt
-    startedAt: startedAt,
-  };
-
-  if (!error) {
-    return result as Step;
-  }
-
-  // Try to parse as structured error JSON
-  try {
-    const parsed = JSON.parse(error);
-    if (typeof parsed === 'object' && parsed.message !== undefined) {
-      result.error = {
-        message: parsed.message,
-        stack: parsed.stack,
-        code: parsed.code,
-      };
-      return result as Step;
-    }
-  } catch {
-    // Not JSON, treat as plain string
-  }
-
-  // Backwards compatibility: handle legacy separate fields or plain string error
-  result.error = {
-    message: error || '',
-  };
-  return result as Step;
+    startedAt,
+  } as Step;
 }
 
 export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
@@ -128,6 +106,7 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       value.output ||= value.outputJson;
       value.input ||= value.inputJson;
       value.executionContext ||= value.executionContextJson;
+      value.error ||= parseErrorJson(value.errorJson);
       const deserialized = deserializeRunError(compact(value));
       const parsed = WorkflowRunSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
@@ -155,6 +134,10 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
+          v.output ||= v.outputJson;
+          v.input ||= v.inputJson;
+          v.executionContext ||= v.executionContextJson;
+          v.error ||= parseErrorJson(v.errorJson);
           const deserialized = deserializeRunError(compact(v));
           const parsed = WorkflowRunSchema.parse(deserialized);
           return filterRunData(parsed, resolveData);
@@ -574,17 +557,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           typeof eventData.error === 'string'
             ? eventData.error
             : (eventData.error?.message ?? 'Unknown error');
-        // Store structured error as JSON for deserializeRunError to parse
-        const errorJson = JSON.stringify({
-          message: errorMessage,
-          stack: eventData.error?.stack,
-          code: eventData.errorCode,
-        });
         const [runValue] = await drizzle
           .update(Schema.runs)
           .set({
             status: 'failed',
-            error: errorJson,
+            error: {
+              message: errorMessage,
+              stack: eventData.error?.stack,
+              code: eventData.errorCode,
+            },
             completedAt: now,
             updatedAt: now,
           })
@@ -719,21 +700,19 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           error?: any;
           stack?: string;
         };
-        // Store structured error as JSON for deserializeStepError to parse
         const errorMessage =
           typeof eventData.error === 'string'
             ? eventData.error
             : (eventData.error?.message ?? 'Unknown error');
-        const errorJson = JSON.stringify({
-          message: errorMessage,
-          stack: eventData.stack,
-        });
 
         const [stepValue] = await drizzle
           .update(Schema.steps)
           .set({
             status: 'failed',
-            error: errorJson,
+            error: {
+              message: errorMessage,
+              stack: eventData.stack,
+            },
             completedAt: now,
           })
           .where(
@@ -775,21 +754,19 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           stack?: string;
           retryAfter?: Date;
         };
-        // Store error as JSON in 'error' column
         const errorMessage =
           typeof eventData.error === 'string'
             ? eventData.error
             : (eventData.error?.message ?? 'Unknown error');
-        const errorJson = JSON.stringify({
-          message: errorMessage,
-          stack: eventData.stack,
-        });
 
         const [stepValue] = await drizzle
           .update(Schema.steps)
           .set({
             status: 'pending',
-            error: errorJson,
+            error: {
+              message: errorMessage,
+              stack: eventData.stack,
+            },
             retryAfter: eventData.retryAfter,
           })
           .where(
@@ -1062,6 +1039,8 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
         });
       }
       value.output ||= value.outputJson;
+      value.input ||= value.inputJson;
+      value.error ||= parseErrorJson(value.errorJson);
       const deserialized = deserializeStepError(compact(value));
       const parsed = StepSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
@@ -1088,6 +1067,9 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
       const resolveData = params?.resolveData ?? 'all';
       return {
         data: values.map((v) => {
+          v.output ||= v.outputJson;
+          v.input ||= v.inputJson;
+          v.error ||= parseErrorJson(v.errorJson);
           const deserialized = deserializeStepError(compact(v));
           const parsed = StepSchema.parse(deserialized);
           return filterStepData(parsed, resolveData);

@@ -3,6 +3,7 @@ import {
   type Hook,
   type Step,
   StepStatusSchema,
+  type StructuredError,
   type WorkflowRun,
   WorkflowRunStatusSchema,
 } from '@workflow/world';
@@ -71,7 +72,9 @@ export const runs = schema.table(
     /** @deprecated */
     inputJson: jsonb('input').$type<SerializedContent>(),
     input: Cbor<SerializedContent>()('input_cbor'),
-    error: text('error'),
+    /** @deprecated - use error instead */
+    errorJson: text('error'),
+    error: Cbor<StructuredError>()('error_cbor'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -83,7 +86,7 @@ export const runs = schema.table(
   } satisfies DrizzlishOfType<
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
-      'input' | 'output' | 'executionContext'
+      'input' | 'output' | 'executionContext' | 'error'
     >
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
@@ -106,12 +109,6 @@ export const events = schema.table(
   (tb) => [index().on(tb.runId), index().on(tb.correlationId)]
 );
 
-/**
- * Database schema for steps. Note: DB column names differ from Step interface:
- * - error (DB) → error (Step interface, parsed from JSON string)
- * - startedAt (DB) → startedAt (Step interface)
- * The mapping is done in storage.ts deserializeStepError()
- */
 export const steps = schema.table(
   'workflow_steps',
   {
@@ -125,8 +122,9 @@ export const steps = schema.table(
     /** @deprecated we stream binary data */
     outputJson: jsonb('output').$type<SerializedContent>(),
     output: Cbor<SerializedContent>()('output_cbor'),
-    /** JSON-stringified StructuredError - parsed and set as error in Step interface */
-    error: text('error'),
+    /** @deprecated - use error instead */
+    errorJson: text('error'),
+    error: Cbor<StructuredError>()('error_cbor'),
     attempt: integer('attempt').notNull(),
     /** Maps to startedAt in Step interface */
     startedAt: timestamp('started_at'),
@@ -142,7 +140,7 @@ export const steps = schema.table(
       Omit<Step, 'input'> & {
         input?: unknown;
       },
-      'output' | 'input'
+      'output' | 'input' | 'error'
     >
   >,
   (tb) => [index().on(tb.runId), index().on(tb.status)]
