@@ -28,9 +28,18 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         args,
       };
 
-      // Capture `this` value for method invocations (e.g., MyClass.method())
-      // Only include if `this` is defined and not the global object
-      if (this !== undefined && this !== null && this !== globalThis) {
+      // Capture `this` value for static method invocations on registered classes.
+      // Only capture if `this` is a class constructor that has been registered for
+      // serialization (indicated by having a `classId` property set by the SWC plugin).
+      // This prevents capturing `this` when a step function is called as a property
+      // on an arbitrary object (e.g., `tool.execute()` where `tool` has non-serializable
+      // properties like Zod schemas).
+      if (
+        this !== undefined &&
+        this !== null &&
+        this !== globalThis &&
+        typeof (this as Record<string, unknown>).classId === 'string'
+      ) {
         queueItem.thisVal = this as Serializable;
       }
 
