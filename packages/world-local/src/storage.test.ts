@@ -2320,4 +2320,164 @@ describe('Storage', () => {
       ).rejects.toThrow(/not found/i);
     });
   });
+
+  describe('legacy/backwards compatibility', () => {
+    // Helper to create a legacy run directly on disk (bypassing events.create)
+    async function createLegacyRun(
+      runId: string,
+      specVersion: number | undefined
+    ) {
+      const runsDir = path.join(testDir, 'runs');
+      await fs.mkdir(runsDir, { recursive: true });
+      const run = {
+        runId,
+        deploymentId: 'legacy-deployment',
+        workflowName: 'legacy-workflow',
+        specVersion,
+        status: 'running',
+        input: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      await fs.writeFile(
+        path.join(runsDir, `${runId}.json`),
+        JSON.stringify(run, null, 2)
+      );
+      return run;
+    }
+
+    describe('legacy runs (specVersion < 2 or undefined)', () => {
+      it('should handle run_cancelled on legacy run with specVersion=1', async () => {
+        const runId = 'wrun_legacy_v1';
+        await createLegacyRun(runId, 1);
+
+        const result = await storage.events.create(runId, {
+          eventType: 'run_cancelled',
+        });
+
+        // Legacy behavior: run is updated but event is not stored
+        expect(result.run?.status).toBe('cancelled');
+        expect(result.event).toBeUndefined();
+      });
+
+      it('should handle run_cancelled on legacy run with specVersion=undefined', async () => {
+        const runId = 'wrun_legacy_undefined';
+        await createLegacyRun(runId, undefined);
+
+        const result = await storage.events.create(runId, {
+          eventType: 'run_cancelled',
+        });
+
+        // Legacy behavior: run is updated but event is not stored
+        expect(result.run?.status).toBe('cancelled');
+        expect(result.event).toBeUndefined();
+      });
+
+      it('should handle wait_completed on legacy run', async () => {
+        const runId = 'wrun_legacy_wait';
+        await createLegacyRun(runId, 1);
+
+        const result = await storage.events.create(runId, {
+          eventType: 'wait_completed',
+          correlationId: 'wait_123',
+          eventData: { result: 'waited' },
+        } as any);
+
+        // Legacy behavior: event is stored but no entity mutation
+        expect(result.event).toBeDefined();
+        expect(result.event?.eventType).toBe('wait_completed');
+        expect(result.run).toBeUndefined();
+      });
+
+      it('should reject unsupported events on legacy runs', async () => {
+        const runId = 'wrun_legacy_unsupported';
+        await createLegacyRun(runId, 1);
+
+        // run_started is not supported for legacy runs
+        await expect(
+          storage.events.create(runId, { eventType: 'run_started' })
+        ).rejects.toThrow(/not supported for legacy runs/i);
+
+        // run_completed is not supported for legacy runs
+        await expect(
+          storage.events.create(runId, {
+            eventType: 'run_completed',
+            eventData: { output: 'done' },
+          })
+        ).rejects.toThrow(/not supported for legacy runs/i);
+
+        // run_failed is not supported for legacy runs
+        await expect(
+          storage.events.create(runId, {
+            eventType: 'run_failed',
+            eventData: { error: 'failed' },
+          })
+        ).rejects.toThrow(/not supported for legacy runs/i);
+      });
+
+      it('should delete hooks when legacy run is cancelled', async () => {
+        const runId = 'wrun_legacy_hooks';
+        await createLegacyRun(runId, 1);
+
+        // Create a hook for this run (hooks can be created on legacy runs)
+        const hooksDir = path.join(testDir, 'hooks');
+        await fs.mkdir(hooksDir, { recursive: true });
+        await fs.writeFile(
+          path.join(hooksDir, 'hook_legacy.json'),
+          JSON.stringify({
+            hookId: 'hook_legacy',
+            runId,
+            token: 'legacy-token',
+            ownerId: 'test-owner',
+            projectId: 'test-project',
+            environment: 'test',
+            createdAt: new Date(),
+          })
+        );
+
+        // Verify hook exists
+        const hookBefore = await storage.hooks.get('hook_legacy');
+        expect(hookBefore).toBeDefined();
+
+        // Cancel the legacy run
+        await storage.events.create(runId, { eventType: 'run_cancelled' });
+
+        // Hook should be deleted
+        await expect(storage.hooks.get('hook_legacy')).rejects.toThrow(
+          /not found/i
+        );
+      });
+    });
+
+    describe('newer runs (specVersion > current)', () => {
+      it('should reject events on runs with newer specVersion', async () => {
+        const runId = 'wrun_future';
+        // Create a run with a future spec version (higher than current)
+        await createLegacyRun(runId, 999);
+
+        await expect(
+          storage.events.create(runId, { eventType: 'run_started' })
+        ).rejects.toThrow(/requires spec version 999/i);
+      });
+    });
+
+    describe('current version runs', () => {
+      it('should process events normally for current specVersion runs', async () => {
+        // Create run via events.create (gets current specVersion)
+        const run = await createRun(storage, {
+          deploymentId: 'current-deployment',
+          workflowName: 'current-workflow',
+          input: [],
+        });
+
+        // Should work normally
+        const result = await storage.events.create(run.runId, {
+          eventType: 'run_started',
+        });
+
+        expect(result.run?.status).toBe('running');
+        expect(result.event?.eventType).toBe('run_started');
+      });
+    });
+  });
 });

@@ -1935,4 +1935,192 @@ describe('Storage (Postgres integration)', () => {
       ).rejects.toThrow(/not found/i);
     });
   });
+
+  describe('legacy/backwards compatibility', () => {
+    // Helper to create a legacy run directly in the database (bypassing events.create)
+    // Column mapping: id (runId), deployment_id, name (workflowName), spec_version, status, input
+    async function createLegacyRun(runId: string, specVersion: number | null) {
+      await sql`
+        INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input, created_at, updated_at)
+        VALUES (${runId}, 'legacy-deployment', 'legacy-workflow', ${specVersion}, 'running', '[]'::jsonb, NOW(), NOW())
+      `;
+    }
+
+    describe('legacy runs (specVersion < 2 or null)', () => {
+      it('should handle run_cancelled on legacy run with specVersion=1', async () => {
+        const runId = 'wrun_legacy_v1';
+        await createLegacyRun(runId, 1);
+
+        const result = await events.create(runId, {
+          eventType: 'run_cancelled',
+        });
+
+        // Legacy behavior: run is updated but event is not stored
+        expect(result.run?.status).toBe('cancelled');
+        expect(result.event).toBeUndefined();
+      });
+
+      it('should handle run_cancelled on legacy run with specVersion=null', async () => {
+        const runId = 'wrun_legacy_null';
+        await createLegacyRun(runId, null);
+
+        const result = await events.create(runId, {
+          eventType: 'run_cancelled',
+        });
+
+        // Legacy behavior: run is updated but event is not stored
+        expect(result.run?.status).toBe('cancelled');
+        expect(result.event).toBeUndefined();
+      });
+
+      it('should handle wait_completed on legacy run', async () => {
+        const runId = 'wrun_legacy_wait';
+        await createLegacyRun(runId, 1);
+
+        const result = await events.create(runId, {
+          eventType: 'wait_completed',
+          correlationId: 'wait_123',
+          eventData: { result: 'waited' },
+        } as any);
+
+        // Legacy behavior: event is stored but no entity mutation
+        expect(result.event).toBeDefined();
+        expect(result.event?.eventType).toBe('wait_completed');
+        expect(result.run).toBeUndefined();
+      });
+
+      it('should reject unsupported events on legacy runs', async () => {
+        const runId = 'wrun_legacy_unsupported';
+        await createLegacyRun(runId, 1);
+
+        // run_started is not supported for legacy runs
+        await expect(
+          events.create(runId, { eventType: 'run_started' })
+        ).rejects.toThrow(/not supported for legacy runs/i);
+
+        // run_completed is not supported for legacy runs
+        await expect(
+          events.create(runId, {
+            eventType: 'run_completed',
+            eventData: { output: 'done' },
+          })
+        ).rejects.toThrow(/not supported for legacy runs/i);
+
+        // run_failed is not supported for legacy runs
+        await expect(
+          events.create(runId, {
+            eventType: 'run_failed',
+            eventData: { error: 'failed' },
+          })
+        ).rejects.toThrow(/not supported for legacy runs/i);
+      });
+
+      it('should delete hooks when legacy run is cancelled', async () => {
+        const runId = 'wrun_legacy_hooks';
+        await createLegacyRun(runId, 1);
+
+        // Create a hook directly in the database for this run
+        await sql`
+          INSERT INTO workflow.workflow_hooks (hook_id, run_id, token, owner_id, project_id, environment, created_at)
+          VALUES ('hook_legacy', ${runId}, 'legacy-token', 'owner', 'project', 'test', NOW())
+        `;
+
+        // Verify hook exists
+        const [hookBefore] =
+          await sql`SELECT hook_id FROM workflow.workflow_hooks WHERE hook_id = 'hook_legacy'`;
+        expect(hookBefore).toBeDefined();
+
+        // Cancel the legacy run
+        await events.create(runId, { eventType: 'run_cancelled' });
+
+        // Hook should be deleted
+        const [hookAfter] =
+          await sql`SELECT hook_id FROM workflow.workflow_hooks WHERE hook_id = 'hook_legacy'`;
+        expect(hookAfter).toBeUndefined();
+      });
+    });
+
+    describe('newer runs (specVersion > current)', () => {
+      it('should reject events on runs with newer specVersion', async () => {
+        const runId = 'wrun_future';
+        // Create a run with a future spec version (higher than current)
+        await sql`
+          INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input, created_at, updated_at)
+          VALUES (${runId}, 'future-deployment', 'future-workflow', 999, 'running', '[]'::jsonb, NOW(), NOW())
+        `;
+
+        await expect(
+          events.create(runId, { eventType: 'run_started' })
+        ).rejects.toThrow(/requires spec version 999/i);
+      });
+    });
+
+    describe('current version runs', () => {
+      it('should process events normally for current specVersion runs', async () => {
+        // Create run via events.create (gets current specVersion)
+        const run = await createRun(events, {
+          deploymentId: 'current-deployment',
+          workflowName: 'current-workflow',
+          input: [],
+        });
+
+        // Should work normally
+        const result = await events.create(run.runId, {
+          eventType: 'run_started',
+        });
+
+        expect(result.run?.status).toBe('running');
+        expect(result.event?.eventType).toBe('run_started');
+      });
+    });
+
+    describe('legacy error parsing', () => {
+      it('should parse legacy errorJson field on runs', async () => {
+        const runId = 'wrun_legacy_error';
+        // Create a run with legacy error format (error column is the text/JSON one)
+        // Failed runs need completed_at set
+        await sql`
+          INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input, error, created_at, updated_at, completed_at)
+          VALUES (${runId}, 'deployment', 'workflow', 2, 'failed', '[]'::jsonb, '{"message":"Legacy error","stack":"at foo()"}', NOW(), NOW(), NOW())
+        `;
+
+        const run = await runs.get(runId);
+        expect(run.error?.message).toBe('Legacy error');
+        expect(run.error?.stack).toBe('at foo()');
+      });
+
+      it('should parse legacy errorJson as plain string', async () => {
+        const runId = 'wrun_legacy_string_error';
+        // Create a run with plain string error
+        // Failed runs need completed_at set
+        await sql`
+          INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input, error, created_at, updated_at, completed_at)
+          VALUES (${runId}, 'deployment', 'workflow', 2, 'failed', '[]'::jsonb, '"Simple error message"', NOW(), NOW(), NOW())
+        `;
+
+        const run = await runs.get(runId);
+        expect(run.error?.message).toBe('Simple error message');
+      });
+
+      it('should parse legacy errorJson field on steps', async () => {
+        // First create a run and step
+        const run = await createRun(events, {
+          deploymentId: 'deployment',
+          workflowName: 'workflow',
+          input: [],
+        });
+
+        // Insert a step directly with legacy error format (error column is the text/JSON one)
+        // Failed steps need completed_at set
+        await sql`
+          INSERT INTO workflow.workflow_steps (run_id, step_id, step_name, status, input, error, attempt, created_at, updated_at, completed_at)
+          VALUES (${run.runId}, 'step_legacy_err', 'test-step', 'failed', '[]'::jsonb, '{"message":"Step error","stack":"at bar()"}', 1, NOW(), NOW(), NOW())
+        `;
+
+        const step = await steps.get(run.runId, 'step_legacy_err');
+        expect(step.error?.message).toBe('Step error');
+        expect(step.error?.stack).toBe('at bar()');
+      });
+    });
+  });
 });
