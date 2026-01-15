@@ -396,7 +396,7 @@ const worldCache = new Map<string, World>();
  * The @workflow/web UI should always pass `{}` for envMap.
  * We intentionally do not trust or apply client-provided env.
  */
-async function getWorldFromEnv(_userEnvMap: EnvMap): Promise<World> {
+async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
   const backendId = getEffectiveBackendId();
   const isVercelWorld = ['vercel', '@workflow/world-vercel'].includes(
     backendId
@@ -407,13 +407,17 @@ async function getWorldFromEnv(_userEnvMap: EnvMap): Promise<World> {
   // directly to avoid having to set process.env.
   if (isVercelWorld) {
     return createVercelWorld({
-      baseUrl: process.env.WORKFLOW_VERCEL_BACKEND_URL,
-      skipProxy: process.env.WORKFLOW_VERCEL_SKIP_PROXY === 'true',
-      token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+      token:
+        userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
+        process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
       projectConfig: {
-        environment: process.env.WORKFLOW_VERCEL_ENV,
-        projectId: process.env.WORKFLOW_VERCEL_PROJECT,
-        teamId: process.env.WORKFLOW_VERCEL_TEAM,
+        environment:
+          userEnvMap.WORKFLOW_VERCEL_ENV || process.env.WORKFLOW_VERCEL_ENV,
+        projectId:
+          userEnvMap.WORKFLOW_VERCEL_PROJECT ||
+          process.env.WORKFLOW_VERCEL_PROJECT,
+        teamId:
+          userEnvMap.WORKFLOW_VERCEL_TEAM || process.env.WORKFLOW_VERCEL_TEAM,
       },
     });
   }
