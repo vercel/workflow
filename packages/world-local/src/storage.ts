@@ -11,17 +11,17 @@ import {
   type GetHookParams,
   type Hook,
   HookSchema,
-  isLegacyVersion,
+  isLegacySpecVersion,
   type ListHooksParams,
   type PaginatedResponse,
+  requiresNewerWorld,
+  SPEC_VERSION_CURRENT,
   type Step,
   StepSchema,
   type Storage,
-  version,
   type WorkflowRun,
   WorkflowRunSchema,
 } from '@workflow/world';
-import semver from 'semver';
 import { monotonicFactory } from 'ulid';
 import { DEFAULT_RESOLVE_DATA_OPTION } from './config.js';
 import {
@@ -423,15 +423,15 @@ export function createStorage(basedir: string): Storage {
         // Skip for run_created (no existing run) and runtime events (step_completed, step_retrying).
         if (currentRun) {
           // Check if run requires a newer world version
-          if (
-            currentRun.specVersion &&
-            semver.gt(currentRun.specVersion, version)
-          ) {
-            throw new RunNotSupportedError(currentRun.specVersion, version);
+          if (requiresNewerWorld(currentRun.specVersion)) {
+            throw new RunNotSupportedError(
+              currentRun.specVersion!,
+              SPEC_VERSION_CURRENT
+            );
           }
 
           // Route to legacy handler for pre-event-sourcing runs
-          if (isLegacyVersion(currentRun.specVersion)) {
+          if (isLegacySpecVersion(currentRun.specVersion)) {
             return handleLegacyEvent(
               basedir,
               effectiveRunId,
@@ -590,15 +590,15 @@ export function createStorage(basedir: string): Storage {
             workflowName: string;
             input: any[];
             executionContext?: Record<string, any>;
-            specVersion?: string;
+            specVersion?: number;
           };
           run = {
             runId: effectiveRunId,
             deploymentId: runData.deploymentId,
             status: 'pending',
             workflowName: runData.workflowName,
-            // Always use current world version (world sets its own version)
-            specVersion: version,
+            // Always use current world spec version
+            specVersion: SPEC_VERSION_CURRENT,
             executionContext: runData.executionContext,
             input: runData.input || [],
             output: undefined,

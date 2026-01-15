@@ -239,17 +239,17 @@ export class WorkflowRunCancelledError extends WorkflowError {
  * current World implementation supports. Users should upgrade their @workflow packages.
  */
 export class RunNotSupportedError extends WorkflowError {
-  readonly runVersion: string;
-  readonly worldVersion: string;
+  readonly runSpecVersion: number;
+  readonly worldSpecVersion: number;
 
-  constructor(runVersion: string, worldVersion: string) {
+  constructor(runSpecVersion: number, worldSpecVersion: number) {
     super(
-      `Run requires spec version ${runVersion}, but world is version ${worldVersion}. ` +
+      `Run requires spec version ${runSpecVersion}, but world supports version ${worldSpecVersion}. ` +
         `Please upgrade @workflow packages.`
     );
     this.name = 'RunNotSupportedError';
-    this.runVersion = runVersion;
-    this.worldVersion = worldVersion;
+    this.runSpecVersion = runSpecVersion;
+    this.worldSpecVersion = worldSpecVersion;
   }
 
   static is(value: unknown): value is RunNotSupportedError {

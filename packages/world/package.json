@@ -22,14 +22,10 @@
     "dev": "genversion --es6 src/version.ts && tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist src/version.ts"
   },
-  "dependencies": {
-    "semver": "^7.7.3"
-  },
   "peerDependencies": {
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/semver": "^7.5.8",
     "@types/node": "catalog:",
     "genversion": "3.2.0",
     "zod": "catalog:",

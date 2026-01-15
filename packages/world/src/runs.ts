@@ -25,7 +25,7 @@ export const WorkflowRunBaseSchema = z.object({
   status: WorkflowRunStatusSchema,
   deploymentId: z.string(),
   workflowName: z.string(),
-  specVersion: z.string().optional(),
+  specVersion: z.number().optional(),
   executionContext: z.record(z.string(), z.any()).optional(),
   input: z.array(z.any()),
   output: z.any().optional(),

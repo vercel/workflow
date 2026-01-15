@@ -63,7 +63,7 @@ export const runs = schema.table(
     deploymentId: varchar('deployment_id').notNull(),
     status: workflowRunStatus('status').notNull(),
     workflowName: varchar('name').notNull(),
-    specVersion: varchar('spec_version'),
+    specVersion: integer('spec_version'),
     /** @deprecated */
     executionContextJson:
       jsonb('execution_context').$type<Record<string, any>>(),
@@ -139,10 +139,8 @@ export const steps = schema.table(
     retryAfter: timestamp('retry_after'),
   } satisfies DrizzlishOfType<
     Cborized<
-      Omit<Step, 'input' | 'error' | 'startedAt'> & {
+      Omit<Step, 'input'> & {
         input?: unknown;
-        error?: string;
-        startedAt?: Date;
       },
       'output' | 'input'
     >

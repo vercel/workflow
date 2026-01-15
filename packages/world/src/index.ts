@@ -32,4 +32,10 @@ export {
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
 export { version } from './version.js';
-export { EVENT_SOURCED_VERSION, isLegacyVersion } from './version-utils.js';
+export type { SpecVersion } from './spec-version.js';
+export {
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_CURRENT,
+  isLegacySpecVersion,
+  requiresNewerWorld,
+} from './spec-version.js';

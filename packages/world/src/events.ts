@@ -164,7 +164,7 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
     workflowName: z.string(),
     input: z.array(z.any()), // SerializedData[]
     executionContext: z.record(z.string(), z.any()).optional(),
-    specVersion: z.string().optional(), // World spec version for backwards compatibility
+    specVersion: z.number().optional(), // Spec version for backwards compatibility
   }),
 });
 

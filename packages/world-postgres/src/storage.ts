@@ -14,13 +14,13 @@ import type {
 import {
   EventSchema,
   HookSchema,
-  isLegacyVersion,
+  isLegacySpecVersion,
+  requiresNewerWorld,
+  SPEC_VERSION_CURRENT,
   StepSchema,
-  version,
   WorkflowRunSchema,
 } from '@workflow/world';
 import { and, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
-import semver from 'semver';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
@@ -182,7 +182,7 @@ async function handleLegacyEventPostgres(
   runId: string,
   eventId: string,
   data: any,
-  currentRun: { status: string; specVersion: string | null },
+  currentRun: { status: string; specVersion: number | null },
   params?: { resolveData?: ResolveData }
 ): Promise<EventResult> {
   const resolveData = params?.resolveData ?? 'all';
@@ -324,7 +324,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Skip run validation for step_completed and step_retrying - they only operate
       // on running steps, and running steps are always allowed to modify regardless
       // of run state. This optimization saves database queries per step event.
-      let currentRun: { status: string; specVersion: string | null } | null =
+      let currentRun: { status: string; specVersion: number | null } | null =
         null;
       const skipRunValidationEvents = ['step_completed', 'step_retrying'];
       if (
@@ -345,15 +345,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Skip for run_created (no existing run) and runtime events (step_completed, step_retrying).
       if (currentRun) {
         // Check if run requires a newer world version
-        if (
-          currentRun.specVersion &&
-          semver.gt(currentRun.specVersion, version)
-        ) {
-          throw new RunNotSupportedError(currentRun.specVersion, version);
+        if (requiresNewerWorld(currentRun.specVersion)) {
+          throw new RunNotSupportedError(
+            currentRun.specVersion!,
+            SPEC_VERSION_CURRENT
+          );
         }
 
         // Route to legacy handler for pre-event-sourcing runs
-        if (isLegacyVersion(currentRun.specVersion ?? undefined)) {
+        if (isLegacySpecVersion(currentRun.specVersion)) {
           return handleLegacyEventPostgres(
             drizzle,
             effectiveRunId,
@@ -503,7 +503,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           workflowName: string;
           input: any[];
           executionContext?: Record<string, any>;
-          specVersion?: string;
+          specVersion?: number;
         };
         const [runValue] = await drizzle
           .insert(Schema.runs)
@@ -511,8 +511,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             runId: effectiveRunId,
             deploymentId: eventData.deploymentId,
             workflowName: eventData.workflowName,
-            // Always use current world version (world sets its own version)
-            specVersion: version,
+            // Always use current world spec version
+            specVersion: SPEC_VERSION_CURRENT,
             input: eventData.input as SerializedContent,
             executionContext: eventData.executionContext as
               | SerializedContent

@@ -54,14 +54,12 @@
     "drizzle-orm": "0.44.7",
     "pg-boss": "11.0.7",
     "postgres": "3.4.7",
-    "semver": "^7.7.3",
     "ulid": "3.0.1",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "11.7.1",
     "@types/node": "catalog:",
-    "@types/semver": "^7.5.8",
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world-testing": "workspace:*",
