@@ -6,7 +6,6 @@ import { HooksTable } from '@/components/hooks-table';
 import { RunsTable } from '@/components/runs-table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { WorkflowsList } from '@/components/workflows-list';
-import { buildUrlWithConfig } from '@/lib/config';
 import { useHookIdState, useSidebarState, useTabState } from '@/lib/url-state';
 import { useServerConfig } from '@/lib/world-config-context';
 
@@ -26,22 +25,17 @@ export default function Home() {
 
   const handleRunClick = (runId: string, streamId?: string) => {
     if (!streamId) {
-      router.push(buildUrlWithConfig(`/run/${runId}`));
+      router.push(`/run/${runId}`);
     } else {
-      router.push(buildUrlWithConfig(`/run/${runId}/streams/${streamId}`));
+      router.push(`/run/${runId}/streams/${streamId}`);
     }
   };
 
   const handleHookSelect = (hookId: string, runId?: string) => {
     if (hookId) {
-      router.push(
-        buildUrlWithConfig(`/run/${runId}`, {
-          sidebar: 'hook',
-          hookId,
-        })
-      );
+      router.push(`/run/${runId}?sidebar=hook&hookId=${hookId}`);
     } else {
-      router.push(buildUrlWithConfig(`/run/${runId}`));
+      router.push(`/run/${runId}`);
     }
   };
 

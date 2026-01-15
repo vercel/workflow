@@ -81,6 +81,13 @@ export const inferLocalWorldEnvVars = async () => {
   const cwd = getWorkflowConfig().workingDir;
   let repoRoot: string | undefined;
 
+  // Always expose the effective working directory to the web UI/server-side helpers.
+  // This is especially useful when developing the web UI from the workflow repo
+  // while targeting another project directory.
+  if (!process.env.WORKFLOW_OBSERVABILITY_CWD) {
+    writeEnvVars({ WORKFLOW_OBSERVABILITY_CWD: cwd });
+  }
+
   if (!envVars.PORT) {
     logger.warn(
       'PORT environment variable is not set, using default port 3000'

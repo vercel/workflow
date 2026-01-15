@@ -54,14 +54,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { useDataDirInfo } from '@/lib/hooks';
 import { useTableSelection } from '@/lib/hooks/use-table-selection';
 import { useServerConfig } from '@/lib/world-config-context';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { SelectionBar } from './display-utils/selection-bar';
 import { StatusBadge } from './display-utils/status-badge';
-import { TableSkeleton } from './display-utils/table-skeleton';
 import { RunActionsDropdownItems } from './run-actions';
 import { Checkbox } from './ui/checkbox';
 
@@ -379,14 +377,14 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   // Empty env object - server actions read from process.env
   const env: EnvMap = useMemo(() => ({}), []);
   const isLocal =
     serverConfig.backendId === 'local' ||
     serverConfig.backendId === '@workflow/world-local';
-  const { data: dataDirInfo, isLoading: dataDirInfoLoading } = useDataDirInfo(
-    serverConfig.displayInfo.dataDir ?? ''
-  );
+  const localDataDirPath = serverConfig.displayInfo?.['local.dataDirPath'];
+  const localShortName = serverConfig.displayInfo?.['local.shortName'];
 
   // TODO: World-vercel doesn't support filtering by status without a workflow name filter
   const statusFilterRequiresWorkflowNameFilter =
@@ -424,9 +422,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const [isBulkReenqueuing, setIsBulkReenqueuing] = useState(false);
 
   const isLocalAndHasMissingData =
-    isLocal &&
-    (!dataDirInfo?.dataDir || !data?.data?.length) &&
-    !dataDirInfoLoading;
+    isLocal && (!localDataDirPath || !data?.data?.length);
 
   // Track seen workflow names from loaded data
   useEffect(() => {
@@ -444,8 +440,22 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
 
   const loading = data.isLoading;
 
+  // Track when we've completed the initial load
+  useEffect(() => {
+    if (!loading && !hasLoadedOnce) {
+      setHasLoadedOnce(true);
+    }
+  }, [loading, hasLoadedOnce]);
+
+  // Reset hasLoadedOnce when filters change
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Want to reset on any filter change
+  useEffect(() => {
+    setHasLoadedOnce(false);
+  }, [workflowNameFilter, status, sortOrder]);
+
   const onReload = useCallback(() => {
     setLastRefreshTime(() => new Date());
+    setHasLoadedOnce(false);
     reload();
   }, [reload]);
 
@@ -546,7 +556,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     if (isLocalAndHasMissingData) {
       const interval = setInterval(() => {
         onReload();
-      }, 3000);
+      }, 5000);
       return () => clearInterval(interval);
     }
   }, [isLocalAndHasMissingData, onReload]);
@@ -572,9 +582,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   }, [lastRefreshTime, onReload]);
 
   const localDirText = (
-    <code className="font-mono">
-      {dataDirInfo?.shortName || 'current directory'}
-    </code>
+    <code className="font-mono">{localShortName || 'current directory'}</code>
   );
 
   return (
@@ -594,153 +602,175 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
         onRefresh={onReload}
         lastRefreshTime={lastRefreshTime}
       />
-      {error ? (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Error loading runs</AlertTitle>
-          <AlertDescription>{getErrorMessage(error)}</AlertDescription>
-        </Alert>
-      ) : loading && !data?.data ? (
-        <TableSkeleton />
-      ) : !loading && (!data.data || data.data.length === 0) ? (
-        <div className="text-sm text-center py-8 text-muted-foreground flex flex-col items-center justify-center gap-3">
-          <span className="text-sm">
-            No workflow runs found
-            {isLocalAndHasMissingData ? <> in {localDirText}</> : ''}.
-          </span>
-          {isLocalAndHasMissingData && (
-            <span className="text-sm flex items-center gap-2">
-              This view will update once you run a workflow.
-            </span>
-          )}
-        </div>
-      ) : (
-        <>
-          <Card className="overflow-hidden mt-4 bg-background">
-            <CardContent className="p-0 max-h-[calc(100vh-280px)] overflow-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10">
-                      <Checkbox
-                        checked={selection.isAllSelected(runs)}
-                        indeterminate={selection.isSomeSelected(runs)}
-                        onCheckedChange={() => selection.toggleSelectAll(runs)}
-                        aria-label="Select all runs"
-                      />
-                    </TableHead>
-                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
-                      Workflow
-                    </TableHead>
-                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
-                      Run ID
-                    </TableHead>
-                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
-                      Status
-                    </TableHead>
-                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
-                      Started
-                    </TableHead>
-                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
-                      Completed
-                    </TableHead>
-                    <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {runs.map((run) => (
-                    <TableRow
-                      key={run.runId}
-                      className="cursor-pointer group relative"
-                      onClick={() => onRunClick(run.runId)}
-                      data-selected={selection.isSelected(run)}
-                    >
-                      <TableCell className="py-2">
-                        <Checkbox
-                          checked={selection.isSelected(run)}
-                          onCheckedChange={() => selection.toggleSelection(run)}
-                          aria-label={`Select run ${run.runId}`}
-                        />
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <CopyableText text={run.workflowName} overlay>
-                          {parseWorkflowName(run.workflowName)?.shortName ||
-                            '?'}
-                        </CopyableText>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs py-2">
-                        <CopyableText text={run.runId} overlay>
-                          {run.runId}
-                        </CopyableText>
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <StatusBadge
-                          status={run.status}
-                          context={run}
-                          durationMs={
-                            run.startedAt
-                              ? (run.completedAt
-                                  ? new Date(run.completedAt).getTime()
-                                  : Date.now()) -
-                                new Date(run.startedAt).getTime()
-                              : undefined
-                          }
-                        />
-                      </TableCell>
-                      <TableCell className="py-2 text-muted-foreground text-xs">
-                        {run.startedAt ? (
-                          <RelativeTime date={run.startedAt} />
-                        ) : (
-                          '-'
-                        )}
-                      </TableCell>
-                      <TableCell className="py-2 text-muted-foreground text-xs">
-                        {run.completedAt ? (
-                          <RelativeTime date={run.completedAt} />
-                        ) : (
-                          '-'
-                        )}
-                      </TableCell>
-                      <TableCell className="py-2">
-                        <LazyDropdownMenu
-                          env={env}
-                          runId={run.runId}
-                          runStatus={run.status}
-                          onSuccess={onReload}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
 
-          <div className="flex items-center justify-between mt-4">
-            <div className="text-sm text-muted-foreground">{pageInfo}</div>
-            <div className="flex gap-2 items-center">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={previousPage}
-                disabled={!hasPreviousPage}
-              >
-                <ChevronLeft />
-                Previous
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={nextPage}
-                disabled={!hasNextPage}
-              >
-                Next
-                <ChevronRight />
-              </Button>
-            </div>
-          </div>
-        </>
-      )}
+      <Card className="overflow-hidden mt-4 bg-background">
+        <CardContent className="p-0 max-h-[calc(100vh-280px)] overflow-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10">
+                  <Checkbox
+                    checked={selection.isAllSelected(runs)}
+                    indeterminate={selection.isSomeSelected(runs)}
+                    onCheckedChange={() => selection.toggleSelectAll(runs)}
+                    aria-label="Select all runs"
+                    disabled={!runs.length}
+                  />
+                </TableHead>
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                  Workflow
+                </TableHead>
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                  Run ID
+                </TableHead>
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                  Status
+                </TableHead>
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                  Started
+                </TableHead>
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                  Completed
+                </TableHead>
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10 w-10"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {error ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="h-[400px]">
+                    <div className="flex items-center justify-center h-full">
+                      <Alert variant="destructive" className="max-w-md">
+                        <AlertCircle className="h-4 w-4" />
+                        <AlertTitle>Error loading runs</AlertTitle>
+                        <AlertDescription>
+                          {getErrorMessage(error)}
+                        </AlertDescription>
+                      </Alert>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : loading && !hasLoadedOnce ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="h-[400px]">
+                    <div className="flex items-center justify-center h-full">
+                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : !data.data || data.data.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="h-[400px]">
+                    <div className="text-sm text-center text-muted-foreground flex flex-col items-center justify-center gap-3 h-full">
+                      <span className="text-sm">
+                        No workflow runs found
+                        {isLocalAndHasMissingData ? (
+                          <> in {localDirText}</>
+                        ) : (
+                          ''
+                        )}
+                        .
+                      </span>
+                      {isLocalAndHasMissingData && (
+                        <span className="text-sm flex items-center gap-2">
+                          This view will update once you run a workflow.
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                runs.map((run) => (
+                  <TableRow
+                    key={run.runId}
+                    className="cursor-pointer group relative"
+                    onClick={() => onRunClick(run.runId)}
+                    data-selected={selection.isSelected(run)}
+                  >
+                    <TableCell className="py-2">
+                      <Checkbox
+                        checked={selection.isSelected(run)}
+                        onCheckedChange={() => selection.toggleSelection(run)}
+                        aria-label={`Select run ${run.runId}`}
+                      />
+                    </TableCell>
+                    <TableCell className="py-2">
+                      <CopyableText text={run.workflowName} overlay>
+                        {parseWorkflowName(run.workflowName)?.shortName || '?'}
+                      </CopyableText>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs py-2">
+                      <CopyableText text={run.runId} overlay>
+                        {run.runId}
+                      </CopyableText>
+                    </TableCell>
+                    <TableCell className="py-2">
+                      <StatusBadge
+                        status={run.status}
+                        context={run}
+                        durationMs={
+                          run.startedAt
+                            ? (run.completedAt
+                                ? new Date(run.completedAt).getTime()
+                                : Date.now()) -
+                              new Date(run.startedAt).getTime()
+                            : undefined
+                        }
+                      />
+                    </TableCell>
+                    <TableCell className="py-2 text-muted-foreground text-xs">
+                      {run.startedAt ? (
+                        <RelativeTime date={run.startedAt} />
+                      ) : (
+                        '-'
+                      )}
+                    </TableCell>
+                    <TableCell className="py-2 text-muted-foreground text-xs">
+                      {run.completedAt ? (
+                        <RelativeTime date={run.completedAt} />
+                      ) : (
+                        '-'
+                      )}
+                    </TableCell>
+                    <TableCell className="py-2">
+                      <LazyDropdownMenu
+                        env={env}
+                        runId={run.runId}
+                        runStatus={run.status}
+                        onSuccess={onReload}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <div className="flex items-center justify-between mt-4">
+        <div className="text-sm text-muted-foreground">{pageInfo}</div>
+        <div className="flex gap-2 items-center">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={previousPage}
+            disabled={!hasPreviousPage}
+          >
+            <ChevronLeft />
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={nextPage}
+            disabled={!hasNextPage}
+          >
+            Next
+            <ChevronRight />
+          </Button>
+        </div>
+      </div>
 
       <SelectionBar
         selectionCount={selection.selectionCount}

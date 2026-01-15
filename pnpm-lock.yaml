@@ -881,15 +881,9 @@ importers:
 
   packages/web:
     dependencies:
-      '@xyflow/react':
-        specifier: 12.9.3
-        version: 12.9.3(@types/react@19.1.13)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       next:
         specifier: 16.0.10
         version: 16.0.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
-      nuqs:
-        specifier: ^2.2.5
-        version: 2.8.3(next@16.0.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react-router@7.10.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react@19.1.0)
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
@@ -948,6 +942,9 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
+      '@xyflow/react':
+        specifier: 12.9.3
+        version: 12.9.3(@types/react@19.1.13)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -963,12 +960,18 @@ importers:
       next-themes:
         specifier: 0.4.6
         version: 0.4.6(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      nuqs:
+        specifier: ^2.2.5
+        version: 2.8.3(next@16.0.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react-router@7.10.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react@19.1.0)
       react:
         specifier: 19.1.0
         version: 19.1.0
       react-dom:
         specifier: 19.1.0
         version: 19.1.0(react@19.1.0)
+      shiki:
+        specifier: 3.13.0
+        version: 3.13.0
       sonner:
         specifier: 2.0.7
         version: 2.0.7(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -996,9 +999,15 @@ importers:
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
+      '@workflow/world-vercel':
+        specifier: workspace:*
+        version: link:../world-vercel
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -1017,6 +1026,9 @@ importers:
       react-dom:
         specifier: 19.1.0
         version: 19.1.0(react@19.1.0)
+      shiki:
+        specifier: 3.13.0
+        version: 3.13.0
       sonner:
         specifier: 2.0.7
         version: 2.0.7(react-dom@19.1.0(react@19.1.0))(react@19.1.0)

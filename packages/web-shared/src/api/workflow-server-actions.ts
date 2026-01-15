@@ -13,6 +13,7 @@ import {
   getExternalRevivers,
 } from '@workflow/core/serialization';
 import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
   Event,
   Hook,
@@ -21,6 +22,7 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
+import { createVercelWorld } from '@workflow/world-vercel';
 
 /**
  * Environment variable map for world configuration.
@@ -34,31 +36,34 @@ import type {
 export type EnvMap = Record<string, string | undefined>;
 
 /**
- * Server configuration info that is safe to send to the client.
- * This deliberately excludes sensitive data like connection strings and auth tokens.
+ * Public configuration info that is safe to send to the client.
+ *
+ * IMPORTANT:
+ * - The web UI must not be able to read arbitrary server env vars.
+ * - The only env-derived data we expose is from a strict per-world allowlist.
  */
-export interface ServerConfig {
-  /** Whether the world is configured (WORKFLOW_TARGET_WORLD or default is set) */
-  isConfigured: boolean;
+export interface PublicServerConfig {
   /** Human-readable backend name for display (e.g., "PostgreSQL", "Local", "Vercel") */
   backendDisplayName: string;
   /** The raw backend identifier (e.g., "@workflow/world-postgres", "local", "vercel") */
   backendId: string;
-  /** Non-sensitive display info specific to the backend type */
-  displayInfo: {
-    /** For Vercel: the environment (production/preview) */
-    environment?: string;
-    /** For Vercel: the project name (not ID) */
-    projectName?: string;
-    /** For Vercel: the team name (not ID) */
-    teamName?: string;
-    /** For Postgres: just the hostname (no credentials or full URL) */
-    hostname?: string;
-    /** For Postgres: the database name */
-    database?: string;
-    /** For Local: the data directory path */
-    dataDir?: string;
-  };
+  /**
+   * Safe, whitelisted, env-derived values.
+   *
+   * Keys MUST match the canonical environment variable names (e.g. "WORKFLOW_VERCEL_PROJECT").
+   * This keeps configuration naming consistent across CLI + web + docs.
+   */
+  publicEnv: Record<string, string>;
+  /**
+   * Keys for env vars that are allowed/known but considered sensitive.
+   * The server will NOT return their values; UIs should display `*****`.
+   */
+  sensitiveEnvKeys: string[];
+  /**
+   * Additional safe, derived info for display (never contains secrets).
+   * These keys are not env var names; they are UI-friendly derived fields.
+   */
+  displayInfo?: Record<string, string>;
 }
 
 /**
@@ -85,6 +90,46 @@ function getBackendDisplayName(targetWorld: string | undefined): string {
   }
 }
 
+function getEffectiveBackendId(): string {
+  const targetWorld = process.env.WORKFLOW_TARGET_WORLD;
+  if (targetWorld) {
+    return targetWorld;
+  }
+  // Match @workflow/core/runtime defaulting: vercel if VERCEL_DEPLOYMENT_ID is set, else local.
+  return process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local';
+}
+
+function getObservabilityCwd(): string {
+  const raw = process.env.WORKFLOW_OBSERVABILITY_CWD;
+  if (!raw) {
+    return process.cwd();
+  }
+  return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+}
+
+/**
+ * Ensure local-world env is derived consistently when running `packages/web` directly.
+ *
+ * Without this, the UI may *display* a dataDir detected from WORKFLOW_OBSERVABILITY_CWD,
+ * while the actual World reads from `WORKFLOW_LOCAL_DATA_DIR` (defaulting to `.workflow-data`
+ * under the web package cwd), resulting in "no runs" even though data exists.
+ */
+async function ensureLocalWorldDataDirEnv(): Promise<void> {
+  if (process.env.WORKFLOW_LOCAL_DATA_DIR) return;
+
+  const cwd = getObservabilityCwd();
+  const info = await findWorkflowDataDir(cwd);
+
+  // Prefer a discovered workflow-data directory (e.g. `.next/workflow-data`).
+  if (info.dataDir) {
+    process.env.WORKFLOW_LOCAL_DATA_DIR = info.dataDir;
+    return;
+  }
+
+  // Fall back to a canonical location under the target project directory.
+  process.env.WORKFLOW_LOCAL_DATA_DIR = path.resolve(cwd, '.workflow-data');
+}
+
 /**
  * Extract hostname from a database URL without exposing credentials.
  */
@@ -99,13 +144,13 @@ function extractHostnameFromUrl(url: string | undefined): string | undefined {
 }
 
 /**
- * Extract database name from a postgres URL.
+ * Extract database name from a URL where pathname is like "/dbname".
+ * (Works for postgres/mongodb-style URLs; returns undefined when not applicable.)
  */
 function extractDatabaseFromUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
   try {
     const parsed = new URL(url);
-    // pathname is like "/dbname", so remove leading slash
     const dbName = parsed.pathname?.slice(1);
     return dbName || undefined;
   } catch {
@@ -113,106 +158,197 @@ function extractDatabaseFromUrl(url: string | undefined): string | undefined {
   }
 }
 
-/**
- * Shorten a file path for display purposes.
- * - Replaces home directory with ~
- * - If path is still long, shows .../last-two-segments
- */
-function shortenPath(filePath: string): string {
-  if (!filePath) return filePath;
+// Keep this list in sync with `worlds-manifest.json` env + credentialsNote.
+const WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD: Record<string, string[]> = {
+  // Official
+  local: [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_LOCAL_DATA_DIR',
+    'WORKFLOW_MANIFEST_PATH',
+    'WORKFLOW_OBSERVABILITY_CWD',
+    'PORT',
+  ],
+  '@workflow/world-local': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_LOCAL_DATA_DIR',
+    'WORKFLOW_MANIFEST_PATH',
+    'WORKFLOW_OBSERVABILITY_CWD',
+    'PORT',
+  ],
+  postgres: ['WORKFLOW_TARGET_WORLD', 'WORKFLOW_POSTGRES_URL'],
+  '@workflow/world-postgres': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_POSTGRES_URL',
+  ],
+  vercel: [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_VERCEL_ENV',
+    'WORKFLOW_VERCEL_TEAM',
+    'WORKFLOW_VERCEL_PROJECT',
+    'WORKFLOW_VERCEL_BACKEND_URL',
+    'WORKFLOW_VERCEL_SKIP_PROXY',
+    'WORKFLOW_VERCEL_AUTH_TOKEN',
+  ],
+  '@workflow/world-vercel': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_VERCEL_ENV',
+    'WORKFLOW_VERCEL_TEAM',
+    'WORKFLOW_VERCEL_PROJECT',
+    'WORKFLOW_VERCEL_BACKEND_URL',
+    'WORKFLOW_VERCEL_SKIP_PROXY',
+    'WORKFLOW_VERCEL_AUTH_TOKEN',
+  ],
 
-  let shortened = filePath;
+  // Community (from worlds-manifest.json)
+  '@workflow-worlds/starter': ['WORKFLOW_TARGET_WORLD'],
+  '@workflow-worlds/turso': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_TURSO_DATABASE_URL',
+  ],
+  '@workflow-worlds/mongodb': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_MONGODB_URI',
+    'WORKFLOW_MONGODB_DATABASE_NAME',
+  ],
+  '@workflow-worlds/redis': ['WORKFLOW_TARGET_WORLD', 'WORKFLOW_REDIS_URI'],
+  'workflow-world-jazz': [
+    'WORKFLOW_TARGET_WORLD',
+    // credentialsNote:
+    'JAZZ_API_KEY',
+    'JAZZ_WORKER_ACCOUNT',
+    'JAZZ_WORKER_SECRET',
+  ],
+};
 
-  // Replace home directory with ~
-  const homeDir = process.env.HOME || process.env.USERPROFILE;
-  if (homeDir && shortened.startsWith(homeDir)) {
-    shortened = '~' + shortened.slice(homeDir.length);
+function getAllowedEnvKeysForBackend(backendId: string): string[] {
+  return (
+    WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD[backendId] ?? ['WORKFLOW_TARGET_WORLD']
+  );
+}
+
+// Keep this list in sync with `worlds-manifest.json` env + credentialsNote.
+//
+// IMPORTANT: This is intentionally explicit (no heuristics). We only redact values for env
+// vars that are known + whitelisted and that we *know* contain secrets/credentials.
+const WORLD_SENSITIVE_ENV_KEYS = new Set<string>([
+  // Official
+  'WORKFLOW_POSTGRES_URL',
+  'WORKFLOW_VERCEL_AUTH_TOKEN',
+
+  // Community
+  'WORKFLOW_TURSO_DATABASE_URL',
+  'WORKFLOW_MONGODB_URI',
+  'WORKFLOW_REDIS_URI',
+  'JAZZ_API_KEY',
+  'JAZZ_WORKER_SECRET',
+]);
+
+function isSet(value: string | undefined): value is string {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function deriveDbInfoForKey(
+  key: string,
+  value: string
+): Record<string, string> | null {
+  // Only attempt for URL-like strings.
+  if (!value.includes(':')) return null;
+  try {
+    const parsed = new URL(value);
+    const protocol = (parsed.protocol || '').replace(':', '');
+    // file: URIs are not useful for hostname/db display
+    if (protocol === 'file') return null;
+    const hostname = extractHostnameFromUrl(value);
+    const database = extractDatabaseFromUrl(value);
+    const out: Record<string, string> = {};
+    if (hostname) out[`derived.${key}.hostname`] = hostname;
+    if (database) out[`derived.${key}.database`] = database;
+    if (protocol) out[`derived.${key}.protocol`] = protocol;
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
   }
+}
 
-  // If still long (> 40 chars), abbreviate to show last meaningful segments
-  if (shortened.length > 40) {
-    const segments = shortened.split('/').filter(Boolean);
-    if (segments.length > 2) {
-      // Show .../<parent>/<name>
-      const lastTwo = segments.slice(-2).join('/');
-      shortened = '.../' + lastTwo;
+async function getLocalDisplayInfo(): Promise<Record<string, string>> {
+  const cwd = getObservabilityCwd();
+  const dataDirInfo = await findWorkflowDataDir(cwd);
+  const out: Record<string, string> = {
+    'local.shortName': dataDirInfo.shortName,
+    'local.projectDir': dataDirInfo.projectDir,
+  };
+  if (dataDirInfo.dataDir) {
+    out['local.dataDirPath'] = dataDirInfo.dataDir;
+  }
+  return out;
+}
+
+function collectAllowedEnv(allowedKeys: string[]): {
+  publicEnv: Record<string, string>;
+  sensitiveEnvKeys: string[];
+  derivedDisplayInfo: Record<string, string>;
+} {
+  const publicEnv: Record<string, string> = {};
+  const sensitiveEnvKeys: string[] = [];
+  const derivedDisplayInfo: Record<string, string> = {};
+
+  for (const key of allowedKeys) {
+    const value = process.env[key];
+    if (!isSet(value)) continue;
+
+    if (WORLD_SENSITIVE_ENV_KEYS.has(key)) {
+      sensitiveEnvKeys.push(key);
+      const derived = deriveDbInfoForKey(key, value);
+      if (derived) Object.assign(derivedDisplayInfo, derived);
+      continue;
     }
+
+    publicEnv[key] = value;
   }
 
-  return shortened;
-}
-
-/**
- * Build an EnvMap from server environment variables.
- * Used internally by getWorldFromEnv when no client EnvMap is provided
- * or when using environment-based configuration.
- */
-function buildEnvMapFromProcessEnv(): EnvMap {
   return {
-    WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
-    WORKFLOW_VERCEL_ENV: process.env.WORKFLOW_VERCEL_ENV,
-    WORKFLOW_VERCEL_AUTH_TOKEN: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-    WORKFLOW_VERCEL_PROJECT: process.env.WORKFLOW_VERCEL_PROJECT,
-    WORKFLOW_VERCEL_TEAM: process.env.WORKFLOW_VERCEL_TEAM,
-    PORT: process.env.PORT,
-    WORKFLOW_MANIFEST_PATH: process.env.WORKFLOW_MANIFEST_PATH,
-    WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
-    WORKFLOW_POSTGRES_URL: process.env.WORKFLOW_POSTGRES_URL,
+    publicEnv,
+    sensitiveEnvKeys: Array.from(new Set(sensitiveEnvKeys)).sort(),
+    derivedDisplayInfo,
   };
 }
 
 /**
- * Get server configuration info that is safe to send to the client.
+ * Get public configuration info that is safe to send to the client.
  *
- * This returns display-only information about the current world configuration
- * without exposing sensitive data like connection strings or auth tokens.
- * The web UI uses this to show the current connection status.
+ * This is the ONLY server action that intentionally exposes env-derived data,
+ * and that data is strictly whitelisted per world backend.
  */
-export async function getServerConfig(): Promise<ServerConfig> {
-  const targetWorld = process.env.WORKFLOW_TARGET_WORLD;
+export async function getPublicServerConfig(): Promise<PublicServerConfig> {
+  const backendId = getEffectiveBackendId();
+  const backendDisplayName = getBackendDisplayName(backendId);
+  const allowedKeys = getAllowedEnvKeysForBackend(backendId);
 
-  // Determine the effective backend
-  // Default behavior matches createWorld: vercel if VERCEL_DEPLOYMENT_ID is set, else local
-  let effectiveBackend = targetWorld;
-  if (!effectiveBackend) {
-    effectiveBackend = process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local';
+  const { publicEnv, sensitiveEnvKeys, derivedDisplayInfo } =
+    collectAllowedEnv(allowedKeys);
+
+  const displayInfo: Record<string, string> = { ...derivedDisplayInfo };
+  if (backendId === 'local' || backendId === '@workflow/world-local') {
+    Object.assign(displayInfo, await getLocalDisplayInfo());
   }
 
-  const backendDisplayName = getBackendDisplayName(effectiveBackend);
-  const displayInfo: ServerConfig['displayInfo'] = {};
-
-  // Populate non-sensitive display info based on backend type
-  if (
-    effectiveBackend === 'vercel' ||
-    effectiveBackend === '@workflow/world-vercel'
-  ) {
-    displayInfo.environment = process.env.WORKFLOW_VERCEL_ENV || 'production';
-    // Note: We show the IDs as-is since they're not sensitive
-    // In a future enhancement, we could resolve these to actual names via Vercel API
-    displayInfo.projectName = process.env.WORKFLOW_VERCEL_PROJECT;
-    displayInfo.teamName = process.env.WORKFLOW_VERCEL_TEAM;
-  } else if (
-    effectiveBackend === '@workflow/world-postgres' ||
-    effectiveBackend === 'postgres'
-  ) {
-    const postgresUrl = process.env.WORKFLOW_POSTGRES_URL;
-    displayInfo.hostname = extractHostnameFromUrl(postgresUrl);
-    displayInfo.database = extractDatabaseFromUrl(postgresUrl);
-  } else if (
-    effectiveBackend === 'local' ||
-    effectiveBackend === '@workflow/world-local'
-  ) {
-    displayInfo.dataDir = shortenPath(
-      process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data'
-    );
-  }
-
-  return {
-    isConfigured: true,
+  const config: PublicServerConfig = {
     backendDisplayName,
-    backendId: effectiveBackend,
-    displayInfo,
+    backendId,
+    publicEnv,
+    sensitiveEnvKeys,
+    displayInfo: Object.keys(displayInfo).length ? displayInfo : undefined,
   };
+
+  // Provide defaults for commonly expected keys without revealing extra secrets.
+  if (
+    (backendId === 'vercel' || backendId === '@workflow/world-vercel') &&
+    !publicEnv.WORKFLOW_VERCEL_ENV
+  ) {
+    config.publicEnv.WORKFLOW_VERCEL_ENV = 'production';
+  }
+
+  return config;
 }
 
 export interface PaginatedResult<T> {
@@ -246,69 +382,61 @@ export type ServerActionResult<T> =
   | { success: false; error: ServerActionError };
 
 /**
- * Cache for World instances keyed by envMap.
+ * Cache for World instances.
  *
- * When using server-side environment variables (the recommended approach),
- * there will typically only be one cached World instance since the env config
- * doesn't change at runtime.
- *
- * The cache key is derived from the effective EnvMap to support potential
- * future use cases where dynamic world switching may be needed.
+ * IMPORTANT:
+ * - We only cache non-vercel worlds.
+ * - Cache keys are derived from **server-side** WORKFLOW_* env vars only.
  */
 const worldCache = new Map<string, World>();
 
 /**
  * Get or create a World instance based on configuration.
  *
- * Configuration priority:
- * 1. If server-side environment variables are set (WORKFLOW_TARGET_WORLD, etc.),
- *    those are used and the envMap parameter is ignored. This is the standard
- *    mode used by the @workflow/web package.
- *
- * 2. If no server-side env vars are set but envMap is provided, the envMap
- *    values are used. This mode is reserved for future use cases where
- *    dynamic world configuration at runtime may be needed (e.g., a multi-tenant
- *    observability dashboard).
- *
- * 3. If neither is set, createWorld() falls back to its default behavior
- *    (vercel if VERCEL_DEPLOYMENT_ID is set, otherwise local).
- *
- * @param envMap - Optional environment map for dynamic configuration (reserved for future use)
+ * The @workflow/web UI should always pass `{}` for envMap.
+ * We intentionally do not trust or apply client-provided env.
  */
-function getWorldFromEnv(envMap: EnvMap) {
-  // Determine the effective configuration to use
-  // Priority: server env vars > provided envMap > defaults
-  const serverEnvMap = buildEnvMapFromProcessEnv();
-  const hasServerConfig = Object.values(serverEnvMap).some(
-    (v) => v !== undefined && v !== ''
+async function getWorldFromEnv(_userEnvMap: EnvMap): Promise<World> {
+  const backendId = getEffectiveBackendId();
+  const isVercelWorld = ['vercel', '@workflow/world-vercel'].includes(
+    backendId
   );
 
-  const effectiveEnvMap = hasServerConfig ? serverEnvMap : envMap;
+  // For the vercel world specifically, we do _not_ cache the world,
+  // as it can be a multi-tenant environment, and we instantiate the world
+  // directly to avoid having to set process.env.
+  if (isVercelWorld) {
+    return createVercelWorld({
+      baseUrl: process.env.WORKFLOW_VERCEL_BACKEND_URL,
+      skipProxy: process.env.WORKFLOW_VERCEL_SKIP_PROXY === 'true',
+      token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+      projectConfig: {
+        environment: process.env.WORKFLOW_VERCEL_ENV,
+        projectId: process.env.WORKFLOW_VERCEL_PROJECT,
+        teamId: process.env.WORKFLOW_VERCEL_TEAM,
+      },
+    });
+  }
 
-  // Generate stable cache key from envMap
-  const sortedKeys = Object.keys(effectiveEnvMap).sort();
-  const sortedEntries = sortedKeys.map((key) => [key, effectiveEnvMap[key]]);
-  const cacheKey = JSON.stringify(Object.fromEntries(sortedEntries));
+  // Ensure local-world reads from the same project directory the UI is inspecting.
+  if (backendId === 'local' || backendId === '@workflow/world-local') {
+    await ensureLocalWorldDataDirEnv();
+  }
 
-  // Check if we have a cached World for this configuration
+  // Cache key derived ONLY from WORKFLOW_* env vars.
+  const workflowEnvEntries = Object.entries(process.env).filter(([key]) =>
+    key.startsWith('WORKFLOW_')
+  );
+  workflowEnvEntries.sort(([a], [b]) => a.localeCompare(b));
+  const cacheKey = JSON.stringify(Object.fromEntries(workflowEnvEntries));
+
   const cachedWorld = worldCache.get(cacheKey);
   if (cachedWorld) {
     return cachedWorld;
   }
 
-  // No cached World found, set environment variables and create a new one
-  for (const [key, value] of Object.entries(effectiveEnvMap)) {
-    if (value === undefined || value === null || value === '') {
-      continue;
-    }
-    process.env[key] = value;
-  }
-
   const world = createWorld();
-
-  // Cache the newly created World
   worldCache.set(cacheKey, world);
-
   return world;
 }
 
@@ -323,17 +451,6 @@ function createServerActionError<T>(
   const err = error instanceof Error ? error : new Error(String(error));
   console.error(`[web-api] ${operation} error:`, err);
   let errorResponse: ServerActionError;
-
-  console.warn('isWorkflowAPIError(error)', WorkflowAPIError.is(error));
-  console.warn(
-    'error.status',
-    WorkflowAPIError.is(error) ? error.status : undefined
-  );
-  console.warn('error.url', WorkflowAPIError.is(error) ? error.url : undefined);
-  console.warn(
-    'error.code',
-    WorkflowAPIError.is(error) ? error.code : undefined
-  );
 
   if (WorkflowAPIError.is(error)) {
     // If the World threw the error on fetch/fs.read, we add that data
@@ -377,10 +494,8 @@ function createServerActionError<T>(
  * Converts an error into a user-facing message
  */
 function getUserFacingErrorMessage(error: Error, status?: number): string {
-  console.warn('getUserFacingErrorMessage', error, status);
   if (!status) {
-    console.warn('No status, returning error message', error.message);
-    return 'Error creating response: ' + error.message;
+    return `Error creating response: ${error.message}`;
   }
 
   // Check for common error patterns
@@ -454,7 +569,7 @@ export async function fetchRuns(
     status,
   } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.runs.list({
       ...(workflowName ? { workflowName } : {}),
       ...(status ? { status: status } : {}),
@@ -484,7 +599,7 @@ export async function fetchRun(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<WorkflowRun>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData });
     const hydratedRun = hydrate(run as WorkflowRun);
     return createResponse(hydratedRun);
@@ -510,7 +625,7 @@ export async function fetchSteps(
 ): Promise<ServerActionResult<PaginatedResult<Step>>> {
   const { cursor, sortOrder = 'asc', limit = 100 } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.steps.list({
       runId,
       pagination: { cursor, limit, sortOrder },
@@ -543,7 +658,7 @@ export async function fetchStep(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<Step>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const step = await world.steps.get(runId, stepId, { resolveData });
     const hydratedStep = hydrate(step as Step);
     return createResponse(hydratedStep);
@@ -570,7 +685,7 @@ export async function fetchEvents(
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   const { cursor, sortOrder = 'asc', limit = 1000 } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.events.list({
       runId,
       pagination: { cursor, limit, sortOrder },
@@ -608,7 +723,7 @@ export async function fetchEventsByCorrelationId(
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.events.listByCorrelationId({
       correlationId,
       pagination: { cursor, limit, sortOrder },
@@ -645,7 +760,7 @@ export async function fetchHooks(
 ): Promise<ServerActionResult<PaginatedResult<Hook>>> {
   const { runId, cursor, sortOrder = 'desc', limit = 10 } = params;
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const result = await world.hooks.list({
       ...(runId ? { runId } : {}),
       pagination: { cursor, limit, sortOrder },
@@ -674,7 +789,7 @@ export async function fetchHook(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<Hook>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     const hook = await world.hooks.get(hookId, { resolveData });
     return createResponse(hydrate(hook as Hook));
   } catch (error) {
@@ -693,7 +808,7 @@ export async function cancelRun(
   runId: string
 ): Promise<ServerActionResult<void>> {
   try {
-    const world = getWorldFromEnv(worldEnv);
+    const world = await getWorldFromEnv(worldEnv);
     await world.runs.cancel(runId);
     return createResponse(undefined);
   } catch (error) {
@@ -711,7 +826,7 @@ export async function recreateRun(
   runId: string
 ): Promise<ServerActionResult<string>> {
   try {
-    const world = getWorldFromEnv({ ...worldEnv });
+    const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const hydratedRun = hydrate(run as WorkflowRun);
     const deploymentId = run.deploymentId;
@@ -739,7 +854,7 @@ export async function reenqueueRun(
   runId: string
 ): Promise<ServerActionResult<void>> {
   try {
-    const world = getWorldFromEnv({ ...worldEnv });
+    const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const deploymentId = run.deploymentId;
 
@@ -789,7 +904,7 @@ export async function wakeUpRun(
   options?: StopSleepOptions
 ): Promise<ServerActionResult<StopSleepResult>> {
   try {
-    const world = getWorldFromEnv({ ...worldEnv });
+    const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const deploymentId = run.deploymentId;
 
@@ -879,7 +994,7 @@ export async function resumeHook(
 ): Promise<ServerActionResult<ResumeHookResult>> {
   try {
     // Initialize the world so resumeHookRuntime can access it
-    getWorldFromEnv({ ...worldEnv });
+    await getWorldFromEnv({ ...worldEnv });
 
     const hook = await resumeHookRuntime(token, payload);
 
@@ -900,7 +1015,7 @@ export async function readStreamServerAction(
   startIndex?: number
 ): Promise<ReadableStream<unknown> | ServerActionError> {
   try {
-    const world = getWorldFromEnv(env);
+    const world = await getWorldFromEnv(env);
     // We should probably use getRun().getReadable() instead, to make the UI
     // more consistent with runtime behavior, and also expose a "replay" and "startIndex",
     // feature, to allow for testing World behavior.
@@ -931,7 +1046,7 @@ export async function fetchStreams(
   runId: string
 ): Promise<ServerActionResult<string[]>> {
   try {
-    const world = getWorldFromEnv(env);
+    const world = await getWorldFromEnv(env);
     const streams = await world.listStreamsByRunId(runId);
     return createResponse(streams);
   } catch (error) {
@@ -955,15 +1070,9 @@ export async function fetchStreams(
  * 3. WORKFLOW_EMBEDDED_DATA_DIR - legacy data directory
  */
 export async function fetchWorkflowsManifest(
-  worldEnv: EnvMap
+  _worldEnv: EnvMap
 ): Promise<ServerActionResult<any>> {
-  const cwd = process.cwd();
-
-  console.log('[fetchWorkflowsManifest] cwd:', cwd);
-  console.log(
-    '[fetchWorkflowsManifest] WORKFLOW_MANIFEST_PATH from env:',
-    worldEnv.WORKFLOW_MANIFEST_PATH
-  );
+  const cwd = getObservabilityCwd();
 
   // Helper to resolve path (absolute or relative to cwd)
   const resolvePath = (p: string) =>
@@ -973,9 +1082,6 @@ export async function fetchWorkflowsManifest(
   const manifestPaths: string[] = [];
 
   // 1. Explicit manifest path configuration (highest priority)
-  if (worldEnv.WORKFLOW_MANIFEST_PATH) {
-    manifestPaths.push(resolvePath(worldEnv.WORKFLOW_MANIFEST_PATH));
-  }
   if (process.env.WORKFLOW_MANIFEST_PATH) {
     manifestPaths.push(resolvePath(process.env.WORKFLOW_MANIFEST_PATH));
   }
@@ -987,14 +1093,6 @@ export async function fetchWorkflowsManifest(
   );
 
   // 3. Legacy data directory locations
-  if (worldEnv.WORKFLOW_EMBEDDED_DATA_DIR) {
-    manifestPaths.push(
-      path.join(
-        resolvePath(worldEnv.WORKFLOW_EMBEDDED_DATA_DIR),
-        'manifest.json'
-      )
-    );
-  }
   if (process.env.WORKFLOW_EMBEDDED_DATA_DIR) {
     manifestPaths.push(
       path.join(
@@ -1004,34 +1102,19 @@ export async function fetchWorkflowsManifest(
     );
   }
 
-  console.log('[fetchWorkflowsManifest] Trying paths:', manifestPaths);
-
   // Try each path until we find the manifest
   for (const manifestPath of manifestPaths) {
     try {
       const content = await fs.readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(content);
-      const workflowCount = Object.keys(manifest.workflows || {}).reduce(
-        (acc, filePath) =>
-          acc + Object.keys(manifest.workflows[filePath] || {}).length,
-        0
-      );
-      console.log(
-        `[fetchWorkflowsManifest] Found manifest at: ${manifestPath} with ${workflowCount} workflows`
-      );
       return createResponse(manifest);
-    } catch (err) {
-      console.log(
-        `[fetchWorkflowsManifest] Failed to read: ${manifestPath}`,
-        (err as Error).message
-      );
+    } catch (_err) {
       // Continue to next path
     }
   }
 
   // If no manifest found, return an empty manifest
   // This allows the UI to work without workflows graph data
-  console.log('[fetchWorkflowsManifest] No manifest found, returning empty');
   return createResponse({
     version: '1.0.0',
     steps: {},
