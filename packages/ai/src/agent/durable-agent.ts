@@ -13,6 +13,7 @@ import {
   type LanguageModelUsage,
   type ModelMessage,
   Output,
+  readUIMessageStream,
   type StepResult,
   type StopCondition,
   type StreamTextOnStepFinishCallback,
@@ -898,8 +899,9 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     }
 
     // Collect accumulated UI messages if requested
+    // This requires a step function since it performs stream operations
     const uiMessages = accumulator
-      ? await accumulator.getMessages()
+      ? await convertChunksToUIMessages(accumulator.getChunks())
       : undefined;
 
     return {
@@ -954,6 +956,59 @@ async function closeStream(
   if (!preventClose) {
     await writable.close();
   }
+}
+
+/**
+ * Convert UIMessageChunks to UIMessage[] using the AI SDK's readUIMessageStream.
+ * This must be a step function because it performs stream operations.
+ *
+ * @param chunks - The collected UIMessageChunks to convert
+ * @returns The accumulated UIMessage array
+ */
+async function convertChunksToUIMessages(
+  chunks: UIMessageChunk[]
+): Promise<UIMessage[]> {
+  'use step';
+
+  if (chunks.length === 0) {
+    return [];
+  }
+
+  // Create a readable stream from the collected chunks.
+  // AI SDK only supports conversion from UIMessageChunk[] to UIMessage[]
+  // as a streaming operation, so we need to wrap the chunks in a stream.
+  const chunkStream = new ReadableStream<UIMessageChunk>({
+    start: (controller) => {
+      for (const chunk of chunks) {
+        controller.enqueue(chunk);
+      }
+      controller.close();
+    },
+  });
+
+  // Use the AI SDK's readUIMessageStream to convert chunks to messages
+  const messageStream = readUIMessageStream({
+    stream: chunkStream,
+    onError: (error) => {
+      console.error('Error processing UI message chunks:', error);
+    },
+  });
+
+  // Collect all message updates and return the final state
+  const messages: UIMessage[] = [];
+  for await (const message of messageStream) {
+    // readUIMessageStream yields updated versions of the message as it's built
+    // We want to collect the final state of each message
+    // Messages are identified by their id, so we update in place
+    const existingIndex = messages.findIndex((m) => m.id === message.id);
+    if (existingIndex >= 0) {
+      messages[existingIndex] = message;
+    } else {
+      messages.push(message);
+    }
+  }
+
+  return messages;
 }
 
 async function executeTool(

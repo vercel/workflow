@@ -1,21 +1,18 @@
-import { readUIMessageStream, type UIMessage, type UIMessageChunk } from 'ai';
+import type { UIMessageChunk } from 'ai';
 
 /**
- * Accumulates UIMessageChunks into UIMessage[] while forwarding all chunks
- * to a wrapped writable stream.
+ * Accumulates UIMessageChunks while forwarding all chunks to a wrapped writable stream.
  *
- * This allows collecting the final UIMessage[] representation of a conversation
- * while still streaming chunks to the client in real-time, with minimal impact
- * to the DurableAgent's streamTextIterator.
+ * This allows collecting chunks for later conversion to UIMessage[] representation
+ * while still streaming chunks to the client in real-time.
  *
- * This file might seem complicated, but it's the closest to the internal
- * implementation that AI SDK uses to collect UIMessage[] for return to the
- * onFinish callback on toUIMessageStreamResponse.
+ * Note: The actual conversion from chunks to UIMessage[] must happen in a step function
+ * since it requires stream operations, which are not allowed in workflow context.
+ * Use `convertChunksToUIMessages()` step function for the conversion.
  */
 export class UIMessageAccumulator {
   private chunks: UIMessageChunk[] = [];
   private readonly originalWritable: WritableStream<UIMessageChunk>;
-  private messagesPromise: Promise<UIMessage[]> | null = null;
 
   /**
    * The writable stream that should be passed to the streaming function.
@@ -52,63 +49,8 @@ export class UIMessageAccumulator {
   }
 
   /**
-   * Get the accumulated UIMessage[] from all collected chunks.
-   * This should be called after streaming is complete.
-   *
-   * @returns Promise resolving to the accumulated UIMessage array
-   */
-  async getMessages(): Promise<UIMessage[]> {
-    // Cache the promise so we only process once
-    if (this.messagesPromise) {
-      return this.messagesPromise;
-    }
-
-    this.messagesPromise = this.processChunksToMessages();
-    return this.messagesPromise;
-  }
-
-  private async processChunksToMessages(): Promise<UIMessage[]> {
-    if (this.chunks.length === 0) {
-      return [];
-    }
-
-    // Create a readable stream from the collected chunks
-    const chunkStream = new ReadableStream<UIMessageChunk>({
-      start: (controller) => {
-        for (const chunk of this.chunks) {
-          controller.enqueue(chunk);
-        }
-        controller.close();
-      },
-    });
-
-    // Use the AI SDK's readUIMessageStream to convert chunks to messages
-    const messageStream = readUIMessageStream({
-      stream: chunkStream,
-      onError: (error) => {
-        console.error('Error processing UI message chunks:', error);
-      },
-    });
-
-    // Collect all message updates and return the final state
-    const messages: UIMessage[] = [];
-    for await (const message of messageStream) {
-      // readUIMessageStream yields updated versions of the message as it's built
-      // We want to collect the final state of each message
-      // Messages are identified by their id, so we update in place
-      const existingIndex = messages.findIndex((m) => m.id === message.id);
-      if (existingIndex >= 0) {
-        messages[existingIndex] = message;
-      } else {
-        messages.push(message);
-      }
-    }
-
-    return messages;
-  }
-
-  /**
-   * Get the raw collected chunks (useful for debugging or custom processing).
+   * Get the raw collected chunks.
+   * Use `convertChunksToUIMessages()` step function to convert these to UIMessage[].
    */
   getChunks(): UIMessageChunk[] {
     return [...this.chunks];
