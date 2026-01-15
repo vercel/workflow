@@ -1586,7 +1586,7 @@ describe('DurableAgent', () => {
       expect(result.uiMessages).toBeUndefined();
     });
 
-    it('should use accumulator writable when collectUIMessages is true', async () => {
+    it('should pass collectUIChunks to streamTextIterator when collectUIMessages is true', async () => {
       const mockModel = createMockModel();
 
       const agent = new DurableAgent({
@@ -1594,21 +1594,18 @@ describe('DurableAgent', () => {
         tools: {},
       });
 
-      const writtenChunks: unknown[] = [];
       const mockWritable = new WritableStream({
-        write: (chunk) => {
-          writtenChunks.push(chunk);
-        },
+        write: vi.fn(),
         close: vi.fn(),
       });
 
       const { streamTextIterator } = await import('./stream-text-iterator.js');
-      let capturedWritable: unknown;
+      let capturedCollectUIChunks: boolean | undefined;
       const mockIterator = {
         next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockImplementation((opts) => {
-        capturedWritable = opts.writable;
+        capturedCollectUIChunks = opts.collectUIChunks;
         return mockIterator as unknown as MockIterator;
       });
 
@@ -1618,10 +1615,8 @@ describe('DurableAgent', () => {
         collectUIMessages: true,
       });
 
-      // When collectUIMessages is true, the writable passed to streamTextIterator
-      // should be the accumulator's writable (not the original)
-      expect(capturedWritable).toBeDefined();
-      expect(capturedWritable).not.toBe(mockWritable);
+      // When collectUIMessages is true, collectUIChunks should be passed to streamTextIterator
+      expect(capturedCollectUIChunks).toBe(true);
 
       // uiMessages should be defined (even if empty, since we're mocking)
       expect(result.uiMessages).toBeDefined();

@@ -60,6 +60,11 @@ export interface DoStreamStepOptions {
   experimental_telemetry?: TelemetrySettings;
   transforms?: Array<StreamTextTransform<ToolSet>>;
   responseFormat?: LanguageModelV2CallOptions['responseFormat'];
+  /**
+   * If true, collects and returns all UIMessageChunks written to the stream.
+   * This is used by DurableAgent when collectUIMessages is enabled.
+   */
+  collectUIChunks?: boolean;
 }
 
 /**
@@ -157,6 +162,8 @@ export async function doStreamStep(
   const toolCalls: LanguageModelV2ToolCall[] = [];
   const chunks: LanguageModelV2StreamPart[] = [];
   const includeRawChunks = options?.includeRawChunks ?? false;
+  const collectUIChunks = options?.collectUIChunks ?? false;
+  const uiChunks: UIMessageChunk[] = [];
 
   // Build the stream pipeline
   let stream: ReadableStream<LanguageModelV2StreamPart> = result.stream;
@@ -443,10 +450,26 @@ export async function doStreamStep(
         },
       })
     )
+    .pipeThrough(
+      // Optionally collect UIMessageChunks for later conversion to UIMessage[]
+      new TransformStream<UIMessageChunk, UIMessageChunk>({
+        transform: (chunk, controller) => {
+          if (collectUIChunks) {
+            uiChunks.push(chunk);
+          }
+          controller.enqueue(chunk);
+        },
+      })
+    )
     .pipeTo(writable, { preventClose: true });
 
   const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
-  return { toolCalls, finish, step };
+  return {
+    toolCalls,
+    finish,
+    step,
+    uiChunks: collectUIChunks ? uiChunks : undefined,
+  };
 }
 
 /**
