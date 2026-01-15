@@ -2389,6 +2389,24 @@ describe('Storage', () => {
         expect(result.run).toBeUndefined();
       });
 
+      it('should handle hook_received on legacy run', async () => {
+        const runId = 'wrun_legacy_hook_received';
+        await createLegacyRun(runId, 1);
+
+        const result = await storage.events.create(runId, {
+          eventType: 'hook_received',
+          correlationId: 'hook_123',
+          eventData: { payload: { data: 'test' } },
+        } as any);
+
+        // Legacy behavior: event is stored but no entity mutation
+        // (hooks exist via old system, not via events)
+        expect(result.event).toBeDefined();
+        expect(result.event?.eventType).toBe('hook_received');
+        expect(result.event?.correlationId).toBe('hook_123');
+        expect(result.hook).toBeUndefined();
+      });
+
       it('should reject unsupported events on legacy runs', async () => {
         const runId = 'wrun_legacy_unsupported';
         await createLegacyRun(runId, 1);

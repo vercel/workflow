@@ -8,10 +8,11 @@ import { monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 
 /**
- * Handle events for legacy runs (pre-event-sourcing, specVersion < 4.1).
+ * Handle events for legacy runs (pre-event-sourcing, specVersion < 2).
  * Legacy runs use different behavior:
  * - run_cancelled: Skip event storage, directly update run
  * - wait_completed: Store event only (no entity mutation)
+ * - hook_received: Store event only (hooks exist via old system, no entity mutation)
  * - Other events: Throw error (not supported for legacy runs)
  */
 export async function handleLegacyEvent(
@@ -50,8 +51,11 @@ export async function handleLegacyEvent(
       return { event: undefined, run: filterRunData(run, resolveData) };
     }
 
-    case 'wait_completed': {
+    case 'wait_completed':
+    case 'hook_received': {
       // Legacy: Store event only (no entity mutation)
+      // - wait_completed: for replay purposes
+      // - hook_received: hooks exist via old system, just record the event
       const eventId = `evnt_${monotonicUlid()}`;
       const now = new Date();
       const event: Event = {
