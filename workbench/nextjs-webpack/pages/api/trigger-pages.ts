@@ -63,12 +63,7 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
     });
   } else {
     // Args from body
-    const body = req.body;
-    if (body && Object.keys(body).length > 0) {
-      args = hydrateWorkflowArguments(body, globalThis);
-    } else {
-      args = [42];
-    }
+    args = hydrateWorkflowArguments(JSON.parse(req.body), globalThis);
   }
   console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
 
