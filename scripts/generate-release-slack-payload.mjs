@@ -143,7 +143,10 @@ function parseReleaseBodyToLines(body) {
 
   const lines = text.split('\n');
   let currentPkg = null;
-  const out = [];
+
+  // Collect all changes keyed by (prNumber || summary) so we can merge duplicates.
+  // Map key -> { packages: Set<string>, prNumber, author, summary }
+  const changeMap = new Map();
 
   for (const raw of lines) {
     const line = raw.trim();
@@ -159,7 +162,28 @@ function parseReleaseBodyToLines(body) {
     const item = line.slice(2).trim();
     const { prNumber, author, summary } = parseReleaseItem(item);
 
+    // Use PR number as the unique key if available, otherwise fall back to summary text.
+    const key = prNumber != null ? `pr:${prNumber}` : `summary:${summary}`;
     const pkgName = toPkgPrefix(currentPkg);
+
+    if (changeMap.has(key)) {
+      // Merge: add this package to the existing entry.
+      changeMap.get(key).packages.add(pkgName);
+    } else {
+      changeMap.set(key, {
+        packages: new Set([pkgName]),
+        prNumber,
+        author,
+        summary,
+      });
+    }
+  }
+
+  // Build output lines from the deduplicated map.
+  const out = [];
+  for (const { packages, prNumber, author, summary } of changeMap.values()) {
+    // Sort packages alphabetically for consistent output.
+    const pkgPrefix = [...packages].sort().join(', ');
     const prLink =
       prNumber != null
         ? `<https://github.com/${GITHUB_REPO}/pull/${prNumber}|#${prNumber}>`
@@ -167,8 +191,8 @@ function parseReleaseBodyToLines(body) {
     const authorText = author ? `by \`${author}\`` : null;
 
     // Example:
-    // - @workflow/core <...|#754> by `SomeUser` - summary of change
-    const parts = [pkgName, prLink, authorText, '-', summary].filter(Boolean);
+    // - @workflow/core, @workflow/cli <...|#754> by `SomeUser` - summary of change
+    const parts = [pkgPrefix, prLink, authorText, '-', summary].filter(Boolean);
     out.push(`- ${parts.join(' ')}`.replace(/\s+-\s+/, ' - '));
   }
 
