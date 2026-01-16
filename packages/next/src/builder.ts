@@ -351,8 +351,9 @@ export async function getNextBuilder() {
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
       return inputFiles.filter((item) => {
-        // Match App Router entrypoints: route.ts, page.ts, layout.ts
-        if (item.match(/[/\\](route|page|layout)\./)) {
+        // Match App Router entrypoints: route.ts, page.ts, layout.ts in app/ or src/app/ directories
+        // Matches: /app/page.ts, /app/dashboard/page.ts, /src/app/route.ts, etc.
+        if (item.match(/(^|.*[/\\])(app|src[/\\]app)([/\\](route|page|layout)\.|[/\\].*[/\\](route|page|layout)\.)/)) {
           return true;
         }
         // Match Pages Router entrypoints: files in pages/ or src/pages/
