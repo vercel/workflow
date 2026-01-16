@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.48
+
+### Patch Changes
+
+- [#790](https://github.com/vercel/workflow/pull/790) [`49a1c5f`](https://github.com/vercel/workflow/commit/49a1c5f2fc1c6726eaed8ed77cbe47010e23c446) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Avoid attempting to serialize the "tool" during tool call execution
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.48
+
 ## 4.0.1-beta.47
 
 ### Patch Changes
