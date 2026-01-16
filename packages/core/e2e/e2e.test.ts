@@ -48,9 +48,13 @@ function writeE2EMetadata() {
 
 async function triggerWorkflow(
   workflow: string | { workflowFile: string; workflowFn: string },
-  args: any[]
+  args: any[],
+  options?: { usePagesRouter?: boolean }
 ): Promise<{ runId: string }> {
-  const url = new URL('/api/trigger', deploymentUrl);
+  const endpoint = options?.usePagesRouter
+    ? '/api/trigger-pages'
+    : '/api/trigger';
+  const url = new URL(endpoint, deploymentUrl);
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;
   const workflowFile =
@@ -1292,4 +1296,46 @@ describe('e2e', () => {
       expect(runData.output).toBe(300);
     }
   );
+
+  // ==================== PAGES ROUTER TESTS ====================
+  // Tests for Next.js Pages Router API endpoint (only runs for nextjs-turbopack and nextjs-webpack)
+  const isNextJsApp =
+    process.env.APP_NAME === 'nextjs-turbopack' ||
+    process.env.APP_NAME === 'nextjs-webpack';
+
+  describe.skipIf(!isNextJsApp)('pages router', () => {
+    test('addTenWorkflow via pages router', { timeout: 60_000 }, async () => {
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'addTenWorkflow',
+        },
+        [123],
+        { usePagesRouter: true }
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue).toBe(133);
+    });
+
+    test(
+      'promiseAllWorkflow via pages router',
+      { timeout: 60_000 },
+      async () => {
+        const run = await triggerWorkflow('promiseAllWorkflow', [], {
+          usePagesRouter: true,
+        });
+        const returnValue = await getWorkflowReturnValue(run.runId);
+        expect(returnValue).toBe('ABC');
+      }
+    );
+
+    test('sleepingWorkflow via pages router', { timeout: 60_000 }, async () => {
+      const run = await triggerWorkflow('sleepingWorkflow', [], {
+        usePagesRouter: true,
+      });
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
+      expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
+    });
+  });
 });
