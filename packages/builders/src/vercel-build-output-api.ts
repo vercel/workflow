@@ -60,6 +60,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createVcConfig(stepsFuncDir, {
       shouldAddSourcemapSupport: true,
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
+      runtime: this.config.runtime,
     });
 
     return manifest;
@@ -88,6 +89,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(workflowsFuncDir, 'commonjs');
     await this.createVcConfig(workflowsFuncDir, {
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+      runtime: this.config.runtime,
     });
   }
 
@@ -111,6 +113,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(webhookFuncDir, 'commonjs');
     await this.createVcConfig(webhookFuncDir, {
       shouldAddHelpers: false,
+      runtime: this.config.runtime,
     });
   }
 

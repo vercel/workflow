@@ -26,6 +26,9 @@ interface BaseWorkflowConfig {
 
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;
+
+  // Node.js runtime version for Vercel Functions (e.g., "nodejs22.x", "nodejs24.x")
+  runtime?: string;
 }
 
 /**

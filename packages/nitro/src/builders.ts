@@ -13,6 +13,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
         dirs: ['.'], // Different apps that use nitro have different directories
+        runtime: nitro.options.workflow?.runtime,
       }),
       buildTarget: 'vercel-build-output-api',
     });

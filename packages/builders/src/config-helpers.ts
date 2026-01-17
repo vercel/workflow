@@ -77,6 +77,7 @@ export function createBaseBuilderConfig(options: {
   dirs?: string[];
   watch?: boolean;
   externalPackages?: string[];
+  runtime?: string;
 }): Omit<WorkflowConfig, 'buildTarget'> {
   return {
     dirs: options.dirs ?? ['workflows'],
@@ -86,5 +87,6 @@ export function createBaseBuilderConfig(options: {
     workflowsBundlePath: '', // Not used by base builder methods
     webhookBundlePath: '', // Not used by base builder methods
     externalPackages: options.externalPackages,
+    runtime: options.runtime,
   };
 }

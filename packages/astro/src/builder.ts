@@ -194,6 +194,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       ...createBaseBuilderConfig({
         workingDir,
         dirs: ['src/pages', 'src/workflows'],
+        runtime: config?.runtime,
       }),
       buildTarget: 'vercel-build-output-api',
       debugFilePrefix: '_',
