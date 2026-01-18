@@ -3,10 +3,9 @@
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { AlertCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { createContext, useContext, useMemo, useState } from 'react';
-import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { ErrorCard } from '../components/ui/error-card';
 import { extractConversation, isDoStreamStep } from '../lib/utils';
 import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
@@ -685,15 +684,11 @@ export const AttributePanel = ({
           </div>
         )}
         {error ? (
-          <Alert variant="destructive" className="my-4 flex flex-col gap-2">
-            <div className="flex items-center gap-2 text-destructive">
-              <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Failed to load resource details</AlertTitle>
-            </div>
-            <AlertDescription className="text-sm">
-              {error.message}
-            </AlertDescription>
-          </Alert>
+          <ErrorCard
+            title="Failed to load resource details"
+            details={error.message}
+            className="my-4"
+          />
         ) : hasExpired ? (
           <ExpiredDataMessage />
         ) : (

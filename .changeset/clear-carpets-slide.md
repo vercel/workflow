@@ -2,4 +2,4 @@
 "@workflow/web-shared": patch
 ---
 
-Improve spacing, styling and scroll behavior of trace viewer sidebar
+Improve styling, error display, and scroll behavior of trace viewer sidebar
