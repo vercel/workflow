@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import type { EnvMap } from './api/workflow-server-actions';
 import { Skeleton } from './components/ui/skeleton';
 import { ErrorBoundary } from './error-boundary';
-import { WorkflowDetailPanel } from './sidebar/workflow-detail-panel';
+import { EntityDetailPanel } from './sidebar/entity-detail-panel';
 import {
   TraceViewerContextProvider,
   TraceViewerTimeline,
@@ -198,7 +198,7 @@ export const WorkflowTraceViewer = ({
         customSpanEventClassNameFunc={getCustomSpanEventClassName}
         customPanelComponent={
           <ErrorBoundary title="Failed to load entity details">
-            <WorkflowDetailPanel
+            <EntityDetailPanel
               env={env}
               run={run}
               onStreamClick={onStreamClick}

@@ -11,15 +11,15 @@ import {
   wakeUpRun,
 } from '../api/workflow-api-client';
 import type { EnvMap } from '../api/workflow-server-actions';
-import { EventsList } from '../sidebar/events-list';
 import { useTraceViewer } from '../trace-viewer';
 import { AttributePanel } from './attribute-panel';
+import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
 
 /**
  * Custom panel component for workflow traces that displays entity details
  */
-export function WorkflowDetailPanel({
+export function EntityDetailPanel({
   env,
   run,
   onStreamClick,
