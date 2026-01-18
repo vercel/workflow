@@ -8,6 +8,7 @@ Common distributed control flow patterns are simple to implement in workflows an
 
 The simplest way to orchestrate steps is to execute them one after another, where each step can be dependent on the previous step.
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 export async function dataPipelineWorkflow(data: any) {
   "use workflow";

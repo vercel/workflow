@@ -3,7 +3,6 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import chalk from 'chalk';
-import { parse } from 'comment-json';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
@@ -13,6 +12,7 @@ import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.j
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import type { WorkflowConfig } from './types.js';
+import { extractWorkflowGraphs } from './workflows-extractor.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
@@ -39,52 +39,12 @@ export abstract class BaseBuilder {
   abstract build(): Promise<void>;
 
   /**
-   * Extracts TypeScript path mappings and baseUrl from tsconfig.json/jsconfig.json.
-   * Used to properly resolve module imports during bundling.
+   * Finds tsconfig.json/jsconfig.json for the project.
+   * Used by esbuild to properly resolve module imports during bundling.
    */
-  protected async getTsConfigOptions(): Promise<{
-    baseUrl?: string;
-    paths?: Record<string, string[]>;
-  }> {
-    const options: {
-      paths?: Record<string, string[]>;
-      baseUrl?: string;
-    } = {};
-
+  protected async findTsConfigPath(): Promise<string | undefined> {
     const cwd = this.config.workingDir || process.cwd();
-
-    const tsJsConfig = await findUp(['tsconfig.json', 'jsconfig.json'], {
-      cwd,
-    });
-
-    if (tsJsConfig) {
-      try {
-        const rawJson = await readFile(tsJsConfig, 'utf8');
-        const parsed: null | {
-          compilerOptions?: {
-            paths?: Record<string, string[]> | undefined;
-            baseUrl?: string;
-          };
-        } = parse(rawJson) as any;
-
-        if (parsed) {
-          options.paths = parsed.compilerOptions?.paths;
-
-          if (parsed.compilerOptions?.baseUrl) {
-            options.baseUrl = resolve(cwd, parsed.compilerOptions.baseUrl);
-          } else {
-            options.baseUrl = cwd;
-          }
-        }
-      } catch (err) {
-        console.error(
-          `Failed to parse ${tsJsConfig} aliases might not apply properly`,
-          err
-        );
-      }
-    }
-
-    return options;
+    return findUp(['tsconfig.json', 'jsconfig.json'], { cwd });
   }
 
   /**
@@ -160,9 +120,11 @@ export abstract class BaseBuilder {
         write: false,
         outdir,
         bundle: true,
-        sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+        sourcemap: false,
         absWorkingDir: this.config.workingDir,
         logLevel: 'silent',
+        // External packages that should not be bundled during discovery
+        external: this.config.externalPackages || [],
       });
     } catch (_) {}
 
@@ -270,31 +232,31 @@ export abstract class BaseBuilder {
    * Steps have full Node.js runtime access and handle side effects, API calls, etc.
    *
    * @param externalizeNonSteps - If true, only bundles step entry points and externalizes other code
+   * @returns Build context (for watch mode) and the collected workflow manifest
    */
   protected async createStepsBundle({
     inputFiles,
     format = 'cjs',
     outfile,
     externalizeNonSteps,
-    tsBaseUrl,
-    tsPaths,
+    tsconfigPath,
   }: {
-    tsPaths?: Record<string, string[]>;
-    tsBaseUrl?: string;
+    tsconfigPath?: string;
     inputFiles: string[];
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
-  }): Promise<esbuild.BuildContext | undefined> {
+  }): Promise<{
+    context: esbuild.BuildContext | undefined;
+    manifest: WorkflowManifest;
+  }> {
     // These need to handle watching for dev to scan for
     // new entries and changes to existing ones
-    const { discoveredSteps: stepFiles } = await this.discoverEntries(
-      inputFiles,
-      dirname(outfile)
-    );
+    const { discoveredSteps: stepFiles, discoveredWorkflows: workflowFiles } =
+      await this.discoverEntries(inputFiles, dirname(outfile));
 
     // log the step files for debugging
-    await this.writeDebugFile(outfile, { stepFiles });
+    await this.writeDebugFile(outfile, { stepFiles, workflowFiles });
 
     const stepsBundleStart = Date.now();
     const workflowManifest: WorkflowManifest = {};
@@ -366,6 +328,9 @@ export abstract class BaseBuilder {
       keepNames: true,
       minify: false,
       jsx: 'preserve',
+      logLevel: 'error',
+      // Use tsconfig for path alias resolution
+      tsconfig: tsconfigPath,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -376,8 +341,11 @@ export abstract class BaseBuilder {
         '.mjs',
         '.cjs',
       ],
-      // TODO: investigate proper source map support
-      sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+      // Inline source maps for better stack traces in step execution.
+      // Steps execute in Node.js context and inline sourcemaps ensure we get
+      // meaningful stack traces with proper file names and line numbers when errors
+      // occur in deeply nested function calls across multiple files.
+      sourcemap: 'inline',
       plugins: [
         createSwcPlugin({
           mode: 'step',
@@ -388,8 +356,6 @@ export abstract class BaseBuilder {
               ]
             : undefined,
           outdir: outfile ? dirname(outfile) : undefined,
-          tsBaseUrl,
-          tsPaths,
           workflowManifest,
         }),
       ],
@@ -403,23 +369,14 @@ export abstract class BaseBuilder {
     this.logEsbuildMessages(stepsResult, 'steps bundle creation');
     console.log('Created steps bundle', `${Date.now() - stepsBundleStart}ms`);
 
-    const partialWorkflowManifest = {
-      steps: workflowManifest.steps,
-    };
-    // always write to debug file
-    await this.writeDebugFile(
-      join(dirname(outfile), 'manifest'),
-      partialWorkflowManifest,
-      true
-    );
-
     // Create .gitignore in .swc directory
     await this.createSwcGitignore();
 
     if (this.config.watch) {
-      return esbuildCtx;
+      return { context: esbuildCtx, manifest: workflowManifest };
     }
     await esbuildCtx.dispose();
+    return { context: undefined, manifest: workflowManifest };
   }
 
   /**
@@ -433,11 +390,9 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     bundleFinalOutput = true,
-    tsBaseUrl,
-    tsPaths,
+    tsconfigPath,
   }: {
-    tsPaths?: Record<string, string[]>;
-    tsBaseUrl?: string;
+    tsconfigPath?: string;
     inputFiles: string[];
     outfile: string;
     format?: 'cjs' | 'esm';
@@ -509,6 +464,8 @@ export abstract class BaseBuilder {
       // This intermediate bundle is executed via runInContext() in a VM, so we need
       // inline source maps to get meaningful stack traces instead of "evalmachine.<anonymous>".
       sourcemap: 'inline',
+      // Use tsconfig for path alias resolution
+      tsconfig: tsconfigPath,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -522,14 +479,14 @@ export abstract class BaseBuilder {
       plugins: [
         createSwcPlugin({
           mode: 'workflow',
-          tsBaseUrl,
-          tsPaths,
           workflowManifest,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
         createNodeModuleErrorPlugin(),
       ],
+      // External packages that should not be bundled (e.g., server-only, client-only for Next.js)
+      external: this.config.externalPackages || [],
     });
     const interimBundle = await interimBundleCtx.rebuild();
 
@@ -537,16 +494,6 @@ export abstract class BaseBuilder {
     console.log(
       'Created intermediate workflow bundle',
       `${Date.now() - bundleStartTime}ms`
-    );
-
-    const partialWorkflowManifest = {
-      workflows: workflowManifest.workflows,
-    };
-
-    await this.writeDebugFile(
-      join(dirname(outfile), 'manifest'),
-      partialWorkflowManifest,
-      true
     );
 
     if (this.config.workflowManifestPath) {
@@ -807,7 +754,7 @@ export const OPTIONS = handler;`;
         '.mjs',
         '.cjs',
       ],
-      sourcemap: false,
+      sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
       mainFields: ['module', 'main'],
       // Don't externalize anything - bundle everything including workflow packages
       external: [],
@@ -899,5 +846,108 @@ export const OPTIONS = handler;`;
     } catch {
       // We're intentionally silently ignoring this error - creating .gitignore isn't critical
     }
+  }
+
+  /**
+   * Creates a manifest JSON file containing step/workflow metadata
+   * and graph data for visualization.
+   */
+  protected async createManifest({
+    workflowBundlePath,
+    manifestDir,
+    manifest,
+  }: {
+    workflowBundlePath: string;
+    manifestDir: string;
+    manifest: WorkflowManifest;
+  }): Promise<void> {
+    const buildStart = Date.now();
+    console.log('Creating manifest...');
+
+    try {
+      const workflowGraphs = await extractWorkflowGraphs(workflowBundlePath);
+
+      const steps = this.convertStepsManifest(manifest.steps);
+      const workflows = this.convertWorkflowsManifest(
+        manifest.workflows,
+        workflowGraphs
+      );
+
+      const output = { version: '1.0.0', steps, workflows };
+
+      await mkdir(manifestDir, { recursive: true });
+      await writeFile(
+        join(manifestDir, 'manifest.json'),
+        JSON.stringify(output, null, 2)
+      );
+
+      const stepCount = Object.values(steps).reduce(
+        (acc, s) => acc + Object.keys(s).length,
+        0
+      );
+      const workflowCount = Object.values(workflows).reduce(
+        (acc, w) => acc + Object.keys(w).length,
+        0
+      );
+
+      console.log(
+        `Created manifest with ${stepCount} step(s) and ${workflowCount} workflow(s)`,
+        `${Date.now() - buildStart}ms`
+      );
+    } catch (error) {
+      console.warn(
+        'Failed to create manifest:',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
+  private convertStepsManifest(
+    steps: WorkflowManifest['steps']
+  ): Record<string, Record<string, { stepId: string }>> {
+    const result: Record<string, Record<string, { stepId: string }>> = {};
+    if (!steps) return result;
+
+    for (const [filePath, entries] of Object.entries(steps)) {
+      result[filePath] = {};
+      for (const [name, data] of Object.entries(entries)) {
+        result[filePath][name] = { stepId: data.stepId };
+      }
+    }
+    return result;
+  }
+
+  private convertWorkflowsManifest(
+    workflows: WorkflowManifest['workflows'],
+    graphs: Record<
+      string,
+      Record<string, { graph: { nodes: any[]; edges: any[] } }>
+    >
+  ): Record<
+    string,
+    Record<
+      string,
+      { workflowId: string; graph: { nodes: any[]; edges: any[] } }
+    >
+  > {
+    const result: Record<
+      string,
+      Record<
+        string,
+        { workflowId: string; graph: { nodes: any[]; edges: any[] } }
+      >
+    > = {};
+    if (!workflows) return result;
+
+    for (const [filePath, entries] of Object.entries(workflows)) {
+      result[filePath] = {};
+      for (const [name, data] of Object.entries(entries)) {
+        result[filePath][name] = {
+          workflowId: data.workflowId,
+          graph: graphs[filePath]?.[name]?.graph || { nodes: [], edges: [] },
+        };
+      }
+    }
+    return result;
   }
 }

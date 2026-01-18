@@ -162,9 +162,13 @@ export const streams = schema.table(
   {
     chunkId: varchar('id').$type<`chnk_${string}`>().notNull(),
     streamId: varchar('stream_id').notNull(),
+    runId: varchar('run_id'),
     chunkData: bytea('data').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     eof: boolean('eof').notNull(),
   },
-  (tb) => [primaryKey({ columns: [tb.streamId, tb.chunkId] })]
+  (tb) => [
+    primaryKey({ columns: [tb.streamId, tb.chunkId] }),
+    index().on(tb.runId),
+  ]
 );

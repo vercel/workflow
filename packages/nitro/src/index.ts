@@ -1,7 +1,7 @@
+import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
 import { LocalBuilder, VercelBuilder } from './builders.js';
-import { workflowTransformPlugin } from '@workflow/rollup';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
@@ -12,9 +12,10 @@ export default {
     const isVercelDeploy =
       !nitro.options.dev && nitro.options.preset === 'vercel';
 
-    // Add transform plugin
+    // Add transform plugin at the BEGINNING to run before other transforms
+    // (especially before class property transforms that rename classes like _ClassName)
     nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
-      (config.plugins as Array<unknown>).push(workflowTransformPlugin());
+      (config.plugins as Array<unknown>).unshift(workflowTransformPlugin());
     });
 
     // NOTE: Temporary workaround for debug unenv mock
@@ -50,13 +51,19 @@ export default {
     // Generate local bundles for dev and local prod
     if (!isVercelDeploy) {
       const builder = new LocalBuilder(nitro);
+      let isInitialBuild = true;
+
       nitro.hooks.hook('build:before', async () => {
         await builder.build();
       });
 
-      // Allows for HMR
+      // Allows for HMR - but skip the first dev:reload since build:before already ran
       if (nitro.options.dev) {
         nitro.hooks.hook('dev:reload', async () => {
+          if (isInitialBuild) {
+            isInitialBuild = false;
+            return;
+          }
           await builder.build();
         });
       }

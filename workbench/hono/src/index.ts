@@ -5,6 +5,7 @@ import {
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { getWorld, healthCheck } from 'workflow/runtime';
 import { allWorkflows } from '../_workflows.js';
 
 const app = new Hono();
@@ -32,7 +33,18 @@ app.post('/api/trigger', async ({ req }) => {
       status: 400,
     });
   }
-  const workflow = workflows[workflowFn as keyof typeof workflows];
+
+  // Handle static method lookups (e.g., "Calculator.calculate")
+  let workflow: unknown;
+  if (workflowFn.includes('.')) {
+    const [className, methodName] = workflowFn.split('.');
+    const cls = workflows[className as keyof typeof workflows];
+    if (cls && typeof cls === 'function') {
+      workflow = (cls as Record<string, unknown>)[methodName];
+    }
+  } else {
+    workflow = workflows[workflowFn as keyof typeof workflows];
+  }
   if (!workflow) {
     return new Response(`Workflow "${workflowFn}" not found`, { status: 400 });
   }
@@ -189,11 +201,40 @@ app.post('/api/hook', async ({ req }) => {
   return Response.json(hook);
 });
 
+app.post('/api/test-health-check', async ({ req }) => {
+  // This route tests the queue-based health check functionality
+  try {
+    const body = await req.json();
+    const { endpoint = 'workflow', timeout = 30000 } = body;
+
+    console.log(
+      `Testing queue-based health check for endpoint: ${endpoint}, timeout: ${timeout}ms`
+    );
+
+    const world = getWorld();
+    const result = await healthCheck(world, endpoint, { timeout });
+
+    console.log(`Health check result:`, result);
+
+    return Response.json(result);
+  } catch (error) {
+    console.error('Health check test failed:', error);
+    return Response.json(
+      {
+        healthy: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      { status: 500 }
+    );
+  }
+});
+
 app.post('/api/test-direct-step-call', async ({ req }) => {
   // This route tests calling step functions directly outside of any workflow context
   // After the SWC compiler changes, step functions in client mode have their directive removed
   // and keep their original implementation, allowing them to be called as regular async functions
-  const { add } = await import('../workflows/99_e2e.js');
+  // Import from 98_duplicate_case.ts to avoid path alias imports
+  const { add } = await import('../workflows/98_duplicate_case.js');
 
   const body = await req.json();
   const { x, y } = body;

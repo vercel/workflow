@@ -47,6 +47,7 @@ The queue automatically detects your development server's port and adjusts the q
 
 The local world provides a simple authentication implementation since no authentication is required or enforced in local development.
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 getAuthHeaders(): Promise<Record<string, string>> {
   return Promise.resolve({});
@@ -67,6 +68,7 @@ export WORKFLOW_LOCAL_DATA_DIR=./custom-workflow-data
 
 **Programmatically:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 import { createLocalWorld } from "@workflow/world-local";
 
@@ -79,6 +81,7 @@ By default, the local world **automatically detects** which port your applicatio
 
 **Auto-detection example** (recommended):
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 import { createLocalWorld } from "@workflow/world-local";
 
@@ -92,6 +95,7 @@ If auto-detection fails, the world will fall back to the `PORT` environment vari
 
 You can override the auto-detected port by specifying it explicitly:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 import { createLocalWorld } from "@workflow/world-local";
 
@@ -116,6 +120,7 @@ export WORKFLOW_LOCAL_BASE_URL=https://local.example.com:3000
 
 **Programmatically:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 import { createLocalWorld } from "@workflow/world-local";
 
@@ -207,6 +212,7 @@ For production deployments, use the [Vercel World](/docs/deploying/world/vercel-
 
 Creates a local world instance:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 function createLocalWorld(
   args?: Partial<{
@@ -230,6 +236,7 @@ function createLocalWorld(
 
 **Examples:**
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 import { createLocalWorld } from "@workflow/world-local";
 

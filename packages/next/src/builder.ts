@@ -34,18 +34,27 @@ export async function getNextBuilder() {
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
 
       const inputFiles = await this.getInputFiles();
-      const tsConfig = await this.getTsConfigOptions();
+      const tsconfigPath = await this.findTsConfigPath();
 
       const options = {
         inputFiles,
         workflowGeneratedDir,
-        tsBaseUrl: tsConfig.baseUrl,
-        tsPaths: tsConfig.paths,
+        tsconfigPath,
       };
 
-      const stepsBuildContext = await this.buildStepsFunction(options);
+      const { manifest, context: stepsBuildContext } =
+        await this.buildStepsFunction(options);
       const workflowsBundle = await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
+
+      // Write unified manifest to workflow generated directory
+      const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
+      await this.createManifest({
+        workflowBundlePath,
+        manifestDir: workflowGeneratedDir,
+        manifest,
+      });
+
       await this.writeFunctionsConfig(outputDir);
 
       if (this.config.watch) {
@@ -151,7 +160,8 @@ export async function getNextBuilder() {
           options.inputFiles = newInputFiles;
 
           await stepsCtx.dispose();
-          const newStepsCtx = await this.buildStepsFunction(options);
+          const { context: newStepsCtx } =
+            await this.buildStepsFunction(options);
           if (!newStepsCtx) {
             throw new Error(
               'Invariant: expected steps build context after rebuild'
@@ -340,12 +350,22 @@ export async function getNextBuilder() {
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
-      return inputFiles.filter((item) =>
-        // non-exact pattern match to try to narrow
-        // down to just app route entrypoints, this will
-        // not be valid when pages router support is added
-        item.match(/[/\\](route|page|layout)\./)
-      );
+      return inputFiles.filter((item) => {
+        // Match App Router entrypoints: route.ts, page.ts, layout.ts in app/ or src/app/ directories
+        // Matches: /app/page.ts, /app/dashboard/page.ts, /src/app/route.ts, etc.
+        if (
+          item.match(
+            /(^|.*[/\\])(app|src[/\\]app)([/\\](route|page|layout)\.|[/\\].*[/\\](route|page|layout)\.)/
+          )
+        ) {
+          return true;
+        }
+        // Match Pages Router entrypoints: files in pages/ or src/pages/
+        if (item.match(/[/\\](pages|src[/\\]pages)[/\\]/)) {
+          return true;
+        }
+        return false;
+      });
     }
 
     private async writeFunctionsConfig(outputDir: string) {
@@ -374,13 +394,11 @@ export async function getNextBuilder() {
     private async buildStepsFunction({
       inputFiles,
       workflowGeneratedDir,
-      tsPaths,
-      tsBaseUrl,
+      tsconfigPath,
     }: {
       inputFiles: string[];
       workflowGeneratedDir: string;
-      tsBaseUrl?: string;
-      tsPaths?: Record<string, string[]>;
+      tsconfigPath?: string;
     }) {
       // Create steps bundle
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
@@ -395,21 +413,18 @@ export async function getNextBuilder() {
         inputFiles,
         outfile: join(stepsRouteDir, 'route.js'),
         externalizeNonSteps: true,
-        tsBaseUrl,
-        tsPaths,
+        tsconfigPath,
       });
     }
 
     private async buildWorkflowsFunction({
       inputFiles,
       workflowGeneratedDir,
-      tsPaths,
-      tsBaseUrl,
+      tsconfigPath,
     }: {
       inputFiles: string[];
       workflowGeneratedDir: string;
-      tsBaseUrl?: string;
-      tsPaths?: Record<string, string[]>;
+      tsconfigPath?: string;
     }): Promise<void | {
       interimBundleCtx: import('esbuild').BuildContext;
       bundleFinal: (interimBundleResult: string) => Promise<void>;
@@ -421,8 +436,7 @@ export async function getNextBuilder() {
         outfile: join(workflowsRouteDir, 'route.js'),
         bundleFinalOutput: false,
         inputFiles,
-        tsBaseUrl,
-        tsPaths,
+        tsconfigPath,
       });
     }
 
@@ -444,28 +458,52 @@ export async function getNextBuilder() {
     private async findAppDirectory(): Promise<string> {
       const appDir = resolve(this.config.workingDir, 'app');
       const srcAppDir = resolve(this.config.workingDir, 'src/app');
+      const pagesDir = resolve(this.config.workingDir, 'pages');
+      const srcPagesDir = resolve(this.config.workingDir, 'src/pages');
 
-      try {
-        await access(appDir, constants.F_OK);
-        const appStats = await stat(appDir);
-        if (!appStats.isDirectory()) {
-          throw new Error(`Path exists but is not a directory: ${appDir}`);
-        }
-        return appDir;
-      } catch {
+      // Helper to check if a path exists and is a directory
+      const isDirectory = async (path: string): Promise<boolean> => {
         try {
-          await access(srcAppDir, constants.F_OK);
-          const srcAppStats = await stat(srcAppDir);
-          if (!srcAppStats.isDirectory()) {
-            throw new Error(`Path exists but is not a directory: ${srcAppDir}`);
+          await access(path, constants.F_OK);
+          const stats = await stat(path);
+          if (!stats.isDirectory()) {
+            throw new Error(`Path exists but is not a directory: ${path}`);
           }
-          return srcAppDir;
-        } catch {
-          throw new Error(
-            'Could not find Next.js app directory. Expected either "app" or "src/app" to exist.'
-          );
+          return true;
+        } catch (e) {
+          if (e instanceof Error && e.message.includes('not a directory')) {
+            throw e;
+          }
+          return false;
         }
+      };
+
+      // Check if app directory exists
+      if (await isDirectory(appDir)) {
+        return appDir;
       }
+
+      // Check if src/app directory exists
+      if (await isDirectory(srcAppDir)) {
+        return srcAppDir;
+      }
+
+      // If no app directory exists, check for pages directory and create app next to it
+      if (await isDirectory(pagesDir)) {
+        // Create app directory next to pages directory
+        await mkdir(appDir, { recursive: true });
+        return appDir;
+      }
+
+      if (await isDirectory(srcPagesDir)) {
+        // Create src/app directory next to src/pages directory
+        await mkdir(srcAppDir, { recursive: true });
+        return srcAppDir;
+      }
+
+      throw new Error(
+        'Could not find Next.js app or pages directory. Expected one of: "app", "src/app", "pages", or "src/pages" to exist.'
+      );
     }
   }
 

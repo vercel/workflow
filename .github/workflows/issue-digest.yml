@@ -1,0 +1,51 @@
+# CI CRON job that sends an issue digest to Slack.
+# Adapted from next.js implementation: https://github.com/vercel/next.js/blob/canary/.github/workflows/
+# The workflow uses GitHub Actions' built-in `github.token` for `GITHUB_TOKEN` and requires `issues: read` permission.
+# Optional configuration:
+# `ISSUE_DIGEST_REPO` e.g. `vercel/workflow`
+# `DIGEST_INTERVAL_DAYS` e.g. `7`
+
+name: Issue Digest
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly on Thursday at 12:00 UTC
+    - cron: "0 12 * * 4"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  issue-digest:
+    name: Post issue digest to Slack
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Post digest
+        env:
+          # Provided automatically by GitHub Actions; permissions above must allow issues:read.
+          GITHUB_TOKEN: ${{ github.token }}
+          # Reused by the existing release Slack integration.
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          # New secret for this workflow.
+          SLACK_ISSUE_SUMMARY_CHANNEL_ID: ${{ secrets.SLACK_ISSUE_SUMMARY_CHANNEL_ID }}
+
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_ISSUE_SUMMARY_CHANNEL_ID" ]; then
+            echo "Missing Slack secrets: SLACK_BOT_TOKEN and/or SLACK_ISSUE_SUMMARY_CHANNEL_ID"
+            exit 1
+          fi
+
+          node scripts/issue-digest.mjs --post

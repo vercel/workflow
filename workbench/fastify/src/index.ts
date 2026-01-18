@@ -1,13 +1,14 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import Fastify from 'fastify';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
+import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { getWorld, healthCheck } from 'workflow/runtime';
 import { allWorkflows } from '../_workflows.js';
-import { resolve } from 'node:path';
-import { readFile } from 'node:fs/promises';
 
 type JsonResult = { ok: true; value: any } | { ok: false; error: Error };
 const parseJson = (text: string): JsonResult => {
@@ -82,7 +83,18 @@ server.post('/api/trigger', async (req: any, reply) => {
   if (!workflowFn) {
     return reply.code(400).send('No workflow query parameter provided');
   }
-  const workflow = workflows[workflowFn as keyof typeof workflows];
+
+  // Handle static method lookups (e.g., "Calculator.calculate")
+  let workflow: unknown;
+  if (workflowFn.includes('.')) {
+    const [className, methodName] = workflowFn.split('.');
+    const cls = workflows[className as keyof typeof workflows];
+    if (cls && typeof cls === 'function') {
+      workflow = (cls as Record<string, unknown>)[methodName];
+    }
+  } else {
+    workflow = workflows[workflowFn as keyof typeof workflows];
+  }
   if (!workflow) {
     return reply.code(400).send('Workflow not found');
   }
@@ -249,11 +261,36 @@ server.get('/api/trigger', async (req: any, reply) => {
   }
 });
 
+server.post('/api/test-health-check', async (req: any, reply) => {
+  // This route tests the queue-based health check functionality
+  try {
+    const { endpoint = 'workflow', timeout = 30000 } = req.body;
+
+    console.log(
+      `Testing queue-based health check for endpoint: ${endpoint}, timeout: ${timeout}ms`
+    );
+
+    const world = getWorld();
+    const result = await healthCheck(world, endpoint, { timeout });
+
+    console.log(`Health check result:`, result);
+
+    return reply.send(result);
+  } catch (error) {
+    console.error('Health check test failed:', error);
+    return reply.code(500).send({
+      healthy: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 server.post('/api/test-direct-step-call', async (req: any, reply) => {
   // This route tests calling step functions directly outside of any workflow context
   // After the SWC compiler changes, step functions in client mode have their directive removed
   // and keep their original implementation, allowing them to be called as regular async functions
-  const { add } = await import('../workflows/99_e2e.js');
+  // Import from 98_duplicate_case.ts to avoid path alias imports
+  const { add } = await import('../workflows/98_duplicate_case.js');
 
   const { x, y } = req.body;
 

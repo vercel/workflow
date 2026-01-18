@@ -2,8 +2,12 @@
 
 import {
   cancelRun,
+  type EnvMap,
   getErrorMessage,
+  HookResolveModalWrapper,
+  ResolveHookDropdownItem,
   recreateRun,
+  useHookActions,
   useWorkflowHooks,
 } from '@workflow/web-shared';
 import { fetchEventsByCorrelationId } from '@workflow/web-shared/server';
@@ -42,14 +46,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { worldConfigToEnvMap } from '@/lib/config';
-import type { WorldConfig } from '@/lib/config-world';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { TableSkeleton } from './display-utils/table-skeleton';
 
 interface HooksTableProps {
-  config: WorldConfig;
   runId?: string;
   onHookClick: (hookId: string, runId?: string) => void;
   selectedHookId?: string;
@@ -65,9 +66,11 @@ interface InvocationData {
  * HooksTable - Displays hooks with server-side pagination.
  * Uses the PaginatingTable pattern similar to RunsTable.
  * Fetches invocation counts in the background for each hook.
+ *
+ * World configuration is read from server-side environment variables.
+ * The env object passed to server actions is empty - the server uses process.env.
  */
 export function HooksTable({
-  config,
   runId,
   onHookClick,
   selectedHookId,
@@ -75,7 +78,8 @@ export function HooksTable({
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(
     () => new Date()
   );
-  const env = useMemo(() => worldConfigToEnvMap(config), [config]);
+  // Empty env object - server actions read from process.env
+  const env: EnvMap = useMemo(() => ({}), []);
 
   const {
     data,
@@ -89,6 +93,14 @@ export function HooksTable({
   } = useWorkflowHooks(env, {
     runId,
     sortOrder: 'desc',
+  });
+
+  // Hook actions for resolve functionality
+  const hookActions = useHookActions({
+    env,
+    callbacks: {
+      onSuccess: reload,
+    },
   });
 
   const loading = data.isLoading;
@@ -212,7 +224,7 @@ export function HooksTable({
           <TooltipTrigger asChild>
             <span className="font-semibold cursor-help">{displayText}</span>
           </TooltipTrigger>
-          <TooltipContent>
+          <TooltipContent className="max-w-xs">
             <div className="text-xs">
               Showing first 100 invocations. There may be more.
             </div>
@@ -226,6 +238,9 @@ export function HooksTable({
 
   return (
     <div>
+      {/* Modal for resolving hooks - rendered at top level */}
+      <HookResolveModalWrapper hookActions={hookActions} />
+
       <div className="flex items-center justify-between">
         <div className="flex items-end gap-2">
           <p className="text-sm text-muted-foreground">Last refreshed</p>
@@ -342,6 +357,12 @@ export function HooksTable({
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
+                            <ResolveHookDropdownItem
+                              hook={hook}
+                              stopPropagation
+                              onResolveClick={hookActions.openResolveModal}
+                              DropdownMenuItem={DropdownMenuItem}
+                            />
                             <DropdownMenuItem
                               onClick={async (e) => {
                                 e.stopPropagation();
@@ -365,7 +386,7 @@ export function HooksTable({
                               }}
                             >
                               <RotateCw className="h-4 w-4 mr-2" />
-                              Re-run
+                              Replay Run
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               onClick={async (e) => {

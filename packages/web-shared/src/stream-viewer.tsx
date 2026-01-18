@@ -22,6 +22,7 @@ interface Chunk {
 export function StreamViewer({ env, streamId }: StreamViewerProps) {
   const [chunks, setChunks] = useState<Chunk[]>([]);
   const [isLive, setIsLive] = useState(true);
+  // TODO: Handle 410 error specifically (stream expired)
   const [error, setError] = useState<string | null>(null);
   const [hasMoreBelow, setHasMoreBelow] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);

@@ -1,6 +1,6 @@
 {
   "name": "@workflow/cli",
-  "version": "4.0.1-beta.29",
+  "version": "4.0.1-beta.48",
   "description": "Command-line interface for Workflow DevKit",
   "type": "module",
   "bin": {
@@ -45,6 +45,7 @@
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/web": "workspace:*",
@@ -55,8 +56,8 @@
     "builtin-modules": "5.0.0",
     "chalk": "5.6.2",
     "chokidar": "4.0.3",
-    "comment-json": "4.2.5",
     "date-fns": "4.1.0",
+    "dotenv": "^16.4.7",
     "easy-table": "1.2.0",
     "enhanced-resolve": "5.18.2",
     "esbuild": "catalog:",

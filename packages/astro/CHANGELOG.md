@@ -1,5 +1,129 @@
 # @workflow/astro
 
+## 4.0.0-beta.22
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.39
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.21
+
+### Patch Changes
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`a2fc53a`](https://github.com/vercel/workflow/commit/a2fc53a0dc2df0648ae9e7fd59aae044a612ebcb)]:
+  - @workflow/swc-plugin@4.0.1-beta.13
+  - @workflow/builders@4.0.1-beta.38
+  - @workflow/rollup@4.0.0-beta.7
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.20
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.37
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.36
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.18
+
+### Patch Changes
+
+- Updated dependencies [[`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf), [`505063c`](https://github.com/vercel/workflow/commit/505063cbb9ef04af8531c2cd3cd3840b5d272f82)]:
+  - @workflow/builders@4.0.1-beta.35
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.17
+
+### Patch Changes
+
+- Updated dependencies [[`d552374`](https://github.com/vercel/workflow/commit/d552374b13945c76cbffccfcfdef38f4e3b5a97c)]:
+  - @workflow/builders@4.0.1-beta.34
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.16
+
+### Patch Changes
+
+- [#705](https://github.com/vercel/workflow/pull/705) [`7ff68d1`](https://github.com/vercel/workflow/commit/7ff68d1753c43b14d161d249f6745de6beddd99b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Pass `tsconfig` to esbuild for support of "paths" aliases
+
+- Updated dependencies [[`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c), [`7ff68d1`](https://github.com/vercel/workflow/commit/7ff68d1753c43b14d161d249f6745de6beddd99b)]:
+  - @workflow/builders@4.0.1-beta.33
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.15
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.32
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.14
+
+### Patch Changes
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/builders@4.0.1-beta.31
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.13
+
+### Patch Changes
+
+- Updated dependencies [[`ea3afce`](https://github.com/vercel/workflow/commit/ea3afce222ff9c2f90d99414fae275ef5f54b431)]:
+  - @workflow/builders@4.0.1-beta.30
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.29
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.28
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.27
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.26
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.8
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.25
+  - @workflow/vite@4.0.0-beta.2
+
 ## 4.0.0-beta.7
 
 ### Patch Changes

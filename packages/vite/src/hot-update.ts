@@ -1,5 +1,5 @@
-import type { Plugin, HotUpdateOptions } from 'vite';
 import type { BaseBuilder } from '@workflow/builders';
+import type { HotUpdateOptions, Plugin } from 'vite';
 
 interface WorkflowHotUpdatePluginOptions {
   /**

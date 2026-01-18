@@ -20,6 +20,7 @@ Let's add stream resumption to our Flight Booking Agent that we build in the [Bu
 
 Modify your chat endpoint to include the workflow run ID in a response header. The Run ID uniquely identifies the run's stream, so it allows the client to know which stream to reconnect to.
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript title="app/api/chat/route.ts" lineNumbers
 // ... imports ...
 

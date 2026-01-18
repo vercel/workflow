@@ -1,3 +1,4 @@
+import type { APIRoute } from 'astro';
 import { getRun, start } from 'workflow/api';
 import {
   WorkflowRunFailedError,
@@ -5,7 +6,6 @@ import {
 } from 'workflow/internal/errors';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from '../../lib/_workflows';
-import type { APIRoute } from 'astro';
 
 export async function POST({ request }: { request: Request }) {
   const url = new URL(request.url);
@@ -29,7 +29,18 @@ export async function POST({ request }: { request: Request }) {
       status: 400,
     });
   }
-  const workflow = workflows[workflowFn as keyof typeof workflows];
+
+  // Handle static method lookups (e.g., "Calculator.calculate")
+  let workflow: unknown;
+  if (workflowFn.includes('.')) {
+    const [className, methodName] = workflowFn.split('.');
+    const cls = workflows[className as keyof typeof workflows];
+    if (cls && typeof cls === 'function') {
+      workflow = (cls as Record<string, unknown>)[methodName];
+    }
+  } else {
+    workflow = workflows[workflowFn as keyof typeof workflows];
+  }
   if (!workflow) {
     return new Response(`Workflow "${workflowFn}" not found`, { status: 400 });
   }

@@ -32,6 +32,11 @@ export default class Cancel extends BaseCommand {
     const { flags, args } = await this.parse(Cancel);
 
     const world = await setupCliWorld(flags, this.config.version);
+    if (!world) {
+      throw new Error(
+        'Failed to connect to backend. Check your configuration.'
+      );
+    }
 
     await cancelRun(world, args.runId);
   }

@@ -1,5 +1,161 @@
 # @workflow/core
 
+## 4.0.1-beta.39
+
+### Patch Changes
+
+- [#792](https://github.com/vercel/workflow/pull/792) [`344c90f`](https://github.com/vercel/workflow/commit/344c90ff9f630addc4b41f72c2296b26e61513bc) Thanks [@ijjk](https://github.com/ijjk)! - Add Next.js pages router entries handling
+
+- [#788](https://github.com/vercel/workflow/pull/788) [`b729d49`](https://github.com/vercel/workflow/commit/b729d49610739ae818fd56853f8ddc557591e9a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow passing custom world to runtime start() call
+
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- [#754](https://github.com/vercel/workflow/pull/754) [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for serializing `this` when invoking step functions
+
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- [#743](https://github.com/vercel/workflow/pull/743) [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add queue-based health check feature
+
+- [#773](https://github.com/vercel/workflow/pull/773) [`3dd5b27`](https://github.com/vercel/workflow/commit/3dd5b2708de56e63c9dce9b3f2eafea63b0e3936) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Make `resumeHook()` accept a `Hook` object or string
+
+- [#776](https://github.com/vercel/workflow/pull/776) [`49f650c`](https://github.com/vercel/workflow/commit/49f650c3a79e7b9b501cb602e3c12b75a3c4fffc) Thanks [@Timer](https://github.com/Timer)! - Fix race condition where step would stay pending forever if process crashed between database write and queue write
+
+- [#678](https://github.com/vercel/workflow/pull/678) [`39e5774`](https://github.com/vercel/workflow/commit/39e5774de2a4c8b6a18574aa4edaf79e9f0d655e) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix stream serialization to resolve when user releases lock instead of waiting for stream to close. This prevents Vercel functions from hanging when users incrementally write to streams within steps (e.g., `await writer.write(data); writer.releaseLock()`). Uses a polling approach to detect when the stream lock is released and all pending writes are flushed.
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66)]:
+  - @workflow/world@4.0.1-beta.13
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/world-local@4.0.1-beta.26
+  - @workflow/world-vercel@4.0.1-beta.27
+
+## 4.0.1-beta.36
+
+### Patch Changes
+
+- Updated dependencies [[`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167)]:
+  - @workflow/world@4.0.1-beta.12
+  - @workflow/world-local@4.0.1-beta.25
+  - @workflow/world-vercel@4.0.1-beta.26
+  - @workflow/errors@4.0.1-beta.13
+
+## 4.0.1-beta.35
+
+### Patch Changes
+
+- [#720](https://github.com/vercel/workflow/pull/720) [`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf) Thanks [@pranaygp](https://github.com/pranaygp)! - Correctly propagate stack traces for step errors
+
+## 4.0.1-beta.34
+
+### Patch Changes
+
+- [#703](https://github.com/vercel/workflow/pull/703) [`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Do not include initial attempt in step function `maxRetries` count
+
+- [#712](https://github.com/vercel/workflow/pull/712) [`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c) Thanks [@ijjk](https://github.com/ijjk)! - Revert lazy workflow and step discovery
+
+- Updated dependencies [[`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2)]:
+  - @workflow/utils@4.0.1-beta.10
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/world-local@4.0.1-beta.24
+  - @workflow/world-vercel@4.0.1-beta.25
+
+## 4.0.1-beta.33
+
+### Patch Changes
+
+- Updated dependencies [[`2dbe494`](https://github.com/vercel/workflow/commit/2dbe49495dd4fae22edc53e190952c8f15289b8b)]:
+  - @workflow/world-local@4.0.1-beta.23
+
+## 4.0.1-beta.32
+
+### Patch Changes
+
+- [#455](https://github.com/vercel/workflow/pull/455) [`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added Control Flow Graph extraction from Workflows and extended manifest.json's schema to incorporate the graph structure into it. Refactored manifest generation to pass manifest as a parameter instead of using instance state. Add e2e tests for manifest validation across all builders.
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/world-local@4.0.1-beta.22
+  - @workflow/utils@4.0.1-beta.9
+  - @workflow/world@4.0.1-beta.11
+  - @workflow/errors@4.0.1-beta.12
+  - @workflow/world-vercel@4.0.1-beta.24
+
+## 4.0.1-beta.31
+
+### Patch Changes
+
+- [#624](https://github.com/vercel/workflow/pull/624) [`25b02b0`](https://github.com/vercel/workflow/commit/25b02b0bfdefa499e13fb974b1832fbe47dbde86) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add CORS headers to endpoints health check response
+
+- Updated dependencies [[`d9f6a49`](https://github.com/vercel/workflow/commit/d9f6a4939760be94dfc9eaf77dcaa48c602c18ef), [`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1), [`c3464bf`](https://github.com/vercel/workflow/commit/c3464bfd978a073f6d8fca95208bd053aa5c78dd)]:
+  - @workflow/world-local@4.0.1-beta.21
+  - @workflow/utils@4.0.1-beta.8
+  - @workflow/errors@4.0.1-beta.11
+  - @workflow/world-vercel@4.0.1-beta.23
+
+## 4.0.1-beta.30
+
+### Patch Changes
+
+- Updated dependencies [[`f2d5997`](https://github.com/vercel/workflow/commit/f2d5997b800d6c474bb93d4ddd82cf52489752da)]:
+  - @workflow/world-local@4.0.1-beta.20
+
+## 4.0.1-beta.29
+
+### Patch Changes
+
+- [#649](https://github.com/vercel/workflow/pull/649) [`eaf9aa6`](https://github.com/vercel/workflow/commit/eaf9aa65f354bf1e22e8e148c0fd1936f0ec9358) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Don't shadow `globalThis`
+
+- Updated dependencies [[`75a5060`](https://github.com/vercel/workflow/commit/75a506047304f6dd1ac07d9150e8a9563f69283c), [`6cd1a47`](https://github.com/vercel/workflow/commit/6cd1a47b3146770f5cb9d4c384971331aab6b28a)]:
+  - @workflow/world-vercel@4.0.1-beta.22
+
+## 4.0.1-beta.28
+
+### Patch Changes
+
+- [#544](https://github.com/vercel/workflow/pull/544) [`ea2a67e`](https://github.com/vercel/workflow/commit/ea2a67e19c5d224b4b4fd1c1a417810562df0807) Thanks [@pranaygp](https://github.com/pranaygp)! - perf: parallelize suspension handler and refactor runtime
+
+  - Process hooks first, then steps and waits in parallel to prevent race conditions
+  - Refactor runtime.ts into modular files: `suspension-handler.ts`, `step-handler.ts`, `helpers.ts`
+  - Add otel attributes for hooks created (`workflow.hooks.created`) and waits created (`workflow.waits.created`)
+  - Update suspension status from `pending_steps` to `workflow_suspended`
+
+- [#625](https://github.com/vercel/workflow/pull/625) [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Change serialized stream names from v4 UUIDs to ULIDs
+
+- Updated dependencies [[`ce7d428`](https://github.com/vercel/workflow/commit/ce7d428a07cd415d2ea64c779b84ecdc796927a0), [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005), [`ab55ba2`](https://github.com/vercel/workflow/commit/ab55ba2d61b41e2b2cd9e213069c93be988c9b1e), [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3)]:
+  - @workflow/world-local@4.0.1-beta.19
+  - @workflow/world-vercel@4.0.1-beta.21
+  - @workflow/errors@4.0.1-beta.10
+
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- [#627](https://github.com/vercel/workflow/pull/627) [`deaf019`](https://github.com/vercel/workflow/commit/deaf0193e91ea7a24d2423a813b64f51faa681e3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - [world-vercel] Allow skipping vercel backend proxy for e2e tests where CLI runs in runtime env
+
+- [#505](https://github.com/vercel/workflow/pull/505) [`b56aae3`](https://github.com/vercel/workflow/commit/b56aae3fe9b5568d7bdda592ed025b3499149240) Thanks [@copilot-swe-agent](https://github.com/apps/copilot-swe-agent)! - Override setTimeout, setInterval, and related functions in workflow VM context to throw helpful errors suggesting to use `sleep` instead
+
+- [#613](https://github.com/vercel/workflow/pull/613) [`4d7a393`](https://github.com/vercel/workflow/commit/4d7a393906846be751e798c943594bec3c9b0ff3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add workflow endpoints health check query parameter
+
+- Updated dependencies [[`1ef6b2f`](https://github.com/vercel/workflow/commit/1ef6b2fdc8dc7e4d665aa2fe1a7d9e68ce7f1e95), [`deaf019`](https://github.com/vercel/workflow/commit/deaf0193e91ea7a24d2423a813b64f51faa681e3), [`b56aae3`](https://github.com/vercel/workflow/commit/b56aae3fe9b5568d7bdda592ed025b3499149240)]:
+  - @workflow/utils@4.0.1-beta.7
+  - @workflow/world-vercel@4.0.1-beta.20
+  - @workflow/errors@4.0.1-beta.9
+  - @workflow/world-local@4.0.1-beta.18
+
+## 4.0.1-beta.26
+
+### Patch Changes
+
+- [#588](https://github.com/vercel/workflow/pull/588) [`696e7e3`](https://github.com/vercel/workflow/commit/696e7e31e88eae5d86e9d4b9f0344f0777ae9673) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix rare case where workflows get stuck due to edge case in step update logic
+
+- Updated dependencies [[`c9b8d84`](https://github.com/vercel/workflow/commit/c9b8d843fd0a88de268d603a14ebe2e7c726169a)]:
+  - @workflow/world-local@4.0.1-beta.17
+  - @workflow/utils@4.0.1-beta.6
+  - @workflow/errors@4.0.1-beta.8
+  - @workflow/world-vercel@4.0.1-beta.19
+
 ## 4.0.1-beta.25
 
 ### Patch Changes

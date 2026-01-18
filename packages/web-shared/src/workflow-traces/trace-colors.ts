@@ -26,8 +26,6 @@ function getStatusClassName(
       return styles.spanCompleted;
     case 'cancelled':
       return styles.spanCancelled;
-    case 'paused':
-      return styles.spanPaused;
     case 'failed':
       return styles.spanFailed;
     default:

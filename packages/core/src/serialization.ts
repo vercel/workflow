@@ -1,14 +1,30 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
+import { monotonicFactory } from 'ulid';
+import { getSerializationClass } from './class-serialization.js';
+import {
+  createFlushableState,
+  flushablePipe,
+  pollReadableLock,
+  pollWritableLock,
+} from './flushable-stream.js';
 import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
 import {
   BODY_INIT_SYMBOL,
+  STABLE_ULID,
   STREAM_NAME_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
+
+/**
+ * Default ULID generator for contexts where VM's seeded `stableUlid` isn't available.
+ * Used as a fallback when serializing streams outside the workflow VM context
+ * (e.g., when starting a workflow or handling step return values).
+ */
+const defaultUlid = monotonicFactory();
 
 /**
  * Format a serialization error with context about what failed.
@@ -208,6 +224,9 @@ export interface SerializableSpecial {
     body: Response['body'];
     redirected: boolean;
   };
+  Class: {
+    classId: string;
+  };
   Set: any[];
   StepFunction: {
     stepId: string;
@@ -321,6 +340,14 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
         redirected: value.redirected,
       };
     },
+    Class: (value) => {
+      // Check if this is a class constructor with a classId property
+      // (set by the SWC plugin for classes with static step/workflow methods)
+      if (typeof value !== 'function') return false;
+      const classId = (value as any).classId;
+      if (typeof classId !== 'string') return false;
+      return { classId };
+    },
     Set: (value) => value instanceof global.Set && Array.from(value),
     StepFunction: (value) => {
       if (typeof value !== 'function') return false;
@@ -382,7 +409,8 @@ export function getExternalReducers(
         throw new Error('ReadableStream is locked');
       }
 
-      const name = global.crypto.randomUUID();
+      const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
+      const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
       const writable = new WorkflowServerWritableStream(name, runId);
@@ -406,7 +434,8 @@ export function getExternalReducers(
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
-      const name = global.crypto.randomUUID();
+      const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
+      const name = `strm_${streamId}`;
 
       const readable = new WorkflowServerReadableStream(name);
       ops.push(readable.pipeTo(value));
@@ -500,7 +529,8 @@ function getStepReducers(
           );
         }
 
-        name = global.crypto.randomUUID();
+        const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
+        name = `strm_${streamId}`;
         type = getStreamType(value);
 
         const writable = new WorkflowServerWritableStream(name, runId);
@@ -533,7 +563,8 @@ function getStepReducers(
           );
         }
 
-        name = global.crypto.randomUUID();
+        const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
+        name = `strm_${streamId}`;
         ops.push(
           new WorkflowServerReadableStream(name)
             .pipeThrough(
@@ -599,6 +630,16 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     },
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
+    Class: (value) => {
+      const classId = value.classId;
+      const cls = getSerializationClass(classId);
+      if (!cls) {
+        throw new Error(
+          `Class "${classId}" not found. Make sure the class is registered with registerSerializationClass.`
+        );
+      }
+      return cls;
+    },
     Set: (value) => new global.Set(value),
     StepFunction: (value) => {
       const stepId = value.stepId;
@@ -723,12 +764,38 @@ export function getExternalRevivers(
         value.startIndex
       );
       if (value.type === 'bytes') {
-        return readable;
+        // For byte streams, use flushable pipe with lock polling
+        const state = createFlushableState();
+        ops.push(state.promise);
+
+        // Create an identity transform to give the user a readable
+        const { readable: userReadable, writable } =
+          new global.TransformStream();
+
+        // Start the flushable pipe in the background
+        flushablePipe(readable, writable, state).catch(() => {
+          // Errors are handled via state.reject
+        });
+
+        // Start polling to detect when user releases lock
+        pollReadableLock(userReadable, state);
+
+        return userReadable;
       } else {
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId)
         );
-        ops.push(readable.pipeTo(transform.writable));
+        const state = createFlushableState();
+        ops.push(state.promise);
+
+        // Start the flushable pipe in the background
+        flushablePipe(readable, transform.writable, state).catch(() => {
+          // Errors are handled via state.reject
+        });
+
+        // Start polling to detect when user releases lock
+        pollReadableLock(transform.readable, state);
+
         return transform.readable;
       }
     },
@@ -736,11 +803,23 @@ export function getExternalRevivers(
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, runId)
       );
-      ops.push(
-        serialize.readable.pipeTo(
-          new WorkflowServerWritableStream(value.name, runId)
-        )
+      const serverWritable = new WorkflowServerWritableStream(
+        value.name,
+        runId
       );
+
+      // Create flushable state for this stream
+      const state = createFlushableState();
+      ops.push(state.promise);
+
+      // Start the flushable pipe in the background
+      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+        // Errors are handled via state.reject
+      });
+
+      // Start polling to detect when user releases lock
+      pollWritableLock(serialize.writable, state);
+
       return serialize.writable;
     },
   };
@@ -867,12 +946,38 @@ function getStepRevivers(
 
       const readable = new WorkflowServerReadableStream(value.name);
       if (value.type === 'bytes') {
-        return readable;
+        // For byte streams, use flushable pipe with lock polling
+        const state = createFlushableState();
+        ops.push(state.promise);
+
+        // Create an identity transform to give the user a readable
+        const { readable: userReadable, writable } =
+          new global.TransformStream();
+
+        // Start the flushable pipe in the background
+        flushablePipe(readable, writable, state).catch(() => {
+          // Errors are handled via state.reject
+        });
+
+        // Start polling to detect when user releases lock
+        pollReadableLock(userReadable, state);
+
+        return userReadable;
       } else {
         const transform = getDeserializeStream(
           getStepRevivers(global, ops, runId)
         );
-        ops.push(readable.pipeTo(transform.writable));
+        const state = createFlushableState();
+        ops.push(state.promise);
+
+        // Start the flushable pipe in the background
+        flushablePipe(readable, transform.writable, state).catch(() => {
+          // Errors are handled via state.reject
+        });
+
+        // Start polling to detect when user releases lock
+        pollReadableLock(transform.readable, state);
+
         return transform.readable;
       }
     },
@@ -884,11 +989,23 @@ function getStepRevivers(
       }
 
       const serialize = getSerializeStream(getStepReducers(global, ops, runId));
-      ops.push(
-        serialize.readable.pipeTo(
-          new WorkflowServerWritableStream(value.name, runId)
-        )
+      const serverWritable = new WorkflowServerWritableStream(
+        value.name,
+        runId
       );
+
+      // Create flushable state for this stream
+      const state = createFlushableState();
+      ops.push(state.promise);
+
+      // Start the flushable pipe in the background
+      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+        // Errors are handled via state.reject
+      });
+
+      // Start polling to detect when user releases lock
+      pollWritableLock(serialize.writable, state);
+
       return serialize.writable;
     },
   };

@@ -1,5 +1,169 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.43
+
+### Patch Changes
+
+- [#788](https://github.com/vercel/workflow/pull/788) [`b729d49`](https://github.com/vercel/workflow/commit/b729d49610739ae818fd56853f8ddc557591e9a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ensure re-running Run from o11y UI will use specified world, instead of inferring from env
+
+- Updated dependencies [[`344c90f`](https://github.com/vercel/workflow/commit/344c90ff9f630addc4b41f72c2296b26e61513bc), [`b729d49`](https://github.com/vercel/workflow/commit/b729d49610739ae818fd56853f8ddc557591e9a1)]:
+  - @workflow/core@4.0.1-beta.39
+
+## 4.0.1-beta.42
+
+### Patch Changes
+
+- [#774](https://github.com/vercel/workflow/pull/774) [`abdca8f`](https://github.com/vercel/workflow/commit/abdca8fd526f3c83c7da7b96a0522f9552e2bd2f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve display of configuration information. Fix opening of Vercel backend when using `--localUi`. Fix world caching in multi-tenant environments. Fix flicker in run table when refreshing. Improve contributor experience by adding `--observabilityCwd` flag to easily iterate on web UI from another directory. Polish navbar UI.
+
+- [#783](https://github.com/vercel/workflow/pull/783) [`125d0a6`](https://github.com/vercel/workflow/commit/125d0a666e3bb899609c55fd6f358bc6d61463d3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix unsafe access of requestId in UI worker for trace viewer
+
+- [#787](https://github.com/vercel/workflow/pull/787) [`7ff6a05`](https://github.com/vercel/workflow/commit/7ff6a05cf9ffd91300b081ec1dfa9cf3cf278ed0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow passing user env variables to vercel backend in o11y UI
+
+## 4.0.1-beta.41
+
+### Patch Changes
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290)]:
+  - @workflow/core@4.0.1-beta.38
+
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`3dd5b27`](https://github.com/vercel/workflow/commit/3dd5b2708de56e63c9dce9b3f2eafea63b0e3936), [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66), [`49f650c`](https://github.com/vercel/workflow/commit/49f650c3a79e7b9b501cb602e3c12b75a3c4fffc), [`39e5774`](https://github.com/vercel/workflow/commit/39e5774de2a4c8b6a18574aa4edaf79e9f0d655e)]:
+  - @workflow/core@4.0.1-beta.37
+  - @workflow/world@4.0.1-beta.13
+  - @workflow/errors@4.0.1-beta.13
+
+## 4.0.1-beta.39
+
+### Patch Changes
+
+- [#747](https://github.com/vercel/workflow/pull/747) [`3fb57e1`](https://github.com/vercel/workflow/commit/3fb57e14c8bd3948599625bdf911b88db5842320) Thanks [@pranaygp](https://github.com/pranaygp)! - Use env variables instead of query params for world config (like WORKFLOW_TARGET_WORLD)
+
+  **BREAKING CHANGE**: The OSS web UI is now locked to a single world and will not let you change world using query params
+
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- [#736](https://github.com/vercel/workflow/pull/736) [`0d79ff0`](https://github.com/vercel/workflow/commit/0d79ff084ce85880a11b9d056bd07c26bf68547a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Increase contrast on attribute items in sidebar
+
+- [#751](https://github.com/vercel/workflow/pull/751) [`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the unused paused/resumed run events and states
+
+  - Remove `run_paused` and `run_resumed` event types
+  - Remove `paused` status from `WorkflowRunStatus`
+  - Remove `PauseWorkflowRunParams` and `ResumeWorkflowRunParams` types
+  - Remove `pauseWorkflowRun` and `resumeWorkflowRun` functions from world-vercel
+
+- Updated dependencies [[`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167)]:
+  - @workflow/world@4.0.1-beta.12
+  - @workflow/core@4.0.1-beta.36
+  - @workflow/errors@4.0.1-beta.13
+
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- [#728](https://github.com/vercel/workflow/pull/728) [`de31837`](https://github.com/vercel/workflow/commit/de3183719c6e5bb6e6a1008a36a401e5afa27b0f) Thanks [@haydenbleasel](https://github.com/haydenbleasel)! - Upgrade Streamdown to 1.6.11
+
+- Updated dependencies [[`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf)]:
+  - @workflow/core@4.0.1-beta.35
+
+## 4.0.1-beta.36
+
+### Patch Changes
+
+- Updated dependencies [[`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2), [`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c)]:
+  - @workflow/core@4.0.1-beta.34
+  - @workflow/errors@4.0.1-beta.13
+
+## 4.0.1-beta.35
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.0.1-beta.33
+
+## 4.0.1-beta.34
+
+### Patch Changes
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/world@4.0.1-beta.11
+  - @workflow/core@4.0.1-beta.32
+  - @workflow/errors@4.0.1-beta.12
+
+## 4.0.1-beta.33
+
+### Patch Changes
+
+- [#674](https://github.com/vercel/workflow/pull/674) [`4bc98ff`](https://github.com/vercel/workflow/commit/4bc98ff4a15a090e2233c18b75e0a1b5dd2e9ff1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Move ErrorBoundary component from web to web-shared and use in sidebar detail view.
+
+- Updated dependencies [[`25b02b0`](https://github.com/vercel/workflow/commit/25b02b0bfdefa499e13fb974b1832fbe47dbde86)]:
+  - @workflow/core@4.0.1-beta.31
+  - @workflow/errors@4.0.1-beta.11
+
+## 4.0.1-beta.32
+
+### Patch Changes
+
+- [#673](https://github.com/vercel/workflow/pull/673) [`616bc67`](https://github.com/vercel/workflow/commit/616bc67be4691830e272b4987c73f1155adc5303) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix null access in event data. This is due to a typing issue in event.eventData in the world interface, which will be resolved separately
+
+## 4.0.1-beta.31
+
+### Patch Changes
+
+- [#656](https://github.com/vercel/workflow/pull/656) [`ef22f82`](https://github.com/vercel/workflow/commit/ef22f82c9ead53744bac23fa12ed6bfbb1aba0bb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow resuming hooks with payloads from the UI
+
+- [#658](https://github.com/vercel/workflow/pull/658) [`88ad5c9`](https://github.com/vercel/workflow/commit/88ad5c9bbf4d79ef89a82492145ca70f9bf7cada) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix trace viewer not showing hook spans correctly if hook was already disposed
+
+- Updated dependencies []:
+  - @workflow/core@4.0.1-beta.30
+
+## 4.0.1-beta.30
+
+### Patch Changes
+
+- Updated dependencies [[`eaf9aa6`](https://github.com/vercel/workflow/commit/eaf9aa65f354bf1e22e8e148c0fd1936f0ec9358)]:
+  - @workflow/core@4.0.1-beta.29
+
+## 4.0.1-beta.29
+
+### Patch Changes
+
+- [#636](https://github.com/vercel/workflow/pull/636) [`c6f33ee`](https://github.com/vercel/workflow/commit/c6f33ee9d3a7889389f3ad30a30704e552dc596a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Show event markers for step_started events
+
+- [#623](https://github.com/vercel/workflow/pull/623) [`ce7d428`](https://github.com/vercel/workflow/commit/ce7d428a07cd415d2ea64c779b84ecdc796927a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Re-fetch previous steps in live trace viewer to ensure status gets updated correctly even for parallel step invocations
+
+- [#622](https://github.com/vercel/workflow/pull/622) [`a84f0db`](https://github.com/vercel/workflow/commit/a84f0db22715644e2a08d5455b68836255826828) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Indicate time between createdAt and startedAt for runs/steps, fix when "wake up from sleep" is shown
+
+- [#638](https://github.com/vercel/workflow/pull/638) [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Move auth error messages into @workflow/errors package
+
+- Updated dependencies [[`ea2a67e`](https://github.com/vercel/workflow/commit/ea2a67e19c5d224b4b4fd1c1a417810562df0807), [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005), [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3)]:
+  - @workflow/core@4.0.1-beta.28
+  - @workflow/errors@4.0.1-beta.10
+
+## 4.0.1-beta.28
+
+### Patch Changes
+
+- [#582](https://github.com/vercel/workflow/pull/582) [`05ea678`](https://github.com/vercel/workflow/commit/05ea6789e5773d5b4ee16dce4a800e613261f452) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add buttons to wake up workflow from sleep or scheduling issues
+
+- Updated dependencies [[`deaf019`](https://github.com/vercel/workflow/commit/deaf0193e91ea7a24d2423a813b64f51faa681e3), [`b56aae3`](https://github.com/vercel/workflow/commit/b56aae3fe9b5568d7bdda592ed025b3499149240), [`4d7a393`](https://github.com/vercel/workflow/commit/4d7a393906846be751e798c943594bec3c9b0ff3)]:
+  - @workflow/core@4.0.1-beta.27
+  - @workflow/errors@4.0.1-beta.9
+
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- [#586](https://github.com/vercel/workflow/pull/586) [`a4b67a9`](https://github.com/vercel/workflow/commit/a4b67a9b3aa0130785e6376fbeb636ca3c39b3a1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Show a conversation view in the trace viewer UI for `doStreamStep` steps from DurableAgent
+
+- Updated dependencies [[`696e7e3`](https://github.com/vercel/workflow/commit/696e7e31e88eae5d86e9d4b9f0344f0777ae9673)]:
+  - @workflow/core@4.0.1-beta.26
+  - @workflow/errors@4.0.1-beta.8
+
 ## 4.0.1-beta.26
 
 ### Patch Changes

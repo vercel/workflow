@@ -20,7 +20,14 @@ export interface NodeMetadata {
 
 export interface NodeData {
   label: string;
-  nodeKind: 'workflow_start' | 'workflow_end' | 'step';
+  nodeKind:
+    | 'workflow_start'
+    | 'workflow_end'
+    | 'step'
+    | 'primitive'
+    | 'conditional'
+    | 'agent'
+    | 'tool';
   stepId?: string;
 }
 
@@ -36,7 +43,7 @@ export interface GraphEdge {
   id: string;
   source: string;
   target: string;
-  type: 'default' | 'loop' | 'conditional' | 'parallel';
+  type: 'default' | 'loop' | 'conditional' | 'parallel' | 'tool';
   label?: string;
 }
 
@@ -105,7 +112,7 @@ export interface StepExecution {
   duration?: number;
   input?: unknown;
   output?: unknown;
-  error?: { message: string; stack: string };
+  error?: { message: string; stack?: string; code?: string };
 }
 
 export interface EdgeTraversal {
@@ -117,13 +124,7 @@ export interface EdgeTraversal {
 
 export interface WorkflowRunExecution {
   runId: string;
-  status:
-    | 'pending'
-    | 'running'
-    | 'completed'
-    | 'failed'
-    | 'paused'
-    | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   nodeExecutions: Map<string, StepExecution[]>; // nodeId -> array of executions (for retries)
   edgeTraversals: Map<string, EdgeTraversal>; // edgeId -> traversal info
   currentNode?: string; // for running workflows

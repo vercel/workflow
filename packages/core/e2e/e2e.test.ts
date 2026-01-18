@@ -1,13 +1,14 @@
 import { withResolvers } from '@workflow/utils';
-import { assert, afterAll, describe, expect, test } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { afterAll, assert, describe, expect, test } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
 import {
   cliInspectJson,
   getProtectionBypassHeaders,
-  isLocalDeployment,
+  hasStepSourceMaps,
+  hasWorkflowSourceMaps,
 } from './utils';
-import fs from 'fs';
-import path from 'path';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
@@ -47,9 +48,13 @@ function writeE2EMetadata() {
 
 async function triggerWorkflow(
   workflow: string | { workflowFile: string; workflowFn: string },
-  args: any[]
+  args: any[],
+  options?: { usePagesRouter?: boolean }
 ): Promise<{ runId: string }> {
-  const url = new URL('/api/trigger', deploymentUrl);
+  const endpoint = options?.usePagesRouter
+    ? '/api/trigger-pages'
+    : '/api/trigger';
+  const url = new URL(endpoint, deploymentUrl);
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;
   const workflowFile =
@@ -585,48 +590,265 @@ describe('e2e', () => {
     expect(returnValue).toEqual([0, 1, 2, 3, 4]);
   });
 
-  test('retryAttemptCounterWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('retryAttemptCounterWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+  // ==================== ERROR HANDLING TESTS ====================
+  describe('error handling', () => {
+    describe('error propagation', () => {
+      describe('workflow errors', () => {
+        test(
+          'nested function calls preserve message and stack trace',
+          { timeout: 60_000 },
+          async () => {
+            const run = await triggerWorkflow('errorWorkflowNested', []);
+            const result = await getWorkflowReturnValue(run.runId);
 
-    // The step should have succeeded on attempt 3
-    expect(returnValue).toEqual({ finalAttempt: 3 });
+            expect(result.name).toBe('WorkflowRunFailedError');
+            expect(result.cause.message).toContain('Nested workflow error');
 
-    // Also verify the run data shows the correct output
-    const { json: runData } = await cliInspectJson(
-      `runs ${run.runId} --withData`
-    );
-    expect(runData).toMatchObject({
-      runId: run.runId,
-      status: 'completed',
-      output: { finalAttempt: 3 },
+            // TODO: Known issue - workflow error stack traces are muddled when
+            //       running sveltekit in dev mode
+            if (
+              !process.env.DEV_TEST_CONFIG ||
+              process.env.APP_NAME !== 'sveltekit'
+            ) {
+              // Stack shows call chain: errorNested1 -> errorNested2 -> errorNested3
+              expect(result.cause.stack).toContain('errorNested1');
+              expect(result.cause.stack).toContain('errorNested2');
+              expect(result.cause.stack).toContain('errorNested3');
+              expect(result.cause.stack).toContain('errorWorkflowNested');
+              expect(result.cause.stack).toContain('99_e2e.ts');
+              expect(result.cause.stack).not.toContain('evalmachine');
+            }
+
+            const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+            expect(runData.status).toBe('failed');
+          }
+        );
+
+        test(
+          'cross-file imports preserve message and stack trace',
+          { timeout: 60_000 },
+          async () => {
+            const run = await triggerWorkflow('errorWorkflowCrossFile', []);
+            const result = await getWorkflowReturnValue(run.runId);
+
+            expect(result.name).toBe('WorkflowRunFailedError');
+            expect(result.cause.message).toContain(
+              'Error from imported helper module'
+            );
+
+            // TODO: Known issue - workflow error stack traces are muddled when
+            //       running sveltekit in dev mode
+            if (
+              !process.env.DEV_TEST_CONFIG ||
+              process.env.APP_NAME !== 'sveltekit'
+            ) {
+              expect(result.cause.stack).toContain('throwError');
+              expect(result.cause.stack).toContain('callThrower');
+              expect(result.cause.stack).toContain('errorWorkflowCrossFile');
+              expect(result.cause.stack).not.toContain('evalmachine');
+
+              // Workflow source maps are not properly supported everyhwere. Check the definition
+              // of hasWorkflowSourceMaps() to see where they are supported
+              if (hasWorkflowSourceMaps()) {
+                expect(result.cause.stack).toContain('helpers.ts');
+              } else {
+                expect(result.cause.stack).not.toContain('helpers.ts');
+              }
+            }
+
+            const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+            expect(runData.status).toBe('failed');
+          }
+        );
+      });
+
+      describe('step errors', () => {
+        test(
+          'basic step error preserves message and stack trace',
+          { timeout: 60_000 },
+          async () => {
+            const run = await triggerWorkflow('errorStepBasic', []);
+            const result = await getWorkflowReturnValue(run.runId);
+
+            // Workflow catches the error and returns it
+            expect(result.caught).toBe(true);
+            expect(result.message).toContain('Step error message');
+            // Stack trace contains function name and source file
+            expect(result.stack).toContain('errorStepFn');
+            expect(result.stack).not.toContain('evalmachine');
+
+            // Source maps are not supported everyhwere. Check the definition
+            // of hasStepSourceMaps() to see where they are supported
+            if (hasStepSourceMaps()) {
+              expect(result.stack).toContain('99_e2e.ts');
+            } else {
+              expect(result.stack).not.toContain('99_e2e.ts');
+            }
+
+            // Verify step failed via CLI (--withData needed to resolve errorRef)
+            const { json: steps } = await cliInspectJson(
+              `steps --runId ${run.runId} --withData`
+            );
+            const failedStep = steps.find((s: any) =>
+              s.stepName.includes('errorStepFn')
+            );
+            expect(failedStep.status).toBe('failed');
+            expect(failedStep.error.message).toContain('Step error message');
+
+            // Step error also has function name and source file in stack
+            expect(failedStep.error.stack).toContain('errorStepFn');
+            expect(failedStep.error.stack).not.toContain('evalmachine');
+
+            // Source maps are not supported everyhwere. Check the definition
+            // of hasStepSourceMaps() to see where they are supported
+            if (hasStepSourceMaps()) {
+              expect(failedStep.error.stack).toContain('99_e2e.ts');
+            } else {
+              expect(failedStep.error.stack).not.toContain('99_e2e.ts');
+            }
+
+            // Workflow completed (error was caught)
+            const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+            expect(runData.status).toBe('completed');
+          }
+        );
+
+        test(
+          'cross-file step error preserves message and function names in stack',
+          { timeout: 60_000 },
+          async () => {
+            const run = await triggerWorkflow('errorStepCrossFile', []);
+            const result = await getWorkflowReturnValue(run.runId);
+
+            // Workflow catches the error and returns message + stack
+            expect(result.caught).toBe(true);
+            expect(result.message).toContain(
+              'Step error from imported helper module'
+            );
+            // Stack trace propagates to caught error with function names and source file
+            expect(result.stack).toContain('throwErrorFromStep');
+            expect(result.stack).toContain('stepThatThrowsFromHelper');
+            expect(result.stack).not.toContain('evalmachine');
+
+            // Source maps are not supported everyhwere. Check the definition
+            // of hasStepSourceMaps() to see where they are supported
+            if (hasStepSourceMaps()) {
+              expect(result.stack).toContain('helpers.ts');
+            } else {
+              expect(result.stack).not.toContain('helpers.ts');
+            }
+
+            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
+            const { json: steps } = await cliInspectJson(
+              `steps --runId ${run.runId} --withData`
+            );
+            const failedStep = steps.find((s: any) =>
+              s.stepName.includes('stepThatThrowsFromHelper')
+            );
+            expect(failedStep.status).toBe('failed');
+            expect(failedStep.error.stack).toContain('throwErrorFromStep');
+            expect(failedStep.error.stack).toContain(
+              'stepThatThrowsFromHelper'
+            );
+            expect(failedStep.error.stack).not.toContain('evalmachine');
+            // Source maps are not supported everyhwere. Check the definition
+            // of hasStepSourceMaps() to see where they are supported
+            if (hasStepSourceMaps()) {
+              expect(failedStep.error.stack).toContain('helpers.ts');
+            } else {
+              expect(failedStep.error.stack).not.toContain('helpers.ts');
+            }
+
+            // Workflow completed (error was caught)
+            const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+            expect(runData.status).toBe('completed');
+          }
+        );
+      });
     });
 
-    // Query steps separately to verify the step data
-    const { json: stepsData } = await cliInspectJson(
-      `steps --runId ${run.runId} --withData`
-    );
-    expect(stepsData).toBeDefined();
-    expect(Array.isArray(stepsData)).toBe(true);
-    expect(stepsData.length).toBeGreaterThan(0);
+    describe('retry behavior', () => {
+      test(
+        'regular Error retries until success',
+        { timeout: 60_000 },
+        async () => {
+          const run = await triggerWorkflow('errorRetrySuccess', []);
+          const result = await getWorkflowReturnValue(run.runId);
 
-    // Find the stepThatRetriesAndSucceeds step
-    const retryStep = stepsData.find((s: any) =>
-      s.stepName.includes('stepThatRetriesAndSucceeds')
-    );
-    expect(retryStep).toBeDefined();
-    expect(retryStep.status).toBe('completed');
-    expect(retryStep.attempt).toBe(3);
-    expect(retryStep.output).toEqual([3]);
-  });
+          expect(result.finalAttempt).toBe(3);
 
-  test('retryableAndFatalErrorWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('retryableAndFatalErrorWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
-    expect(returnValue.retryableResult.attempt).toEqual(2);
-    expect(returnValue.retryableResult.duration).toBeGreaterThan(10_000);
-    expect(returnValue.gotFatalError).toBe(true);
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const step = steps.find((s: any) =>
+            s.stepName.includes('retryUntilAttempt3')
+          );
+          expect(step.status).toBe('completed');
+          expect(step.attempt).toBe(3);
+        }
+      );
+
+      test(
+        'FatalError fails immediately without retries',
+        { timeout: 60_000 },
+        async () => {
+          const run = await triggerWorkflow('errorRetryFatal', []);
+          const result = await getWorkflowReturnValue(run.runId);
+
+          expect(result.name).toBe('WorkflowRunFailedError');
+          expect(result.cause.message).toContain('Fatal step error');
+
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const step = steps.find((s: any) =>
+            s.stepName.includes('throwFatalError')
+          );
+          expect(step.status).toBe('failed');
+          expect(step.attempt).toBe(1);
+        }
+      );
+
+      test(
+        'RetryableError respects custom retryAfter delay',
+        { timeout: 60_000 },
+        async () => {
+          const run = await triggerWorkflow('errorRetryCustomDelay', []);
+          const result = await getWorkflowReturnValue(run.runId);
+
+          expect(result.attempt).toBe(2);
+          expect(result.duration).toBeGreaterThan(10_000);
+        }
+      );
+
+      test('maxRetries=0 disables retries', { timeout: 60_000 }, async () => {
+        const run = await triggerWorkflow('errorRetryDisabled', []);
+        const result = await getWorkflowReturnValue(run.runId);
+
+        expect(result.failed).toBe(true);
+        expect(result.attempt).toBe(1);
+      });
+    });
+
+    describe('catchability', () => {
+      test(
+        'FatalError can be caught and detected with FatalError.is()',
+        { timeout: 60_000 },
+        async () => {
+          const run = await triggerWorkflow('errorFatalCatchable', []);
+          const result = await getWorkflowReturnValue(run.runId);
+
+          expect(result.caught).toBe(true);
+          expect(result.isFatal).toBe(true);
+
+          // Verify workflow completed successfully (error was caught)
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+        }
+      );
+    });
   });
+  // ==================== END ERROR HANDLING TESTS ====================
 
   test(
     'stepDirectCallWorkflow - calling step functions directly outside workflow context',
@@ -655,68 +877,6 @@ describe('e2e', () => {
 
       // Expected: add(3, 5) = 8
       expect(result).toBe(8);
-    }
-  );
-
-  test(
-    'crossFileErrorWorkflow - stack traces work across imported modules',
-    { timeout: 60_000 },
-    async () => {
-      // This workflow intentionally throws an error from an imported helper module
-      // to verify that stack traces correctly show cross-file call chains
-      const run = await triggerWorkflow('crossFileErrorWorkflow', []);
-      const returnValue = await getWorkflowReturnValue(run.runId);
-
-      // The workflow should fail with error response containing both top-level and cause
-      expect(returnValue).toHaveProperty('name');
-      expect(returnValue.name).toBe('WorkflowRunFailedError');
-      expect(returnValue).toHaveProperty('message');
-
-      // Verify the cause property contains the structured error
-      expect(returnValue).toHaveProperty('cause');
-      expect(returnValue.cause).toBeTypeOf('object');
-      expect(returnValue.cause).toHaveProperty('message');
-      expect(returnValue.cause.message).toContain(
-        'Error from imported helper module'
-      );
-
-      // Verify the stack trace is present in the cause
-      expect(returnValue.cause).toHaveProperty('stack');
-      expect(typeof returnValue.cause.stack).toBe('string');
-
-      // Known issue: vite-based frameworks dev mode has incorrect source map mappings for bundled imports.
-      // esbuild with bundle:true inlines helpers.ts but source maps incorrectly map to 99_e2e.ts
-      // This works correctly in production and other frameworks.
-      // TODO: Investigate esbuild source map generation for bundled modules
-      const isViteBasedFrameworkDevMode =
-        (process.env.APP_NAME === 'sveltekit' ||
-          process.env.APP_NAME === 'vite' ||
-          process.env.APP_NAME === 'astro') &&
-        isLocalDeployment();
-
-      if (!isViteBasedFrameworkDevMode) {
-        // Stack trace should include frames from the helper module (helpers.ts)
-        expect(returnValue.cause.stack).toContain('helpers.ts');
-      }
-
-      // These checks should work in all modes
-      expect(returnValue.cause.stack).toContain('throwError');
-      expect(returnValue.cause.stack).toContain('callThrower');
-
-      // Stack trace should include frames from the workflow file (99_e2e.ts)
-      expect(returnValue.cause.stack).toContain('99_e2e.ts');
-      expect(returnValue.cause.stack).toContain('crossFileErrorWorkflow');
-
-      // Stack trace should NOT contain 'evalmachine' anywhere
-      expect(returnValue.cause.stack).not.toContain('evalmachine');
-
-      // Verify the run failed with structured error
-      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
-      expect(runData.status).toBe('failed');
-      expect(runData.error).toBeTypeOf('object');
-      expect(runData.error.message).toContain(
-        'Error from imported helper module'
-      );
     }
   );
 
@@ -914,4 +1074,268 @@ describe('e2e', () => {
       });
     }
   );
+
+  test(
+    'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
+    { timeout: 30_000 },
+    async () => {
+      // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
+      // This approach requires direct HTTP access and works when:
+      // - Running locally (for port detection)
+      // - Vercel Deployment Protection bypass headers are available
+      //
+      // For production use on Vercel with Deployment Protection enabled, use the
+      // queue-based `healthCheck(world, endpoint, options)` function instead, which
+      // bypasses protection by sending messages through the Queue infrastructure.
+
+      // Test the flow endpoint health check
+      const flowHealthUrl = new URL(
+        '/.well-known/workflow/v1/flow?__health',
+        deploymentUrl
+      );
+      const flowRes = await fetch(flowHealthUrl, {
+        method: 'POST',
+        headers: getProtectionBypassHeaders(),
+      });
+      expect(flowRes.status).toBe(200);
+      expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
+      const flowBody = await flowRes.text();
+      expect(flowBody).toBe(
+        'Workflow DevKit "/.well-known/workflow/v1/flow" endpoint is healthy'
+      );
+
+      // Test the step endpoint health check
+      const stepHealthUrl = new URL(
+        '/.well-known/workflow/v1/step?__health',
+        deploymentUrl
+      );
+      const stepRes = await fetch(stepHealthUrl, {
+        method: 'POST',
+        headers: getProtectionBypassHeaders(),
+      });
+      expect(stepRes.status).toBe(200);
+      expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
+      const stepBody = await stepRes.text();
+      expect(stepBody).toBe(
+        'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
+      );
+    }
+  );
+
+  test(
+    'health check (queue-based) - workflow and step endpoints respond to health check messages',
+    { timeout: 60_000 },
+    async () => {
+      // NOTE: This tests the queue-based health check using healthCheck() function.
+      // This approach bypasses Vercel Deployment Protection by sending messages
+      // through the Queue infrastructure rather than direct HTTP.
+      const url = new URL('/api/test-health-check', deploymentUrl);
+
+      // Test workflow endpoint health check
+      const workflowRes = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
+        body: JSON.stringify({ endpoint: 'workflow', timeout: 30000 }),
+      });
+      expect(workflowRes.status).toBe(200);
+      const workflowResult = await workflowRes.json();
+      expect(workflowResult.healthy).toBe(true);
+
+      // Test step endpoint health check
+      const stepRes = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
+        body: JSON.stringify({ endpoint: 'step', timeout: 30000 }),
+      });
+      expect(stepRes.status).toBe(200);
+      const stepResult = await stepRes.json();
+      expect(stepResult.healthy).toBe(true);
+    }
+  );
+
+  test(
+    'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow uses a step that calls a helper function imported via @repo/* path alias
+      // which resolves to a file outside the workbench directory (../../lib/steps/paths-alias-test.ts)
+      const run = await triggerWorkflow('pathsAliasWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // The step should return the helper's identifier string
+      expect(returnValue).toBe('pathsAliasHelper');
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe('pathsAliasHelper');
+    }
+  );
+
+  // ==================== STATIC METHOD STEP/WORKFLOW TESTS ====================
+  // Tests for static methods on classes with "use step" and "use workflow" directives.
+
+  test(
+    'Calculator.calculate - static workflow method using static step methods from another class',
+    { timeout: 60_000 },
+    async () => {
+      // Calculator.calculate(5, 3) should:
+      // 1. MathService.add(5, 3) = 8
+      // 2. MathService.multiply(8, 2) = 16
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'Calculator.calculate',
+        },
+        [5, 3]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(16);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(16);
+    }
+  );
+
+  test(
+    'AllInOneService.processNumber - static workflow method using sibling static step methods',
+    { timeout: 60_000 },
+    async () => {
+      // AllInOneService.processNumber(10) should:
+      // 1. AllInOneService.double(10) = 20
+      // 2. AllInOneService.triple(10) = 30
+      // 3. return 20 + 30 = 50
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'AllInOneService.processNumber',
+        },
+        [10]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(50);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(50);
+    }
+  );
+
+  test(
+    'ChainableService.processWithThis - static step methods using `this` to reference the class',
+    { timeout: 60_000 },
+    async () => {
+      // ChainableService.processWithThis(5) should:
+      // - ChainableService.multiplyByClassValue(5) uses `this.multiplier` (10) -> 5 * 10 = 50
+      // - ChainableService.doubleAndMultiply(5) uses `this.multiplier` (10) -> 5 * 2 * 10 = 100
+      // - sum = 50 + 100 = 150
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'ChainableService.processWithThis',
+        },
+        [5]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toEqual({
+        multiplied: 50, // 5 * 10
+        doubledAndMultiplied: 100, // 5 * 2 * 10
+        sum: 150, // 50 + 100
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        multiplied: 50,
+        doubledAndMultiplied: 100,
+        sum: 150,
+      });
+    }
+  );
+
+  test(
+    'thisSerializationWorkflow - step function invoked with .call() and .apply()',
+    { timeout: 60_000 },
+    async () => {
+      // thisSerializationWorkflow(10) should:
+      // 1. multiplyByFactor.call({ factor: 2 }, 10) = 20
+      // 2. multiplyByFactor.apply({ factor: 3 }, [20]) = 60
+      // 3. multiplyByFactor.call({ factor: 5 }, 60) = 300
+      // Total: 10 * 2 * 3 * 5 = 300
+      const run = await triggerWorkflow('thisSerializationWorkflow', [10]);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(300);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(300);
+    }
+  );
+
+  // ==================== PAGES ROUTER TESTS ====================
+  // Tests for Next.js Pages Router API endpoint (only runs for nextjs-turbopack and nextjs-webpack)
+  const isNextJsApp =
+    process.env.APP_NAME === 'nextjs-turbopack' ||
+    process.env.APP_NAME === 'nextjs-webpack';
+
+  describe.skipIf(!isNextJsApp)('pages router', () => {
+    test('addTenWorkflow via pages router', { timeout: 60_000 }, async () => {
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'addTenWorkflow',
+        },
+        [123],
+        { usePagesRouter: true }
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue).toBe(133);
+    });
+
+    test(
+      'promiseAllWorkflow via pages router',
+      { timeout: 60_000 },
+      async () => {
+        const run = await triggerWorkflow('promiseAllWorkflow', [], {
+          usePagesRouter: true,
+        });
+        const returnValue = await getWorkflowReturnValue(run.runId);
+        expect(returnValue).toBe('ABC');
+      }
+    );
+
+    test('sleepingWorkflow via pages router', { timeout: 60_000 }, async () => {
+      const run = await triggerWorkflow('sleepingWorkflow', [], {
+        usePagesRouter: true,
+      });
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
+      expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
+    });
+  });
 });

@@ -6,8 +6,6 @@ import {
   type ListWorkflowRunsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
-  type PauseWorkflowRunParams,
-  type ResumeWorkflowRunParams,
   type UpdateWorkflowRunRequest,
   type WorkflowRun,
   WorkflowRunBaseSchema,
@@ -205,72 +203,6 @@ export async function cancelWorkflowRun(
 
   const queryString = searchParams.toString();
   const endpoint = `/v1/runs/${id}/cancel${queryString ? `?${queryString}` : ''}`;
-
-  try {
-    const run = await makeRequest({
-      endpoint,
-      options: { method: 'PUT' },
-      config,
-      schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWireWithRefsSchema
-        : WorkflowRunWireSchema) as any,
-    });
-
-    return filterRunData(run, resolveData);
-  } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
-      throw new WorkflowRunNotFoundError(id);
-    }
-    throw error;
-  }
-}
-
-export async function pauseWorkflowRun(
-  id: string,
-  params?: PauseWorkflowRunParams,
-  config?: APIConfig
-): Promise<WorkflowRun> {
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
-
-  const searchParams = new URLSearchParams();
-  searchParams.set('remoteRefBehavior', remoteRefBehavior);
-
-  const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}/pause${queryString ? `?${queryString}` : ''}`;
-
-  try {
-    const run = await makeRequest({
-      endpoint,
-      options: { method: 'PUT' },
-      config,
-      schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWireWithRefsSchema
-        : WorkflowRunWireSchema) as any,
-    });
-
-    return filterRunData(run, resolveData);
-  } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
-      throw new WorkflowRunNotFoundError(id);
-    }
-    throw error;
-  }
-}
-
-export async function resumeWorkflowRun(
-  id: string,
-  params?: ResumeWorkflowRunParams,
-  config?: APIConfig
-): Promise<WorkflowRun> {
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
-
-  const searchParams = new URLSearchParams();
-  searchParams.set('remoteRefBehavior', remoteRefBehavior);
-
-  const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}/resume${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({

@@ -133,7 +133,7 @@ export async function customFetch(
 
 This example demonstrates:
 
-- Setting custom `maxRetries` to 5 attempts.
+- Setting custom `maxRetries` to 5 retries (6 total attempts including the initial attempt).
 - Throwing [`FatalError`](/docs/api-reference/workflow/fatal-error) for client errors (400-499) to prevent retries.
 - Handling 429 rate limiting by reading the `Retry-After` header and using [`RetryableError`](/docs/api-reference/workflow/retryable-error).
 - Allowing automatic retries for server errors (5xx).

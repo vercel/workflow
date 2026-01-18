@@ -4,6 +4,7 @@ import {
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
+import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import type {
   Event,
   Hook,
@@ -100,7 +101,6 @@ const STATUS_COLORS: Record<
   failed: chalk.red,
   cancelled: chalk.strikethrough.yellow,
   pending: chalk.blue,
-  paused: chalk.yellow,
 };
 
 const isStreamId = (value: string) => {
@@ -115,7 +115,6 @@ const showStatusLegend = () => {
     'failed',
     'cancelled',
     'pending',
-    'paused',
   ];
 
   const legendItems = statuses.map((status) => {
@@ -139,9 +138,7 @@ const checkAndHandleVercelAccessError = (
   if (backend === 'vercel' && error && typeof error === 'object') {
     const err = error as Record<string, unknown>;
     if (err.status === 403) {
-      logger.error(
-        'Your current vercel account does not have access to this workflow run. Please use `vercel login` to login, or use `vercel switch` to ensure you can access the correct team.'
-      );
+      logger.error(VERCEL_403_ERROR_MESSAGE);
       return true;
     }
   }
@@ -348,7 +345,11 @@ const showTable = (
   TABLE_TRUNCATE_IO_LENGTH = displaySettings.dataFieldWidth;
 
   // Show status legend if using abbreviated status
-  if (displaySettings.abbreviateStatus && visibleProps.includes('status')) {
+  if (
+    data.length > 0 &&
+    displaySettings.abbreviateStatus &&
+    visibleProps.includes('status')
+  ) {
     showStatusLegend();
   }
 
@@ -544,6 +545,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
 
   await setupListPagination<WorkflowRun>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       try {
         const runs = await world.runs.list({
@@ -681,6 +683,7 @@ export const listSteps = async (
 
   await setupListPagination<Step>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       logger.debug(`Fetching steps for run ${runId}`);
       try {
@@ -889,6 +892,7 @@ export const listEvents = async (
 
   await setupListPagination<Event>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       logger.debug(`Fetching events for run ${filterId}`);
       try {
@@ -958,6 +962,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
   // Setup pagination with new mechanism
   await setupListPagination<Hook>({
     initialCursor: opts.cursor,
+    interactive: opts.interactive,
     fetchPage: async (cursor) => {
       if (!runId) {
         logger.debug('Fetching all hooks');

@@ -1,25 +1,108 @@
 'use client';
 
 import { TooltipProvider } from '@radix-ui/react-tooltip';
+import type { PublicServerConfig } from '@workflow/web-shared/server';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ThemeProvider, useTheme } from 'next-themes';
 import { useEffect, useRef } from 'react';
 import { ConnectionStatus } from '@/components/display-utils/connection-status';
-import { SettingsDropdown } from '@/components/settings-dropdown';
+import { ThemePicker } from '@/components/theme-dropdown';
+import { DocsLink } from '@/components/top-nav/docs-link';
 import { Toaster } from '@/components/ui/sonner';
-import { buildUrlWithConfig, useQueryParamConfig } from '@/lib/config';
+import { ServerConfigProvider } from '@/lib/world-config-context';
 import { Logo } from '../icons/logo';
 
 interface LayoutClientProps {
   children: React.ReactNode;
+  serverConfig: PublicServerConfig;
 }
 
-function LayoutContent({ children }: LayoutClientProps) {
+function computeDirectRunUrl(params: {
+  runId: string;
+  stepId: string | null;
+  hookId: string | null;
+}): string {
+  const { runId, stepId, hookId } = params;
+  if (stepId) {
+    return `/run/${runId}?sidebar=step&stepId=${stepId}`;
+  }
+  if (hookId) {
+    return `/run/${runId}?sidebar=hook&hookId=${hookId}`;
+  }
+  return `/run/${runId}`;
+}
+
+function computeResourceUrl(params: {
+  resource: string;
+  id: string;
+  runId: string | null;
+}): string | null {
+  const { resource, id, runId } = params;
+  switch (resource) {
+    case 'run':
+      return `/run/${id}`;
+    case 'step':
+      return runId ? `/run/${runId}?sidebar=step&stepId=${id}` : null;
+    case 'stream':
+      return runId ? `/run/${runId}?sidebar=stream&streamId=${id}` : null;
+    case 'event':
+      return runId ? `/run/${runId}?sidebar=event&eventId=${id}` : null;
+    case 'hook':
+      return runId
+        ? `/run/${runId}?sidebar=hook&hookId=${id}`
+        : `/?sidebar=hook&hookId=${id}`;
+    default:
+      return null;
+  }
+}
+
+function getInitialNavigationUrl(params: {
+  pathname: string;
+  hasNavigated: boolean;
+  resource: string | null;
+  id: string | null;
+  runId: string | null;
+  stepId: string | null;
+  hookId: string | null;
+}): { url: string | null; markNavigated: boolean; warn?: string } {
+  const { pathname, hasNavigated, resource, id, runId, stepId, hookId } =
+    params;
+
+  if (pathname.startsWith('/run/')) {
+    return { url: null, markNavigated: true };
+  }
+
+  if (pathname !== '/' && hasNavigated) {
+    return { url: null, markNavigated: false };
+  }
+
+  if (resource) {
+    if (!id) return { url: null, markNavigated: false };
+    const url = computeResourceUrl({ resource, id, runId });
+    return url
+      ? { url, markNavigated: true }
+      : {
+          url: null,
+          markNavigated: false,
+          warn: `Can't deep-link to ${resource} ${id}.`,
+        };
+  }
+
+  if (runId) {
+    return {
+      url: computeDirectRunUrl({ runId, stepId, hookId }),
+      markNavigated: true,
+    };
+  }
+
+  return { url: null, markNavigated: false };
+}
+
+function LayoutContent({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const config = useQueryParamConfig();
   const { setTheme } = useTheme();
 
   const id = searchParams.get('id');
@@ -47,88 +130,28 @@ function LayoutContent({ children }: LayoutClientProps) {
   // If initialized with a resource/id or direct ID params, we navigate to the appropriate page
   // Only run this logic once on mount or when we're on the root path with special params
   useEffect(() => {
-    // Skip if we're not on the root path and we've already navigated
-    if (pathname !== '/' && hasNavigatedRef.current) {
-      return;
+    const result = getInitialNavigationUrl({
+      pathname,
+      hasNavigated: hasNavigatedRef.current,
+      resource,
+      id,
+      runId,
+      stepId,
+      hookId,
+    });
+
+    if (result.warn) {
+      console.warn(result.warn);
     }
 
-    // Skip if we're already on a run page (prevents interference with back navigation)
-    if (pathname.startsWith('/run/')) {
+    if (result.markNavigated) {
       hasNavigatedRef.current = true;
-      return;
     }
 
-    // Handle direct ID parameters (runId, stepId, hookId) without resource
-    if (!resource) {
-      if (runId) {
-        // If we have a runId, open that run's detail view
-        let targetUrl: string;
-        if (stepId) {
-          // Open run with step sidebar
-          targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
-            sidebar: 'step',
-            stepId,
-          });
-        } else if (hookId) {
-          // Open run with hook sidebar
-          targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
-            sidebar: 'hook',
-            hookId,
-          });
-        } else {
-          // Just open the run
-          targetUrl = buildUrlWithConfig(`/run/${runId}`, config);
-        }
-        hasNavigatedRef.current = true;
-        router.push(targetUrl);
-        return;
-      }
-      // No resource and no direct params, nothing to do
-      return;
-    }
+    if (!result.url) return;
 
-    // Handle resource-based navigation
-    if (!id) {
-      return;
-    }
-
-    let targetUrl: string;
-    if (resource === 'run') {
-      targetUrl = buildUrlWithConfig(`/run/${id}`, config);
-    } else if (resource === 'step' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
-        sidebar: 'step',
-        stepId: id,
-      });
-    } else if (resource === 'stream' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
-        sidebar: 'stream',
-        streamId: id,
-      });
-    } else if (resource === 'event' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
-        sidebar: 'event',
-        eventId: id,
-      });
-    } else if (resource === 'hook' && runId) {
-      targetUrl = buildUrlWithConfig(`/run/${runId}`, config, {
-        sidebar: 'hook',
-        hookId: id,
-      });
-    } else if (resource === 'hook' && !runId) {
-      // Hook without runId - go to home page with hook sidebar
-      targetUrl = buildUrlWithConfig('/', config, {
-        sidebar: 'hook',
-        hookId: id,
-      });
-    } else {
-      console.warn(`Can't deep-link to ${resource} ${id}.`);
-      return;
-    }
-
-    hasNavigatedRef.current = true;
-    router.push(targetUrl);
-  }, [resource, id, runId, stepId, hookId, router, config, pathname]);
+    router.push(result.url);
+  }, [resource, id, runId, stepId, hookId, router, pathname]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -136,17 +159,21 @@ function LayoutContent({ children }: LayoutClientProps) {
         {/* Sticky Header */}
         <div className="sticky top-0 z-50 bg-background border-b px-6 py-4">
           <div className="flex items-center justify-between w-full">
-            <Link href={buildUrlWithConfig('/', config)}>
-              <h1
-                className="flex items-center gap-2"
-                title="Workflow Observability"
-              >
-                <Logo />
-              </h1>
-            </Link>
+            <div className="flex items-center gap-4">
+              <Link href="/">
+                <h1
+                  className="flex items-center gap-2"
+                  title="Workflow Observability"
+                >
+                  <Logo />
+                </h1>
+              </Link>
+              <div className="h-6 w-px bg-border" aria-hidden="true" />
+              <ConnectionStatus />
+            </div>
             <div className="ml-auto flex items-center gap-2">
-              <ConnectionStatus config={config} />
-              <SettingsDropdown />
+              <ThemePicker />
+              <DocsLink />
             </div>
           </div>
         </div>
@@ -159,7 +186,7 @@ function LayoutContent({ children }: LayoutClientProps) {
   );
 }
 
-export function LayoutClient({ children }: LayoutClientProps) {
+export function LayoutClient({ children, serverConfig }: LayoutClientProps) {
   return (
     <ThemeProvider
       attribute="class"
@@ -168,7 +195,9 @@ export function LayoutClient({ children }: LayoutClientProps) {
       disableTransitionOnChange
       storageKey="workflow-theme"
     >
-      <LayoutContent>{children}</LayoutContent>
+      <ServerConfigProvider serverConfig={serverConfig}>
+        <LayoutContent>{children}</LayoutContent>
+      </ServerConfigProvider>
     </ThemeProvider>
   );
 }

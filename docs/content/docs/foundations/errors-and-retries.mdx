@@ -22,7 +22,7 @@ async function callApi(endpoint: string) {
   return response.json();
 }
 
-callApi.maxRetries = 5; // Set a custom number of retries
+callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
 
 Steps get enqueued immediately after a failure. Read on to see how this can be customized.
@@ -122,8 +122,14 @@ async function callApi(endpoint: string) {
 
   return response.json();
 }
-callApi.maxRetries = 5;
+callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
+
+<Callout type="info">
+  Setting <code>maxRetries = 0</code> means the step will run once but will not
+  be retried on failure. The default is <code>maxRetries = 3</code>, meaning the
+  step can run up to 4 times total (1 initial attempt + 3 retries).
+</Callout>
 
 ## Rolling Back Failed Steps
 

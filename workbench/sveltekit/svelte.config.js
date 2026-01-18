@@ -17,6 +17,9 @@ const config = {
     // In production, specify only trusted origins or remove this configuration
     // to use SvelteKit's default CSRF protection.
     csrf: { trustedOrigins: ['*'] },
+    alias: {
+      '@repo/*': '../../*',
+    },
   },
 };
 

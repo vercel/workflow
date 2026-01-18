@@ -41,6 +41,7 @@ export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="10"
 
 You can also create a PostgreSQL world directly in your code:
 
+<!-- @skip-typecheck: incomplete code sample -->
 ```typescript
 import { createWorld } from "@workflow/world-postgres";
 

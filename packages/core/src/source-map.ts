@@ -1,4 +1,4 @@
-import { TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
+import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping';
 
 /**
  * Remaps an error stack trace using inline source maps to show original source locations.

@@ -1,7 +1,10 @@
 'use client';
 
-import { GitBranch, Workflow } from 'lucide-react';
-import { useState } from 'react';
+import { pluralize } from '@workflow/utils';
+import { AlertCircle, GitBranch, Workflow } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { WorkflowGraphViewer } from '@/components/flow-graph/workflow-graph-viewer';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -19,33 +22,62 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { WorkflowGraphViewer } from '@/components/flow-graph/workflow-graph-viewer';
+import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
 import type { WorkflowGraph } from '@/lib/flow-graph/workflow-graph-types';
 import { TableSkeleton } from './display-utils/table-skeleton';
 
 interface WorkflowsListProps {
-  workflows: WorkflowGraph[];
-  onWorkflowSelect: (workflowName: string) => void;
-  loading?: boolean;
+  onWorkflowSelect?: (workflowName: string) => void;
 }
 
-export function WorkflowsList({
-  workflows,
-  onWorkflowSelect,
-  loading,
-}: WorkflowsListProps) {
+export function WorkflowsList({ onWorkflowSelect }: WorkflowsListProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [selectedWorkflow, setSelectedWorkflow] =
     useState<WorkflowGraph | null>(null);
 
+  // Fetch workflow graph manifest
+  const {
+    manifest: graphManifest,
+    loading,
+    error: graphError,
+  } = useWorkflowGraphManifest();
+
+  const workflows = graphManifest ? Object.values(graphManifest.workflows) : [];
+
+  // Sort workflows alphabetically by name
+  const sortedWorkflows = useMemo(
+    () =>
+      [...workflows].sort((a, b) =>
+        a.workflowName.localeCompare(b.workflowName)
+      ),
+    [workflows]
+  );
+
+  const selectedWorkflowStepCount = useMemo(
+    () =>
+      selectedWorkflow?.nodes.filter((node) => node.data.nodeKind === 'step')
+        .length ?? 0,
+    [selectedWorkflow]
+  );
+
   const handleViewWorkflow = (workflow: WorkflowGraph) => {
     setSelectedWorkflow(workflow);
     setSheetOpen(true);
-    onWorkflowSelect(workflow.workflowName);
+    onWorkflowSelect?.(workflow.workflowName);
   };
 
   if (loading) {
     return <TableSkeleton variant="workflows" rows={6} />;
+  }
+
+  if (graphError) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle className="h-4 w-4" />
+        <AlertTitle>Error Loading Workflows</AlertTitle>
+        <AlertDescription>{graphError.message}</AlertDescription>
+      </Alert>
+    );
   }
 
   if (workflows.length === 0) {
@@ -81,7 +113,7 @@ export function WorkflowsList({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {workflows.map((workflow) => {
+              {sortedWorkflows.map((workflow) => {
                 const stepCount = workflow.nodes.filter(
                   (node) => node.data.nodeKind === 'step'
                 ).length;
@@ -105,7 +137,7 @@ export function WorkflowsList({
                     <TableCell className="text-center py-2">
                       <Badge variant="secondary" className="gap-1">
                         <GitBranch className="h-3 w-3" />
-                        {stepCount} {stepCount === 1 ? 'step' : 'steps'}
+                        {stepCount} {pluralize('step', 'steps', stepCount)}
                       </Badge>
                     </TableCell>
                   </TableRow>
@@ -133,16 +165,8 @@ export function WorkflowsList({
                   <div>
                     <Badge variant="outline" className="gap-1">
                       <GitBranch className="h-3 w-3" />
-                      {
-                        selectedWorkflow.nodes.filter(
-                          (node) => node.data.nodeKind === 'step'
-                        ).length
-                      }{' '}
-                      {selectedWorkflow.nodes.filter(
-                        (node) => node.data.nodeKind === 'step'
-                      ).length === 1
-                        ? 'step'
-                        : 'steps'}
+                      {selectedWorkflowStepCount}{' '}
+                      {pluralize('step', 'steps', selectedWorkflowStepCount)}
                     </Badge>
                   </div>
                 </div>

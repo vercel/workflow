@@ -1,5 +1,259 @@
 # workflow
 
+## 4.0.1-beta.48
+
+### Patch Changes
+
+- Updated dependencies [[`344c90f`](https://github.com/vercel/workflow/commit/344c90ff9f630addc4b41f72c2296b26e61513bc), [`b729d49`](https://github.com/vercel/workflow/commit/b729d49610739ae818fd56853f8ddc557591e9a1)]:
+  - @workflow/core@4.0.1-beta.39
+  - @workflow/next@4.0.1-beta.44
+  - @workflow/cli@4.0.1-beta.48
+  - @workflow/nitro@4.0.1-beta.43
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.22
+  - @workflow/sveltekit@4.0.0-beta.37
+  - @workflow/nuxt@4.0.1-beta.32
+
+## 4.0.1-beta.47
+
+### Patch Changes
+
+- Updated dependencies [[`abdca8f`](https://github.com/vercel/workflow/commit/abdca8fd526f3c83c7da7b96a0522f9552e2bd2f)]:
+  - @workflow/cli@4.0.1-beta.47
+
+## 4.0.1-beta.46
+
+### Patch Changes
+
+- [#754](https://github.com/vercel/workflow/pull/754) [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for serializing `this` when invoking step functions
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290)]:
+  - @workflow/nitro@4.0.1-beta.42
+  - @workflow/core@4.0.1-beta.38
+  - @workflow/nuxt@4.0.1-beta.31
+  - @workflow/astro@4.0.0-beta.21
+  - @workflow/cli@4.0.1-beta.46
+  - @workflow/next@4.0.1-beta.43
+  - @workflow/rollup@4.0.0-beta.7
+  - @workflow/sveltekit@4.0.0-beta.36
+  - @workflow/typescript-plugin@4.0.1-beta.4
+
+## 4.0.1-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`3dd5b27`](https://github.com/vercel/workflow/commit/3dd5b2708de56e63c9dce9b3f2eafea63b0e3936), [`44dfafe`](https://github.com/vercel/workflow/commit/44dfafe3fcf0c5aa56beb86f6d428894b22d0b0c), [`49f650c`](https://github.com/vercel/workflow/commit/49f650c3a79e7b9b501cb602e3c12b75a3c4fffc), [`39e5774`](https://github.com/vercel/workflow/commit/39e5774de2a4c8b6a18574aa4edaf79e9f0d655e)]:
+  - @workflow/core@4.0.1-beta.37
+  - @workflow/cli@4.0.1-beta.45
+  - @workflow/next@4.0.1-beta.42
+  - @workflow/nitro@4.0.1-beta.41
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/astro@4.0.0-beta.20
+  - @workflow/sveltekit@4.0.0-beta.35
+  - @workflow/nuxt@4.0.1-beta.30
+
+## 4.0.1-beta.44
+
+### Patch Changes
+
+- Updated dependencies [[`3fb57e1`](https://github.com/vercel/workflow/commit/3fb57e14c8bd3948599625bdf911b88db5842320)]:
+  - @workflow/cli@4.0.1-beta.44
+
+## 4.0.1-beta.43
+
+### Patch Changes
+
+- Updated dependencies [[`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167), [`e7de61f`](https://github.com/vercel/workflow/commit/e7de61f8b88ad7c710208ef599872085fb7b6d32), [`05ecfbc`](https://github.com/vercel/workflow/commit/05ecfbcc11508defc7ccd0a8b67839eaef631e71)]:
+  - @workflow/cli@4.0.1-beta.43
+  - @workflow/core@4.0.1-beta.36
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/next@4.0.1-beta.41
+  - @workflow/nitro@4.0.1-beta.40
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.19
+  - @workflow/sveltekit@4.0.0-beta.34
+  - @workflow/nuxt@4.0.1-beta.29
+
+## 4.0.1-beta.42
+
+### Patch Changes
+
+- [#729](https://github.com/vercel/workflow/pull/729) [`01f59a3`](https://github.com/vercel/workflow/commit/01f59a3b960070e2e42804b259b6d789a9ea6789) Thanks [@ijjk](https://github.com/ijjk)! - Reland sourcemap fix for workflow package
+
+- Updated dependencies [[`505063c`](https://github.com/vercel/workflow/commit/505063cbb9ef04af8531c2cd3cd3840b5d272f82), [`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf)]:
+  - @workflow/next@4.0.1-beta.40
+  - @workflow/core@4.0.1-beta.35
+  - @workflow/astro@4.0.0-beta.18
+  - @workflow/cli@4.0.1-beta.42
+  - @workflow/nitro@4.0.1-beta.39
+  - @workflow/sveltekit@4.0.0-beta.33
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.28
+
+## 4.0.1-beta.41
+
+### Patch Changes
+
+- Updated dependencies [[`1a305bf`](https://github.com/vercel/workflow/commit/1a305bf91876b714699b91c6ac73bcbafde670d0)]:
+  - @workflow/cli@4.0.1-beta.41
+  - @workflow/astro@4.0.0-beta.17
+  - @workflow/next@4.0.1-beta.39
+  - @workflow/nitro@4.0.1-beta.38
+  - @workflow/sveltekit@4.0.0-beta.32
+  - @workflow/nuxt@4.0.1-beta.27
+
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- [#712](https://github.com/vercel/workflow/pull/712) [`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c) Thanks [@ijjk](https://github.com/ijjk)! - Revert lazy workflow and step discovery
+
+- Updated dependencies [[`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2), [`307f4b0`](https://github.com/vercel/workflow/commit/307f4b0e41277f6b32afbfa361d8c6ca1b3d7f6c), [`7ff68d1`](https://github.com/vercel/workflow/commit/7ff68d1753c43b14d161d249f6745de6beddd99b)]:
+  - @workflow/core@4.0.1-beta.34
+  - @workflow/nitro@4.0.1-beta.37
+  - @workflow/next@4.0.1-beta.38
+  - @workflow/sveltekit@4.0.0-beta.31
+  - @workflow/astro@4.0.0-beta.16
+  - @workflow/cli@4.0.1-beta.40
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/nuxt@4.0.1-beta.26
+
+## 4.0.1-beta.39
+
+### Patch Changes
+
+- Updated dependencies [[`851c020`](https://github.com/vercel/workflow/commit/851c0203fe3a19ce51cc9897316e74a066580334)]:
+  - @workflow/next@4.0.1-beta.37
+  - @workflow/cli@4.0.1-beta.39
+  - @workflow/core@4.0.1-beta.33
+  - @workflow/nitro@4.0.1-beta.36
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.15
+  - @workflow/sveltekit@4.0.0-beta.30
+  - @workflow/nuxt@4.0.1-beta.25
+
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- Updated dependencies [[`80955e7`](https://github.com/vercel/workflow/commit/80955e7212b38237710249f7ac3c17fb55cae49b)]:
+  - @workflow/cli@4.0.1-beta.38
+
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/sveltekit@4.0.0-beta.29
+  - @workflow/nitro@4.0.1-beta.35
+  - @workflow/core@4.0.1-beta.32
+  - @workflow/next@4.0.1-beta.36
+  - @workflow/cli@4.0.1-beta.37
+  - @workflow/astro@4.0.0-beta.14
+  - @workflow/nuxt@4.0.1-beta.24
+  - @workflow/errors@4.0.1-beta.12
+  - @workflow/typescript-plugin@4.0.1-beta.4
+
+## 4.0.1-beta.36
+
+### Patch Changes
+
+- [#683](https://github.com/vercel/workflow/pull/683) [`8ba8b6b`](https://github.com/vercel/workflow/commit/8ba8b6be6b62c549bd6743a1e5eb96feee93b4d5) Thanks [@ijjk](https://github.com/ijjk)! - Revert extra stdlib re-export
+
+- Updated dependencies [[`0cf0ac3`](https://github.com/vercel/workflow/commit/0cf0ac32114bcdfa49319d27c2ce98da516690f1), [`ea3afce`](https://github.com/vercel/workflow/commit/ea3afce222ff9c2f90d99414fae275ef5f54b431), [`25b02b0`](https://github.com/vercel/workflow/commit/25b02b0bfdefa499e13fb974b1832fbe47dbde86), [`c059cf6`](https://github.com/vercel/workflow/commit/c059cf6fcd0988b380f66dfa0f2bb85a19cc4063)]:
+  - @workflow/cli@4.0.1-beta.36
+  - @workflow/next@4.0.1-beta.35
+  - @workflow/core@4.0.1-beta.31
+  - @workflow/errors@4.0.1-beta.11
+  - @workflow/astro@4.0.0-beta.13
+  - @workflow/nitro@4.0.1-beta.34
+  - @workflow/sveltekit@4.0.0-beta.28
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.23
+
+## 4.0.1-beta.35
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.0.1-beta.35
+  - @workflow/core@4.0.1-beta.30
+  - @workflow/next@4.0.1-beta.34
+  - @workflow/nitro@4.0.1-beta.33
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.12
+  - @workflow/sveltekit@4.0.0-beta.27
+  - @workflow/nuxt@4.0.1-beta.22
+
+## 4.0.1-beta.34
+
+### Patch Changes
+
+- Updated dependencies [[`eaf9aa6`](https://github.com/vercel/workflow/commit/eaf9aa65f354bf1e22e8e148c0fd1936f0ec9358)]:
+  - @workflow/core@4.0.1-beta.29
+  - @workflow/cli@4.0.1-beta.34
+  - @workflow/next@4.0.1-beta.33
+  - @workflow/nitro@4.0.1-beta.32
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.11
+  - @workflow/sveltekit@4.0.0-beta.26
+  - @workflow/nuxt@4.0.1-beta.21
+
+## 4.0.1-beta.33
+
+### Patch Changes
+
+- Updated dependencies [[`ea2a67e`](https://github.com/vercel/workflow/commit/ea2a67e19c5d224b4b4fd1c1a417810562df0807), [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005), [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3)]:
+  - @workflow/core@4.0.1-beta.28
+  - @workflow/errors@4.0.1-beta.10
+  - @workflow/cli@4.0.1-beta.33
+  - @workflow/next@4.0.1-beta.32
+  - @workflow/nitro@4.0.1-beta.31
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.10
+  - @workflow/sveltekit@4.0.0-beta.25
+  - @workflow/nuxt@4.0.1-beta.20
+
+## 4.0.1-beta.32
+
+### Patch Changes
+
+- Updated dependencies [[`deaf019`](https://github.com/vercel/workflow/commit/deaf0193e91ea7a24d2423a813b64f51faa681e3), [`29967bf`](https://github.com/vercel/workflow/commit/29967bff9098f6c1bce90d2ab7ef40484c3b9242), [`b56aae3`](https://github.com/vercel/workflow/commit/b56aae3fe9b5568d7bdda592ed025b3499149240), [`4d7a393`](https://github.com/vercel/workflow/commit/4d7a393906846be751e798c943594bec3c9b0ff3)]:
+  - @workflow/core@4.0.1-beta.27
+  - @workflow/cli@4.0.1-beta.32
+  - @workflow/nitro@4.0.1-beta.30
+  - @workflow/errors@4.0.1-beta.9
+  - @workflow/next@4.0.1-beta.31
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.19
+  - @workflow/astro@4.0.0-beta.9
+  - @workflow/sveltekit@4.0.0-beta.24
+
+## 4.0.1-beta.31
+
+### Patch Changes
+
+- Updated dependencies [[`6265534`](https://github.com/vercel/workflow/commit/6265534d6be2cba54265ef23b94a0810d9e25c9c)]:
+  - @workflow/next@4.0.1-beta.30
+  - @workflow/cli@4.0.1-beta.31
+
+## 4.0.1-beta.30
+
+### Patch Changes
+
+- Updated dependencies [[`8d2cabe`](https://github.com/vercel/workflow/commit/8d2cabe27e80979a5f3cfb4fef373ca3938b5950), [`c9b8d84`](https://github.com/vercel/workflow/commit/c9b8d843fd0a88de268d603a14ebe2e7c726169a), [`696e7e3`](https://github.com/vercel/workflow/commit/696e7e31e88eae5d86e9d4b9f0344f0777ae9673)]:
+  - @workflow/sveltekit@4.0.0-beta.23
+  - @workflow/core@4.0.1-beta.26
+  - @workflow/cli@4.0.1-beta.30
+  - @workflow/errors@4.0.1-beta.8
+  - @workflow/next@4.0.1-beta.29
+  - @workflow/nitro@4.0.1-beta.29
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/astro@4.0.0-beta.8
+  - @workflow/nuxt@4.0.1-beta.18
+
 ## 4.0.1-beta.29
 
 ### Patch Changes

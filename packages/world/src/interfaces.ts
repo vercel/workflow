@@ -17,8 +17,6 @@ import type {
   CreateWorkflowRunRequest,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
-  PauseWorkflowRunParams,
-  ResumeWorkflowRunParams,
   UpdateWorkflowRunRequest,
   WorkflowRun,
 } from './runs.js';
@@ -54,8 +52,6 @@ export interface Storage {
       params?: ListWorkflowRunsParams
     ): Promise<PaginatedResponse<WorkflowRun>>;
     cancel(id: string, params?: CancelWorkflowRunParams): Promise<WorkflowRun>;
-    pause(id: string, params?: PauseWorkflowRunParams): Promise<WorkflowRun>;
-    resume(id: string, params?: ResumeWorkflowRunParams): Promise<WorkflowRun>;
   };
 
   steps: {

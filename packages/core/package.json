@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.0.1-beta.25",
+  "version": "4.0.1-beta.39",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -24,6 +24,7 @@
     },
     "./runtime": "./dist/runtime.js",
     "./private": "./dist/private.js",
+    "./class-serialization": "./dist/class-serialization.js",
     "./builtins": "./dist/builtins.js",
     "./serialization": "./dist/serialization.js",
     "./observability": {

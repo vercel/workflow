@@ -1,5 +1,90 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.28
+
+### Patch Changes
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66)]:
+  - @workflow/world@4.0.1-beta.13
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/world-local@4.0.1-beta.26
+
+## 4.1.0-beta.27
+
+### Patch Changes
+
+- Updated dependencies [[`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167)]:
+  - @workflow/world@4.0.1-beta.12
+  - @workflow/world-local@4.0.1-beta.25
+  - @workflow/errors@4.0.1-beta.13
+
+## 4.1.0-beta.26
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/world-local@4.0.1-beta.24
+
+## 4.1.0-beta.25
+
+### Patch Changes
+
+- Updated dependencies [[`2dbe494`](https://github.com/vercel/workflow/commit/2dbe49495dd4fae22edc53e190952c8f15289b8b)]:
+  - @workflow/world-local@4.0.1-beta.23
+
+## 4.1.0-beta.24
+
+### Patch Changes
+
+- [#455](https://github.com/vercel/workflow/pull/455) [`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added Control Flow Graph extraction from Workflows and extended manifest.json's schema to incorporate the graph structure into it. Refactored manifest generation to pass manifest as a parameter instead of using instance state. Add e2e tests for manifest validation across all builders.
+
+- Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
+  - @workflow/world-local@4.0.1-beta.22
+  - @workflow/world@4.0.1-beta.11
+  - @workflow/errors@4.0.1-beta.12
+
+## 4.1.0-beta.23
+
+### Patch Changes
+
+- Updated dependencies [[`d9f6a49`](https://github.com/vercel/workflow/commit/d9f6a4939760be94dfc9eaf77dcaa48c602c18ef), [`c3464bf`](https://github.com/vercel/workflow/commit/c3464bfd978a073f6d8fca95208bd053aa5c78dd)]:
+  - @workflow/world-local@4.0.1-beta.21
+  - @workflow/errors@4.0.1-beta.11
+
+## 4.1.0-beta.22
+
+### Patch Changes
+
+- Updated dependencies [[`f2d5997`](https://github.com/vercel/workflow/commit/f2d5997b800d6c474bb93d4ddd82cf52489752da)]:
+  - @workflow/world-local@4.0.1-beta.20
+
+## 4.1.0-beta.21
+
+### Patch Changes
+
+- [#625](https://github.com/vercel/workflow/pull/625) [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - List implicitly passed streams for `world.listStreamsByRun`
+
+- Updated dependencies [[`ce7d428`](https://github.com/vercel/workflow/commit/ce7d428a07cd415d2ea64c779b84ecdc796927a0), [`712f6f8`](https://github.com/vercel/workflow/commit/712f6f86b1804c82d4cab3bba0db49584451d005), [`4bdd3e5`](https://github.com/vercel/workflow/commit/4bdd3e5086a51a46898cca774533019d3ace77b3)]:
+  - @workflow/world-local@4.0.1-beta.19
+  - @workflow/errors@4.0.1-beta.10
+
+## 4.1.0-beta.20
+
+### Patch Changes
+
+- Updated dependencies [[`b56aae3`](https://github.com/vercel/workflow/commit/b56aae3fe9b5568d7bdda592ed025b3499149240)]:
+  - @workflow/errors@4.0.1-beta.9
+  - @workflow/world-local@4.0.1-beta.18
+
+## 4.1.0-beta.19
+
+### Patch Changes
+
+- Updated dependencies [[`c9b8d84`](https://github.com/vercel/workflow/commit/c9b8d843fd0a88de268d603a14ebe2e7c726169a)]:
+  - @workflow/world-local@4.0.1-beta.17
+  - @workflow/errors@4.0.1-beta.8
+
 ## 4.1.0-beta.18
 
 ### Patch Changes

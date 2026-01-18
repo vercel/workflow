@@ -56,7 +56,7 @@ export class LocalBuilder extends BaseBuilder {
       inputFiles,
     });
 
-    await this.createStepsBundle({
+    const { manifest } = await this.createStepsBundle({
       outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
       format: 'esm',
@@ -68,6 +68,14 @@ export class LocalBuilder extends BaseBuilder {
     await this.createWebhookBundle({
       outfile: webhookRouteFile,
       bundle: false,
+    });
+
+    // Generate manifest
+    const workflowBundlePath = join(this.#outDir, 'workflows.mjs');
+    await this.createManifest({
+      workflowBundlePath,
+      manifestDir: this.#outDir,
+      manifest,
     });
   }
 }

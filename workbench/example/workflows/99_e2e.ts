@@ -1,3 +1,6 @@
+// Test path alias resolution - imports a helper from outside the workbench directory
+/** biome-ignore-all lint/complexity/noStaticOnlyClass: <explanation> */
+import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
@@ -11,7 +14,7 @@ import {
   sleep,
 } from 'workflow';
 import { getRun, start } from 'workflow/api';
-import { callThrower } from './helpers.js';
+import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
 
 //////////////////////////////////////////////////////////
 
@@ -26,27 +29,6 @@ export async function addTenWorkflow(input: number) {
   const b = await add(a, 3);
   const c = await add(b, 5);
   return c;
-}
-
-//////////////////////////////////////////////////////////
-
-// Helper functions to test nested stack traces
-function deepFunction() {
-  throw new Error('Error from deeply nested function');
-}
-
-function middleFunction() {
-  deepFunction();
-}
-
-function topLevelHelper() {
-  middleFunction();
-}
-
-export async function nestedErrorWorkflow() {
-  'use workflow';
-  topLevelHelper();
-  return 'never reached';
 }
 
 //////////////////////////////////////////////////////////
@@ -399,77 +381,6 @@ export async function promiseRaceStressTestWorkflow() {
 
 //////////////////////////////////////////////////////////
 
-async function stepThatRetriesAndSucceeds() {
-  'use step';
-  const { attempt } = getStepMetadata();
-  console.log(`stepThatRetriesAndSucceeds - attempt: ${attempt}`);
-
-  // Fail on attempts 1 and 2, succeed on attempt 3
-  if (attempt < 3) {
-    console.log(`Attempt ${attempt} - throwing error to trigger retry`);
-    throw new Error(`Failed on attempt ${attempt}`);
-  }
-
-  console.log(`Attempt ${attempt} - succeeding`);
-  return attempt;
-}
-
-export async function retryAttemptCounterWorkflow() {
-  'use workflow';
-  console.log('Starting retry attempt counter workflow');
-
-  // This step should fail twice and succeed on the third attempt
-  const finalAttempt = await stepThatRetriesAndSucceeds();
-
-  console.log(`Workflow completed with final attempt: ${finalAttempt}`);
-  return { finalAttempt };
-}
-
-//////////////////////////////////////////////////////////
-
-async function stepThatThrowsRetryableError() {
-  'use step';
-  const { attempt, stepStartedAt } = getStepMetadata();
-  if (attempt === 1) {
-    throw new RetryableError('Retryable error', {
-      retryAfter: '10s',
-    });
-  }
-  return {
-    attempt,
-    stepStartedAt,
-    duration: Date.now() - stepStartedAt.getTime(),
-  };
-}
-
-export async function crossFileErrorWorkflow() {
-  'use workflow';
-  // This will throw an error from the imported helpers.ts file
-  callThrower();
-  return 'never reached';
-}
-
-//////////////////////////////////////////////////////////
-
-export async function retryableAndFatalErrorWorkflow() {
-  'use workflow';
-
-  const retryableResult = await stepThatThrowsRetryableError();
-
-  let gotFatalError = false;
-  try {
-    await stepThatFails();
-  } catch (error: any) {
-    if (FatalError.is(error)) {
-      gotFatalError = true;
-    }
-  }
-
-  return { retryableResult, gotFatalError };
-}
-
-//////////////////////////////////////////////////////////
-
 export async function hookCleanupTestWorkflow(
   token: string,
   customData: string
@@ -608,4 +519,346 @@ export async function spawnWorkflowFromStepWorkflow(inputValue: number) {
     childRunId,
     childResult,
   };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Step that calls a helper function imported via path alias.
+ */
+async function callPathsAliasHelper() {
+  'use step';
+  // Call the helper function imported via @repo/* path alias
+  return pathsAliasHelper();
+}
+
+/**
+ * Test that TypeScript path aliases work correctly.
+ * This workflow uses a step that calls a helper function imported via the @repo/* path alias,
+ * which resolves to a file outside the workbench directory.
+ */
+export async function pathsAliasWorkflow() {
+  'use workflow';
+  // Call the step that uses the path alias helper
+  const result = await callPathsAliasHelper();
+  return result;
+}
+
+// ============================================================
+// ERROR HANDLING E2E TEST WORKFLOWS
+// ============================================================
+// These workflows test error propagation and retry behavior.
+// Each workflow tests a specific error scenario with clear naming:
+//   error<Context><Behavior>
+// Where Context is "Workflow" or "Step", and Behavior describes what's tested.
+//
+// Organized into 3 sections:
+// 1. Error Propagation - message and stack trace preservation
+// 2. Retry Behavior - how different error types affect retries
+// 3. Catchability - catching errors in workflow code
+// ============================================================
+
+// ------------------------------------------------------------
+// SECTION 1: ERROR PROPAGATION
+// Tests that error messages and stack traces are preserved correctly
+// ------------------------------------------------------------
+
+// --- Workflow Errors (errors thrown directly in workflow code) ---
+
+function errorNested3() {
+  throw new Error('Nested workflow error');
+}
+
+function errorNested2() {
+  errorNested3();
+}
+
+function errorNested1() {
+  errorNested2();
+}
+
+/** Test: Workflow error from nested function calls preserves stack trace */
+export async function errorWorkflowNested() {
+  'use workflow';
+  errorNested1();
+  return 'never reached';
+}
+
+/** Test: Workflow error from imported module preserves file reference in stack */
+export async function errorWorkflowCrossFile() {
+  'use workflow';
+  callThrower(); // from helpers.ts - throws Error
+  return 'never reached';
+}
+
+// --- Step Errors (errors thrown in steps that propagate to workflow) ---
+
+async function errorStepFn() {
+  'use step';
+  throw new Error('Step error message');
+}
+errorStepFn.maxRetries = 0;
+
+/** Test: Step error message propagates correctly to workflow */
+export async function errorStepBasic() {
+  'use workflow';
+  try {
+    await errorStepFn();
+    return { caught: false, message: null, stack: null };
+  } catch (e: any) {
+    return { caught: true, message: e.message, stack: e.stack };
+  }
+}
+
+/** Test: Step error from imported module has function names in stack */
+export async function errorStepCrossFile() {
+  'use workflow';
+  try {
+    await stepThatThrowsFromHelper(); // from helpers.ts
+    return { caught: false, message: null, stack: null };
+  } catch (e: any) {
+    return { caught: true, message: e.message, stack: e.stack };
+  }
+}
+
+// ------------------------------------------------------------
+// SECTION 2: RETRY BEHAVIOR
+// Tests how different error types affect step retry behavior
+// ------------------------------------------------------------
+
+async function retryUntilAttempt3() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  if (attempt < 3) {
+    throw new Error(`Failed on attempt ${attempt}`);
+  }
+  return attempt;
+}
+
+/** Test: Regular Error retries until success (succeeds on attempt 3) */
+export async function errorRetrySuccess() {
+  'use workflow';
+  const attempt = await retryUntilAttempt3();
+  return { finalAttempt: attempt };
+}
+
+// ---
+
+async function throwFatalError() {
+  'use step';
+  throw new FatalError('Fatal step error');
+}
+
+/** Test: FatalError fails immediately without retry (attempt=1) */
+export async function errorRetryFatal() {
+  'use workflow';
+  await throwFatalError();
+  return 'never reached';
+}
+
+// ---
+
+async function throwRetryableError() {
+  'use step';
+  const { attempt, stepStartedAt } = getStepMetadata();
+  if (attempt === 1) {
+    throw new RetryableError('Retryable error', { retryAfter: '10s' });
+  }
+  return {
+    attempt,
+    duration: Date.now() - stepStartedAt.getTime(),
+  };
+}
+
+/** Test: RetryableError respects custom retryAfter timing (waits 10s+) */
+export async function errorRetryCustomDelay() {
+  'use workflow';
+  return await throwRetryableError();
+}
+
+// ---
+
+async function throwWithNoRetries() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  throw new Error(`Failed on attempt ${attempt}`);
+}
+throwWithNoRetries.maxRetries = 0;
+
+/** Test: maxRetries=0 runs once without retry on failure */
+export async function errorRetryDisabled() {
+  'use workflow';
+  try {
+    await throwWithNoRetries();
+    return { failed: false, attempt: null };
+  } catch (e: any) {
+    // Extract attempt from error message
+    const match = e.message?.match(/attempt (\d+)/);
+    return { failed: true, attempt: match ? parseInt(match[1]) : null };
+  }
+}
+
+// ------------------------------------------------------------
+// SECTION 3: CATCHABILITY
+// Tests that errors can be caught and inspected in workflow code
+// ------------------------------------------------------------
+
+/** Test: FatalError can be caught and detected with FatalError.is() */
+export async function errorFatalCatchable() {
+  'use workflow';
+  try {
+    await throwFatalError();
+    return { caught: false, isFatal: false };
+  } catch (e: any) {
+    return { caught: true, isFatal: FatalError.is(e) };
+  }
+}
+
+// ============================================================
+// STATIC METHOD STEP/WORKFLOW TESTS
+// ============================================================
+// Tests for static methods on classes with "use step" and "use workflow" directives.
+// ============================================================
+
+/**
+ * Service class with static step methods for math operations.
+ * These methods are transformed to be callable as workflow steps.
+ */
+export class MathService {
+  /** Static step: add two numbers */
+  static async add(a: number, b: number): Promise<number> {
+    'use step';
+    return a + b;
+  }
+
+  /** Static step: multiply two numbers */
+  static async multiply(a: number, b: number): Promise<number> {
+    'use step';
+    return a * b;
+  }
+}
+
+/**
+ * Workflow class with a static workflow method that uses static step methods.
+ */
+export class Calculator {
+  /** Static workflow: uses MathService static step methods */
+  static async calculate(x: number, y: number): Promise<number> {
+    'use workflow';
+    // Add x + y, then multiply by 2
+    const sum = await MathService.add(x, y);
+    const result = await MathService.multiply(sum, 2);
+    return result;
+  }
+}
+
+/**
+ * Alternative pattern: both step and workflow methods in the same class.
+ */
+export class AllInOneService {
+  static async double(n: number): Promise<number> {
+    'use step';
+    return n * 2;
+  }
+
+  static async triple(n: number): Promise<number> {
+    'use step';
+    return n * 3;
+  }
+
+  /** Static workflow: double(n) + triple(n) = 2n + 3n = 5n */
+  static async processNumber(n: number): Promise<number> {
+    'use workflow';
+    const doubled = await AllInOneService.double(n);
+    const tripled = await AllInOneService.triple(n);
+    return doubled + tripled;
+  }
+}
+
+/**
+ * Class that uses `this` in static step methods to reference the class itself.
+ * This tests that the class constructor is properly serialized when `this` is used.
+ */
+export class ChainableService {
+  /** The multiplier used by the multiply step */
+  static multiplier = 10;
+
+  /** Static step that uses `this` to access class properties */
+  static async multiplyByClassValue(
+    this: typeof ChainableService,
+    n: number
+  ): Promise<number> {
+    'use step';
+    // Use `this` to reference the class and access its static property
+    // `this` is the class constructor, so `this.multiplier` accesses the static property
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    return n * this.multiplier;
+  }
+
+  /** Static step that uses `this` to call another static method */
+  static async doubleAndMultiply(
+    this: typeof ChainableService,
+    n: number
+  ): Promise<number> {
+    'use step';
+    // Use `this` to access the static property on the class
+    // Note: We can't call another step from within a step, so we just reference a static property
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    return n * 2 * this.multiplier;
+  }
+
+  /** Static workflow that demonstrates `this` serialization with static methods */
+  static async processWithThis(n: number): Promise<{
+    multiplied: number;
+    doubledAndMultiplied: number;
+    sum: number;
+  }> {
+    'use workflow';
+    // When calling static methods via ClassName.method(), `this` inside the step
+    // will be the class constructor (ChainableService). The class constructor
+    // is serialized with its classId and passed to the step handler.
+    //
+    // NOTE: We use `ChainableService.method()` here instead of `this.method()` because
+    // the `this` argument is not currently passed through when invoking a workflow via
+    // `start()`. Workflows are executed as standalone functions, so `this` inside the
+    // workflow body is undefined. This could be revisited in the future if needed.
+    const multiplied = await ChainableService.multiplyByClassValue(n);
+    const doubledAndMultiplied = await ChainableService.doubleAndMultiply(n);
+
+    return {
+      multiplied, // n * 10
+      doubledAndMultiplied, // n * 2 * 10 = n * 20
+      sum: multiplied + doubledAndMultiplied, // n * 10 + n * 20 = n * 30
+    };
+  }
+}
+
+//////////////////////////////////////////////////////////
+// E2E test for `this` serialization with .call() and .apply()
+//////////////////////////////////////////////////////////
+
+/**
+ * A step function that uses `this` to access properties.
+ */
+async function multiplyByFactor(this: { factor: number }, value: number) {
+  'use step';
+  return value * this.factor;
+}
+
+/**
+ * Workflow that tests calling step functions with explicit `this` via .call() and .apply()
+ */
+export async function thisSerializationWorkflow(baseValue: number) {
+  'use workflow';
+  // Test .call() - multiply baseValue by 2
+  const result1 = await multiplyByFactor.call({ factor: 2 }, baseValue);
+
+  // Test .apply() - multiply result1 by 3
+  const result2 = await multiplyByFactor.apply({ factor: 3 }, [result1]);
+
+  // Test .call() again - multiply result2 by 5
+  const result3 = await multiplyByFactor.call({ factor: 5 }, result2);
+
+  // baseValue * 2 * 3 * 5 = baseValue * 30
+  return result3;
 }

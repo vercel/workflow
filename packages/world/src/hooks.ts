@@ -18,8 +18,27 @@ export const HookSchema = z.object({
   createdAt: z.coerce.date(),
 });
 
-// Inferred types
-export type Hook = z.infer<typeof HookSchema>;
+/**
+ * Represents a hook that can be used to resume a paused workflow run.
+ */
+export type Hook = z.infer<typeof HookSchema> & {
+  /** The unique identifier of the workflow run this hook belongs to. */
+  runId: string;
+  /** The unique identifier of this hook within the workflow run. */
+  hookId: string;
+  /** The secret token used to reference this hook. */
+  token: string;
+  /** The owner ID (team or user) that owns this hook. */
+  ownerId: string;
+  /** The project ID this hook belongs to. */
+  projectId: string;
+  /** The environment (e.g., "production", "preview", "development") where this hook was created. */
+  environment: string;
+  /** Optional metadata associated with the hook, set when the hook was created. */
+  metadata?: unknown;
+  /** The timestamp when this hook was created. */
+  createdAt: Date;
+};
 
 // Request types
 export interface CreateHookRequest {

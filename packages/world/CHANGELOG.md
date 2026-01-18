@@ -1,5 +1,30 @@
 # @workflow/world
 
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- [#743](https://github.com/vercel/workflow/pull/743) [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `HealthCheckPayloadSchema`
+
+- [#772](https://github.com/vercel/workflow/pull/772) [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add typedoc comments to `Hook` interface
+
+## 4.0.1-beta.12
+
+### Patch Changes
+
+- [#751](https://github.com/vercel/workflow/pull/751) [`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the unused paused/resumed run events and states
+
+  - Remove `run_paused` and `run_resumed` event types
+  - Remove `paused` status from `WorkflowRunStatus`
+  - Remove `PauseWorkflowRunParams` and `ResumeWorkflowRunParams` types
+  - Remove `pauseWorkflowRun` and `resumeWorkflowRun` functions from world-vercel
+
+## 4.0.1-beta.11
+
+### Patch Changes
+
+- [#455](https://github.com/vercel/workflow/pull/455) [`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added Control Flow Graph extraction from Workflows and extended manifest.json's schema to incorporate the graph structure into it. Refactored manifest generation to pass manifest as a parameter instead of using instance state. Add e2e tests for manifest validation across all builders.
+
 ## 4.0.1-beta.10
 
 ### Patch Changes

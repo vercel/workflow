@@ -11,50 +11,57 @@ export class StandaloneBuilder extends BaseBuilder {
 
   async build(): Promise<void> {
     const inputFiles = await this.getInputFiles();
-    const tsConfig = await this.getTsConfigOptions();
+    const tsconfigPath = await this.findTsConfigPath();
 
     const options = {
       inputFiles,
-      tsBaseUrl: tsConfig.baseUrl,
-      tsPaths: tsConfig.paths,
+      tsconfigPath,
     };
-    await this.buildStepsBundle(options);
+    const manifest = await this.buildStepsBundle(options);
     await this.buildWorkflowsBundle(options);
     await this.buildWebhookFunction();
+
+    // Build unified manifest from workflow bundle
+    const workflowBundlePath = this.resolvePath(
+      this.config.workflowsBundlePath
+    );
+    const manifestDir = this.resolvePath('.well-known/workflow/v1');
+    await this.createManifest({
+      workflowBundlePath,
+      manifestDir,
+      manifest,
+    });
 
     await this.createClientLibrary();
   }
 
   private async buildStepsBundle({
     inputFiles,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
-  }): Promise<void> {
+    tsconfigPath?: string;
+  }) {
     console.log('Creating steps bundle at', this.config.stepsBundlePath);
 
     const stepsBundlePath = this.resolvePath(this.config.stepsBundlePath);
     await this.ensureDirectory(stepsBundlePath);
 
-    await this.createStepsBundle({
+    const { manifest } = await this.createStepsBundle({
       outfile: stepsBundlePath,
       inputFiles,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
+
+    return manifest;
   }
 
   private async buildWorkflowsBundle({
     inputFiles,
-    tsPaths,
-    tsBaseUrl,
+    tsconfigPath,
   }: {
     inputFiles: string[];
-    tsBaseUrl?: string;
-    tsPaths?: Record<string, string[]>;
+    tsconfigPath?: string;
   }): Promise<void> {
     console.log(
       'Creating workflows bundle at',
@@ -69,8 +76,7 @@ export class StandaloneBuilder extends BaseBuilder {
     await this.createWorkflowsBundle({
       outfile: workflowBundlePath,
       inputFiles,
-      tsBaseUrl,
-      tsPaths,
+      tsconfigPath,
     });
   }
 

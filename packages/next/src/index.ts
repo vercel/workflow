@@ -128,7 +128,15 @@ export function withWorkflow(
         workflowsBundlePath: '', // not used in base
         stepsBundlePath: '', // not used in base
         webhookBundlePath: '', // node used in base
-        externalPackages: [...(nextConfig.serverExternalPackages || [])],
+        externalPackages: [
+          // server-only and client-only are pseudo-packages handled by Next.js
+          // during its build process. We mark them as external to prevent esbuild
+          // from failing when bundling code that imports them.
+          // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
+          'server-only',
+          'client-only',
+          ...(nextConfig.serverExternalPackages || []),
+        ],
       });
 
       await workflowBuilder.build();

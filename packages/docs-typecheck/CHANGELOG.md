@@ -1,0 +1,85 @@
+# @workflow/docs-typecheck
+
+## 0.0.1-beta.8
+
+### Patch Changes
+
+- Updated dependencies [[`f491237`](https://github.com/vercel/workflow/commit/f491237e1ed9a0054604b48ed8715dd27edf92c0)]:
+  - @workflow/ai@4.0.1-beta.49
+
+## 0.0.1-beta.7
+
+### Patch Changes
+
+- Updated dependencies [[`49a1c5f`](https://github.com/vercel/workflow/commit/49a1c5f2fc1c6726eaed8ed77cbe47010e23c446), [`344c90f`](https://github.com/vercel/workflow/commit/344c90ff9f630addc4b41f72c2296b26e61513bc), [`b729d49`](https://github.com/vercel/workflow/commit/b729d49610739ae818fd56853f8ddc557591e9a1)]:
+  - @workflow/ai@4.0.1-beta.48
+  - @workflow/core@4.0.1-beta.39
+  - @workflow/next@4.0.1-beta.44
+  - workflow@4.0.1-beta.48
+
+## 0.0.1-beta.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.47
+  - @workflow/ai@4.0.1-beta.47
+
+## 0.0.1-beta.5
+
+### Patch Changes
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`49bb48a`](https://github.com/vercel/workflow/commit/49bb48a25610c37da0e42e3b2c7aa07d9675688a)]:
+  - workflow@4.0.1-beta.46
+  - @workflow/core@4.0.1-beta.38
+  - @workflow/ai@4.0.1-beta.46
+  - @workflow/next@4.0.1-beta.43
+
+## 0.0.1-beta.4
+
+### Patch Changes
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`3dd5b27`](https://github.com/vercel/workflow/commit/3dd5b2708de56e63c9dce9b3f2eafea63b0e3936), [`49f650c`](https://github.com/vercel/workflow/commit/49f650c3a79e7b9b501cb602e3c12b75a3c4fffc), [`39e5774`](https://github.com/vercel/workflow/commit/39e5774de2a4c8b6a18574aa4edaf79e9f0d655e)]:
+  - @workflow/core@4.0.1-beta.37
+  - @workflow/next@4.0.1-beta.42
+  - workflow@4.0.1-beta.45
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/ai@4.0.1-beta.45
+
+## 0.0.1-beta.3
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.44
+  - @workflow/ai@4.0.1-beta.44
+
+## 0.0.1-beta.2
+
+### Patch Changes
+
+- Updated dependencies [[`4b43186`](https://github.com/vercel/workflow/commit/4b43186eeca64548d351a20b5845865086393960)]:
+  - @workflow/ai@4.0.1-beta.43
+  - @workflow/core@4.0.1-beta.36
+  - @workflow/errors@4.0.1-beta.13
+  - workflow@4.0.1-beta.43
+  - @workflow/next@4.0.1-beta.41
+
+## 0.0.1-beta.1
+
+### Patch Changes
+
+- Updated dependencies [[`505063c`](https://github.com/vercel/workflow/commit/505063cbb9ef04af8531c2cd3cd3840b5d272f82), [`01f59a3`](https://github.com/vercel/workflow/commit/01f59a3b960070e2e42804b259b6d789a9ea6789), [`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf)]:
+  - @workflow/next@4.0.1-beta.40
+  - workflow@4.0.1-beta.42
+  - @workflow/core@4.0.1-beta.35
+  - @workflow/ai@4.0.1-beta.42
+
+## 0.0.1-beta.0
+
+### Patch Changes
+
+- Updated dependencies [[`a531a74`](https://github.com/vercel/workflow/commit/a531a740094339ea7074b3f4145f9ce9e588adb6)]:
+  - @workflow/ai@4.0.1-beta.41
+  - workflow@4.0.1-beta.41
+  - @workflow/next@4.0.1-beta.39
