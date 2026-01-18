@@ -63,9 +63,11 @@ export function EventsList({
       </h3>
       {/* Events section */}
       {eventError ? (
-        <Alert variant="destructive" className="my-4">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Failed to load event data</AlertTitle>
+        <Alert variant="destructive" className="my-4 flex flex-col gap-2">
+          <div className="flex items-center gap-2 text-destructive-foreground">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Failed to load event data</AlertTitle>
+          </div>
           <AlertDescription className="text-sm">
             {eventError.message}
           </AlertDescription>
