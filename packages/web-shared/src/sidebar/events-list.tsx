@@ -64,7 +64,7 @@ export function EventsList({
       {/* Events section */}
       {eventError ? (
         <Alert variant="destructive" className="my-4 flex flex-col gap-2">
-          <div className="flex items-center gap-2 text-destructive-foreground">
+          <div className="flex items-center gap-2 text-destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Failed to load event data</AlertTitle>
           </div>
