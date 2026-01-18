@@ -571,7 +571,7 @@ export function RunDetailView({
             <TabsContent value="events" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load events list">
                 <div className="h-full">
-                  <EventsList events={allEvents} />
+                  <EventsList events={allEvents} env={env} />
                 </div>
               </ErrorBoundary>
             </TabsContent>

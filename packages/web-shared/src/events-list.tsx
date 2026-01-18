@@ -1,8 +1,10 @@
 'use client';
 
 import type { Event } from '@workflow/world';
-import { ChevronRight } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { ChevronRight, Loader2 } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import type { EnvMap } from './api/workflow-server-actions';
+import { fetchEventsByCorrelationId } from './api/workflow-server-actions';
 import { getEventColor } from './workflow-traces/event-colors';
 
 /**
@@ -48,18 +50,91 @@ function formatEventType(eventType: Event['eventType']): string {
 
 interface EventsListProps {
   events: Event[] | null;
+  env: EnvMap;
 }
 
 /**
  * Single event row component with expandable details
  */
-function EventRow({ event }: { event: Event }) {
+function EventRow({ event, env }: { event: Event; env: EnvMap }) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadedEventData, setLoadedEventData] = useState<unknown | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   const colors = getEventColor(event.eventType);
   const createdAt = new Date(event.createdAt);
 
-  // Get event data if it exists
-  const eventData = 'eventData' in event ? event.eventData : null;
+  // Check if event already has eventData (from initial fetch)
+  const hasExistingEventData = 'eventData' in event && event.eventData != null;
+
+  // Load full event details when expanding
+  const loadEventDetails = useCallback(async () => {
+    // Skip if we already have data or no correlationId
+    if (
+      loadedEventData !== null ||
+      hasExistingEventData ||
+      !event.correlationId
+    ) {
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadError(null);
+
+    try {
+      const result = await fetchEventsByCorrelationId(
+        env,
+        event.correlationId,
+        {
+          sortOrder: 'asc',
+          limit: 100,
+          withData: true,
+        }
+      );
+
+      if (!result.success) {
+        setLoadError(result.error?.message || 'Failed to load event details');
+        return;
+      }
+
+      // Find our specific event in the results
+      const fullEvent = result.data.data.find(
+        (e) => e.eventId === event.eventId
+      );
+      if (fullEvent && 'eventData' in fullEvent) {
+        setLoadedEventData(fullEvent.eventData);
+      }
+    } catch (err) {
+      setLoadError(
+        err instanceof Error ? err.message : 'Failed to load event details'
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }, [
+    env,
+    event.correlationId,
+    event.eventId,
+    loadedEventData,
+    hasExistingEventData,
+  ]);
+
+  // Handle expand/collapse
+  const handleToggle = useCallback(() => {
+    const newExpanded = !isExpanded;
+    setIsExpanded(newExpanded);
+
+    // Load details when expanding for the first time
+    if (newExpanded && loadedEventData === null && !hasExistingEventData) {
+      loadEventDetails();
+    }
+  }, [isExpanded, loadedEventData, hasExistingEventData, loadEventDetails]);
+
+  // Get the event data to display (either from initial fetch, loaded data, or null)
+  const eventData = hasExistingEventData
+    ? (event as Event & { eventData: unknown }).eventData
+    : loadedEventData;
 
   return (
     <div
@@ -74,7 +149,7 @@ function EventRow({ event }: { event: Event }) {
       {/* Clickable row header */}
       <button
         type="button"
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={handleToggle}
         className="w-full text-left grid gap-3 items-center px-0 py-2 text-xs hover:brightness-[0.98] transition-all cursor-pointer"
         style={{
           gridTemplateColumns: '24px 100px minmax(120px, auto) 1fr 1fr',
@@ -161,14 +236,52 @@ function EventRow({ event }: { event: Event }) {
           </div>
 
           {/* Event data section */}
-          {eventData && (
-            <div className="mt-3">
+          <div className="mt-3">
+            <div
+              className="text-xs font-medium mb-1.5"
+              style={{ color: 'var(--ds-gray-700)' }}
+            >
+              Event Data
+            </div>
+
+            {/* Loading state */}
+            {isLoading && (
               <div
-                className="text-xs font-medium mb-1.5"
-                style={{ color: 'var(--ds-gray-700)' }}
+                className="flex items-center gap-2 rounded-md border p-3"
+                style={{
+                  borderColor: 'var(--ds-gray-300)',
+                  backgroundColor: 'var(--ds-gray-100)',
+                }}
               >
-                Event Data
+                <Loader2
+                  className="h-4 w-4 animate-spin"
+                  style={{ color: 'var(--ds-gray-700)' }}
+                />
+                <span
+                  className="text-xs"
+                  style={{ color: 'var(--ds-gray-700)' }}
+                >
+                  Loading event details...
+                </span>
               </div>
+            )}
+
+            {/* Error state */}
+            {loadError && !isLoading && (
+              <div
+                className="rounded-md border p-3 text-xs"
+                style={{
+                  borderColor: 'var(--ds-red-400)',
+                  backgroundColor: 'var(--ds-red-100)',
+                  color: 'var(--ds-red-900)',
+                }}
+              >
+                {loadError}
+              </div>
+            )}
+
+            {/* Event data display */}
+            {!isLoading && !loadError && eventData != null && (
               <pre
                 className="text-[11px] overflow-x-auto rounded-md border p-3"
                 style={{
@@ -179,8 +292,44 @@ function EventRow({ event }: { event: Event }) {
               >
                 <code>{JSON.stringify(eventData, null, 2)}</code>
               </pre>
-            </div>
-          )}
+            )}
+
+            {/* No event data */}
+            {!isLoading &&
+              !loadError &&
+              eventData == null &&
+              !event.correlationId && (
+                <div
+                  className="rounded-md border p-3 text-xs"
+                  style={{
+                    borderColor: 'var(--ds-gray-300)',
+                    backgroundColor: 'var(--ds-gray-100)',
+                    color: 'var(--ds-gray-700)',
+                  }}
+                >
+                  No event data available
+                </div>
+              )}
+
+            {/* No correlation ID - can't load data */}
+            {!isLoading &&
+              !loadError &&
+              eventData == null &&
+              event.correlationId &&
+              !hasExistingEventData &&
+              loadedEventData === null && (
+                <div
+                  className="rounded-md border p-3 text-xs"
+                  style={{
+                    borderColor: 'var(--ds-gray-300)',
+                    backgroundColor: 'var(--ds-gray-100)',
+                    color: 'var(--ds-gray-700)',
+                  }}
+                >
+                  No event data for this event type
+                </div>
+              )}
+          </div>
         </div>
       )}
     </div>
@@ -224,7 +373,7 @@ function AttributeRow({
  * Displays a list of all events for a workflow run as colored cards in a pseudo-table.
  * Events are sorted by createdAt (oldest first).
  */
-export function EventsList({ events }: EventsListProps) {
+export function EventsList({ events, env }: EventsListProps) {
   // Sort events by createdAt (oldest first)
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
@@ -267,7 +416,7 @@ export function EventsList({ events }: EventsListProps) {
       {/* Event rows */}
       <div className="flex flex-col gap-2">
         {sortedEvents.map((event) => (
-          <EventRow key={event.eventId} event={event} />
+          <EventRow key={event.eventId} event={event} env={env} />
         ))}
       </div>
 
