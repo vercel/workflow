@@ -28,8 +28,18 @@ function TabButton({
       onClick={onClick}
       className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
       style={{
-        color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-600)',
+        // Explicit styles to prevent app-level button overrides when web-shared
+        // is embedded in a self-hosted app.
+        backgroundColor: 'transparent',
+        borderTop: 'none',
+        borderLeft: 'none',
+        borderRight: 'none',
         borderBottom: `2px solid ${active ? 'var(--ds-blue-600)' : 'transparent'}`,
+        borderRadius: 0,
+        outline: 'none',
+        boxShadow: 'none',
+        cursor: 'pointer',
+        color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-600)',
       }}
     >
       {children}
@@ -55,11 +65,17 @@ function ConversationWithTabs({
     <DetailCard summary={`Input (${conversation.length} messages)`}>
       <div
         className="rounded-md border"
-        style={{ borderColor: 'var(--ds-gray-300)' }}
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'transparent',
+        }}
       >
         <div
           className="flex gap-1 border-b"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
+          style={{
+            borderColor: 'var(--ds-gray-300)',
+            backgroundColor: 'transparent',
+          }}
         >
           <TabButton
             active={activeTab === 'conversation'}
