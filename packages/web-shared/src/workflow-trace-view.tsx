@@ -197,7 +197,7 @@ export const WorkflowTraceViewer = ({
         customSpanClassNameFunc={getCustomSpanClassName}
         customSpanEventClassNameFunc={getCustomSpanEventClassName}
         customPanelComponent={
-          <ErrorBoundary>
+          <ErrorBoundary title="Failed to load entity details">
             <WorkflowDetailPanel
               env={env}
               run={run}

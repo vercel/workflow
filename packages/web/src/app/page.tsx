@@ -50,18 +50,12 @@ export default function Home() {
           )}
         </TabsList>
         <TabsContent value="runs">
-          <ErrorBoundary
-            title="Runs Error"
-            description="Failed to load workflow runs. Please try refreshing the page."
-          >
+          <ErrorBoundary title="Failed to load workflow runs">
             <RunsTable onRunClick={handleRunClick} />
           </ErrorBoundary>
         </TabsContent>
         <TabsContent value="hooks">
-          <ErrorBoundary
-            title="Hooks Error"
-            description="Failed to load hooks. Please try refreshing the page."
-          >
+          <ErrorBoundary title="Failed to load hooks">
             <HooksTable
               onHookClick={handleHookSelect}
               selectedHookId={selectedHookId}
@@ -70,10 +64,7 @@ export default function Home() {
         </TabsContent>
         {isLocalBackend && (
           <TabsContent value="workflows">
-            <ErrorBoundary
-              title="Workflows Error"
-              description="Failed to load workflow graph data. Please try refreshing the page."
-            >
+            <ErrorBoundary title="Failed to load workflow graph data">
               <WorkflowsList />
             </ErrorBoundary>
           </TabsContent>
