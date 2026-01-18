@@ -565,7 +565,7 @@ export function RunDetailView({
             </TabsContent>
 
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
-              <ErrorBoundary title="Failed to load stream  data">
+              <ErrorBoundary title="Failed to load stream data">
                 <div className="h-full flex gap-4">
                   {/* Stream list sidebar */}
                   <div
