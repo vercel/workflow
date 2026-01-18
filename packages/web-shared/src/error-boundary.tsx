@@ -7,8 +7,6 @@ interface ErrorBoundaryProps {
   children: ReactNode;
   /** Optional title for the error message */
   title?: string;
-  /** Optional description for the error message */
-  description?: string;
   /** Optional fallback component to render on error */
   fallback?: (error: Error, reset: () => void) => ReactNode;
 }
@@ -70,7 +68,7 @@ export class ErrorBoundary extends React.Component<
 
       return (
         <ErrorCard
-          title={this.props.title || 'Something went wrong'}
+          title={this.props.title || 'An error occurred'}
           details={errorDetails}
         />
       );
