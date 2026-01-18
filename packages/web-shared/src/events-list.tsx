@@ -395,7 +395,7 @@ export function EventsList({ events, env }: EventsListProps) {
   }
 
   return (
-    <div className="h-full overflow-auto p-4">
+    <div className="h-full overflow-auto m-2">
       {/* Header row */}
       <div
         className="grid gap-3 pb-2 mb-2 border-b text-xs font-medium sticky top-0 z-10"
