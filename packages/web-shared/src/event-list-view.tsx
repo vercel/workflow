@@ -373,7 +373,7 @@ function AttributeRow({
  * Displays a list of all events for a workflow run as colored cards in a pseudo-table.
  * Events are sorted by createdAt (oldest first).
  */
-export function EventsList({ events, env }: EventsListProps) {
+export function EventListView({ events, env }: EventsListProps) {
   // Sort events by createdAt (oldest first)
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
