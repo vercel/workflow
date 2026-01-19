@@ -871,9 +871,9 @@ export async function thisSerializationWorkflow(baseValue: number) {
  * A custom class with user-defined serialization using Symbol.for() directly.
  * The SWC plugin detects these symbols and generates the classId and registration automatically.
  *
- * Note: We use Symbol.for() directly instead of importing WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE
- * because the SWC plugin specifically looks for the `Symbol.for('workflow-serialize')` pattern
- * in computed property names.
+ * Note: The SWC plugin also supports named imports (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
+ * from the "@workflow/serde" package. We use Symbol.for() directly here for simplicity since
+ * the SWC plugin has its own tests for the named import case.
  */
 export class Point {
   constructor(
