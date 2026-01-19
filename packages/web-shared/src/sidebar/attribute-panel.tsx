@@ -150,6 +150,92 @@ const isStreamRef = (value: unknown): value is StreamRef => {
 };
 
 /**
+ * Marker for custom class instance references.
+ * This is duplicated from @workflow/core/observability to avoid pulling in
+ * Node.js dependencies into the client bundle.
+ */
+const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
+
+/**
+ * A class instance reference object that contains the class name and serialized data.
+ * Used in o11y when a custom class instance is encountered but the class is not
+ * registered for deserialization.
+ */
+interface ClassInstanceRef {
+  __type: typeof CLASS_INSTANCE_REF_TYPE;
+  className: string;
+  classId: string;
+  data: unknown;
+}
+
+/**
+ * Check if a value is a ClassInstanceRef object
+ */
+const isClassInstanceRef = (value: unknown): value is ClassInstanceRef => {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    '__type' in value &&
+    value.__type === CLASS_INSTANCE_REF_TYPE &&
+    'className' in value &&
+    typeof value.className === 'string'
+  );
+};
+
+/**
+ * Renders a ClassInstanceRef as a styled card showing the class name and serialized data
+ */
+const ClassInstanceRefDisplay = ({
+  classInstanceRef,
+}: {
+  classInstanceRef: ClassInstanceRef;
+}) => {
+  return (
+    <div
+      className="inline-flex flex-col rounded text-[11px] font-mono my-1"
+      style={{
+        backgroundColor: 'var(--ds-purple-100)',
+        border: '1px solid var(--ds-purple-400)',
+      }}
+    >
+      <div
+        className="flex items-center gap-1.5 px-2 py-1 rounded-t"
+        style={{
+          backgroundColor: 'var(--ds-purple-200)',
+          color: 'var(--ds-purple-900)',
+          borderBottom: '1px solid var(--ds-purple-400)',
+        }}
+        title={`Custom class: ${classInstanceRef.classId}`}
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <title>Class instance</title>
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+          <line x1="12" y1="22.08" x2="12" y2="12" />
+        </svg>
+        <span className="font-semibold">{classInstanceRef.className}</span>
+      </div>
+      <pre
+        className="px-2 py-1.5 overflow-x-auto whitespace-pre-wrap"
+        style={{ color: 'var(--ds-gray-1000)' }}
+      >
+        {JSON.stringify(classInstanceRef.data, null, 2)}
+      </pre>
+    </div>
+  );
+};
+
+/**
  * Renders a StreamRef as a styled link/badge
  */
 const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
@@ -198,19 +284,30 @@ const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
 };
 
 /**
- * Recursively transforms a value for JSON display, replacing StreamRef objects
- * with placeholder strings that can be identified and replaced with React elements
+ * Recursively transforms a value for JSON display, replacing StreamRef and
+ * ClassInstanceRef objects with placeholder strings that can be identified
+ * and replaced with React elements.
  */
 const transformValueForDisplay = (
   value: unknown
-): { json: string; streamRefs: Map<string, StreamRef> } => {
+): {
+  json: string;
+  streamRefs: Map<string, StreamRef>;
+  classInstanceRefs: Map<string, ClassInstanceRef>;
+} => {
   const streamRefs = new Map<string, StreamRef>();
+  const classInstanceRefs = new Map<string, ClassInstanceRef>();
   let counter = 0;
 
   const transform = (v: unknown): unknown => {
     if (isStreamRef(v)) {
       const placeholder = `__STREAM_REF_${counter++}__`;
       streamRefs.set(placeholder, v);
+      return placeholder;
+    }
+    if (isClassInstanceRef(v)) {
+      const placeholder = `__CLASS_INSTANCE_REF_${counter++}__`;
+      classInstanceRefs.set(placeholder, v);
       return placeholder;
     }
     if (Array.isArray(v)) {
@@ -230,14 +327,16 @@ const transformValueForDisplay = (
   return {
     json: JSON.stringify(transformed, null, 2),
     streamRefs,
+    classInstanceRefs,
   };
 };
 
 const JsonBlock = (value: unknown) => {
-  const { json, streamRefs } = transformValueForDisplay(value);
+  const { json, streamRefs, classInstanceRefs } =
+    transformValueForDisplay(value);
 
-  // If no stream refs, just render plain JSON
-  if (streamRefs.size === 0) {
+  // If no special refs, just render plain JSON
+  if (streamRefs.size === 0 && classInstanceRefs.size === 0) {
     return (
       <pre
         className="text-[11px] overflow-x-auto rounded-md border p-3"
@@ -252,27 +351,63 @@ const JsonBlock = (value: unknown) => {
     );
   }
 
-  // Split the JSON by stream ref placeholders and render with React elements
-  const parts: ReactNode[] = [];
-  let remaining = json;
+  // Build a combined map of all placeholders to their React elements
+  const placeholderComponents = new Map<string, ReactNode>();
   let keyIndex = 0;
 
   for (const [placeholder, streamRef] of streamRefs) {
-    const index = remaining.indexOf(`"${placeholder}"`);
-    if (index !== -1) {
-      // Add text before the placeholder
-      if (index > 0) {
-        parts.push(remaining.slice(0, index));
-      }
-      // Add the StreamRef component
-      parts.push(<StreamRefDisplay key={keyIndex++} streamRef={streamRef} />);
-      remaining = remaining.slice(index + placeholder.length + 2); // +2 for quotes
-    }
+    placeholderComponents.set(
+      placeholder,
+      <StreamRefDisplay key={keyIndex++} streamRef={streamRef} />
+    );
   }
 
-  // Add any remaining text
-  if (remaining) {
-    parts.push(remaining);
+  for (const [placeholder, classInstanceRef] of classInstanceRefs) {
+    placeholderComponents.set(
+      placeholder,
+      <ClassInstanceRefDisplay
+        key={keyIndex++}
+        classInstanceRef={classInstanceRef}
+      />
+    );
+  }
+
+  // Split the JSON by all placeholders and render with React elements
+  const parts: ReactNode[] = [];
+  let remaining = json;
+
+  // Process placeholders in order of their appearance in the string
+  while (remaining.length > 0) {
+    let earliestIndex = -1;
+    let earliestPlaceholder = '';
+    let earliestComponent: ReactNode = null;
+
+    // Find the earliest placeholder in the remaining string
+    for (const [placeholder, component] of placeholderComponents) {
+      const index = remaining.indexOf(`"${placeholder}"`);
+      if (index !== -1 && (earliestIndex === -1 || index < earliestIndex)) {
+        earliestIndex = index;
+        earliestPlaceholder = placeholder;
+        earliestComponent = component;
+      }
+    }
+
+    if (earliestIndex === -1) {
+      // No more placeholders found, add the rest
+      parts.push(remaining);
+      break;
+    }
+
+    // Add text before the placeholder
+    if (earliestIndex > 0) {
+      parts.push(remaining.slice(0, earliestIndex));
+    }
+
+    // Add the component
+    parts.push(earliestComponent);
+
+    // Move past the placeholder
+    remaining = remaining.slice(earliestIndex + earliestPlaceholder.length + 2); // +2 for quotes
   }
 
   return (
