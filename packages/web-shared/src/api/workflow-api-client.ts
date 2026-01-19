@@ -165,6 +165,7 @@ interface PaginatedList<T> {
   hasNextPage: boolean;
   hasPreviousPage: boolean;
   reload: () => void;
+  refresh: () => void;
   pageInfo: string;
 }
 
@@ -336,6 +337,17 @@ export function useWorkflowRuns(
     fetchPage(0, undefined, true);
   }, [fetchPage]);
 
+  const refresh = useCallback(() => {
+    // Refetch current page without resetting state
+    // This preserves the existing data while loading, preventing flicker
+    const currentCursor = pageHistory[currentPage];
+    // Clear cache for current page to ensure fresh data
+    const cacheKey = currentCursor ?? 'initial';
+    pageCache.current.delete(cacheKey);
+    // Force fetch current page
+    fetchPage(currentPage, currentCursor, true);
+  }, [fetchPage, currentPage, pageHistory]);
+
   const currentPageResult = allPageResults.get(currentPage) ?? {
     data: null,
     isLoading: true,
@@ -363,7 +375,7 @@ export function useWorkflowRuns(
     showPlus
   );
 
-  return {
+  const result: PaginatedList<WorkflowRun> = {
     data: currentPageResult,
     allData: Array.from(allPageResults.values()),
     error: globalError,
@@ -375,8 +387,10 @@ export function useWorkflowRuns(
     hasNextPage: hasMore,
     hasPreviousPage: currentPage > 0,
     reload,
+    refresh,
     pageInfo,
   };
+  return result;
 }
 
 /**
@@ -544,6 +558,17 @@ export function useWorkflowHooks(
     fetchPage(0, undefined, true);
   }, [fetchPage]);
 
+  const refresh = useCallback(() => {
+    // Refetch current page without resetting state
+    // This preserves the existing data while loading, preventing flicker
+    const currentCursor = pageHistory[currentPage];
+    // Clear cache for current page to ensure fresh data
+    const cacheKey = currentCursor ?? 'initial';
+    pageCache.current.delete(cacheKey);
+    // Force fetch current page
+    fetchPage(currentPage, currentCursor, true);
+  }, [fetchPage, currentPage, pageHistory]);
+
   const currentPageResult = allPageResults.get(currentPage) ?? {
     data: null,
     isLoading: true,
@@ -583,6 +608,7 @@ export function useWorkflowHooks(
     hasNextPage: hasMore,
     hasPreviousPage: currentPage > 0,
     reload,
+    refresh,
     pageInfo,
   };
 }
