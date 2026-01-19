@@ -1,13 +1,12 @@
 'use client';
 
-import { AlertCircle } from 'lucide-react';
 import { useCallback } from 'react';
 import useSWR from 'swr';
 import {
   type EnvMap,
   fetchEventsByCorrelationId,
 } from '../api/workflow-server-actions';
-import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { ErrorCard } from '../components/ui/error-card';
 import type { SpanEvent } from '../trace-viewer/types';
 import { convertEventsToSpanEvents } from '../workflow-traces/trace-span-construction';
 import { AttributeBlock, localMillisecondTime } from './attribute-panel';
@@ -61,15 +60,12 @@ export function EventsList({
       >
         Events {!eventsLoading && `(${displayData.length})`}
       </h3>
-      {/* Events section */}
       {eventError ? (
-        <Alert variant="destructive" className="my-4">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Failed to load event data</AlertTitle>
-          <AlertDescription className="text-sm">
-            {eventError.message}
-          </AlertDescription>
-        </Alert>
+        <ErrorCard
+          title="Failed to load full event list"
+          details={eventError?.message}
+          className="my-4"
+        />
       ) : null}
       {eventsLoading ? <div>Loading events...</div> : null}
       {!eventsLoading && !eventError && displayData.length === 0 && (

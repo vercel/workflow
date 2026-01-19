@@ -3,18 +3,49 @@
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { AlertCircle } from 'lucide-react';
-import {
-  createContext,
-  type ReactNode,
-  useContext,
-  useMemo,
-  useState,
-} from 'react';
-import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import type { ReactNode } from 'react';
+import { createContext, useContext, useMemo, useState } from 'react';
+import { ErrorCard } from '../components/ui/error-card';
 import { extractConversation, isDoStreamStep } from '../lib/utils';
 import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
+
+/**
+ * Tab button for conversation/JSON toggle
+ */
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
+      style={{
+        // Explicit styles to prevent app-level button overrides when web-shared
+        // is embedded in a self-hosted app.
+        backgroundColor: 'transparent',
+        borderTop: 'none',
+        borderLeft: 'none',
+        borderRight: 'none',
+        borderBottom: `2px solid ${active ? 'var(--ds-blue-600)' : 'transparent'}`,
+        borderRadius: 0,
+        outline: 'none',
+        boxShadow: 'none',
+        cursor: 'pointer',
+        color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-600)',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
 
 /**
  * Tabbed view for conversation and raw JSON
@@ -34,56 +65,36 @@ function ConversationWithTabs({
     <DetailCard summary={`Input (${conversation.length} messages)`}>
       <div
         className="rounded-md border"
-        style={{ borderColor: 'var(--ds-gray-300)' }}
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'transparent',
+        }}
       >
-        {/* Tab buttons */}
         <div
           className="flex gap-1 border-b"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
+          style={{
+            borderColor: 'var(--ds-gray-300)',
+            backgroundColor: 'transparent',
+          }}
         >
-          <button
-            type="button"
+          <TabButton
+            active={activeTab === 'conversation'}
             onClick={() => setActiveTab('conversation')}
-            className="px-3 py-1.5 text-[11px] font-medium transition-colors"
-            style={{
-              color:
-                activeTab === 'conversation'
-                  ? 'var(--ds-gray-1000)'
-                  : 'var(--ds-gray-600)',
-              borderBottom:
-                activeTab === 'conversation'
-                  ? '2px solid var(--ds-blue-600)'
-                  : '2px solid transparent',
-              marginBottom: '-1px',
-            }}
           >
             Conversation
-          </button>
-          <button
-            type="button"
+          </TabButton>
+          <TabButton
+            active={activeTab === 'json'}
             onClick={() => setActiveTab('json')}
-            className="px-3 py-1.5 text-[11px] font-medium transition-colors"
-            style={{
-              color:
-                activeTab === 'json'
-                  ? 'var(--ds-gray-1000)'
-                  : 'var(--ds-gray-600)',
-              borderBottom:
-                activeTab === 'json'
-                  ? '2px solid var(--ds-blue-600)'
-                  : '2px solid transparent',
-              marginBottom: '-1px',
-            }}
           >
             Raw JSON
-          </button>
+          </TabButton>
         </div>
 
-        {/* Tab content */}
         {activeTab === 'conversation' ? (
           <ConversationView messages={conversation} />
         ) : (
-          <div className="p-3 max-h-[400px] overflow-y-auto">
+          <div className="p-3">
             {Array.isArray(args)
               ? args.map((v, i) => (
                   <div className="mt-2 first:mt-0" key={i}>
@@ -178,7 +189,9 @@ const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
         <circle cx="12" cy="12" r="3" />
       </svg>
       {streamRef.streamId.length > 40
-        ? `${streamRef.streamId.slice(0, 20)}...${streamRef.streamId.slice(-15)}`
+        ? `${streamRef.streamId.slice(0, 20)}...${streamRef.streamId.slice(
+            -15
+          )}`
         : streamRef.streamId}
     </button>
   );
@@ -687,13 +700,11 @@ export const AttributePanel = ({
           </div>
         )}
         {error ? (
-          <Alert variant="destructive" className="my-4">
-            <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Failed to load resource details</AlertTitle>
-            <AlertDescription className="text-sm">
-              {error.message}
-            </AlertDescription>
-          </Alert>
+          <ErrorCard
+            title="Failed to load resource details"
+            details={error.message}
+            className="my-4"
+          />
         ) : hasExpired ? (
           <ExpiredDataMessage />
         ) : (

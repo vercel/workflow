@@ -1,16 +1,12 @@
 'use client';
 
-import { AlertCircle } from 'lucide-react';
 import React, { type ReactNode } from 'react';
-import { Alert, AlertDescription, AlertTitle } from './components/ui/alert';
-import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
+import { ErrorCard } from './components/ui/error-card';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
   /** Optional title for the error message */
   title?: string;
-  /** Optional description for the error message */
-  description?: string;
   /** Optional fallback component to render on error */
   fallback?: (error: Error, reset: () => void) => ReactNode;
 }
@@ -66,37 +62,15 @@ export class ErrorBoundary extends React.Component<
       }
 
       // Default error UI
-      return (
-        <Card className="border-destructive/50 bg-destructive/5">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-destructive">
-              <AlertCircle className="h-5 w-5" />
-              {this.props.title || 'Error'}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Alert variant="destructive">
-              <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Something went wrong</AlertTitle>
-              <AlertDescription>
-                {this.props.description ||
-                  'An unexpected error occurred in this section.'}
-              </AlertDescription>
-            </Alert>
+      const errorDetails = this.state.error.stack
+        ? `${this.state.error.message}\n\n${this.state.error.stack}`
+        : this.state.error.message;
 
-            <div className="bg-muted p-3 rounded-md text-sm font-mono text-muted-foreground overflow-auto max-h-48">
-              <div className="text-xs font-semibold mb-2">Error details:</div>
-              <div className="whitespace-pre-wrap break-words text-xs">
-                {this.state.error.message}
-              </div>
-              {this.state.error.stack && (
-                <div className="mt-2 opacity-60 text-xs">
-                  {this.state.error.stack}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+      return (
+        <ErrorCard
+          title={this.props.title || 'An error occurred'}
+          details={errorDetails}
+        />
       );
     }
 

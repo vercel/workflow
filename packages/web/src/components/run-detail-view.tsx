@@ -548,10 +548,7 @@ export function RunDetailView({
             </TabsList>
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
-              <ErrorBoundary
-                title="Trace Viewer Error"
-                description="Failed to load trace viewer. Please try refreshing the page."
-              >
+              <ErrorBoundary title="Failed to load trace viewer">
                 <div className="h-full">
                   <WorkflowTraceViewer
                     error={error}
@@ -568,10 +565,7 @@ export function RunDetailView({
             </TabsContent>
 
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
-              <ErrorBoundary
-                title="Streams Error"
-                description="Failed to load streams. Please try refreshing the page."
-              >
+              <ErrorBoundary title="Failed to load stream data">
                 <div className="h-full flex gap-4">
                   {/* Stream list sidebar */}
                   <div
@@ -658,10 +652,7 @@ export function RunDetailView({
 
             {isLocalBackend && (
               <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
-                <ErrorBoundary
-                  title="Graph Viewer Error"
-                  description="Failed to load execution graph. Please try refreshing the page."
-                >
+                <ErrorBoundary title="Failed to load execution graph">
                   <div className="h-full min-h-[500px]">
                     <GraphTabContent
                       run={run}
