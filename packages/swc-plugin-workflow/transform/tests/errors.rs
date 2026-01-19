@@ -14,7 +14,12 @@ fn step_mode(input: PathBuf) {
     test_fixture(
         Default::default(),
         // The errors occur in any mode, so it doesn't matter
-        &|_| visit_mut_pass(StepTransform::new(TransformMode::Step, input.file_name().unwrap().to_string_lossy().to_string())),
+        &|_| {
+            visit_mut_pass(StepTransform::new(
+                TransformMode::Step,
+                input.file_name().unwrap().to_string_lossy().to_string(),
+            ))
+        },
         &input,
         &output,
         FixtureTestConfig {
@@ -34,7 +39,12 @@ fn workflow_mode(input: PathBuf) {
     test_fixture(
         Default::default(),
         // The errors occur in any mode, so it doesn't matter
-        &|_| visit_mut_pass(StepTransform::new(TransformMode::Workflow, input.file_name().unwrap().to_string_lossy().to_string())),
+        &|_| {
+            visit_mut_pass(StepTransform::new(
+                TransformMode::Workflow,
+                input.file_name().unwrap().to_string_lossy().to_string(),
+            ))
+        },
         &input,
         &output,
         FixtureTestConfig {
@@ -54,7 +64,12 @@ fn client_mode(input: PathBuf) {
     test_fixture(
         Default::default(),
         // The errors occur in any mode, so it doesn't matter
-        &|_| visit_mut_pass(StepTransform::new(TransformMode::Client, input.file_name().unwrap().to_string_lossy().to_string())),
+        &|_| {
+            visit_mut_pass(StepTransform::new(
+                TransformMode::Client,
+                input.file_name().unwrap().to_string_lossy().to_string(),
+            ))
+        },
         &input,
         &output,
         FixtureTestConfig {

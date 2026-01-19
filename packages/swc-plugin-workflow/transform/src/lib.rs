@@ -227,6 +227,9 @@ pub struct StepTransform {
     // Track classes that need serialization registration (for `this` serialization in static methods)
     // Set of class names that have static step/workflow methods
     classes_needing_serialization: HashSet<String>,
+    // Track identifiers that are known to be WORKFLOW_SERIALIZE symbols
+    // (local name -> "workflow-serialize" or "workflow-deserialize")
+    serialization_symbol_identifiers: HashMap<String, String>,
 }
 
 // Structure to track variable names and their access patterns
@@ -1090,6 +1093,7 @@ impl StepTransform {
             static_method_workflow_registrations: Vec::new(),
             static_step_methods_to_strip: Vec::new(),
             classes_needing_serialization: HashSet::new(),
+            serialization_symbol_identifiers: HashMap::new(),
         }
     }
 
@@ -1142,6 +1146,19 @@ impl StepTransform {
                     Decl::Var(var_decl) => {
                         for declarator in &var_decl.decls {
                             self.collect_idents_from_pat(&declarator.name);
+                            // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+                            if let Pat::Ident(ident) = &declarator.name {
+                                if let Some(init) = &declarator.init {
+                                    if let Some(symbol_name) = self.extract_symbol_for_name(init) {
+                                        if symbol_name == "workflow-serialize"
+                                            || symbol_name == "workflow-deserialize"
+                                        {
+                                            self.serialization_symbol_identifiers
+                                                .insert(ident.id.sym.to_string(), symbol_name);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     Decl::Class(class_decl) => {
@@ -1159,6 +1176,21 @@ impl StepTransform {
                         Decl::Var(var_decl) => {
                             for declarator in &var_decl.decls {
                                 self.collect_idents_from_pat(&declarator.name);
+                                // Track exported const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+                                if let Pat::Ident(ident) = &declarator.name {
+                                    if let Some(init) = &declarator.init {
+                                        if let Some(symbol_name) =
+                                            self.extract_symbol_for_name(init)
+                                        {
+                                            if symbol_name == "workflow-serialize"
+                                                || symbol_name == "workflow-deserialize"
+                                            {
+                                                self.serialization_symbol_identifiers
+                                                    .insert(ident.id.sym.to_string(), symbol_name);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         Decl::Class(class_decl) => {
@@ -1184,8 +1216,29 @@ impl StepTransform {
                         for specifier in &import_decl.specifiers {
                             match specifier {
                                 ImportSpecifier::Named(named) => {
-                                    self.declared_identifiers
-                                        .insert(named.local.sym.to_string());
+                                    let local_name = named.local.sym.to_string();
+                                    self.declared_identifiers.insert(local_name.clone());
+
+                                    // Track imports of WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE
+                                    // These can be imported from '@workflow/serde' or re-exported
+                                    let imported_name = named
+                                        .imported
+                                        .as_ref()
+                                        .map(|i| match i {
+                                            ModuleExportName::Ident(id) => id.sym.to_string(),
+                                            ModuleExportName::Str(s) => {
+                                                s.value.to_string_lossy().to_string()
+                                            }
+                                        })
+                                        .unwrap_or_else(|| local_name.clone());
+
+                                    if imported_name == "WORKFLOW_SERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-serialize".to_string());
+                                    } else if imported_name == "WORKFLOW_DESERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-deserialize".to_string());
+                                    }
                                 }
                                 ImportSpecifier::Default(default) => {
                                     self.declared_identifiers
@@ -1945,6 +1998,87 @@ impl StepTransform {
             }
         }
         false
+    }
+
+    /// Extract the symbol name from a `Symbol.for('...')` expression
+    /// Returns Some("workflow-serialize") or Some("workflow-deserialize") if it matches, None otherwise
+    fn extract_symbol_for_name(&self, expr: &Expr) -> Option<String> {
+        // Pattern: Symbol.for('...')
+        if let Expr::Call(call) = expr {
+            if let Callee::Expr(callee) = &call.callee {
+                if let Expr::Member(member) = &**callee {
+                    // Check: obj is `Symbol`
+                    if let Expr::Ident(obj) = &*member.obj {
+                        if obj.sym.as_str() == "Symbol" {
+                            // Check: prop is `for`
+                            if let MemberProp::Ident(prop) = &member.prop {
+                                if prop.sym.as_str() == "for" {
+                                    // Extract the first argument string
+                                    if let Some(arg) = call.args.first() {
+                                        if let Expr::Lit(Lit::Str(s)) = &*arg.expr {
+                                            return Some(s.value.to_string_lossy().to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if an expression represents a workflow serialization symbol.
+    /// Supports multiple patterns:
+    /// 1. Direct: `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
+    /// 2. Identifier reference to an imported symbol: `WORKFLOW_SERIALIZE` (imported from '@workflow/serde')
+    /// 3. Identifier reference to a local const: `const MY_SYM = Symbol.for('workflow-serialize')`
+    fn is_workflow_serialization_symbol(&self, expr: &Expr, symbol_name: &str) -> bool {
+        // Pattern 1: Direct Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+        if let Some(extracted_name) = self.extract_symbol_for_name(expr) {
+            return extracted_name == symbol_name;
+        }
+
+        // Pattern 2 & 3: Identifier reference to a known serialization symbol
+        if let Expr::Ident(ident) = expr {
+            if let Some(known_symbol) = self
+                .serialization_symbol_identifiers
+                .get(&ident.sym.to_string())
+            {
+                return known_symbol == symbol_name;
+            }
+        }
+
+        false
+    }
+
+    /// Check if a class has custom serialization methods (both WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE)
+    fn has_custom_serialization_methods(&self, class: &Class) -> bool {
+        let mut has_serialize = false;
+        let mut has_deserialize = false;
+
+        for member in &class.body {
+            if let ClassMember::Method(method) = member {
+                if method.is_static {
+                    // Check for computed property name with Symbol.for(...) or identifier reference
+                    if let PropName::Computed(computed) = &method.key {
+                        if self
+                            .is_workflow_serialization_symbol(&computed.expr, "workflow-serialize")
+                        {
+                            has_serialize = true;
+                        } else if self.is_workflow_serialization_symbol(
+                            &computed.expr,
+                            "workflow-deserialize",
+                        ) {
+                            has_deserialize = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        has_serialize && has_deserialize
     }
 
     // Remove "use step" directive from arrow function body
@@ -3068,8 +3202,12 @@ impl VisitMut for StepTransform {
 
                 match self.mode {
                     TransformMode::Workflow => {
-                        // In workflow mode, we just assign ClassName.classId = "..."
-                        // No imports needed - the property assignment happens without any function call
+                        // In workflow mode, we need the import for class serialization
+                        let needs_class_serialization =
+                            !self.classes_needing_serialization.is_empty();
+                        if needs_class_serialization {
+                            imports_to_add.push(self.create_class_serialization_import());
+                        }
                     }
                     TransformMode::Step => {
                         // Check what needs to be imported
@@ -3436,10 +3574,13 @@ impl VisitMut for StepTransform {
                     // In step mode, we need:
                     // 1. registerSerializationClass(classId, ClassName) - for deserialization
                     // 2. ClassName.classId = "..." - for serialization (though not typically needed in step mode)
-                    for class_name in self.classes_needing_serialization.drain() {
+                    // Sort for deterministic output ordering
+                    let mut sorted_classes: Vec<_> =
+                        self.classes_needing_serialization.drain().collect();
+                    sorted_classes.sort();
+                    for class_name in sorted_classes {
                         // Generate class ID: class//filename//ClassName
-                        let class_id =
-                            naming::format_name("class", &self.filename, &class_name);
+                        let class_id = naming::format_name("class", &self.filename, &class_name);
 
                         // Create: registerSerializationClass("class//...", ClassName)
                         let registration_call = Stmt::Expr(ExprStmt {
@@ -3561,42 +3702,52 @@ impl VisitMut for StepTransform {
                         module.body.push(ModuleItem::Stmt(assignment));
                     }
 
-                    // Add classId property assignments for class serialization in workflow mode
-                    // This allows class constructors to be serialized when used as `this` in static method calls
-                    // In workflow mode, we just set ClassName.classId = "class//..." (no import needed)
-                    for class_name in self.classes_needing_serialization.drain() {
+                    // Add class serialization registrations for workflow mode
+                    // This is now the same as step mode - using registerSerializationClass()
+                    // which sets both classId and registers in the globalThis Map
+                    // Sort for deterministic output ordering
+                    let mut sorted_classes: Vec<_> =
+                        self.classes_needing_serialization.drain().collect();
+                    sorted_classes.sort();
+                    for class_name in sorted_classes {
                         // Generate class ID: class//filename//ClassName
-                        let class_id =
-                            naming::format_name("class", &self.filename, &class_name);
+                        let class_id = naming::format_name("class", &self.filename, &class_name);
 
-                        // Create: ClassName.classId = "class//filename//ClassName"
-                        let class_id_assignment = Stmt::Expr(ExprStmt {
+                        // Create: registerSerializationClass("class//...", ClassName)
+                        let registration_call = Stmt::Expr(ExprStmt {
                             span: DUMMY_SP,
-                            expr: Box::new(Expr::Assign(AssignExpr {
+                            expr: Box::new(Expr::Call(CallExpr {
                                 span: DUMMY_SP,
-                                op: AssignOp::Assign,
-                                left: AssignTarget::Simple(SimpleAssignTarget::Member(
-                                    MemberExpr {
-                                        span: DUMMY_SP,
-                                        obj: Box::new(Expr::Ident(Ident::new(
+                                ctxt: SyntaxContext::empty(),
+                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
+                                    "registerSerializationClass".into(),
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                )))),
+                                args: vec![
+                                    // First argument: class ID
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                            span: DUMMY_SP,
+                                            value: class_id.into(),
+                                            raw: None,
+                                        }))),
+                                    },
+                                    // Second argument: ClassName
+                                    ExprOrSpread {
+                                        spread: None,
+                                        expr: Box::new(Expr::Ident(Ident::new(
                                             class_name.into(),
                                             DUMMY_SP,
                                             SyntaxContext::empty(),
                                         ))),
-                                        prop: MemberProp::Ident(IdentName::new(
-                                            "classId".into(),
-                                            DUMMY_SP,
-                                        )),
                                     },
-                                )),
-                                right: Box::new(Expr::Lit(Lit::Str(Str {
-                                    span: DUMMY_SP,
-                                    value: class_id.into(),
-                                    raw: None,
-                                }))),
+                                ],
+                                type_args: None,
                             })),
                         });
-                        module.body.push(ModuleItem::Stmt(class_id_assignment));
+                        module.body.push(ModuleItem::Stmt(registration_call));
                     }
                 }
 
@@ -3777,10 +3928,7 @@ impl VisitMut for StepTransform {
                             let needs_class_serialization =
                                 !self.classes_needing_serialization.is_empty();
                             if !self.registration_calls.is_empty() {
-                                module_items.push(self.create_private_imports(
-                                    true,
-                                    false,
-                                ));
+                                module_items.push(self.create_private_imports(true, false));
                             }
                             if needs_class_serialization {
                                 module_items.push(self.create_class_serialization_import());
@@ -5880,6 +6028,12 @@ impl VisitMut for StepTransform {
         let old_class_name = self.current_class_name.take();
         self.current_class_name = Some(class_name.clone());
 
+        // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
+        if self.has_custom_serialization_methods(&class_decl.class) {
+            self.classes_needing_serialization
+                .insert(class_name.clone());
+        }
+
         // Visit the class body (this populates static_step_methods_to_strip)
         class_decl.class.visit_mut_with(self);
 
@@ -5920,6 +6074,12 @@ impl VisitMut for StepTransform {
             .unwrap_or_else(|| "AnonymousClass".to_string());
         let old_class_name = self.current_class_name.take();
         self.current_class_name = Some(class_name.clone());
+
+        // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
+        if self.has_custom_serialization_methods(&class_expr.class) {
+            self.classes_needing_serialization
+                .insert(class_name.clone());
+        }
 
         // Visit the class body (this populates static_step_methods_to_strip)
         class_expr.class.visit_mut_with(self);

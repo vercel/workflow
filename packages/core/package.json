@@ -53,6 +53,7 @@
     "@types/ms": "2.1.0",
     "@vercel/functions": "catalog:",
     "@workflow/errors": "workspace:*",
+    "@workflow/serde": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",

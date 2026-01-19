@@ -862,3 +862,93 @@ export async function thisSerializationWorkflow(baseValue: number) {
   // baseValue * 2 * 3 * 5 = baseValue * 30
   return result3;
 }
+
+//////////////////////////////////////////////////////////
+// Custom Serialization E2E Test
+//////////////////////////////////////////////////////////
+
+/**
+ * A custom class with user-defined serialization using Symbol.for() directly.
+ * The SWC plugin detects these symbols and generates the classId and registration automatically.
+ *
+ * Note: The SWC plugin also supports named imports (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
+ * from the "@workflow/serde" package. We use Symbol.for() directly here for simplicity since
+ * the SWC plugin has its own tests for the named import case.
+ */
+export class Point {
+  constructor(
+    public x: number,
+    public y: number
+  ) {}
+
+  /** Custom serialization - converts instance to plain object */
+  static [Symbol.for('workflow-serialize')](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  /** Custom deserialization - reconstructs instance from plain object */
+  static [Symbol.for('workflow-deserialize')](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+
+  /** Helper method to compute distance from origin */
+  distanceFromOrigin(): number {
+    return Math.sqrt(this.x * this.x + this.y * this.y);
+  }
+}
+
+/**
+ * Step that receives a Point instance and returns a new Point
+ */
+async function transformPoint(point: Point, scale: number) {
+  'use step';
+  // Verify the point was properly deserialized and has its methods
+  // (calling distanceFromOrigin proves the prototype chain is intact)
+  console.log('Point distance from origin:', point.distanceFromOrigin());
+  // Create and return a new Point (will be serialized on return)
+  return new Point(point.x * scale, point.y * scale);
+}
+
+/**
+ * Step that receives an array of Points
+ */
+async function sumPoints(points: Point[]) {
+  'use step';
+  let totalX = 0;
+  let totalY = 0;
+  for (const p of points) {
+    totalX += p.x;
+    totalY += p.y;
+  }
+  return new Point(totalX, totalY);
+}
+
+/**
+ * Workflow that tests custom serialization of user-defined class instances.
+ * The Point class uses WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE symbols
+ * to define how instances should be serialized/deserialized across the
+ * workflow/step boundary.
+ */
+export async function customSerializationWorkflow(x: number, y: number) {
+  'use workflow';
+
+  // Create a Point instance
+  const point = new Point(x, y);
+
+  // Pass it to a step - tests serialization of workflow -> step
+  const scaled = await transformPoint(point, 2);
+
+  // The returned Point should also work - tests serialization of step -> workflow
+  const scaledAgain = await transformPoint(scaled, 3);
+
+  // Test with an array of Points
+  const points = [new Point(1, 2), new Point(3, 4), new Point(5, 6)];
+  const sum = await sumPoints(points);
+
+  return {
+    original: { x: point.x, y: point.y },
+    scaled: { x: scaled.x, y: scaled.y },
+    scaledAgain: { x: scaledAgain.x, y: scaledAgain.y },
+    sum: { x: sum.x, y: sum.y },
+  };
+}

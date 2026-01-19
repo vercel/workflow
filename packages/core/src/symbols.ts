@@ -10,3 +10,9 @@ export const BODY_INIT_SYMBOL = Symbol.for('BODY_INIT');
 export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
   'WEBHOOK_RESPONSE_WRITABLE'
 );
+
+/**
+ * Symbol used to store the class registry on globalThis in workflow mode.
+ * This allows the deserializer to find classes by classId in the VM context.
+ */
+export const WORKFLOW_CLASS_REGISTRY = Symbol.for('workflow-class-registry');
