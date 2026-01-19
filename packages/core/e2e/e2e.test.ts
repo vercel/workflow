@@ -77,7 +77,8 @@ async function triggerWorkflow(
   });
   if (!res.ok) {
     throw new Error(
-      `Failed to trigger workflow: ${res.url} ${res.status
+      `Failed to trigger workflow: ${res.url} ${
+        res.status
       }: ${await res.text()}`
     );
   }
@@ -866,7 +867,8 @@ describe('e2e', () => {
 
       if (!res.ok) {
         throw new Error(
-          `Failed to call step function directly: ${res.url} ${res.status
+          `Failed to call step function directly: ${res.url} ${
+            res.status
           }: ${await res.text()}`
         );
       }
@@ -1353,17 +1355,13 @@ describe.skipIf(!isNextJsApp)('pages router', () => {
     expect(returnValue).toBe(133);
   });
 
-  test(
-    'promiseAllWorkflow via pages router',
-    { timeout: 60_000 },
-    async () => {
-      const run = await triggerWorkflow('promiseAllWorkflow', [], {
-        usePagesRouter: true,
-      });
-      const returnValue = await getWorkflowReturnValue(run.runId);
-      expect(returnValue).toBe('ABC');
-    }
-  );
+  test('promiseAllWorkflow via pages router', { timeout: 60_000 }, async () => {
+    const run = await triggerWorkflow('promiseAllWorkflow', [], {
+      usePagesRouter: true,
+    });
+    const returnValue = await getWorkflowReturnValue(run.runId);
+    expect(returnValue).toBe('ABC');
+  });
 
   test('sleepingWorkflow via pages router', { timeout: 60_000 }, async () => {
     const run = await triggerWorkflow('sleepingWorkflow', [], {
@@ -1373,5 +1371,4 @@ describe.skipIf(!isNextJsApp)('pages router', () => {
     expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
     expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
   });
-});
 });
