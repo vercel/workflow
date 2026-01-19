@@ -7,6 +7,7 @@ export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 export * from './api/workflow-api-client';
 export type { EnvMap, PublicServerConfig } from './api/workflow-server-actions';
 export { ErrorBoundary } from './error-boundary';
+export { EventListView } from './event-list-view';
 export type {
   HookActionCallbacks,
   HookActionsDropdownItemProps,

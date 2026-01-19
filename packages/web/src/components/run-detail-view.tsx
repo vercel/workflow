@@ -6,6 +6,7 @@ import {
   type EnvMap,
   ErrorBoundary,
   type Event,
+  EventListView,
   recreateRun,
   type Step,
   StreamViewer,
@@ -154,6 +155,8 @@ interface RunDetailViewProps {
   selectedId?: string;
 }
 
+type Tab = 'trace' | 'graph' | 'streams' | 'events';
+
 export function RunDetailView({
   runId,
   // TODO: This should open the right sidebar within the trace viewer
@@ -170,8 +173,7 @@ export function RunDetailView({
   const env: EnvMap = useMemo(() => ({}), []);
 
   // Read tab and streamId from URL search params
-  const activeTab =
-    (searchParams.get('tab') as 'trace' | 'graph' | 'streams') || 'trace';
+  const activeTab = (searchParams.get('tab') as Tab) || 'trace';
   const selectedStreamId = searchParams.get('streamId');
 
   // Helper to update URL search params
@@ -191,7 +193,7 @@ export function RunDetailView({
   );
 
   const setActiveTab = useCallback(
-    (tab: 'trace' | 'graph' | 'streams') => {
+    (tab: Tab) => {
       // When switching to trace or graph tab, clear streamId
       if (tab === 'trace' || tab === 'graph') {
         updateSearchParams({ tab, streamId: null });
@@ -525,9 +527,7 @@ export function RunDetailView({
         <div className="mt-4 flex-1 flex flex-col min-h-0">
           <Tabs
             value={activeTab}
-            onValueChange={(v) =>
-              setActiveTab(v as 'trace' | 'graph' | 'streams')
-            }
+            onValueChange={(v) => setActiveTab(v as Tab)}
             className="flex-1 flex flex-col min-h-0"
           >
             <TabsList className="mb-4 flex-none">
@@ -541,6 +541,10 @@ export function RunDetailView({
                   Graph
                 </TabsTrigger>
               )}
+              <TabsTrigger value="events" className="gap-2">
+                <List className="h-4 w-4" />
+                Events
+              </TabsTrigger>
               <TabsTrigger value="streams" className="gap-2">
                 <List className="h-4 w-4" />
                 Streams
@@ -560,6 +564,14 @@ export function RunDetailView({
                     isLoading={loading}
                     onStreamClick={handleStreamClick}
                   />
+                </div>
+              </ErrorBoundary>
+            </TabsContent>
+
+            <TabsContent value="events" className="mt-0 flex-1 min-h-0">
+              <ErrorBoundary title="Failed to load events list">
+                <div className="h-full">
+                  <EventListView events={allEvents} env={env} />
                 </div>
               </ErrorBoundary>
             </TabsContent>
