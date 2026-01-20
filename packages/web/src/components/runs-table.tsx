@@ -403,6 +403,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     hasNextPage,
     hasPreviousPage,
     reload,
+    refresh,
     pageInfo,
   } = useWorkflowRuns(env, {
     sortOrder,
@@ -458,6 +459,12 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     setHasLoadedOnce(false);
     reload();
   }, [reload]);
+
+  // Refresh current page without resetting state (prevents layout shift)
+  const onRefresh = useCallback(() => {
+    setLastRefreshTime(() => new Date());
+    refresh();
+  }, [refresh]);
 
   // Get selected runs that are cancellable (pending or running)
   const selectedRuns = useMemo(() => {
@@ -555,11 +562,11 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   useEffect(() => {
     if (isLocalAndHasMissingData) {
       const interval = setInterval(() => {
-        onReload();
+        onRefresh();
       }, 5000);
       return () => clearInterval(interval);
     }
-  }, [isLocalAndHasMissingData, onReload]);
+  }, [isLocalAndHasMissingData, onRefresh]);
 
   // Refresh when tab regains focus after a delay, to prevent stale UI.
   // TODO: We should generally move to using SWR or similar for _all_ API calls here.

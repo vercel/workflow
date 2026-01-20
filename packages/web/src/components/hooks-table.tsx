@@ -89,6 +89,7 @@ export function HooksTable({
     hasNextPage,
     hasPreviousPage,
     reload,
+    refresh,
     pageInfo,
   } = useWorkflowHooks(env, {
     runId,
@@ -99,16 +100,17 @@ export function HooksTable({
   const hookActions = useHookActions({
     env,
     callbacks: {
-      onSuccess: reload,
+      onSuccess: refresh,
     },
   });
 
   const loading = data.isLoading;
   const hooks = data.data ?? [];
 
-  const onReload = () => {
+  // Refresh current page without resetting state (prevents layout shift)
+  const onRefresh = () => {
     setLastRefreshTime(() => new Date());
-    reload();
+    refresh();
   };
 
   // Track invocation counts per hook (fetched in background)
@@ -258,7 +260,7 @@ export function HooksTable({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={onReload}
+                onClick={onRefresh}
                 disabled={loading}
               >
                 <RefreshCw className={loading ? 'animate-spin' : ''} />
@@ -374,7 +376,7 @@ export function HooksTable({
                                   toast.success('New run started', {
                                     description: `Run ID: ${newRunId}`,
                                   });
-                                  reload();
+                                  refresh();
                                 } catch (err) {
                                   toast.error('Failed to re-run', {
                                     description:
@@ -394,7 +396,7 @@ export function HooksTable({
                                 try {
                                   await cancelRun(env, hook.runId);
                                   toast.success('Run cancelled');
-                                  reload();
+                                  refresh();
                                 } catch (err) {
                                   toast.error('Failed to cancel', {
                                     description:
