@@ -184,22 +184,22 @@ const isClassInstanceRef = (value: unknown): value is ClassInstanceRef => {
 
 /**
  * Color palette for class instance badges.
- * Each entry has: [background, border, text] colors.
- * These are designed to be visually distinct and accessible.
+ * Each entry has: [headerBg, bodyBg, textColor] colors.
+ * Uses darker body backgrounds for better visual appearance.
  */
 const CLASS_COLOR_PALETTE: Array<[string, string, string]> = [
-  ['#E8F5E9', '#4CAF50', '#1B5E20'], // Green
-  ['#E3F2FD', '#2196F3', '#0D47A1'], // Blue
-  ['#FFF3E0', '#FF9800', '#E65100'], // Orange
-  ['#F3E5F5', '#9C27B0', '#4A148C'], // Purple
-  ['#E0F7FA', '#00BCD4', '#006064'], // Cyan
-  ['#FCE4EC', '#E91E63', '#880E4F'], // Pink
-  ['#FFF8E1', '#FFC107', '#FF6F00'], // Amber
-  ['#E8EAF6', '#3F51B5', '#1A237E'], // Indigo
-  ['#F1F8E9', '#8BC34A', '#33691E'], // Light Green
-  ['#FFEBEE', '#F44336', '#B71C1C'], // Red
-  ['#E0F2F1', '#009688', '#004D40'], // Teal
-  ['#EDE7F6', '#673AB7', '#311B92'], // Deep Purple
+  ['#4CAF50', '#1B5E20', '#A5D6A7'], // Green
+  ['#2196F3', '#0D47A1', '#90CAF9'], // Blue
+  ['#FF9800', '#E65100', '#FFCC80'], // Orange
+  ['#9C27B0', '#4A148C', '#CE93D8'], // Purple
+  ['#00BCD4', '#006064', '#80DEEA'], // Cyan
+  ['#E91E63', '#880E4F', '#F48FB1'], // Pink
+  ['#FFC107', '#FF6F00', '#FFE082'], // Amber
+  ['#3F51B5', '#1A237E', '#9FA8DA'], // Indigo
+  ['#8BC34A', '#33691E', '#C5E1A5'], // Light Green
+  ['#F44336', '#B71C1C', '#EF9A9A'], // Red
+  ['#009688', '#004D40', '#80CBC4'], // Teal
+  ['#673AB7', '#311B92', '#B39DDB'], // Deep Purple
 ];
 
 /**
@@ -215,15 +215,15 @@ const hashString = (str: string): number => {
 };
 
 /**
- * Get consistent colors for a class name.
- * Returns [backgroundColor, borderColor, textColor].
+ * Get consistent colors for a class ID.
+ * Returns header background, body background, and text color.
  */
 const getClassColors = (
-  className: string
-): { bg: string; border: string; text: string } => {
-  const index = hashString(className) % CLASS_COLOR_PALETTE.length;
-  const [bg, border, text] = CLASS_COLOR_PALETTE[index];
-  return { bg, border, text };
+  classId: string
+): { header: string; body: string; text: string } => {
+  const index = hashString(classId) % CLASS_COLOR_PALETTE.length;
+  const [header, body, text] = CLASS_COLOR_PALETTE[index];
+  return { header, body, text };
 };
 
 /**
@@ -241,16 +241,15 @@ const ClassInstanceRefDisplay = ({
     <div
       className="inline-flex flex-col rounded text-[11px] font-mono my-1"
       style={{
-        backgroundColor: colors.bg,
-        border: `1px solid ${colors.border}`,
+        backgroundColor: colors.body,
+        border: `1px solid ${colors.header}`,
       }}
     >
       <div
         className="flex items-center gap-1.5 px-2 py-1 rounded-t"
         style={{
-          backgroundColor: colors.border,
+          backgroundColor: colors.header,
           color: '#FFFFFF',
-          borderBottom: `1px solid ${colors.border}`,
         }}
         title={`Custom class: ${classInstanceRef.classId}`}
       >
