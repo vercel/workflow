@@ -1,5 +1,6 @@
 import { Flags } from '@oclif/core';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
+import { getWorkflowPort } from '@workflow/utils/get-port';
 import chalk from 'chalk';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
@@ -38,7 +39,7 @@ function getEndpointsToCheck(endpointFlag: string): HealthCheckEndpoint[] {
     : [endpointFlag as HealthCheckEndpoint];
 }
 
-function printSummary(results: EndpointHealthResult[]): void {
+function printSummary(results: EndpointHealthResult[], backend: string): void {
   const allHealthy = results.every((r) => r.healthy);
   logger.log('');
   if (allHealthy) {
@@ -48,11 +49,69 @@ function printSummary(results: EndpointHealthResult[]): void {
     logger.log(
       chalk.red(`${unhealthyCount} of ${results.length} endpoint(s) unhealthy`)
     );
+    // Provide helpful hints for common issues
+    if (backend === 'local' || backend === '@workflow/world-local') {
+      logger.log('');
+      logger.log(chalk.yellow('Hint: For local health checks, ensure:'));
+      logger.log(chalk.yellow('  1. Your development server is running'));
+      logger.log(
+        chalk.yellow('  2. The server is accessible at the configured URL')
+      );
+    }
   }
 }
 
+/**
+ * For local backend, verify the server is accessible before attempting health check.
+ * Returns the base URL if accessible, or throws an error with a helpful message.
+ */
+async function verifyLocalServerAccessible(): Promise<string> {
+  // First, try to detect the port
+  const port =
+    process.env.PORT || process.env.WORKFLOW_LOCAL_BASE_URL
+      ? undefined
+      : await getWorkflowPort();
+
+  // Determine base URL
+  let baseUrl: string;
+  if (process.env.WORKFLOW_LOCAL_BASE_URL) {
+    baseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
+  } else if (port) {
+    baseUrl = `http://localhost:${port}`;
+  } else if (process.env.PORT) {
+    baseUrl = `http://localhost:${process.env.PORT}`;
+  } else {
+    throw new Error(
+      'No local server detected. Make sure your development server is running.'
+    );
+  }
+
+  // Try to reach the health check endpoint
+  try {
+    const healthUrl = `${baseUrl}/.well-known/workflow/v1/flow?__health`;
+    const response = await fetch(healthUrl, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.ok) {
+      return baseUrl;
+    }
+  } catch {
+    // Server not reachable
+  }
+
+  throw new Error(
+    `Cannot reach local server at ${baseUrl}. Make sure your development server is running.`
+  );
+}
+
+function isLocalBackend(backend: string): boolean {
+  return backend === 'local' || backend === '@workflow/world-local';
+}
+
 export default class Health extends BaseCommand {
-  static description = 'Check health of workflow and step endpoints';
+  static description =
+    'Check health of workflow and step endpoints via queue-based health check';
 
   static examples = [
     '$ workflow health',
@@ -96,6 +155,14 @@ export default class Health extends BaseCommand {
   public async run(): Promise<void> {
     const { flags } = await this.parse(Health);
 
+    // For local backend, first verify the server is accessible
+    if (isLocalBackend(flags.backend)) {
+      const accessible = await this.verifyLocalServer(flags.json);
+      if (!accessible) {
+        process.exit(1);
+      }
+    }
+
     const world = await setupCliWorld(flags, this.config.version);
     if (!world) {
       throw new Error(
@@ -105,6 +172,16 @@ export default class Health extends BaseCommand {
 
     const { healthCheck } = await import('@workflow/core/runtime');
     const endpoints = getEndpointsToCheck(flags.endpoint);
+
+    if (!flags.json) {
+      const backendName =
+        flags.backend === 'local' ? 'local server' : flags.backend;
+      logger.log(
+        chalk.gray(`Running queue-based health check against ${backendName}...`)
+      );
+      logger.log('');
+    }
+
     const results = await this.checkEndpoints(
       endpoints,
       healthCheck,
@@ -112,10 +189,39 @@ export default class Health extends BaseCommand {
       flags
     );
 
-    this.outputResults(results, flags.json);
+    this.outputResults(results, flags.json, flags.backend);
 
     const allHealthy = results.every((r) => r.healthy);
     process.exit(allHealthy ? 0 : 1);
+  }
+
+  private async verifyLocalServer(jsonMode: boolean): Promise<boolean> {
+    if (!jsonMode) {
+      logger.log(chalk.gray('Checking local server accessibility...'));
+    }
+    try {
+      const baseUrl = await verifyLocalServerAccessible();
+      if (!jsonMode) {
+        logger.log(chalk.green(`  ✓ Local server accessible at ${baseUrl}`));
+        logger.log('');
+      }
+      return true;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      if (jsonMode) {
+        console.log(
+          JSON.stringify({
+            results: [],
+            allHealthy: false,
+            error: errorMessage,
+          })
+        );
+      } else {
+        logger.error(errorMessage);
+      }
+      return false;
+    }
   }
 
   private async checkEndpoints(
@@ -137,9 +243,20 @@ export default class Health extends BaseCommand {
         logger.log(`Checking ${endpoint} endpoint...`);
       }
 
-      const result = await healthCheck(world, endpoint, {
-        timeout: flags.timeout,
-      });
+      let result: HealthCheckResult;
+      try {
+        result = await healthCheck(world, endpoint, {
+          timeout: flags.timeout,
+        });
+      } catch (error) {
+        // Catch any unhandled errors from healthCheck
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        result = {
+          healthy: false,
+          error: errorMessage || 'Unknown error during health check',
+        };
+      }
 
       const latencyMs = Date.now() - startTime;
       results.push({
@@ -162,7 +279,8 @@ export default class Health extends BaseCommand {
 
   private outputResults(
     results: EndpointHealthResult[],
-    jsonMode: boolean
+    jsonMode: boolean,
+    backend: string
   ): void {
     if (jsonMode) {
       const jsonOutput = {
@@ -171,7 +289,7 @@ export default class Health extends BaseCommand {
       };
       console.log(JSON.stringify(jsonOutput, null, 2));
     } else {
-      printSummary(results);
+      printSummary(results, backend);
     }
   }
 }
