@@ -1,0 +1,189 @@
+import { Flags } from '@oclif/core';
+import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
+import chalk from 'chalk';
+import { BaseCommand } from '../base.js';
+import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
+import { cliFlags } from '../lib/inspect/flags.js';
+import { setupCliWorld } from '../lib/inspect/setup.js';
+
+type HealthCheckEndpoint = 'workflow' | 'step';
+
+interface HealthCheckResult {
+  healthy: boolean;
+  error?: string;
+}
+
+interface EndpointHealthResult {
+  endpoint: HealthCheckEndpoint;
+  healthy: boolean;
+  error?: string;
+  latencyMs: number;
+}
+
+function formatHealthyResult(endpoint: string, latencyMs: number): string {
+  return (
+    chalk.green(`  ✓ ${endpoint} endpoint is healthy`) +
+    chalk.gray(` (${latencyMs}ms)`)
+  );
+}
+
+function formatUnhealthyResult(endpoint: string, error?: string): string {
+  const errorSuffix = error ? chalk.gray(` - ${error}`) : '';
+  return chalk.red(`  ✗ ${endpoint} endpoint is unhealthy`) + errorSuffix;
+}
+
+function getEndpointsToCheck(endpointFlag: string): HealthCheckEndpoint[] {
+  return endpointFlag === 'both'
+    ? ['workflow', 'step']
+    : [endpointFlag as HealthCheckEndpoint];
+}
+
+function printSummary(results: EndpointHealthResult[]): void {
+  const allHealthy = results.every((r) => r.healthy);
+  logger.log('');
+  if (allHealthy) {
+    logger.log(chalk.green('All endpoints are healthy!'));
+  } else {
+    const unhealthyCount = results.filter((r) => !r.healthy).length;
+    logger.log(
+      chalk.red(`${unhealthyCount} of ${results.length} endpoint(s) unhealthy`)
+    );
+  }
+}
+
+export default class Health extends BaseCommand {
+  static description = 'Check health of workflow and step endpoints';
+
+  static examples = [
+    '$ workflow health',
+    '$ workflow health --endpoint workflow',
+    '$ workflow health --endpoint step --timeout 60000',
+    '$ workflow health --backend vercel --project my-project --team my-team',
+  ];
+
+  static flags = {
+    endpoint: Flags.string({
+      char: 'e',
+      description: 'Which endpoint(s) to check',
+      options: ['workflow', 'step', 'both'],
+      default: 'both',
+      helpGroup: 'Health Check',
+      helpLabel: '-e, --endpoint',
+      helpValue: ['workflow', 'step', 'both'],
+    }),
+    timeout: Flags.integer({
+      char: 't',
+      description: 'Timeout in milliseconds for health check',
+      default: 30000,
+      helpGroup: 'Health Check',
+      helpLabel: '-t, --timeout',
+      helpValue: 'MS',
+    }),
+    // Include relevant flags from cliFlags (excluding ones not relevant to health check)
+    verbose: cliFlags.verbose,
+    json: cliFlags.json,
+    backend: cliFlags.backend,
+    authToken: cliFlags.authToken,
+    project: cliFlags.project,
+    team: cliFlags.team,
+    env: cliFlags.env,
+  } as const;
+
+  async catch(error: any) {
+    handleHealthCheckError(error);
+  }
+
+  public async run(): Promise<void> {
+    const { flags } = await this.parse(Health);
+
+    const world = await setupCliWorld(flags, this.config.version);
+    if (!world) {
+      throw new Error(
+        'Failed to connect to backend. Check your configuration.'
+      );
+    }
+
+    const { healthCheck } = await import('@workflow/core/runtime');
+    const endpoints = getEndpointsToCheck(flags.endpoint);
+    const results = await this.checkEndpoints(
+      endpoints,
+      healthCheck,
+      world,
+      flags
+    );
+
+    this.outputResults(results, flags.json);
+
+    const allHealthy = results.every((r) => r.healthy);
+    process.exit(allHealthy ? 0 : 1);
+  }
+
+  private async checkEndpoints(
+    endpoints: HealthCheckEndpoint[],
+    healthCheck: (
+      world: any,
+      endpoint: HealthCheckEndpoint,
+      options: { timeout: number }
+    ) => Promise<HealthCheckResult>,
+    world: any,
+    flags: { timeout: number; json: boolean }
+  ): Promise<EndpointHealthResult[]> {
+    const results: EndpointHealthResult[] = [];
+
+    for (const endpoint of endpoints) {
+      const startTime = Date.now();
+
+      if (!flags.json) {
+        logger.log(`Checking ${endpoint} endpoint...`);
+      }
+
+      const result = await healthCheck(world, endpoint, {
+        timeout: flags.timeout,
+      });
+
+      const latencyMs = Date.now() - startTime;
+      results.push({
+        endpoint,
+        healthy: result.healthy,
+        error: result.error,
+        latencyMs,
+      });
+
+      if (!flags.json) {
+        const message = result.healthy
+          ? formatHealthyResult(endpoint, latencyMs)
+          : formatUnhealthyResult(endpoint, result.error);
+        logger.log(message);
+      }
+    }
+
+    return results;
+  }
+
+  private outputResults(
+    results: EndpointHealthResult[],
+    jsonMode: boolean
+  ): void {
+    if (jsonMode) {
+      const jsonOutput = {
+        results,
+        allHealthy: results.every((r) => r.healthy),
+      };
+      console.log(JSON.stringify(jsonOutput, null, 2));
+    } else {
+      printSummary(results);
+    }
+  }
+}
+
+function handleHealthCheckError(error: any): never {
+  if (error?.status === 403) {
+    logger.error(VERCEL_403_ERROR_MESSAGE);
+  } else if (LOGGING_CONFIG.VERBOSE_MODE) {
+    logger.error(error);
+  } else {
+    const errorMessage = error?.message || String(error) || 'Unknown error';
+    logger.error(`Error: ${errorMessage}`);
+  }
+  process.exit(1);
+}

@@ -5,6 +5,9 @@ import path from 'node:path';
 import { hydrateResourceIO } from '@workflow/core/observability';
 import {
   createWorld,
+  healthCheck,
+  type HealthCheckEndpoint,
+  type HealthCheckResult,
   resumeHook as resumeHookRuntime,
   start,
 } from '@workflow/core/runtime';
@@ -1128,4 +1131,58 @@ export async function fetchWorkflowsManifest(
     steps: {},
     workflows: {},
   });
+}
+
+/**
+ * Health check result with latency information
+ */
+export interface HealthCheckResultWithLatency extends HealthCheckResult {
+  latencyMs: number;
+}
+
+/**
+ * Run a queue-based health check on a workflow endpoint.
+ *
+ * This sends a health check message through the Queue infrastructure,
+ * bypassing Vercel Deployment Protection. The endpoint processes the
+ * message and writes a response to a stream, which we then read to
+ * verify the endpoint is healthy.
+ *
+ * @param worldEnv - Environment configuration for the World
+ * @param endpoint - Which endpoint to check: 'workflow' or 'step'
+ * @param options - Optional configuration (timeout in ms)
+ */
+export async function runHealthCheck(
+  worldEnv: EnvMap,
+  endpoint: HealthCheckEndpoint,
+  options?: { timeout?: number }
+): Promise<ServerActionResult<HealthCheckResultWithLatency>> {
+  const startTime = Date.now();
+  try {
+    const world = await getWorldFromEnv(worldEnv);
+    const result = await healthCheck(world, endpoint, options);
+    const latencyMs = Date.now() - startTime;
+    return createResponse({
+      ...result,
+      latencyMs,
+    });
+  } catch (error) {
+    const latencyMs = Date.now() - startTime;
+    // If we catch an error, we still want to return a structured response
+    const errorResult = createServerActionError<HealthCheckResultWithLatency>(
+      error,
+      'healthCheck',
+      { endpoint, ...options }
+    );
+    // For health check failures, we want to return success=true with healthy=false
+    // so the UI can display the error properly
+    if (!errorResult.success) {
+      return createResponse({
+        healthy: false,
+        error: errorResult.error.message,
+        latencyMs,
+      });
+    }
+    return errorResult;
+  }
 }

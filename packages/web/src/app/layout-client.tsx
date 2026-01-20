@@ -7,6 +7,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ThemeProvider, useTheme } from 'next-themes';
 import { useEffect, useRef } from 'react';
 import { ConnectionStatus } from '@/components/display-utils/connection-status';
+import { HealthCheckButton } from '@/components/display-utils/health-check-button';
 import { ThemePicker } from '@/components/theme-dropdown';
 import { DocsLink } from '@/components/top-nav/docs-link';
 import { Toaster } from '@/components/ui/sonner';
@@ -172,6 +173,8 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
               <ConnectionStatus />
             </div>
             <div className="ml-auto flex items-center gap-2">
+              <HealthCheckButton />
+              <div className="h-6 w-px bg-border" aria-hidden="true" />
               <ThemePicker />
               <DocsLink />
             </div>
