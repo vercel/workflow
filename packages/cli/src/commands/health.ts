@@ -97,10 +97,11 @@ function resolveLocalBaseUrl(
 
 async function testHttpHealthEndpoint(
   baseUrl: string,
+  endpoint: 'flow' | 'step',
   verbose: boolean
-): Promise<boolean> {
+): Promise<{ ok: boolean; status?: number; error?: string }> {
   try {
-    const healthUrl = `${baseUrl}/.well-known/workflow/v1/flow?__health`;
+    const healthUrl = `${baseUrl}/.well-known/workflow/v1/${endpoint}?__health`;
     if (verbose) {
       logger.debug(`Testing HTTP health at: ${healthUrl}`);
     }
@@ -109,17 +110,19 @@ async function testHttpHealthEndpoint(
       signal: AbortSignal.timeout(5000),
     });
     if (response.ok) {
-      return true;
+      return { ok: true, status: response.status };
     }
     if (verbose) {
       logger.debug(`HTTP health check returned status: ${response.status}`);
     }
+    return { ok: false, status: response.status };
   } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
     if (verbose) {
-      logger.debug(`HTTP health check failed: ${err}`);
+      logger.debug(`HTTP health check failed: ${errorMessage}`);
     }
+    return { ok: false, error: errorMessage };
   }
-  return false;
 }
 
 /**
@@ -142,8 +145,8 @@ async function verifyLocalServerAccessible(
     logger.debug(`Resolved base URL: ${baseUrl}`);
   }
 
-  const isHealthy = await testHttpHealthEndpoint(baseUrl, verbose);
-  if (isHealthy) {
+  const result = await testHttpHealthEndpoint(baseUrl, 'flow', verbose);
+  if (result.ok) {
     return baseUrl;
   }
 
@@ -155,6 +158,50 @@ async function verifyLocalServerAccessible(
 
 function isLocalBackend(backend: string): boolean {
   return backend === 'local' || backend === '@workflow/world-local';
+}
+
+function logWorldConfig(): void {
+  logger.debug(
+    `Data directory: ${process.env.WORKFLOW_LOCAL_DATA_DIR || '(not set)'}`
+  );
+  logger.debug(
+    `Base URL: ${process.env.WORKFLOW_LOCAL_BASE_URL || '(not set)'}`
+  );
+  logger.debug(`PORT: ${process.env.PORT || '(not set)'}`);
+}
+
+async function runHealthCheckWithLogging(
+  healthCheck: (
+    world: any,
+    endpoint: HealthCheckEndpoint,
+    options: { timeout: number }
+  ) => Promise<HealthCheckResult>,
+  world: any,
+  endpoint: HealthCheckEndpoint,
+  timeout: number,
+  verbose: boolean
+): Promise<HealthCheckResult> {
+  try {
+    if (verbose) {
+      logger.debug(`Starting health check for ${endpoint}...`);
+    }
+    const result = await healthCheck(world, endpoint, { timeout });
+    if (verbose) {
+      logger.debug(
+        `Health check for ${endpoint} completed: ${JSON.stringify(result)}`
+      );
+    }
+    return result;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (verbose) {
+      logger.debug(`Health check for ${endpoint} threw: ${errorMessage}`);
+    }
+    return {
+      healthy: false,
+      error: errorMessage || 'Unknown error during health check',
+    };
+  }
 }
 
 export default class Health extends BaseCommand {
@@ -247,12 +294,11 @@ export default class Health extends BaseCommand {
       logger.log('');
     }
 
-    const results = await this.checkEndpoints(
-      endpoints,
-      healthCheck,
-      world,
-      flags
-    );
+    const results = await this.checkEndpoints(endpoints, healthCheck, world, {
+      timeout: flags.timeout,
+      json: flags.json,
+      verbose: flags.verbose,
+    });
 
     this.outputResults(results, flags.json, flags.backend);
 
@@ -301,49 +347,64 @@ export default class Health extends BaseCommand {
       options: { timeout: number }
     ) => Promise<HealthCheckResult>,
     world: any,
-    flags: { timeout: number; json: boolean }
+    flags: { timeout: number; json: boolean; verbose: boolean }
   ): Promise<EndpointHealthResult[]> {
-    const results: EndpointHealthResult[] = [];
-
-    for (const endpoint of endpoints) {
-      const startTime = Date.now();
-
-      if (!flags.json) {
-        logger.log(`Checking ${endpoint} endpoint...`);
-      }
-
-      let result: HealthCheckResult;
-      try {
-        result = await healthCheck(world, endpoint, {
-          timeout: flags.timeout,
-        });
-      } catch (error) {
-        // Catch any unhandled errors from healthCheck
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        result = {
-          healthy: false,
-          error: errorMessage || 'Unknown error during health check',
-        };
-      }
-
-      const latencyMs = Date.now() - startTime;
-      results.push({
-        endpoint,
-        healthy: result.healthy,
-        error: result.error,
-        latencyMs,
-      });
-
-      if (!flags.json) {
-        const message = result.healthy
-          ? formatHealthyResult(endpoint, latencyMs)
-          : formatUnhealthyResult(endpoint, result.error);
-        logger.log(message);
-      }
+    if (flags.verbose) {
+      logWorldConfig();
     }
 
+    const results: EndpointHealthResult[] = [];
+    for (const endpoint of endpoints) {
+      const result = await this.checkSingleEndpoint(
+        endpoint,
+        healthCheck,
+        world,
+        flags
+      );
+      results.push(result);
+    }
     return results;
+  }
+
+  private async checkSingleEndpoint(
+    endpoint: HealthCheckEndpoint,
+    healthCheck: (
+      world: any,
+      endpoint: HealthCheckEndpoint,
+      options: { timeout: number }
+    ) => Promise<HealthCheckResult>,
+    world: any,
+    flags: { timeout: number; json: boolean; verbose: boolean }
+  ): Promise<EndpointHealthResult> {
+    const startTime = Date.now();
+
+    if (!flags.json) {
+      logger.log(`Checking ${endpoint} endpoint...`);
+    }
+
+    const result = await runHealthCheckWithLogging(
+      healthCheck,
+      world,
+      endpoint,
+      flags.timeout,
+      flags.verbose
+    );
+
+    const latencyMs = Date.now() - startTime;
+
+    if (!flags.json) {
+      const message = result.healthy
+        ? formatHealthyResult(endpoint, latencyMs)
+        : formatUnhealthyResult(endpoint, result.error);
+      logger.log(message);
+    }
+
+    return {
+      endpoint,
+      healthy: result.healthy,
+      error: result.error,
+      latencyMs,
+    };
   }
 
   private outputResults(
