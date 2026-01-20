@@ -62,3 +62,14 @@ export function parseWorkflowName(name: string) {
 export function parseStepName(name: string) {
   return parseName('step', name);
 }
+
+/**
+ * Parse a class ID into its components.
+ *
+ * @param name - The class ID to parse (e.g., "class//path/to/file.ts//ClassName").
+ * @returns An object with `shortName`, `path`, and `functionName` (className) properties.
+ * When the name is invalid, returns `null`.
+ */
+export function parseClassName(name: string) {
+  return parseName('class', name);
+}

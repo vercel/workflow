@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { parseStepName, parseWorkflowName } from './parse-name';
+import { parseClassName, parseStepName, parseWorkflowName } from './parse-name';
 
 describe('parseWorkflowName', () => {
   test('should parse a valid workflow name with Unix path', () => {
@@ -126,6 +126,44 @@ describe('parseStepName', () => {
       shortName: '__builtin_fetch',
       path: 'builtin',
       functionName: '__builtin_fetch',
+    });
+  });
+});
+
+describe('parseClassName', () => {
+  test('should parse a valid class ID', () => {
+    const result = parseClassName('class//src/models/point.ts//Point');
+    expect(result).toEqual({
+      shortName: 'Point',
+      path: 'src/models/point.ts',
+      functionName: 'Point',
+    });
+  });
+
+  test('should parse class ID with nested path', () => {
+    const result = parseClassName('class//workflows/user-signup.ts//UserData');
+    expect(result).toEqual({
+      shortName: 'UserData',
+      path: 'workflows/user-signup.ts',
+      functionName: 'UserData',
+    });
+  });
+
+  test('should return null for invalid class IDs', () => {
+    expect(parseClassName('invalid')).toBeNull();
+    expect(parseClassName('class//')).toBeNull();
+    expect(parseClassName('step//path//fn')).toBeNull();
+    expect(parseClassName('workflow//path//fn')).toBeNull();
+  });
+
+  test('should handle class ID with Windows-style path', () => {
+    const result = parseClassName(
+      'class//C:/dev/project/models/config.ts//Config'
+    );
+    expect(result).toEqual({
+      shortName: 'Config',
+      path: 'C:/dev/project/models/config.ts',
+      functionName: 'Config',
     });
   });
 });
