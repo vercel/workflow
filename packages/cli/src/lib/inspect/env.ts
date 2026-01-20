@@ -89,8 +89,8 @@ export const inferLocalWorldEnvVars = async () => {
   }
 
   if (!envVars.PORT) {
-    logger.warn(
-      'PORT environment variable is not set, using default port 3000'
+    logger.debug(
+      'Trying to connect to queue on default port 3000, set PORT environment variable to override.'
     );
     envVars.PORT = '3000';
     writeEnvVars(envVars);
