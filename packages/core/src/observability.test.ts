@@ -88,44 +88,73 @@ describe('ClassInstanceRef', () => {
   });
 
   describe('[inspect.custom]', () => {
-    it('should render as ClassName { data } [classId]', () => {
-      const ref = new ClassInstanceRef('Point', 'class//file.ts//Point', {
+    it('should render as ClassName { data } [filepath]', () => {
+      const ref = new ClassInstanceRef(
+        'Point',
+        'class//workflows/user-signup.ts//Point',
+        { x: 1, y: 2 }
+      );
+
+      const output = inspect(ref);
+      expect(output).toBe('Point { x: 1, y: 2 } [workflows/user-signup.ts]');
+    });
+
+    it('should handle nested file paths', () => {
+      const ref = new ClassInstanceRef(
+        'Config',
+        'class//lib/models/config.ts//Config',
+        { nested: { a: 1, b: 2 } }
+      );
+
+      const output = inspect(ref);
+      expect(output).toBe(
+        'Config { nested: { a: 1, b: 2 } } [lib/models/config.ts]'
+      );
+    });
+
+    it('should handle string data', () => {
+      const ref = new ClassInstanceRef(
+        'Token',
+        'class//auth/token.ts//Token',
+        'secret'
+      );
+
+      const output = inspect(ref);
+      expect(output).toBe("Token 'secret' [auth/token.ts]");
+    });
+
+    it('should handle null data', () => {
+      const ref = new ClassInstanceRef(
+        'Empty',
+        'class//utils/empty.ts//Empty',
+        null
+      );
+
+      const output = inspect(ref);
+      expect(output).toBe('Empty null [utils/empty.ts]');
+    });
+
+    it('should handle array data', () => {
+      const ref = new ClassInstanceRef(
+        'List',
+        'class//collections/list.ts//List',
+        [1, 2, 3]
+      );
+
+      const output = inspect(ref);
+      expect(output).toBe('List [ 1, 2, 3 ] [collections/list.ts]');
+    });
+
+    it('should handle simple classId format gracefully', () => {
+      // Fallback for non-standard classId format
+      const ref = new ClassInstanceRef('Point', 'test//TestPoint', {
         x: 1,
         y: 2,
       });
 
       const output = inspect(ref);
-      expect(output).toBe('Point { x: 1, y: 2 } [class//file.ts//Point]');
-    });
-
-    it('should handle nested data', () => {
-      const ref = new ClassInstanceRef('Config', 'class//Config', {
-        nested: { a: 1, b: 2 },
-      });
-
-      const output = inspect(ref);
-      expect(output).toBe('Config { nested: { a: 1, b: 2 } } [class//Config]');
-    });
-
-    it('should handle string data', () => {
-      const ref = new ClassInstanceRef('Token', 'class//Token', 'secret');
-
-      const output = inspect(ref);
-      expect(output).toBe("Token 'secret' [class//Token]");
-    });
-
-    it('should handle null data', () => {
-      const ref = new ClassInstanceRef('Empty', 'class//Empty', null);
-
-      const output = inspect(ref);
-      expect(output).toBe('Empty null [class//Empty]');
-    });
-
-    it('should handle array data', () => {
-      const ref = new ClassInstanceRef('List', 'class//List', [1, 2, 3]);
-
-      const output = inspect(ref);
-      expect(output).toBe('List [ 1, 2, 3 ] [class//List]');
+      // Falls back to extracting middle portion
+      expect(output).toBe('Point { x: 1, y: 2 } [test//TestPoint]');
     });
   });
 });

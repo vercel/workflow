@@ -4,6 +4,7 @@
  */
 
 import { inspect } from 'node:util';
+import { parseClassName } from './parse-name.js';
 import {
   hydrateStepArguments,
   hydrateStepReturnValue,
@@ -53,14 +54,16 @@ export class ClassInstanceRef {
 
   /**
    * Custom inspect for Node.js util.inspect (used by console.log, CLI, etc.)
-   * Renders as: ClassName { ...data } [classId]
+   * Renders as: ClassName { ...data } [filepath]
    */
   [inspect.custom](
     _depth: number,
     options: import('node:util').InspectOptions
   ): string {
     const dataStr = inspect(this.data, { ...options, depth: options.depth });
-    return `${this.className} ${dataStr} [${this.classId}]`;
+    const parsed = parseClassName(this.classId);
+    const filePath = parsed?.path ?? this.classId;
+    return `${this.className} ${dataStr} [${filePath}]`;
   }
 
   /**
