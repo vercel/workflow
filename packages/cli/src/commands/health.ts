@@ -73,6 +73,9 @@ function logPortDetectionDebug(
   logger.debug(`Detected/resolved port: ${detectedPort || '(none)'}`);
 }
 
+// Default port for local development servers
+const DEFAULT_LOCAL_PORT = 3000;
+
 function resolveLocalBaseUrl(
   explicitPort: number | undefined,
   detectedPort: number | undefined
@@ -89,10 +92,8 @@ function resolveLocalBaseUrl(
   if (detectedPort) {
     return `http://localhost:${detectedPort}`;
   }
-  throw new Error(
-    'No local server detected. Make sure your development server is running.\n' +
-      'Hint: Use --port 3000 or set WORKFLOW_LOCAL_BASE_URL=http://localhost:3000'
-  );
+  // Fall back to default port 3000 (common for Next.js, Nuxt, etc.)
+  return `http://localhost:${DEFAULT_LOCAL_PORT}`;
 }
 
 async function testHttpHealthEndpoint(
@@ -150,9 +151,13 @@ async function verifyLocalServerAccessible(
     return baseUrl;
   }
 
+  const portHint =
+    baseUrl === `http://localhost:${DEFAULT_LOCAL_PORT}`
+      ? 'If your server runs on a different port, use --port <port> or set WORKFLOW_LOCAL_BASE_URL'
+      : `Hint: Use --port <port> or set WORKFLOW_LOCAL_BASE_URL=http://localhost:<port>`;
   throw new Error(
     `Cannot reach local server at ${baseUrl}. Make sure your development server is running.\n` +
-      'Hint: Use --port 3000 or set WORKFLOW_LOCAL_BASE_URL=http://localhost:3000'
+      portHint
   );
 }
 
@@ -258,13 +263,20 @@ export default class Health extends BaseCommand {
   public async run(): Promise<void> {
     const { flags } = await this.parse(Health);
 
-    // If user specifies a port for local backend, set the env var so the World uses it
-    if (flags.port && isLocalBackend(flags.backend)) {
-      process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${flags.port}`;
-    }
-
-    // For local backend, first verify the server is accessible
+    // For local backend, set up port configuration early
     if (isLocalBackend(flags.backend)) {
+      // If user specifies a port, set the env var so the World uses it
+      if (flags.port) {
+        process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${flags.port}`;
+      }
+      // Set default WORKFLOW_LOCAL_BASE_URL if not already set
+      // We use WORKFLOW_LOCAL_BASE_URL instead of PORT to avoid conflicts
+      // with other tools (like Next.js) that also use the PORT env var
+      if (!process.env.WORKFLOW_LOCAL_BASE_URL && !process.env.PORT) {
+        process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${DEFAULT_LOCAL_PORT}`;
+      }
+
+      // Verify the server is accessible before proceeding
       const accessible = await this.verifyLocalServer(
         flags.json,
         flags.verbose,

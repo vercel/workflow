@@ -88,11 +88,14 @@ export const inferLocalWorldEnvVars = async () => {
     writeEnvVars({ WORKFLOW_OBSERVABILITY_CWD: cwd });
   }
 
-  if (!envVars.PORT) {
+  // Set default base URL for local queue if not already configured
+  // We use WORKFLOW_LOCAL_BASE_URL instead of PORT to avoid conflicts
+  // with other tools (like Next.js) that also use the PORT env var
+  if (!envVars.WORKFLOW_LOCAL_BASE_URL && !envVars.PORT) {
     logger.debug(
-      'Trying to connect to queue on default port 3000, set PORT environment variable to override.'
+      'Using default queue target http://localhost:3000, set WORKFLOW_LOCAL_BASE_URL or PORT to override.'
     );
-    envVars.PORT = '3000';
+    envVars.WORKFLOW_LOCAL_BASE_URL = 'http://localhost:3000';
     writeEnvVars(envVars);
   }
 
