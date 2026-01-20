@@ -88,15 +88,15 @@ describe('ClassInstanceRef', () => {
   });
 
   describe('[inspect.custom]', () => {
-    it('should render as ClassName { data } [filepath]', () => {
+    it('should render as ClassName@filename { data }', () => {
       const ref = new ClassInstanceRef(
         'Point',
         'class//workflows/user-signup.ts//Point',
         { x: 1, y: 2 }
       );
 
-      const output = inspect(ref);
-      expect(output).toBe('Point { x: 1, y: 2 } [workflows/user-signup.ts]');
+      const output = inspect(ref, { colors: false });
+      expect(output).toBe('Point@user-signup.ts { x: 1, y: 2 }');
     });
 
     it('should handle nested file paths', () => {
@@ -106,10 +106,8 @@ describe('ClassInstanceRef', () => {
         { nested: { a: 1, b: 2 } }
       );
 
-      const output = inspect(ref);
-      expect(output).toBe(
-        'Config { nested: { a: 1, b: 2 } } [lib/models/config.ts]'
-      );
+      const output = inspect(ref, { colors: false });
+      expect(output).toBe('Config@config.ts { nested: { a: 1, b: 2 } }');
     });
 
     it('should handle string data', () => {
@@ -119,8 +117,8 @@ describe('ClassInstanceRef', () => {
         'secret'
       );
 
-      const output = inspect(ref);
-      expect(output).toBe("Token 'secret' [auth/token.ts]");
+      const output = inspect(ref, { colors: false });
+      expect(output).toBe("Token@token.ts 'secret'");
     });
 
     it('should handle null data', () => {
@@ -130,8 +128,8 @@ describe('ClassInstanceRef', () => {
         null
       );
 
-      const output = inspect(ref);
-      expect(output).toBe('Empty null [utils/empty.ts]');
+      const output = inspect(ref, { colors: false });
+      expect(output).toBe('Empty@empty.ts null');
     });
 
     it('should handle array data', () => {
@@ -141,8 +139,8 @@ describe('ClassInstanceRef', () => {
         [1, 2, 3]
       );
 
-      const output = inspect(ref);
-      expect(output).toBe('List [ 1, 2, 3 ] [collections/list.ts]');
+      const output = inspect(ref, { colors: false });
+      expect(output).toBe('List@list.ts [ 1, 2, 3 ]');
     });
 
     it('should handle simple classId format gracefully', () => {
@@ -152,9 +150,26 @@ describe('ClassInstanceRef', () => {
         y: 2,
       });
 
-      const output = inspect(ref);
-      // Falls back to extracting middle portion
-      expect(output).toBe('Point { x: 1, y: 2 } [test//TestPoint]');
+      const output = inspect(ref, { colors: false });
+      // Falls back to extracting just the last segment as filename
+      expect(output).toBe('Point@TestPoint { x: 1, y: 2 }');
+    });
+
+    it('should style @filename gray when colors are enabled', () => {
+      const ref = new ClassInstanceRef(
+        'Point',
+        'class//workflows/point.ts//Point',
+        { x: 1, y: 2 }
+      );
+
+      const output = inspect(ref, { colors: true });
+      // When colors are enabled, the @filename should have ANSI escape codes
+      expect(output).toContain('Point');
+      // Check for ANSI escape codes (gray/dim styling for @filename)
+      expect(output).toMatch(/\x1b\[90m@point\.ts\x1b\[39m/);
+      // Data is also present (may have color codes for numbers)
+      expect(output).toContain('x:');
+      expect(output).toContain('y:');
     });
   });
 });

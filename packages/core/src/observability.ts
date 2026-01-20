@@ -54,16 +54,23 @@ export class ClassInstanceRef {
 
   /**
    * Custom inspect for Node.js util.inspect (used by console.log, CLI, etc.)
-   * Renders as: ClassName { ...data } [filepath]
+   * Renders as: ClassName@filename { ...data }
+   * The @filename portion is styled gray (like undefined in Node.js)
    */
   [inspect.custom](
     _depth: number,
-    options: import('node:util').InspectOptions
+    options: import('node:util').InspectOptionsStylized
   ): string {
     const dataStr = inspect(this.data, { ...options, depth: options.depth });
     const parsed = parseClassName(this.classId);
     const filePath = parsed?.path ?? this.classId;
-    return `${this.className} ${dataStr} [${filePath}]`;
+    // Extract just the filename from the path
+    const fileName = filePath.split('/').pop() ?? filePath;
+    // Style the @filename portion gray using the 'undefined' style
+    const styledFileName = options.stylize
+      ? options.stylize(`@${fileName}`, 'undefined')
+      : `@${fileName}`;
+    return `${this.className}${styledFileName} ${dataStr}`;
   }
 
   /**
