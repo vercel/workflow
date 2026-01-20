@@ -183,27 +183,74 @@ const isClassInstanceRef = (value: unknown): value is ClassInstanceRef => {
 };
 
 /**
- * Renders a ClassInstanceRef as a styled card showing the class name and serialized data
+ * Color palette for class instance badges.
+ * Each entry has: [background, border, text] colors.
+ * These are designed to be visually distinct and accessible.
+ */
+const CLASS_COLOR_PALETTE: Array<[string, string, string]> = [
+  ['#E8F5E9', '#4CAF50', '#1B5E20'], // Green
+  ['#E3F2FD', '#2196F3', '#0D47A1'], // Blue
+  ['#FFF3E0', '#FF9800', '#E65100'], // Orange
+  ['#F3E5F5', '#9C27B0', '#4A148C'], // Purple
+  ['#E0F7FA', '#00BCD4', '#006064'], // Cyan
+  ['#FCE4EC', '#E91E63', '#880E4F'], // Pink
+  ['#FFF8E1', '#FFC107', '#FF6F00'], // Amber
+  ['#E8EAF6', '#3F51B5', '#1A237E'], // Indigo
+  ['#F1F8E9', '#8BC34A', '#33691E'], // Light Green
+  ['#FFEBEE', '#F44336', '#B71C1C'], // Red
+  ['#E0F2F1', '#009688', '#004D40'], // Teal
+  ['#EDE7F6', '#673AB7', '#311B92'], // Deep Purple
+];
+
+/**
+ * Simple string hash function (djb2 algorithm).
+ * Returns a consistent number for a given string.
+ */
+const hashString = (str: string): number => {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash * 33) ^ str.charCodeAt(i);
+  }
+  return hash >>> 0; // Convert to unsigned 32-bit integer
+};
+
+/**
+ * Get consistent colors for a class name.
+ * Returns [backgroundColor, borderColor, textColor].
+ */
+const getClassColors = (
+  className: string
+): { bg: string; border: string; text: string } => {
+  const index = hashString(className) % CLASS_COLOR_PALETTE.length;
+  const [bg, border, text] = CLASS_COLOR_PALETTE[index];
+  return { bg, border, text };
+};
+
+/**
+ * Renders a ClassInstanceRef as a styled card showing the class name and serialized data.
+ * The header color is determined by hashing the classId for visual distinction.
  */
 const ClassInstanceRefDisplay = ({
   classInstanceRef,
 }: {
   classInstanceRef: ClassInstanceRef;
 }) => {
+  const colors = getClassColors(classInstanceRef.classId);
+
   return (
     <div
       className="inline-flex flex-col rounded text-[11px] font-mono my-1"
       style={{
-        backgroundColor: 'var(--ds-purple-100)',
-        border: '1px solid var(--ds-purple-400)',
+        backgroundColor: colors.bg,
+        border: `1px solid ${colors.border}`,
       }}
     >
       <div
         className="flex items-center gap-1.5 px-2 py-1 rounded-t"
         style={{
-          backgroundColor: 'var(--ds-purple-200)',
-          color: 'var(--ds-purple-900)',
-          borderBottom: '1px solid var(--ds-purple-400)',
+          backgroundColor: colors.border,
+          color: '#FFFFFF',
+          borderBottom: `1px solid ${colors.border}`,
         }}
         title={`Custom class: ${classInstanceRef.classId}`}
       >
@@ -227,7 +274,7 @@ const ClassInstanceRefDisplay = ({
       </div>
       <pre
         className="px-2 py-1.5 overflow-x-auto whitespace-pre-wrap"
-        style={{ color: 'var(--ds-gray-1000)' }}
+        style={{ color: colors.text }}
       >
         {JSON.stringify(classInstanceRef.data, null, 2)}
       </pre>
