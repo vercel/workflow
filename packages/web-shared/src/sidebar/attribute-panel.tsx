@@ -6,6 +6,7 @@ import type { ModelMessage } from 'ai';
 import type { ReactNode } from 'react';
 import { createContext, useContext, useMemo, useState } from 'react';
 import { ErrorCard } from '../components/ui/error-card';
+import { useDarkMode } from '../hooks/use-dark-mode';
 import { extractConversation, isDoStreamStep } from '../lib/utils';
 import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
@@ -182,60 +183,63 @@ const isClassInstanceRef = (value: unknown): value is ClassInstanceRef => {
   );
 };
 
-/**
- * Color palette for class instance badges.
- * Each entry has: [headerBg, bodyBg, textColor] colors.
- * Uses darker body backgrounds for better visual appearance.
- */
-const CLASS_COLOR_PALETTE: Array<[string, string, string]> = [
-  ['#4CAF50', '#1B5E20', '#A5D6A7'], // Green
-  ['#2196F3', '#0D47A1', '#90CAF9'], // Blue
-  ['#FF9800', '#E65100', '#FFCC80'], // Orange
-  ['#9C27B0', '#4A148C', '#CE93D8'], // Purple
-  ['#00BCD4', '#006064', '#80DEEA'], // Cyan
-  ['#E91E63', '#880E4F', '#F48FB1'], // Pink
-  ['#FFC107', '#FF6F00', '#FFE082'], // Amber
-  ['#3F51B5', '#1A237E', '#9FA8DA'], // Indigo
-  ['#8BC34A', '#33691E', '#C5E1A5'], // Light Green
-  ['#F44336', '#B71C1C', '#EF9A9A'], // Red
-  ['#009688', '#004D40', '#80CBC4'], // Teal
-  ['#673AB7', '#311B92', '#B39DDB'], // Deep Purple
-];
+import ColorHash from 'color-hash';
 
 /**
- * Simple string hash function (djb2 algorithm).
- * Returns a consistent number for a given string.
+ * Color hash instance configured for nice saturation and lightness.
+ * Returns HSL values which we can transform for different use cases.
  */
-const hashString = (str: string): number => {
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash * 33) ^ str.charCodeAt(i);
-  }
-  return hash >>> 0; // Convert to unsigned 32-bit integer
+const colorHash = new ColorHash({
+  saturation: [0.5, 0.6, 0.7],
+  lightness: [0.4, 0.5, 0.6],
+});
+
+/**
+ * Convert HSL to CSS hsl() string
+ */
+const hslToString = (h: number, s: number, l: number): string => {
+  return `hsl(${h}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
 };
 
 /**
- * Get consistent colors for a class ID.
- * Returns header background, body background, and text color.
+ * Get consistent colors for a class ID using color-hash and HSL transformations.
+ * Adjusts colors based on light/dark mode for optimal appearance.
  */
 const getClassColors = (
-  classId: string
+  classId: string,
+  isDark: boolean
 ): { header: string; body: string; text: string } => {
-  const index = hashString(classId) % CLASS_COLOR_PALETTE.length;
-  const [header, body, text] = CLASS_COLOR_PALETTE[index];
-  return { header, body, text };
+  const [h, s, l] = colorHash.hsl(classId);
+
+  if (isDark) {
+    // Dark mode: vibrant header, dark body, light text
+    return {
+      header: hslToString(h, s, Math.min(l + 0.1, 0.6)), // Slightly brighter header
+      body: hslToString(h, s * 0.8, 0.15), // Very dark, slightly desaturated body
+      text: hslToString(h, s * 0.6, 0.8), // Light, slightly desaturated text
+    };
+  } else {
+    // Light mode: vibrant header, light body, dark text
+    return {
+      header: hslToString(h, s, l), // Use base color for header
+      body: hslToString(h, s * 0.4, 0.95), // Very light, desaturated body
+      text: hslToString(h, s * 0.8, 0.25), // Dark, saturated text
+    };
+  }
 };
 
 /**
  * Renders a ClassInstanceRef as a styled card showing the class name and serialized data.
  * The header color is determined by hashing the classId for visual distinction.
+ * Reacts to theme changes for proper dark/light mode support.
  */
 const ClassInstanceRefDisplay = ({
   classInstanceRef,
 }: {
   classInstanceRef: ClassInstanceRef;
 }) => {
-  const colors = getClassColors(classInstanceRef.classId);
+  const isDark = useDarkMode();
+  const colors = getClassColors(classInstanceRef.classId, isDark);
 
   return (
     <div
