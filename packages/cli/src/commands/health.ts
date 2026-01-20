@@ -61,47 +61,95 @@ function printSummary(results: EndpointHealthResult[], backend: string): void {
   }
 }
 
-/**
- * For local backend, verify the server is accessible before attempting health check.
- * Returns the base URL if accessible, or throws an error with a helpful message.
- */
-async function verifyLocalServerAccessible(): Promise<string> {
-  // First, try to detect the port
-  const port =
-    process.env.PORT || process.env.WORKFLOW_LOCAL_BASE_URL
-      ? undefined
-      : await getWorkflowPort();
+function logPortDetectionDebug(
+  explicitPort: number | undefined,
+  detectedPort: number | undefined
+): void {
+  logger.debug(`Explicit port flag: ${explicitPort || '(not set)'}`);
+  logger.debug(`PORT env: ${process.env.PORT || '(not set)'}`);
+  logger.debug(
+    `WORKFLOW_LOCAL_BASE_URL env: ${process.env.WORKFLOW_LOCAL_BASE_URL || '(not set)'}`
+  );
+  logger.debug(`Detected/resolved port: ${detectedPort || '(none)'}`);
+}
 
-  // Determine base URL
-  let baseUrl: string;
-  if (process.env.WORKFLOW_LOCAL_BASE_URL) {
-    baseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
-  } else if (port) {
-    baseUrl = `http://localhost:${port}`;
-  } else if (process.env.PORT) {
-    baseUrl = `http://localhost:${process.env.PORT}`;
-  } else {
-    throw new Error(
-      'No local server detected. Make sure your development server is running.'
-    );
+function resolveLocalBaseUrl(
+  explicitPort: number | undefined,
+  detectedPort: number | undefined
+): string {
+  if (explicitPort) {
+    return `http://localhost:${explicitPort}`;
   }
+  if (process.env.WORKFLOW_LOCAL_BASE_URL) {
+    return process.env.WORKFLOW_LOCAL_BASE_URL;
+  }
+  if (process.env.PORT) {
+    return `http://localhost:${process.env.PORT}`;
+  }
+  if (detectedPort) {
+    return `http://localhost:${detectedPort}`;
+  }
+  throw new Error(
+    'No local server detected. Make sure your development server is running.\n' +
+      'Hint: Use --port 3000 or set WORKFLOW_LOCAL_BASE_URL=http://localhost:3000'
+  );
+}
 
-  // Try to reach the health check endpoint
+async function testHttpHealthEndpoint(
+  baseUrl: string,
+  verbose: boolean
+): Promise<boolean> {
   try {
     const healthUrl = `${baseUrl}/.well-known/workflow/v1/flow?__health`;
+    if (verbose) {
+      logger.debug(`Testing HTTP health at: ${healthUrl}`);
+    }
     const response = await fetch(healthUrl, {
       method: 'POST',
       signal: AbortSignal.timeout(5000),
     });
     if (response.ok) {
-      return baseUrl;
+      return true;
     }
-  } catch {
-    // Server not reachable
+    if (verbose) {
+      logger.debug(`HTTP health check returned status: ${response.status}`);
+    }
+  } catch (err) {
+    if (verbose) {
+      logger.debug(`HTTP health check failed: ${err}`);
+    }
+  }
+  return false;
+}
+
+/**
+ * For local backend, verify the server is accessible before attempting health check.
+ * Returns the base URL if accessible, or throws an error with a helpful message.
+ */
+async function verifyLocalServerAccessible(
+  verbose: boolean,
+  explicitPort?: number
+): Promise<string> {
+  const detectedPort = explicitPort ?? (await getWorkflowPort());
+
+  if (verbose) {
+    logPortDetectionDebug(explicitPort, detectedPort);
+  }
+
+  const baseUrl = resolveLocalBaseUrl(explicitPort, detectedPort);
+
+  if (verbose) {
+    logger.debug(`Resolved base URL: ${baseUrl}`);
+  }
+
+  const isHealthy = await testHttpHealthEndpoint(baseUrl, verbose);
+  if (isHealthy) {
+    return baseUrl;
   }
 
   throw new Error(
-    `Cannot reach local server at ${baseUrl}. Make sure your development server is running.`
+    `Cannot reach local server at ${baseUrl}. Make sure your development server is running.\n` +
+      'Hint: Use --port 3000 or set WORKFLOW_LOCAL_BASE_URL=http://localhost:3000'
   );
 }
 
@@ -138,6 +186,14 @@ export default class Health extends BaseCommand {
       helpLabel: '-t, --timeout',
       helpValue: 'MS',
     }),
+    port: Flags.integer({
+      char: 'p',
+      description: 'Local server port (for local backend)',
+      required: false,
+      helpGroup: 'Health Check',
+      helpLabel: '-p, --port',
+      helpValue: 'PORT',
+    }),
     // Include relevant flags from cliFlags (excluding ones not relevant to health check)
     verbose: cliFlags.verbose,
     json: cliFlags.json,
@@ -155,9 +211,18 @@ export default class Health extends BaseCommand {
   public async run(): Promise<void> {
     const { flags } = await this.parse(Health);
 
+    // If user specifies a port for local backend, set the env var so the World uses it
+    if (flags.port && isLocalBackend(flags.backend)) {
+      process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${flags.port}`;
+    }
+
     // For local backend, first verify the server is accessible
     if (isLocalBackend(flags.backend)) {
-      const accessible = await this.verifyLocalServer(flags.json);
+      const accessible = await this.verifyLocalServer(
+        flags.json,
+        flags.verbose,
+        flags.port
+      );
       if (!accessible) {
         process.exit(1);
       }
@@ -195,12 +260,16 @@ export default class Health extends BaseCommand {
     process.exit(allHealthy ? 0 : 1);
   }
 
-  private async verifyLocalServer(jsonMode: boolean): Promise<boolean> {
+  private async verifyLocalServer(
+    jsonMode: boolean,
+    verbose: boolean,
+    port?: number
+  ): Promise<boolean> {
     if (!jsonMode) {
       logger.log(chalk.gray('Checking local server accessibility...'));
     }
     try {
-      const baseUrl = await verifyLocalServerAccessible();
+      const baseUrl = await verifyLocalServerAccessible(verbose, port);
       if (!jsonMode) {
         logger.log(chalk.green(`  ✓ Local server accessible at ${baseUrl}`));
         logger.log('');
