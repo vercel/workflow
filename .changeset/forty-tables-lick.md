@@ -3,4 +3,4 @@
 "@workflow/core": patch
 ---
 
-Show opaque marker when deserializing custom classes and instances in o11y
+Show custom class serialization UI and class names in o11y
