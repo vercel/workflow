@@ -94,14 +94,19 @@ function getCliArgs(): string {
   return `--backend vercel --verbose`;
 }
 
-const awaitCommand = async (command: string, args: string[], cwd: string) => {
+const awaitCommand = async (
+  command: string,
+  args: string[],
+  cwd: string,
+  timeout = 5_000
+) => {
   console.log(`[Debug]: Executing ${command} ${args.join(' ')}`);
   console.log(`[Debug]: in CWD: ${cwd}`);
   return await new Promise<{ stdout: string; stderr: string }>(
     (resolve, reject) => {
       const child = spawn(command, args, {
         shell: true,
-        timeout: 5_000,
+        timeout,
         cwd,
         env: {
           ...process.env,
@@ -172,6 +177,45 @@ export const cliInspectJson = async (args: string) => {
     console.error('Stdout:', result.stdout);
     console.error('Stderr:', result.stderr);
     err.message = `Error parsing JSON result from CLI: ${err.message}`;
+    throw err;
+  }
+};
+
+/**
+ * Executes the `workflow health` CLI command and returns the parsed JSON result.
+ * Uses --json flag for machine-readable output.
+ */
+export const cliHealthJson = async (options?: {
+  endpoint?: 'workflow' | 'step' | 'both';
+  timeout?: number;
+}) => {
+  const cliAppPath = getWorkbenchAppPath();
+  const cliArgs = getCliArgs();
+
+  const command = `node ./node_modules/workflow/bin/run.js health`;
+  const args = ['--json'];
+
+  if (options?.endpoint) {
+    args.push(`--endpoint=${options.endpoint}`);
+  }
+  if (options?.timeout) {
+    args.push(`--timeout=${options.timeout}`);
+  }
+  if (cliArgs) {
+    args.push(cliArgs);
+  }
+
+  // Use a longer timeout for health checks since they poll for responses
+  const result = await awaitCommand(command, args, cliAppPath, 45_000);
+  try {
+    console.log('Health check result:', result.stdout);
+    const json = JSON.parse(result.stdout || '{}');
+    return { json, stdout: result.stdout, stderr: result.stderr };
+  } catch (err) {
+    console.error('Stdout:', result.stdout);
+    console.error('Stderr:', result.stderr);
+    (err as Error).message =
+      `Error parsing JSON result from health CLI: ${(err as Error).message}`;
     throw err;
   }
 };

@@ -4,6 +4,7 @@ import path from 'path';
 import { afterAll, assert, describe, expect, test } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
 import {
+  cliHealthJson,
   cliInspectJson,
   getProtectionBypassHeaders,
   hasStepSourceMaps,
@@ -1156,6 +1157,37 @@ describe('e2e', () => {
       expect(stepRes.status).toBe(200);
       const stepResult = await stepRes.json();
       expect(stepResult.healthy).toBe(true);
+    }
+  );
+
+  test(
+    'health check (CLI) - workflow health command reports healthy endpoints',
+    { timeout: 60_000 },
+    async () => {
+      // NOTE: This tests the `workflow health` CLI command which uses the
+      // queue-based health check under the hood. The CLI provides a convenient
+      // way to check endpoint health from the command line.
+
+      // Test checking both endpoints (default behavior)
+      const result = await cliHealthJson({ timeout: 30000 });
+      expect(result.json.allHealthy).toBe(true);
+      expect(result.json.results).toHaveLength(2);
+
+      // Verify workflow endpoint result
+      const workflowResult = result.json.results.find(
+        (r: { endpoint: string }) => r.endpoint === 'workflow'
+      );
+      expect(workflowResult).toBeDefined();
+      expect(workflowResult.healthy).toBe(true);
+      expect(workflowResult.latencyMs).toBeGreaterThan(0);
+
+      // Verify step endpoint result
+      const stepResult = result.json.results.find(
+        (r: { endpoint: string }) => r.endpoint === 'step'
+      );
+      expect(stepResult).toBeDefined();
+      expect(stepResult.healthy).toBe(true);
+      expect(stepResult.latencyMs).toBeGreaterThan(0);
     }
   );
 
