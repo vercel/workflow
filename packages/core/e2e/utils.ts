@@ -98,10 +98,12 @@ const awaitCommand = async (
   command: string,
   args: string[],
   cwd: string,
-  timeout = 5_000
+  timeout = 5_000,
+  envOverrides?: Record<string, string | undefined>
 ) => {
   console.log(`[Debug]: Executing ${command} ${args.join(' ')}`);
   console.log(`[Debug]: in CWD: ${cwd}`);
+
   return await new Promise<{ stdout: string; stderr: string }>(
     (resolve, reject) => {
       const child = spawn(command, args, {
@@ -111,8 +113,9 @@ const awaitCommand = async (
         env: {
           ...process.env,
           DEBUG: '1',
+          ...envOverrides,
         },
-      } as any);
+      });
 
       let stdout = '';
       let stderr = '';
@@ -205,8 +208,12 @@ export const cliHealthJson = async (options?: {
     args.push(cliArgs);
   }
 
-  // Use a longer timeout for health checks since they poll for responses
-  const result = await awaitCommand(command, args, cliAppPath, 45_000);
+  // The CLI health check runs outside Vercel and needs the proxy for authentication.
+  // WORKFLOW_VERCEL_SKIP_PROXY is only for code running INSIDE Vercel deployments,
+  // so we explicitly set it to empty string to disable skip-proxy behavior.
+  const result = await awaitCommand(command, args, cliAppPath, 45_000, {
+    WORKFLOW_VERCEL_SKIP_PROXY: '',
+  });
   try {
     console.log('Health check result:', result.stdout);
     const json = JSON.parse(result.stdout || '{}');
