@@ -65,6 +65,16 @@ export function createQueue(config?: APIConfig): Queue {
   });
 
   const queue: Queue['queue'] = async (queueName, payload, opts) => {
+    // Check if we have a deployment ID either from options or environment
+    const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
+    if (!deploymentId) {
+      throw new Error(
+        'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set. ' +
+          'Queue messages require a deployment ID to route correctly. ' +
+          'Either set VERCEL_DEPLOYMENT_ID or provide deploymentId in options.'
+      );
+    }
+
     // zod v3 doesn't have the `encode` method. We only support zod v4 officially,
     // but codebases that pin zod v3 are still common.
     const hasEncoder = typeof MessageWrapper.encode === 'function';
