@@ -36,17 +36,10 @@ export function HealthCheckButton() {
         const response = await runHealthCheck(env, endpoint, {
           timeout: 30000,
         });
+        // runHealthCheck always returns success: true, with healthy: false on errors
+        // but we still need the check for TypeScript type narrowing
         if (response.success) {
           results.push({ endpoint, result: response.data });
-        } else {
-          results.push({
-            endpoint,
-            result: {
-              healthy: false,
-              error: response.error.message,
-              latencyMs: 0,
-            },
-          });
         }
       }
 
