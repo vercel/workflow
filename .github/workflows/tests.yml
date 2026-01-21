@@ -243,6 +243,7 @@ jobs:
         env:
           NODE_OPTIONS: "--enable-source-maps"
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
           APP_NAME: ${{ matrix.app.name }}
           WORKFLOW_VERCEL_SKIP_PROXY: 'true'
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
