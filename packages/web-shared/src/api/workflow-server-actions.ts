@@ -1168,19 +1168,14 @@ export async function runHealthCheck(
     });
   } catch (error) {
     const latencyMs = Date.now() - startTime;
-    // If we catch an error, we still want to return a structured response
-    const errorResult = createServerActionError<HealthCheckResultWithLatency>(
-      error,
-      'healthCheck',
-      { endpoint, ...options }
-    );
     // For health check failures, we want to return success=true with healthy=false
     // so the UI can display the error properly, rather than propagating the server
     // action error. This allows the health check result to be parsed by the UI
     // even when the endpoint is down or unreachable.
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return createResponse({
       healthy: false,
-      error: errorResult.error.message,
+      error: errorMessage,
       latencyMs,
     });
   }
