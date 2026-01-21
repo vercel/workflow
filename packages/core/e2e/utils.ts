@@ -208,12 +208,27 @@ export const cliHealthJson = async (options?: {
     args.push(cliArgs);
   }
 
+  // Build environment overrides for the CLI process
+  const envOverrides: Record<string, string> = {};
+
+  // For local deployments, set WORKFLOW_LOCAL_BASE_URL from DEPLOYMENT_URL
+  // since different frameworks use different default ports (Astro: 4321, SvelteKit: 5173, etc.)
+  if (isLocalDeployment() && process.env.DEPLOYMENT_URL) {
+    envOverrides.WORKFLOW_LOCAL_BASE_URL = process.env.DEPLOYMENT_URL;
+  }
+
   // The CLI health check runs outside Vercel and needs the proxy for authentication.
   // WORKFLOW_VERCEL_SKIP_PROXY is only for code running INSIDE Vercel deployments,
   // so we explicitly set it to empty string to disable skip-proxy behavior.
-  const result = await awaitCommand(command, args, cliAppPath, 45_000, {
-    WORKFLOW_VERCEL_SKIP_PROXY: '',
-  });
+  envOverrides.WORKFLOW_VERCEL_SKIP_PROXY = '';
+
+  const result = await awaitCommand(
+    command,
+    args,
+    cliAppPath,
+    45_000,
+    envOverrides
+  );
   try {
     console.log('Health check result:', result.stdout);
     const json = JSON.parse(result.stdout || '{}');
