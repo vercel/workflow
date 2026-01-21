@@ -100,6 +100,79 @@ export interface HealthCheckOptions {
  * @param options - Optional configuration for the health check
  * @returns Promise resolving to health check result
  */
+// Poll interval for health check retries (ms)
+const HEALTH_CHECK_POLL_INTERVAL = 100;
+// Per-read timeout to prevent blocking forever on local world's EventEmitter
+// (which doesn't work across processes)
+const HEALTH_CHECK_READ_TIMEOUT = 500;
+
+/**
+ * Read chunks from a stream with a timeout per read operation.
+ * Returns { chunks, timedOut } where timedOut indicates if a read timed out.
+ */
+async function readStreamWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  readTimeout: number
+): Promise<{ chunks: Uint8Array[]; timedOut: boolean }> {
+  const chunks: Uint8Array[] = [];
+  let done = false;
+  let timedOut = false;
+
+  while (!done && !timedOut) {
+    const readPromise = reader.read();
+    const timeoutPromise = new Promise<{ done: true; value: undefined }>(
+      (resolve) =>
+        setTimeout(() => {
+          timedOut = true;
+          resolve({ done: true, value: undefined });
+        }, readTimeout)
+    );
+
+    const result = await Promise.race([readPromise, timeoutPromise]);
+    done = result.done;
+    if (result.value) chunks.push(result.value);
+  }
+
+  return { chunks, timedOut };
+}
+
+/**
+ * Parse and validate a health check response from stream chunks.
+ * Returns the parsed response or null if invalid.
+ */
+function parseHealthCheckResponse(
+  chunks: Uint8Array[]
+): { healthy: boolean } | null {
+  if (chunks.length === 0) return null;
+
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const combined = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  const responseText = new TextDecoder().decode(combined);
+
+  let response: unknown;
+  try {
+    response = JSON.parse(responseText);
+  } catch {
+    return null;
+  }
+
+  if (
+    typeof response !== 'object' ||
+    response === null ||
+    !('healthy' in response) ||
+    typeof (response as { healthy: unknown }).healthy !== 'boolean'
+  ) {
+    return null;
+  }
+
+  return { healthy: (response as { healthy: boolean }).healthy };
+}
+
 export async function healthCheck(
   world: World,
   endpoint: HealthCheckEndpoint,
@@ -109,7 +182,6 @@ export async function healthCheck(
   const correlationId = `hc_${generateId()}`;
   const streamName = getHealthCheckStreamName(correlationId);
 
-  // Determine which queue to use based on endpoint
   const queueName: ValidQueueName =
     endpoint === 'workflow'
       ? '__wkf_workflow_health_check'
@@ -118,80 +190,47 @@ export async function healthCheck(
   const startTime = Date.now();
 
   try {
-    // Send the health check message through the queue first
     await world.queue(queueName, {
       __healthCheck: true,
       correlationId,
     });
 
-    // Poll for the stream response with retries
-    // The stream may not exist immediately after queueing on Vercel
-    const pollInterval = 100; // ms between retries
-
     while (Date.now() - startTime < timeout) {
       try {
-        // Try to read from the stream by name (includes correlationId)
         const stream = await world.readFromStream(streamName);
         const reader = stream.getReader();
-        const chunks: Uint8Array[] = [];
-
-        let done = false;
-        while (!done) {
-          const result = await reader.read();
-          done = result.done;
-          if (result.value) chunks.push(result.value);
-        }
-
-        // If we got no data, the stream might not have been written yet
-        if (chunks.length === 0) {
-          await new Promise((resolve) => setTimeout(resolve, pollInterval));
-          continue;
-        }
-
-        // Parse the response
-        const totalLength = chunks.reduce(
-          (sum, chunk) => sum + chunk.length,
-          0
+        const { chunks, timedOut } = await readStreamWithTimeout(
+          reader,
+          HEALTH_CHECK_READ_TIMEOUT
         );
-        const combined = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          combined.set(chunk, offset);
-          offset += chunk.length;
-        }
-        const responseText = new TextDecoder().decode(combined);
 
-        let response: unknown;
-        try {
-          response = JSON.parse(responseText);
-        } catch {
-          // Response might not be valid JSON yet, retry
-          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        if (timedOut) {
+          try {
+            reader.cancel();
+          } catch {
+            // Ignore cancel errors
+          }
+          await new Promise((resolve) =>
+            setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
+          );
           continue;
         }
 
-        // Type guard: ensure response has the expected structure
-        if (
-          typeof response !== 'object' ||
-          response === null ||
-          !('healthy' in response) ||
-          typeof (response as { healthy: unknown }).healthy !== 'boolean'
-        ) {
-          // Invalid structure, retry
-          await new Promise((resolve) => setTimeout(resolve, pollInterval));
-          continue;
+        const response = parseHealthCheckResponse(chunks);
+        if (response) {
+          return response;
         }
 
-        return {
-          healthy: (response as { healthy: boolean }).healthy,
-        };
+        await new Promise((resolve) =>
+          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
+        );
       } catch {
-        // Stream might not exist yet, retry after a delay
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve) =>
+          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
+        );
       }
     }
 
-    // Timeout reached
     return {
       healthy: false,
       error: `Health check timed out after ${timeout}ms`,

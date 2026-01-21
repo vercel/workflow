@@ -5,7 +5,16 @@ export {
 export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 
 export * from './api/workflow-api-client';
-export type { EnvMap, PublicServerConfig } from './api/workflow-server-actions';
+export type {
+  EnvMap,
+  HealthCheckResultWithLatency,
+  PublicServerConfig,
+} from './api/workflow-server-actions';
+export { runHealthCheck } from './api/workflow-server-actions';
+export type {
+  HealthCheckEndpoint,
+  HealthCheckResult,
+} from '@workflow/core/runtime';
 export { ErrorBoundary } from './error-boundary';
 export { EventListView } from './event-list-view';
 export type {
