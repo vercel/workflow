@@ -1,5 +1,15 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.38
+
+### Patch Changes
+
+- Updated dependencies [[`1843704`](https://github.com/vercel/workflow/commit/1843704b83d5aaadcf1e4f5f1c73c150bd0bd2a3)]:
+  - @workflow/swc-plugin@4.0.1-beta.14
+  - @workflow/builders@4.0.1-beta.40
+  - @workflow/rollup@4.0.0-beta.8
+  - @workflow/vite@4.0.0-beta.2
+
 ## 4.0.0-beta.37
 
 ### Patch Changes

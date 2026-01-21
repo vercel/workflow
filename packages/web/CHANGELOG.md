@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 4.0.1-beta.29
+
+### Patch Changes
+
+- [#806](https://github.com/vercel/workflow/pull/806) [`d30e5c0`](https://github.com/vercel/workflow/commit/d30e5c0249018083bdd63ac84408449003399099) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - [web] Add view to display a list of all events
+
+- [#808](https://github.com/vercel/workflow/pull/808) [`ee7b1fd`](https://github.com/vercel/workflow/commit/ee7b1fd24483c24527d95ba1f5ad444d05b7ffcf) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix layout shift when empty run or hook tables auto-refreshes in local environment
+
 ## 4.0.1-beta.28
 
 ### Patch Changes
