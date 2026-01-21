@@ -9,6 +9,40 @@ const ulid = monotonicFactory(() => Math.random());
 
 const Ulid = z.string().ulid();
 
+const isWindows = process.platform === 'win32';
+
+/**
+ * Execute a filesystem operation with retry logic on Windows.
+ * On Windows, file operations can fail with EPERM/EBUSY/EACCES when files
+ * are briefly locked by another process or antivirus. This wrapper adds
+ * exponential backoff retry logic. On non-Windows platforms, executes directly.
+ */
+async function withWindowsRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 5
+): Promise<T> {
+  if (!isWindows) return fn();
+
+  const retryableErrors = ['EPERM', 'EBUSY', 'EACCES'];
+  const baseDelayMs = 10;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      const isRetryable =
+        attempt < maxRetries && retryableErrors.includes(error.code);
+      if (!isRetryable) throw error;
+      // Exponential backoff with jitter
+      const delay =
+        baseDelayMs * Math.pow(2, attempt) + Math.random() * baseDelayMs;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  // TypeScript: unreachable, but satisfies return type
+  throw new Error('Retry loop exited unexpectedly');
+}
+
 // In-memory cache of created files to avoid expensive fs.access() calls
 // This is safe because we only write once per file path (no overwrites without explicit flag)
 const createdFilesCache = new Set<string>();
@@ -96,13 +130,13 @@ export async function write(
     await ensureDir(path.dirname(filePath));
     await fs.writeFile(tempPath, data);
     tempFileCreated = true;
-    await fs.rename(tempPath, filePath);
+    await withWindowsRetry(() => fs.rename(tempPath, filePath));
     // Track this file in cache so future writes know it exists
     createdFilesCache.add(filePath);
   } catch (error) {
     // Only try to clean up temp file if it was actually created
     if (tempFileCreated) {
-      await fs.unlink(tempPath).catch(() => {});
+      await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
     }
     throw error;
   }
