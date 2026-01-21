@@ -36,6 +36,22 @@ describe('parseWorkflowName', () => {
     });
   });
 
+  test('should handle Windows path with backslashes during workflow name normalization', () => {
+    // This tests the scenario from the bug report where the workflow name contains backslashes
+    const windowsWorkflowName = 'workflow//C:\\dev\\birthday-card-generator\\app\\api\\generate\\route.ts//handleOrder';
+    const normalizedName = windowsWorkflowName.replace(/\\/g, '/');
+    
+    // The normalized name should equal the expected format
+    expect(normalizedName).toBe('workflow//C:/dev/birthday-card-generator/app/api/generate/route.ts//handleOrder');
+    
+    const result = parseWorkflowName(normalizedName);
+    expect(result).toEqual({
+      shortName: 'handleOrder',
+      path: 'C:/dev/birthday-card-generator/app/api/generate/route.ts',
+      functionName: 'handleOrder',
+    });
+  });
+
   test('should parse workflow name with nested function names', () => {
     const result = parseWorkflowName(
       'workflow//src/app.ts//nested//function//name'
