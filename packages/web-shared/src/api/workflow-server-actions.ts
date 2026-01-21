@@ -1175,14 +1175,13 @@ export async function runHealthCheck(
       { endpoint, ...options }
     );
     // For health check failures, we want to return success=true with healthy=false
-    // so the UI can display the error properly
-    if (!errorResult.success) {
-      return createResponse({
-        healthy: false,
-        error: errorResult.error.message,
-        latencyMs,
-      });
-    }
-    return errorResult;
+    // so the UI can display the error properly, rather than propagating the server
+    // action error. This allows the health check result to be parsed by the UI
+    // even when the endpoint is down or unreachable.
+    return createResponse({
+      healthy: false,
+      error: errorResult.error.message,
+      latencyMs,
+    });
   }
 }
