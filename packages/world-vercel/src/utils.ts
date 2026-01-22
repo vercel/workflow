@@ -201,7 +201,7 @@ export async function makeRequest<T>({
   config?: APIConfig;
   schema: z.ZodSchema<T>;
 }): Promise<T> {
-  const { baseUrl, headers, usingProxy } = await getHttpConfig(config);
+  const { baseUrl, headers } = await getHttpConfig(config);
   headers.set('Content-Type', 'application/json');
   headers.set('Accept', 'application/cbor');
   // NOTE: Add a unique header to bypass RSC request memoization.
@@ -213,24 +213,7 @@ export async function makeRequest<T>({
     ...options,
     headers,
   });
-
-  // Debug logging for URL, proxy mode, and headers
-  const workflowApiUrlHeader = headers.get('x-vercel-workflow-api-url');
-  if (usingProxy) {
-    console.log(
-      `[workflow-request] ${request.method} ${url} [PROXY]${workflowApiUrlHeader ? ` -> ${workflowApiUrlHeader}` : ''}`
-    );
-  } else {
-    console.log(`[workflow-request] ${request.method} ${url} [DIRECT]`);
-  }
-
   const response = await fetch(request);
-
-  // Debug logging for response Content-Type
-  const responseContentType = response.headers.get('Content-Type') || 'unknown';
-  console.log(
-    `[workflow-response] ${response.status} ${response.statusText} (Content-Type: ${responseContentType})`
-  );
 
   if (!response.ok) {
     const errorData = await parseResponseBody(response).catch(() => ({}));
