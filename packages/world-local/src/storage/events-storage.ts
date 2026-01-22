@@ -50,6 +50,9 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         effectiveRunId = runId;
       }
 
+      // Use client-provided specVersion, default to current if not provided
+      const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
+
       // Helper to check if run is in terminal state
       const isRunTerminal = (status: string) =>
         ['completed', 'failed', 'cancelled'].includes(status);
@@ -121,7 +124,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             runId: effectiveRunId,
             eventId,
             createdAt: now,
-            specVersion: SPEC_VERSION_CURRENT,
+            specVersion: effectiveSpecVersion,
           };
           const compositeKey = `${effectiveRunId}-${eventId}`;
           const eventPath = path.join(
@@ -224,13 +227,12 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           });
         }
       }
-
       const event: Event = {
         ...data,
         runId: effectiveRunId,
         eventId,
         createdAt: now,
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: effectiveSpecVersion,
       };
 
       // Track entity created/updated for EventResult
@@ -246,15 +248,14 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           workflowName: string;
           input: any[];
           executionContext?: Record<string, any>;
-          specVersion?: number;
         };
         run = {
           runId: effectiveRunId,
           deploymentId: runData.deploymentId,
           status: 'pending',
           workflowName: runData.workflowName,
-          // Use client-provided specVersion, default to current if not provided
-          specVersion: runData.specVersion ?? SPEC_VERSION_CURRENT,
+          // Propagate specVersion from the event to the run entity
+          specVersion: effectiveSpecVersion,
           executionContext: runData.executionContext,
           input: runData.input || [],
           output: undefined,
@@ -392,7 +393,8 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           completedAt: undefined,
           createdAt: now,
           updatedAt: now,
-          specVersion: SPEC_VERSION_CURRENT,
+          // Propagate specVersion from the event to the step entity
+          specVersion: effectiveSpecVersion,
         };
         const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
         const stepPath = path.join(
@@ -538,7 +540,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             runId: effectiveRunId,
             eventId,
             createdAt: now,
-            specVersion: SPEC_VERSION_CURRENT,
+            specVersion: effectiveSpecVersion,
           };
 
           // Store the conflict event
@@ -572,7 +574,8 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           projectId: 'local-project',
           environment: 'local',
           createdAt: now,
-          specVersion: SPEC_VERSION_CURRENT,
+          // Propagate specVersion from the event to the hook entity
+          specVersion: effectiveSpecVersion,
         };
         const hookPath = path.join(
           basedir,

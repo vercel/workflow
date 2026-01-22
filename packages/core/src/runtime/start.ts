@@ -112,12 +112,12 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const result = await world.events.create(null, {
         eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
         eventData: {
           deploymentId: deploymentId,
           workflowName: workflowName,
           input: workflowArguments,
           executionContext: { traceCarrier },
-          specVersion: SPEC_VERSION_CURRENT,
         },
       });
 

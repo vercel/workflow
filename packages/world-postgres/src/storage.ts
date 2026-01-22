@@ -290,6 +290,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         effectiveRunId = runId;
       }
 
+      // Use client-provided specVersion, default to current if not provided
+      const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
+
       // Track entity created/updated for EventResult
       let run: WorkflowRun | undefined;
       let step: Step | undefined;
@@ -382,7 +385,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               correlationId: data.correlationId,
               eventType: data.eventType,
               eventData: 'eventData' in data ? data.eventData : undefined,
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: effectiveSpecVersion,
             })
             .returning({ createdAt: Schema.events.createdAt });
 
@@ -492,7 +495,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           workflowName: string;
           input: any[];
           executionContext?: Record<string, any>;
-          specVersion?: number;
         };
         const [runValue] = await drizzle
           .insert(Schema.runs)
@@ -500,8 +502,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             runId: effectiveRunId,
             deploymentId: eventData.deploymentId,
             workflowName: eventData.workflowName,
-            // Use client-provided specVersion, default to current if not provided
-            specVersion: eventData.specVersion ?? SPEC_VERSION_CURRENT,
+            // Propagate specVersion from the event to the run entity
+            specVersion: effectiveSpecVersion,
             input: eventData.input as SerializedContent,
             executionContext: eventData.executionContext as
               | SerializedContent
@@ -621,7 +623,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             input: eventData.input as SerializedContent,
             status: 'pending',
             attempt: 0,
-            specVersion: SPEC_VERSION_CURRENT,
+            // Propagate specVersion from the event to the step entity
+            specVersion: effectiveSpecVersion,
           })
           .onConflictDoNothing()
           .returning();
@@ -815,7 +818,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               correlationId: data.correlationId,
               eventType: 'hook_conflict',
               eventData: conflictEventData,
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: effectiveSpecVersion,
             })
             .returning({ createdAt: events.createdAt });
 
@@ -854,7 +857,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             ownerId: '', // TODO: get from context
             projectId: '', // TODO: get from context
             environment: '', // TODO: get from context
-            specVersion: SPEC_VERSION_CURRENT,
+            // Propagate specVersion from the event to the hook entity
+            specVersion: effectiveSpecVersion,
           })
           .onConflictDoNothing()
           .returning();
@@ -879,7 +883,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           correlationId: data.correlationId,
           eventType: data.eventType,
           eventData: 'eventData' in data ? data.eventData : undefined,
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: effectiveSpecVersion,
         })
         .returning({ createdAt: events.createdAt });
       if (!value) {

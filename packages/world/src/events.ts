@@ -32,6 +32,7 @@ export const EventTypeSchema = z.enum([
 export const BaseEventSchema = z.object({
   eventType: EventTypeSchema,
   correlationId: z.string().optional(),
+  specVersion: z.number().optional(),
 });
 
 // Event schemas (shared between creation requests and server responses)
@@ -160,7 +161,6 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
     workflowName: z.string(),
     input: z.array(z.any()), // SerializedData[]
     executionContext: z.record(z.string(), z.any()).optional(),
-    specVersion: z.number().optional(), // Spec version for backwards compatibility
   }),
 });
 
