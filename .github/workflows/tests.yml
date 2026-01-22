@@ -245,13 +245,15 @@ jobs:
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
           VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
           APP_NAME: ${{ matrix.app.name }}
-          WORKFLOW_VERCEL_SKIP_PROXY: 'true'
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Optional: Override workflow-server API URL for testing different versions
+          # When set, the proxy forwards requests to this URL instead of the default
+          WORKFLOW_VERCEL_API_URL: ''
 
       - name: Generate E2E summary
         if: always()

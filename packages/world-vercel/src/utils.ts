@@ -6,10 +6,17 @@ import type { z } from 'zod';
 import { version } from './version.js';
 
 export interface APIConfig {
-  baseUrl?: string;
   token?: string;
   headers?: RequestInit['headers'];
-  skipProxy?: boolean;
+  /**
+   * Override the workflow-server API URL.
+   * When set:
+   * - If not using proxy: requests go directly to this URL
+   * - If using proxy: this value is sent as the `x-vercel-workflow-api-url`
+   *   header to forward requests to a different workflow-server instance
+   * This is useful for testing different workflow-server versions.
+   */
+  workflowApiUrl?: string;
   projectConfig?: {
     projectId?: string;
     teamId?: string;
@@ -113,17 +120,13 @@ export const getHttpUrl = (
   const projectConfig = config?.projectConfig;
   const defaultUrl = 'https://vercel-workflow.com/api';
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
-  const usingProxy =
-    // Skipping proxy is specifically used for e2e testing. Normally, we assume calls from
-    // CLI and web UI are not running inside the Vercel runtime environment, and so need to
-    // use the proxy for authentication. However, during e2e tests, this is not the case,
-    // so we allow skipping the proxy.
-    !config?.skipProxy &&
-    Boolean(
-      config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)
-    );
-  const baseUrl =
-    config?.baseUrl || (usingProxy ? defaultProxyUrl : defaultUrl);
+  // Use proxy when we have project config (for authentication via Vercel API)
+  const usingProxy = Boolean(projectConfig?.projectId && projectConfig?.teamId);
+  // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if workflowApiUrl is set)
+  // When not using proxy, use workflowApiUrl if set, otherwise the default workflow-server URL
+  const baseUrl = usingProxy
+    ? defaultProxyUrl
+    : config?.workflowApiUrl || defaultUrl;
   return { baseUrl, usingProxy };
 };
 
@@ -142,6 +145,9 @@ export const getHeaders = (config?: APIConfig): Headers => {
     if (projectConfig.teamId) {
       headers.set('x-vercel-team-id', projectConfig.teamId);
     }
+  }
+  if (config?.workflowApiUrl) {
+    headers.set('x-vercel-workflow-api-url', config.workflowApiUrl);
   }
   return headers;
 };
