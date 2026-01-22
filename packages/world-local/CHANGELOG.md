@@ -1,5 +1,15 @@
 # @workflow/world-local
 
+## 4.0.1-beta.27
+
+### Patch Changes
+
+- [#818](https://github.com/vercel/workflow/pull/818) [`202c524`](https://github.com/vercel/workflow/commit/202c524723932fc5342d33f4b57d26c25c7f9e64) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add retry for filesystem operation errors on Windows
+
+- [#816](https://github.com/vercel/workflow/pull/816) [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for setting `WORKFLOW_LOCAL_BASE_URL` env var
+
+- [#824](https://github.com/vercel/workflow/pull/824) [`b05dbd7`](https://github.com/vercel/workflow/commit/b05dbd7525c1a4b4027a28e0f4eae9da87ea5788) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Clamp setTimeout value to 32-bit integer (~25d) for `sleep()`
+
 ## 4.0.1-beta.26
 
 ### Patch Changes
