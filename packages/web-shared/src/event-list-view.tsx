@@ -140,9 +140,9 @@ function EventRow({ event, env }: { event: Event; env: EnvMap }) {
     <div
       className="rounded-lg border overflow-hidden transition-all"
       style={{
-        backgroundColor: colors.background,
+        backgroundColor: 'var(--ds-background-100)',
         borderColor: colors.border,
-        borderLeftWidth: '3px',
+        borderLeftWidth: '1px',
         borderLeftColor: colors.color,
       }}
     >
