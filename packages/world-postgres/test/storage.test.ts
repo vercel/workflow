@@ -596,14 +596,15 @@ describe('Storage (Postgres integration)', () => {
         expect(result.event.createdAt).toBeInstanceOf(Date);
       });
 
-      it('should handle workflow completed events', async () => {
+      it('should handle run completed events', async () => {
         const eventData = {
-          eventType: 'workflow_completed' as const,
+          eventType: 'run_completed' as const,
+          eventData: { output: { result: 'done' } },
         };
 
         const result = await events.create(testRunId, eventData);
 
-        expect(result.event.eventType).toBe('workflow_completed');
+        expect(result.event.eventType).toBe('run_completed');
         expect(result.event.correlationId).toBeUndefined();
       });
     });
@@ -611,7 +612,7 @@ describe('Storage (Postgres integration)', () => {
     describe('list', () => {
       it('should list all events for a run', async () => {
         const result1 = await events.create(testRunId, {
-          eventType: 'workflow_started' as const,
+          eventType: 'run_started' as const,
         });
 
         // Small delay to ensure different timestamps in event IDs
@@ -634,7 +635,7 @@ describe('Storage (Postgres integration)', () => {
           pagination: { sortOrder: 'asc' }, // Explicitly request ascending order
         });
 
-        // 4 events: run_created (from createRun), workflow_started, step_created, step_started
+        // 4 events: run_created (from createRun), run_started, step_created, step_started
         expect(result.data).toHaveLength(4);
         // Should be in chronological order (oldest first)
         expect(result.data[0].eventType).toBe('run_created');
@@ -647,7 +648,7 @@ describe('Storage (Postgres integration)', () => {
 
       it('should list events in descending order when explicitly requested (newest first)', async () => {
         const result1 = await events.create(testRunId, {
-          eventType: 'workflow_started' as const,
+          eventType: 'run_started' as const,
         });
 
         // Small delay to ensure different timestamps in event IDs
@@ -670,7 +671,7 @@ describe('Storage (Postgres integration)', () => {
           pagination: { sortOrder: 'desc' },
         });
 
-        // 4 events: run_created (from createRun), workflow_started, step_created, step_started
+        // 4 events: run_created (from createRun), run_started, step_created, step_started
         expect(result.data).toHaveLength(4);
         // Should be in reverse chronological order (newest first)
         expect(result.data[0].eventId).toBe(result2.event.eventId);
@@ -756,7 +757,8 @@ describe('Storage (Postgres integration)', () => {
           correlationId: 'different-step',
         });
         await events.create(testRunId, {
-          eventType: 'workflow_completed',
+          eventType: 'run_completed',
+          eventData: { output: { result: 'done' } },
         });
 
         const result = await events.listByCorrelationId({

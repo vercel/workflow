@@ -681,14 +681,15 @@ describe('Storage', () => {
         expect(fileExists).toBe(true);
       });
 
-      it('should handle workflow completed events', async () => {
+      it('should handle run completed events', async () => {
         const eventData = {
-          eventType: 'workflow_completed' as const,
+          eventType: 'run_completed' as const,
+          eventData: { output: { result: 'done' } },
         };
 
         const { event } = await storage.events.create(testRunId, eventData);
 
-        expect(event.eventType).toBe('workflow_completed');
+        expect(event.eventType).toBe('run_completed');
         expect(event.correlationId).toBeUndefined();
       });
     });
@@ -697,7 +698,7 @@ describe('Storage', () => {
       it('should list all events for a run', async () => {
         // Note: testRunId was created via createRun which creates a run_created event
         const { event: event1 } = await storage.events.create(testRunId, {
-          eventType: 'workflow_started' as const,
+          eventType: 'run_started' as const,
         });
 
         // Small delay to ensure different timestamps in event IDs
@@ -722,7 +723,7 @@ describe('Storage', () => {
           pagination: { sortOrder: 'asc' }, // Explicitly request ascending order
         });
 
-        // 4 events: run_created (from createRun), workflow_started, step_created, step_started
+        // 4 events: run_created (from createRun), run_started, step_created, step_started
         expect(result.data).toHaveLength(4);
         // Should be in chronological order (oldest first)
         expect(result.data[0].eventType).toBe('run_created');
@@ -737,7 +738,7 @@ describe('Storage', () => {
       it('should list events in descending order when explicitly requested (newest first)', async () => {
         // Note: testRunId was created via createRun which creates a run_created event
         const { event: event1 } = await storage.events.create(testRunId, {
-          eventType: 'workflow_started' as const,
+          eventType: 'run_started' as const,
         });
 
         // Small delay to ensure different timestamps in event IDs
@@ -762,7 +763,7 @@ describe('Storage', () => {
           pagination: { sortOrder: 'desc' },
         });
 
-        // 4 events: run_created (from createRun), workflow_started, step_created, step_started
+        // 4 events: run_created (from createRun), run_started, step_created, step_started
         expect(result.data).toHaveLength(4);
         // Should be in reverse chronological order (newest first)
         expect(result.data[0].eventId).toBe(event2.eventId);
@@ -845,7 +846,8 @@ describe('Storage', () => {
           correlationId: 'different-step',
         });
         await storage.events.create(testRunId, {
-          eventType: 'workflow_completed' as const,
+          eventType: 'run_completed' as const,
+          eventData: { output: { result: 'done' } },
         });
 
         const result = await storage.events.listByCorrelationId({

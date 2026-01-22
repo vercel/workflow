@@ -10,80 +10,16 @@ import {
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
-  type Step,
-  StepSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
 import z from 'zod';
+import { deserializeStep, StepWireSchema } from './steps.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
   dateToStringReplacer,
   makeRequest,
 } from './utils.js';
-
-/**
- * Wire format schema for step in event results.
- * Handles error deserialization from wire format.
- */
-const StepWireSchema = StepSchema.omit({
-  error: true,
-}).extend({
-  // Backend returns error either as:
-  // - A JSON string (legacy/lazy mode)
-  // - An object {message, stack} (when errorRef is resolved)
-  error: z
-    .union([
-      z.string(),
-      z.object({
-        message: z.string(),
-        stack: z.string().optional(),
-        code: z.string().optional(),
-      }),
-    ])
-    .optional(),
-  errorRef: z.any().optional(),
-});
-
-/**
- * Deserialize step from wire format to Step interface format.
- */
-function deserializeStep(wireStep: z.infer<typeof StepWireSchema>): Step {
-  const { error, errorRef, ...rest } = wireStep;
-
-  const result: any = {
-    ...rest,
-  };
-
-  // Deserialize error to StructuredError
-  const errorSource = error ?? errorRef;
-  if (errorSource) {
-    if (typeof errorSource === 'string') {
-      try {
-        const parsed = JSON.parse(errorSource);
-        if (typeof parsed === 'object' && parsed.message !== undefined) {
-          result.error = {
-            message: parsed.message,
-            stack: parsed.stack,
-            code: parsed.code,
-          };
-        } else {
-          result.error = { message: String(parsed) };
-        }
-      } catch {
-        result.error = { message: errorSource };
-      }
-    } else if (typeof errorSource === 'object' && errorSource !== null) {
-      result.error = {
-        message: errorSource.message ?? 'Unknown error',
-        stack: errorSource.stack,
-        code: errorSource.code,
-      };
-    }
-  }
-
-  return result as Step;
-}
 
 // Helper to filter event data based on resolveData setting
 function filterEventData(event: any, resolveData: 'none' | 'all'): Event {

@@ -20,7 +20,7 @@ import {
  * Wire format schema for steps coming from the backend.
  * Handles error deserialization from wire format.
  */
-const StepWireSchema = StepSchema.omit({
+export const StepWireSchema = StepSchema.omit({
   error: true,
 }).extend({
   // Backend returns error either as:
@@ -57,7 +57,7 @@ const StepWireWithRefsSchema = StepWireSchema.omit({
  * Maps:
  * - error/errorRef → error (deserializing JSON string to StructuredError)
  */
-function deserializeStep(wireStep: any): Step {
+export function deserializeStep(wireStep: any): Step {
   const { error, errorRef, ...rest } = wireStep;
 
   const result: any = {
@@ -66,9 +66,9 @@ function deserializeStep(wireStep: any): Step {
 
   // Deserialize error to StructuredError
   // The backend returns error as:
-  // - errorRef: resolved object {message, stack} when remoteRefBehavior=resolve
   // - error: JSON string (legacy) or object (when resolved)
-  const errorSource = errorRef ?? error;
+  // - errorRef: resolved object {message, stack} when remoteRefBehavior=resolve
+  const errorSource = error ?? errorRef;
   if (errorSource) {
     if (typeof errorSource === 'string') {
       try {

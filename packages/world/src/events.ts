@@ -23,10 +23,6 @@ export const EventTypeSchema = z.enum([
   // Wait lifecycle events
   'wait_created',
   'wait_completed',
-  // Legacy workflow events (deprecated, use run_* instead)
-  'workflow_completed',
-  'workflow_failed',
-  'workflow_started',
 ]);
 
 // Base event schema with common properties
@@ -207,28 +203,6 @@ const RunCancelledEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_cancelled'),
 });
 
-// =============================================================================
-// Legacy workflow events (deprecated, use run_* events instead)
-// =============================================================================
-
-/** @deprecated Use run_completed instead */
-const WorkflowCompletedEventSchema = BaseEventSchema.extend({
-  eventType: z.literal('workflow_completed'),
-});
-
-/** @deprecated Use run_failed instead */
-const WorkflowFailedEventSchema = BaseEventSchema.extend({
-  eventType: z.literal('workflow_failed'),
-  eventData: z.object({
-    error: z.any(),
-  }),
-});
-
-/** @deprecated Use run_started instead */
-const WorkflowStartedEventSchema = BaseEventSchema.extend({
-  eventType: z.literal('workflow_started'),
-});
-
 // Discriminated union for user-creatable events (requests to world.events.create)
 // Note: hook_conflict is NOT included here - it can only be created by World implementations
 export const CreateEventSchema = z.discriminatedUnion('eventType', [
@@ -251,10 +225,6 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
-  // Legacy workflow events (deprecated)
-  WorkflowCompletedEventSchema,
-  WorkflowFailedEventSchema,
-  WorkflowStartedEventSchema,
 ]);
 
 // Discriminated union for ALL events (includes World-only events like hook_conflict)
@@ -280,10 +250,6 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
-  // Legacy workflow events (deprecated)
-  WorkflowCompletedEventSchema,
-  WorkflowFailedEventSchema,
-  WorkflowStartedEventSchema,
 ]);
 
 // Server response includes runId, eventId, and createdAt
