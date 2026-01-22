@@ -9,9 +9,9 @@ export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
   /**
-   * Override the workflow-server API URL.
+   * Override the workflow-server base URL (protocol + hostname only, e.g., `https://vercel-workflow.com`).
    * When set:
-   * - If not using proxy: requests go directly to this URL
+   * - If not using proxy: requests go directly to this URL (with `/api` path appended)
    * - If using proxy: this value is sent as the `x-vercel-workflow-api-url`
    *   header to forward requests to a different workflow-server instance
    * This is useful for testing different workflow-server versions.
@@ -118,15 +118,15 @@ export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
-  const defaultUrl = 'https://vercel-workflow.com/api';
+  const defaultHost = 'https://vercel-workflow.com';
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
   const usingProxy = Boolean(projectConfig?.projectId && projectConfig?.teamId);
   // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if workflowApiUrl is set)
-  // When not using proxy, use workflowApiUrl if set, otherwise the default workflow-server URL
+  // When not using proxy, use workflowApiUrl if set, otherwise the default workflow-server URL (append /api path)
   const baseUrl = usingProxy
     ? defaultProxyUrl
-    : config?.workflowApiUrl || defaultUrl;
+    : `${config?.workflowApiUrl || defaultHost}/api`;
   return { baseUrl, usingProxy };
 };
 
