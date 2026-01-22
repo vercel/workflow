@@ -485,8 +485,13 @@ export abstract class BaseBuilder {
         // happens first, preventing false positives on Node.js imports in unused code paths
         createNodeModuleErrorPlugin(),
       ],
-      // External packages that should not be bundled (e.g., server-only, client-only for Next.js)
-      external: this.config.externalPackages || [],
+      // NOTE: We intentionally do NOT use the external option here for workflow bundles.
+      // When packages are marked external with format: 'cjs', esbuild generates require() calls.
+      // However, the workflow VM (vm.runInContext) does not have require() defined - it only
+      // provides module.exports and exports. External packages would fail at runtime with:
+      //   ReferenceError: require is not defined
+      // Instead, we bundle everything and rely on createNodeModuleErrorPlugin() to catch
+      // Node.js builtin imports at build time with helpful error messages.
     });
     const interimBundle = await interimBundleCtx.rebuild();
 
