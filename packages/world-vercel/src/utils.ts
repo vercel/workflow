@@ -123,8 +123,8 @@ export const getHttpUrl = (
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
   const usingProxy = Boolean(projectConfig?.projectId && projectConfig?.teamId);
-  // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if workflowApiUrl is set)
-  // When not using proxy, use workflowApiUrl if set, otherwise the default workflow-server URL (append /api path)
+  // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if override is set)
+  // When not using proxy, use the default workflow-server URL (with /api path appended)
   const baseUrl = usingProxy ? defaultProxyUrl : `${defaultHost}/api`;
   return { baseUrl, usingProxy };
 };

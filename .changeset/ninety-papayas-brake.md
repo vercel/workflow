@@ -5,4 +5,4 @@
 "@workflow/cli": patch
 ---
 
-Add `workflowApiUrl` config to "world-vercel"
+Remove `skipProxy` and `baseUrl` config options, simplify proxy logic
