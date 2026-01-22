@@ -500,8 +500,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             runId: effectiveRunId,
             deploymentId: eventData.deploymentId,
             workflowName: eventData.workflowName,
-            // Always use current world spec version
-            specVersion: SPEC_VERSION_CURRENT,
+            // Use client-provided specVersion, default to current if not provided
+            specVersion: eventData.specVersion ?? SPEC_VERSION_CURRENT,
             input: eventData.input as SerializedContent,
             executionContext: eventData.executionContext as
               | SerializedContent

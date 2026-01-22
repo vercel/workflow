@@ -253,8 +253,8 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           deploymentId: runData.deploymentId,
           status: 'pending',
           workflowName: runData.workflowName,
-          // Always use current world spec version
-          specVersion: SPEC_VERSION_CURRENT,
+          // Use client-provided specVersion, default to current if not provided
+          specVersion: runData.specVersion ?? SPEC_VERSION_CURRENT,
           executionContext: runData.executionContext,
           input: runData.input || [],
           output: undefined,

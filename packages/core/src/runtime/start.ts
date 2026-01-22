@@ -2,6 +2,7 @@ import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { Run } from '../runtime.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
@@ -116,6 +117,7 @@ export async function start<TArgs extends unknown[], TResult>(
           workflowName: workflowName,
           input: workflowArguments,
           executionContext: { traceCarrier },
+          specVersion: SPEC_VERSION_CURRENT,
         },
       });
 
