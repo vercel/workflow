@@ -8,15 +8,6 @@ import { version } from './version.js';
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
-  /**
-   * Override the workflow-server base URL (protocol + hostname only, e.g., `https://vercel-workflow.com`).
-   * When set:
-   * - If not using proxy: requests go directly to this URL (with `/api` path appended)
-   * - If using proxy: this value is sent as the `x-vercel-workflow-api-url`
-   *   header to forward requests to a different workflow-server instance
-   * This is useful for testing different workflow-server versions.
-   */
-  workflowApiUrl?: string;
   projectConfig?: {
     projectId?: string;
     teamId?: string;
@@ -114,19 +105,27 @@ export interface HttpConfig {
   usingProxy: boolean;
 }
 
+/**
+ * Hard-coded workflow-server URL override for testing.
+ * Set this to test against a different workflow-server version.
+ * Leave empty string for production (uses default vercel-workflow.com).
+ *
+ * Example: 'https://workflow-server-git-branch-name.vercel.sh'
+ */
+const WORKFLOW_SERVER_URL_OVERRIDE = '';
+
 export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
-  const defaultHost = 'https://vercel-workflow.com';
+  const defaultHost =
+    WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
   const usingProxy = Boolean(projectConfig?.projectId && projectConfig?.teamId);
   // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if workflowApiUrl is set)
   // When not using proxy, use workflowApiUrl if set, otherwise the default workflow-server URL (append /api path)
-  const baseUrl = usingProxy
-    ? defaultProxyUrl
-    : `${config?.workflowApiUrl || defaultHost}/api`;
+  const baseUrl = usingProxy ? defaultProxyUrl : `${defaultHost}/api`;
   return { baseUrl, usingProxy };
 };
 
@@ -146,8 +145,8 @@ export const getHeaders = (config?: APIConfig): Headers => {
       headers.set('x-vercel-team-id', projectConfig.teamId);
     }
   }
-  if (config?.workflowApiUrl) {
-    headers.set('x-vercel-workflow-api-url', config.workflowApiUrl);
+  if (WORKFLOW_SERVER_URL_OVERRIDE) {
+    headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
   }
   return headers;
 };

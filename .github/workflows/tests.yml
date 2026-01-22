@@ -251,9 +251,6 @@ jobs:
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-          # Optional: Override workflow-server API URL for testing different versions
-          # When set, the proxy forwards requests to this URL instead of the default
-          WORKFLOW_VERCEL_API_URL: ''
 
       - name: Generate E2E summary
         if: always()
