@@ -48,6 +48,7 @@ const EventWithRefsSchema = z.object({
   correlationId: z.string().optional(),
   eventDataRef: z.any().optional(),
   createdAt: z.coerce.date(),
+  specVersion: z.number().optional(),
 });
 
 // Functions

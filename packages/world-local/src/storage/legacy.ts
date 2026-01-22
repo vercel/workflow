@@ -75,7 +75,7 @@ export async function handleLegacyEvent(
       throw new Error(
         `Event type '${data.eventType}' not supported for legacy runs ` +
           `(specVersion: ${currentRun.specVersion || 'undefined'}). ` +
-          `Please upgrade @workflow packages.`
+          `Please upgrade 'workflow' package.`
       );
   }
 }
