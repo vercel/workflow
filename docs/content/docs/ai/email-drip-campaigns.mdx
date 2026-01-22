@@ -1,0 +1,486 @@
+---
+title: Email Drip Campaigns
+---
+
+Email drip campaigns are a common use case for durable workflows. They involve sending a series of emails over time, maintaining state about user interactions, and potentially branching logic based on user behavior.
+
+Workflow DevKit makes implementing drip campaigns straightforward through its event sourcing model - no external state store required. The workflow's event history serves as your state, maintaining perfect durability across restarts, deployments, and infrastructure changes.
+
+## Basic Drip Campaign
+
+Here's a simple onboarding campaign that sends emails over 14 days:
+
+```typescript title="workflows/onboarding-campaign.ts" lineNumbers
+import { sleep } from "workflow";
+
+export async function onboardingCampaign(email: string, name: string) {
+  "use workflow";
+
+  // Day 0: Send welcome email
+  await sendEmail(email, {
+    subject: "Welcome to Acme!",
+    template: "welcome",
+    data: { name },
+  });
+
+  // Day 1: Send getting started guide
+  await sleep("1 day");
+  await sendEmail(email, {
+    subject: "Getting Started with Acme",
+    template: "getting-started",
+    data: { name },
+  });
+
+  // Day 3: Send tips and tricks
+  await sleep("2 days");
+  await sendEmail(email, {
+    subject: "Pro Tips for Using Acme",
+    template: "pro-tips",
+    data: { name },
+  });
+
+  // Day 7: Check-in and offer help
+  await sleep("4 days");
+  await sendEmail(email, {
+    subject: "How's it going?",
+    template: "check-in",
+    data: { name },
+  });
+
+  // Day 14: Feature announcement
+  await sleep("7 days");
+  await sendEmail(email, {
+    subject: "New Features You'll Love",
+    template: "features",
+    data: { name },
+  });
+
+  return { email, status: "campaign_completed", emailsSent: 5 };
+}
+
+async function sendEmail(
+  to: string,
+  options: { subject: string; template: string; data: Record<string, any> }
+) {
+  "use step";
+
+  // Use your email provider (Resend, SendGrid, etc.)
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: "onboarding@acme.com",
+      to,
+      subject: options.subject,
+      // Your email provider's template rendering
+      template: options.template,
+      template_data: options.data,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to send email: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+```
+
+### How State is Maintained
+
+The workflow doesn't need a separate database to track which emails were sent. The event history automatically stores this information:
+
+- Each `sendEmail` step creates a `step_completed` event
+- Each `sleep` creates `wait_created` and `wait_completed` events
+- When the workflow resumes, it replays from the beginning using cached results
+
+**On Day 7**, the workflow:
+1. Reads all events from the database
+2. Sees `step_completed` for the first 3 emails → skips re-sending
+3. Sees `wait_completed` for the first 3 sleeps → continues past them
+4. Executes the Day 7 email and sleep
+
+No external state tracking needed!
+
+## Graceful Unsubscribe Handling
+
+While you can directly cancel a workflow (see [Cancelling a Campaign](#cancelling-a-campaign) below), sometimes you want the workflow to handle unsubscription gracefully. Check user preferences before each email:
+
+```typescript title="workflows/onboarding-campaign.ts" lineNumbers
+export async function onboardingCampaign(email: string, name: string) {
+  "use workflow";
+
+  // Day 0: Welcome email
+  await sendEmail(email, {
+    subject: "Welcome to Acme!",
+    template: "welcome",
+    data: { name },
+  });
+
+  // Check if user unsubscribed before each subsequent email
+  await sleep("1 day");
+  if (await hasUnsubscribed(email)) {
+    return { email, status: "unsubscribed", emailsSent: 1 };
+  }
+
+  await sendEmail(email, {
+    subject: "Getting Started",
+    template: "getting-started",
+    data: { name },
+  });
+
+  await sleep("2 days");
+  if (await hasUnsubscribed(email)) {
+    return { email, status: "unsubscribed", emailsSent: 2 };
+  }
+
+  await sendEmail(email, {
+    subject: "Pro Tips",
+    template: "pro-tips",
+    data: { name },
+  });
+
+  // Continue pattern...
+
+  return { email, status: "campaign_completed", emailsSent: 5 };
+}
+
+async function hasUnsubscribed(email: string) {
+  "use step";
+
+  const response = await fetch(
+    `https://api.example.com/users/preferences?email=${encodeURIComponent(email)}`
+  );
+  const { unsubscribed } = await response.json();
+  return unsubscribed === true;
+}
+```
+
+<Callout type="info">
+This pattern allows the workflow to track how many emails were sent before unsubscribe. For immediate cancellation without graceful handling, use `world.runs.cancel(runId)` as shown in [Cancelling a Campaign](#cancelling-a-campaign).
+</Callout>
+
+## Behavioral Drip Campaigns
+
+Send emails based on user actions using webhooks:
+
+```typescript title="workflows/engagement-campaign.ts" lineNumbers
+import { createWebhook, sleep } from "workflow";
+
+export async function engagementCampaign(email: string, name: string) {
+  "use workflow";
+
+  // Send initial email with activation link
+  const activationWebhook = createWebhook();
+  await sendEmail(email, {
+    subject: "Activate Your Account",
+    template: "activation",
+    data: {
+      name,
+      activationUrl: activationWebhook.url,
+    },
+  });
+
+  // Wait up to 3 days for activation
+  const activated = await Promise.race([
+    activationWebhook.then(() => true),
+    sleep("3 days").then(() => false),
+  ]);
+
+  if (!activated) {
+    // Send reminder if not activated
+    await sendEmail(email, {
+      subject: "Don't forget to activate!",
+      template: "activation-reminder",
+      data: { name },
+    });
+
+    // Wait another 4 days
+    const remindedActivation = await Promise.race([
+      activationWebhook.then(() => true),
+      sleep("4 days").then(() => false),
+    ]);
+
+    if (!remindedActivation) {
+      return { email, status: "not_activated", emailsSent: 2 };
+    }
+  }
+
+  // User activated! Continue with engagement emails
+  await sleep("1 day");
+  await sendEmail(email, {
+    subject: "Welcome! Here's what to do next",
+    template: "post-activation",
+    data: { name },
+  });
+
+  // Check if user completed onboarding
+  const onboardingWebhook = createWebhook();
+  await recordOnboardingWebhook(email, onboardingWebhook.url);
+
+  const onboarded = await Promise.race([
+    onboardingWebhook.then(() => true),
+    sleep("5 days").then(() => false),
+  ]);
+
+  if (!onboarded) {
+    await sendEmail(email, {
+      subject: "Need help getting started?",
+      template: "onboarding-help",
+      data: { name },
+    });
+  }
+
+  return {
+    email,
+    status: onboarded ? "fully_onboarded" : "partially_onboarded",
+    emailsSent: onboarded ? 3 : 4,
+  };
+}
+
+async function recordOnboardingWebhook(email: string, webhookUrl: string) {
+  "use step";
+
+  // Store webhook URL so your app can call it when user completes onboarding
+  await fetch(`https://api.example.com/users/webhooks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      event: "onboarding_complete",
+      url: webhookUrl,
+    }),
+  });
+}
+```
+
+In your application, when the user completes onboarding:
+
+```typescript title="app/api/onboarding/complete/route.ts" lineNumbers
+export async function POST(request: Request) {
+  const { email } = await request.json();
+
+  // Get the webhook URL you stored earlier
+  const webhook = await getWebhookForEmail(email, "onboarding_complete");
+
+  // Call the webhook to resume the workflow
+  if (webhook) {
+    await fetch(webhook.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, completedAt: new Date() }),
+    });
+  }
+
+  return Response.json({ success: true });
+}
+```
+
+## Personalized A/B Testing
+
+Send different email sequences based on user segments or A/B test variants:
+
+```typescript title="workflows/ab-test-campaign.ts" lineNumbers
+export async function personalizedCampaign(email: string, name: string) {
+  "use workflow";
+
+  // Determine variant (use deterministic hash based on email for consistency)
+  const variant = hashEmail(email) % 2 === 0 ? "A" : "B";
+
+  // Send welcome email
+  await sendEmail(email, {
+    subject: variant === "A"
+      ? "Welcome to Acme!"
+      : "You're in! Let's get started",
+    template: `welcome-${variant}`,
+    data: { name },
+  });
+
+  await sleep("2 days");
+
+  if (variant === "A") {
+    // Variant A: Feature-focused
+    await sendEmail(email, {
+      subject: "Powerful features at your fingertips",
+      template: "features-a",
+      data: { name },
+    });
+  } else {
+    // Variant B: Benefit-focused
+    await sendEmail(email, {
+      subject: "Save 10 hours per week with Acme",
+      template: "benefits-b",
+      data: { name },
+    });
+  }
+
+  await sleep("5 days");
+
+  // Check engagement
+  const engagement = await getUserEngagement(email);
+
+  if (engagement.score < 30) {
+    // Low engagement - send help email
+    await sendEmail(email, {
+      subject: "Need help?",
+      template: "low-engagement",
+      data: { name },
+    });
+  } else {
+    // Good engagement - send advanced tips
+    await sendEmail(email, {
+      subject: "Advanced tips for power users",
+      template: "advanced-tips",
+      data: { name },
+    });
+  }
+
+  // Track which variant performed better
+  await recordVariantOutcome(email, variant, engagement.score);
+
+  return {
+    email,
+    variant,
+    engagementScore: engagement.score,
+    status: "campaign_completed"
+  };
+}
+
+function hashEmail(email: string): number {
+  // Simple hash function - in production use a proper hashing library
+  let hash = 0;
+  for (let i = 0; i < email.length; i++) {
+    hash = ((hash << 5) - hash) + email.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return Math.abs(hash);
+}
+
+async function getUserEngagement(email: string) {
+  "use step";
+
+  const response = await fetch(
+    `https://api.example.com/engagement?email=${encodeURIComponent(email)}`
+  );
+  return response.json();
+}
+
+async function recordVariantOutcome(
+  email: string,
+  variant: string,
+  score: number
+) {
+  "use step";
+
+  await fetch("https://api.example.com/ab-test/outcomes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, variant, engagementScore: score }),
+  });
+}
+```
+
+## Time Zone Aware Campaigns
+
+Send emails at optimal times based on user time zones:
+
+```typescript title="workflows/timezone-aware-campaign.ts" lineNumbers
+export async function timezoneCampaign(email: string, name: string, timezone: string) {
+  "use workflow";
+
+  // Calculate when to send next email (9 AM in user's timezone)
+  const nextSendTime = getNextOptimalSendTime(timezone, "09:00");
+
+  await sendEmail(email, {
+    subject: "Good morning! Your daily digest",
+    template: "daily-digest",
+    data: { name },
+  });
+
+  // Sleep until next optimal send time
+  await sleep(nextSendTime);
+
+  await sendEmail(email, {
+    subject: "Your personalized update",
+    template: "update",
+    data: { name },
+  });
+
+  return { email, status: "completed" };
+}
+
+function getNextOptimalSendTime(timezone: string, time: string): Date {
+  // Calculate next send time in user's timezone
+  const now = new Date();
+  const [hours, minutes] = time.split(':').map(Number);
+
+  // This is simplified - use a proper timezone library in production
+  const sendTime = new Date(now);
+  sendTime.setHours(hours, minutes, 0, 0);
+
+  // If time has passed today, schedule for tomorrow
+  if (sendTime <= now) {
+    sendTime.setDate(sendTime.getDate() + 1);
+  }
+
+  return sendTime;
+}
+```
+
+## Starting a Drip Campaign
+
+Trigger campaigns from your application:
+
+```typescript title="app/api/users/signup/route.ts" lineNumbers
+import { start } from "workflow";
+import { onboardingCampaign } from "@/workflows/onboarding-campaign";
+
+export async function POST(request: Request) {
+  const { email, name } = await request.json();
+
+  // Start drip campaign
+  const runId = await start(onboardingCampaign, email, name);
+
+  // Optionally store runId to cancel later
+  await storeWorkflowRunId(email, runId);
+
+  return Response.json({
+    email,
+    campaignRunId: runId
+  });
+}
+```
+
+## Cancelling a Campaign
+
+You can directly cancel a workflow by calling `cancel()` with the run ID. The workflow will stop immediately on its next replay:
+
+```typescript title="app/api/campaigns/cancel/route.ts" lineNumbers
+import { getWorld } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { email } = await request.json();
+
+  // Get the campaign run ID (stored when you started the campaign)
+  const runId = await getCampaignRunId(email);
+
+  if (runId) {
+    // Cancel the workflow - it will stop on next replay
+    await getWorld().runs.cancel(runId);
+  }
+
+  return Response.json({ success: true });
+}
+```
+
+### When the Workflow is Cancelled
+
+- **Status updated**: The run status becomes `'cancelled'` in the database
+- **Immediate stop**: On the next replay attempt (e.g., after a sleep completes), the workflow exits
+- **No graceful handling**: The workflow code doesn't get a chance to run cleanup logic
+
+For graceful handling where the workflow can track state before stopping, use the pattern in [Graceful Unsubscribe Handling](#graceful-unsubscribe-handling) instead.
+
