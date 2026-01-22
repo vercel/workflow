@@ -13,7 +13,7 @@ import { version } from './version.js';
  *
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-git-01-21-addsupportforcborresponseencoding.vercel.sh';
 
 export interface APIConfig {
   token?: string;
