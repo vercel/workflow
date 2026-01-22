@@ -1,5 +1,18 @@
 # @workflow/cli
 
+## 4.0.1-beta.50
+
+### Patch Changes
+
+- [#816](https://github.com/vercel/workflow/pull/816) [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `workflow health` CLI command
+
+- Updated dependencies [[`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916), [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916), [`202c524`](https://github.com/vercel/workflow/commit/202c524723932fc5342d33f4b57d26c25c7f9e64), [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916), [`f3785f0`](https://github.com/vercel/workflow/commit/f3785f04fbdf9e6199e0e42c592e3d5ba246a6c6), [`b05dbd7`](https://github.com/vercel/workflow/commit/b05dbd7525c1a4b4027a28e0f4eae9da87ea5788)]:
+  - @workflow/core@4.0.1-beta.41
+  - @workflow/web@4.0.1-beta.30
+  - @workflow/world-local@4.0.1-beta.27
+  - @workflow/world-vercel@4.0.1-beta.28
+  - @workflow/builders@4.0.1-beta.41
+
 ## 4.0.1-beta.49
 
 ### Patch Changes

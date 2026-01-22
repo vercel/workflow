@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.0.1-beta.30
+
+### Patch Changes
+
+- [#816](https://github.com/vercel/workflow/pull/816) [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add button to run queue based health checks
+
 ## 4.0.1-beta.29
 
 ### Patch Changes

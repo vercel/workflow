@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nuxt",
-  "version": "4.0.1-beta.33",
+  "version": "4.0.1-beta.34",
   "description": "Nuxt integration for Workflow DevKit",
   "license": "Apache-2.0",
   "type": "module",

@@ -1,5 +1,14 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.29
+
+### Patch Changes
+
+- [#804](https://github.com/vercel/workflow/pull/804) [`1533dbb`](https://github.com/vercel/workflow/commit/1533dbbf44e94a36c9f15b190fccdd7f0040a89a) Thanks [@lcneves](https://github.com/lcneves)! - Delete redundant and bugged Drizzle migration
+
+- Updated dependencies [[`202c524`](https://github.com/vercel/workflow/commit/202c524723932fc5342d33f4b57d26c25c7f9e64), [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916), [`b05dbd7`](https://github.com/vercel/workflow/commit/b05dbd7525c1a4b4027a28e0f4eae9da87ea5788)]:
+  - @workflow/world-local@4.0.1-beta.27
+
 ## 4.1.0-beta.28
 
 ### Patch Changes

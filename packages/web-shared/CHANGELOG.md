@@ -1,5 +1,17 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.45
+
+### Patch Changes
+
+- [#816](https://github.com/vercel/workflow/pull/816) [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add button to run queue based health checks
+
+- [#828](https://github.com/vercel/workflow/pull/828) [`549ffbe`](https://github.com/vercel/workflow/commit/549ffbee3c75396f7d4362558c957101f59ce400) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Tone down color use on event list view
+
+- Updated dependencies [[`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916), [`f3785f0`](https://github.com/vercel/workflow/commit/f3785f04fbdf9e6199e0e42c592e3d5ba246a6c6)]:
+  - @workflow/core@4.0.1-beta.41
+  - @workflow/world-vercel@4.0.1-beta.28
+
 ## 4.0.1-beta.44
 
 ### Patch Changes
