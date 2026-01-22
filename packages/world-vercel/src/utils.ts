@@ -2,6 +2,7 @@ import os from 'node:os';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
+import { decode } from 'cbor-x';
 import type { z } from 'zod';
 import { version } from './version.js';
 
@@ -202,6 +203,7 @@ export async function makeRequest<T>({
 }): Promise<T> {
   const { baseUrl, headers } = await getHttpConfig(config);
   headers.set('Content-Type', 'application/json');
+  headers.set('Accept', 'application/cbor');
   // NOTE: Add a unique header to bypass RSC request memoization.
   // See: https://github.com/vercel/workflow/issues/618
   headers.set('X-Request-Time', Date.now().toString());
@@ -214,7 +216,7 @@ export async function makeRequest<T>({
   const response = await fetch(request);
 
   if (!response.ok) {
-    const errorData = (await response.json().catch(() => ({}))) as any;
+    const errorData = await parseResponseBody(response).catch(() => ({}));
     if (process.env.DEBUG === '1') {
       const stringifiedHeaders = Array.from(headers.entries())
         .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
@@ -230,14 +232,30 @@ export async function makeRequest<T>({
     );
   }
 
-  const text = await response.text();
-
   try {
-    return schema.parse(JSON.parse(text));
+    const data = await parseResponseBody(response);
+    return schema.parse(data);
   } catch (error) {
     throw new WorkflowAPIError(
-      `Failed to parse server response for ${request.method} ${endpoint}:\n\n${error}\n\nResponse body: ${text}`,
+      `Failed to parse server response for ${request.method} ${endpoint}:\n\n${error}`,
       { url, cause: error }
     );
   }
+}
+
+/**
+ * Parse response body based on Content-Type header.
+ * Supports both CBOR and JSON responses.
+ */
+async function parseResponseBody(response: Response): Promise<any> {
+  const contentType = response.headers.get('Content-Type') || '';
+
+  if (contentType.includes('application/cbor')) {
+    const buffer = await response.arrayBuffer();
+    return decode(new Uint8Array(buffer));
+  }
+
+  // Fall back to JSON parsing
+  const text = await response.text();
+  return JSON.parse(text);
 }
