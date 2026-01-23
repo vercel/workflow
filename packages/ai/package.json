@@ -5,8 +5,12 @@
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "docs/**/*"
   ],
+  "directories": {
+    "doc": "./docs"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -53,8 +57,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "clean": "tsc --build --clean",
-    "test": "vitest run"
+    "clean": "tsc --build --clean && rm -rf docs ||:",
+    "test": "vitest run",
+    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/ai ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow-ai ./docs/",
+    "postpack": "rm -rf docs"
   },
   "devDependencies": {
     "@workflow/tsconfig": "workspace:*",

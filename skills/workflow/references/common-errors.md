@@ -1,4 +1,9 @@
-# Common Errors and Solutions
+---
+title: Common Errors
+description: Reference for common Workflow DevKit errors and how to resolve them.
+---
+
+# Common Errors
 
 ## Quick Reference
 

@@ -5,8 +5,12 @@
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "docs/**/*"
   ],
+  "directories": {
+    "doc": "./docs"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -37,10 +41,12 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -r dist ||:",
+    "clean": "tsc --build --clean && rm -rf dist docs ||:",
     "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run src",
     "test:e2e": "vitest run e2e",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/foundations ./docs/ && cp -r ../../docs/content/docs/how-it-works ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow ./docs/api-reference",
+    "postpack": "rm -rf docs"
   },
   "dependencies": {
     "@aws-sdk/credential-provider-web-identity": "3.609.0",
