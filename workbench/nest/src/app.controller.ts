@@ -22,8 +22,12 @@ import { allWorkflows } from './_workflows.js';
 @Controller('api')
 export class AppController {
   @Post('hook')
-  async resumeWorkflowHook(@Body() body: { token: string; data: any }) {
-    const { token, data } = body;
+  async resumeWorkflowHook(
+    @Body() body: { token: string; data: any } | string
+  ) {
+    // Handle body as string (when Content-Type is not application/json) or object
+    const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
+    const { token, data } = parsedBody;
 
     let hook: Awaited<ReturnType<typeof getHookByToken>>;
     try {
