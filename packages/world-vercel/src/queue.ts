@@ -2,6 +2,8 @@ import { Client, DuplicateMessageError } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
+  type QueueOptions,
+  type QueuePayload,
   QueuePayloadSchema,
   ValidQueueName,
 } from '@workflow/world';
@@ -46,6 +48,12 @@ const MAX_DELAY_SECONDS = Number(
   process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS || 82800 // 23 hours - leave 1h buffer before 24h retention limit
 );
 
+type QueueFunction = (
+  queueName: ValidQueueName,
+  payload: QueuePayload,
+  opts?: QueueOptions & { delaySeconds?: number }
+) => ReturnType<Queue['queue']>;
+
 export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config);
@@ -60,7 +68,11 @@ export function createQueue(config?: APIConfig): Queue {
     deploymentId: process.env.VERCEL_DEPLOYMENT_ID,
   });
 
-  const queue: Queue['queue'] = async (queueName, payload, opts) => {
+  const queue: QueueFunction = async (
+    queueName,
+    payload,
+    opts?: QueueOptions & { delaySeconds?: number }
+  ) => {
     // Check if we have a deployment ID either from options or environment
     const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
