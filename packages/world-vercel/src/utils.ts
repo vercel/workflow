@@ -5,11 +5,18 @@ import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import type { z } from 'zod';
 import { version } from './version.js';
 
+/**
+ * Hard-coded workflow-server URL override for testing.
+ * Set this to test against a different workflow-server version.
+ * Leave empty string for production (uses default vercel-workflow.com).
+ *
+ * Example: 'https://workflow-server-git-branch-name.vercel.sh'
+ */
+const WORKFLOW_SERVER_URL_OVERRIDE = '';
+
 export interface APIConfig {
-  baseUrl?: string;
   token?: string;
   headers?: RequestInit['headers'];
-  skipProxy?: boolean;
   projectConfig?: {
     projectId?: string;
     teamId?: string;
@@ -133,23 +140,21 @@ export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
-  const defaultUrl = 'https://vercel-workflow.com/api';
+  const defaultHost =
+    WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
-  const usingProxy =
-    // Skipping proxy is specifically used for e2e testing. Normally, we assume calls from
-    // CLI and web UI are not running inside the Vercel runtime environment, and so need to
-    // use the proxy for authentication. However, during e2e tests, this is not the case,
-    // so we allow skipping the proxy.
-    !config?.skipProxy &&
-    Boolean(
-      config?.baseUrl || (projectConfig?.projectId && projectConfig?.teamId)
-    );
-  const baseUrl =
-    config?.baseUrl || (usingProxy ? defaultProxyUrl : defaultUrl);
+  // Use proxy when we have project config (for authentication via Vercel API)
+  const usingProxy = Boolean(projectConfig?.projectId && projectConfig?.teamId);
+  // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if override is set)
+  // When not using proxy, use the default workflow-server URL (with /api path appended)
+  const baseUrl = usingProxy ? defaultProxyUrl : `${defaultHost}/api`;
   return { baseUrl, usingProxy };
 };
 
-export const getHeaders = (config?: APIConfig): Headers => {
+export const getHeaders = (
+  config: APIConfig | undefined,
+  options: { usingProxy: boolean }
+): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
   headers.set('User-Agent', getUserAgent());
@@ -165,16 +170,22 @@ export const getHeaders = (config?: APIConfig): Headers => {
       headers.set('x-vercel-team-id', projectConfig.teamId);
     }
   }
+  // Only set workflow-api-url header when using the proxy, since the proxy
+  // forwards it to the workflow-server. When not using proxy, requests go
+  // directly to the workflow-server so this header has no effect.
+  if (WORKFLOW_SERVER_URL_OVERRIDE && options.usingProxy) {
+    headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
+  }
   return headers;
 };
 
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
-  const headers = getHeaders(config);
+  const { baseUrl, usingProxy } = getHttpUrl(config);
+  const headers = getHeaders(config, { usingProxy });
   const token = config?.token ?? (await getVercelOidcToken());
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
-  const { baseUrl, usingProxy } = getHttpUrl(config);
   return { baseUrl, headers, usingProxy };
 }
 

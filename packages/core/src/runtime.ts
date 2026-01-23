@@ -4,6 +4,7 @@ import {
   WorkflowRunNotCompletedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -14,7 +15,6 @@ import {
 } from '@workflow/world';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
-import { parseWorkflowName } from './parse-name.js';
 import {
   getAllWorkflowRunEvents,
   getQueueOverhead,
