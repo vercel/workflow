@@ -54,7 +54,7 @@ export function createQueue(config?: APIConfig): Queue {
     // The proxy will strip `/queues` from the path, and add `/api` in front,
     // so this ends up being `/api/v3` when arriving at the queue server,
     // which is the same as the default basePath in VQS client.
-    basePath: usingProxy ? '/queues/v3' : undefined,
+    basePath: usingProxy ? '/queues/v3/topic' : undefined,
     token: usingProxy ? config?.token : undefined,
     headers: Object.fromEntries(headers.entries()),
     deploymentId: process.env.VERCEL_DEPLOYMENT_ID,
