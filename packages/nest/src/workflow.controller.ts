@@ -30,7 +30,13 @@ function toWebRequest(req: any): Request {
     method,
     headers,
     body:
-      method !== 'GET' && method !== 'HEAD' ? JSON.stringify(body) : undefined,
+      method !== 'GET' && method !== 'HEAD'
+        ? body === undefined
+          ? undefined
+          : typeof body === 'string'
+            ? body
+            : JSON.stringify(body)
+        : undefined,
   });
 }
 
