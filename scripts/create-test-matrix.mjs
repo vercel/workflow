@@ -55,6 +55,12 @@ const DEV_TEST_CONFIGS = {
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
   },
+  nest: {
+    generatedStepPath: '.nestjs/workflow/steps.mjs',
+    generatedWorkflowPath: '.nestjs/workflow/workflows.mjs',
+    apiFilePath: './src/app.controller.ts',
+    apiFileImportPath: '..',
+  },
   astro: {
     generatedStepPath: 'src/pages/.well-known/workflow/v1/step.js',
     generatedWorkflowPath: 'src/pages/.well-known/workflow/v1/flow.js',
@@ -129,6 +135,12 @@ matrix.app.push({
   name: 'fastify',
   project: 'workbench-fastify-workflow',
   ...DEV_TEST_CONFIGS.fastify,
+});
+
+matrix.app.push({
+  name: 'nest',
+  project: 'workbench-nest-workflow',
+  ...DEV_TEST_CONFIGS.nest,
 });
 
 matrix.app.push({

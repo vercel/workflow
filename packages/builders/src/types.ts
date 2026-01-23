@@ -2,6 +2,7 @@ export const validBuildTargets = [
   'standalone',
   'vercel-build-output-api',
   'next',
+  'nest',
   'sveltekit',
   'astro',
 ] as const;
@@ -82,12 +83,24 @@ export interface AstroConfig extends BaseWorkflowConfig {
 }
 
 /**
+ * Configuration for NestJS builds.
+ */
+export interface NestConfig extends BaseWorkflowConfig {
+  buildTarget: 'nest';
+  // NestJS builder computes paths dynamically, so these are not used
+  stepsBundlePath: string;
+  workflowsBundlePath: string;
+  webhookBundlePath: string;
+}
+
+/**
  * Discriminated union of all builder configuration types.
  */
 export type WorkflowConfig =
   | StandaloneConfig
   | VercelBuildOutputConfig
   | NextConfig
+  | NestConfig
   | SvelteKitConfig
   | AstroConfig;
 
