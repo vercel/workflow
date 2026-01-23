@@ -1,15 +1,19 @@
 import {
+  type AnyEventRequest,
   type CreateEventParams,
-  type CreateEventRequest,
   type Event,
+  type EventResult,
   EventSchema,
   EventTypeSchema,
+  HookSchema,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  WorkflowRunSchema,
 } from '@workflow/world';
 import z from 'zod';
+import { deserializeStep, StepWireSchema } from './steps.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
@@ -26,8 +30,18 @@ function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
   return event;
 }
 
+// Schema for EventResult wire format returned by events.create
+// Uses wire format schemas for step to handle field name mapping
+const EventResultWireSchema = z.object({
+  event: EventSchema,
+  run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.optional(),
+  hook: HookSchema.optional(),
+});
+
 // Would usually "EventSchema.omit({ eventData: true })" but that doesn't work
 // on zod unions. Re-creating the schema manually.
+// specVersion defaults to 1 (legacy) when parsing responses from storage
 const EventWithRefsSchema = z.object({
   eventId: z.string(),
   runId: z.string(),
@@ -35,6 +49,7 @@ const EventWithRefsSchema = z.object({
   correlationId: z.string().optional(),
   eventDataRef: z.any().optional(),
   createdAt: z.coerce.date(),
+  specVersion: z.number().default(1),
 });
 
 // Functions
@@ -68,8 +83,8 @@ export async function getWorkflowRunEvents(
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
-    ? `/v1/events${query}`
-    : `/v1/runs/${runId}/events${query}`;
+    ? `/v2/events${query}`
+    : `/v2/runs/${runId}/events${query}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -89,22 +104,31 @@ export async function getWorkflowRunEvents(
 }
 
 export async function createWorkflowRunEvent(
-  id: string,
-  data: CreateEventRequest,
+  id: string | null,
+  data: AnyEventRequest,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<Event> {
+): Promise<EventResult> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
 
-  const event = await makeRequest({
-    endpoint: `/v1/runs/${id}/events`,
+  // For run_created events, runId is null - use "null" string in the URL path
+  const runIdPath = id === null ? 'null' : id;
+
+  const wireResult = await makeRequest({
+    endpoint: `/v2/runs/${runIdPath}/events`,
     options: {
       method: 'POST',
       body: JSON.stringify(data, dateToStringReplacer),
     },
     config,
-    schema: EventSchema,
+    schema: EventResultWireSchema,
   });
 
-  return filterEventData(event, resolveData);
+  // Transform wire format to interface format
+  return {
+    event: filterEventData(wireResult.event, resolveData),
+    run: wireResult.run,
+    step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
+    hook: wireResult.hook,
+  };
 }

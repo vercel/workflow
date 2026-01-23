@@ -90,6 +90,27 @@ export async function runWorkflow(
       return EventConsumerResult.NotConsumed;
     });
 
+    // Consume run lifecycle events - these are structural events that don't
+    // need special handling in the workflow, but must be consumed to advance
+    // past them in the event log
+    workflowContext.eventsConsumer.subscribe((event) => {
+      if (!event) {
+        return EventConsumerResult.NotConsumed;
+      }
+
+      // Consume run_created - every run has exactly one
+      if (event.eventType === 'run_created') {
+        return EventConsumerResult.Consumed;
+      }
+
+      // Consume run_started - every run has exactly one
+      if (event.eventType === 'run_started') {
+        return EventConsumerResult.Consumed;
+      }
+
+      return EventConsumerResult.NotConsumed;
+    });
+
     const useStep = createUseStep(workflowContext);
     const createHook = createCreateHook(workflowContext);
     const sleep = createSleep(workflowContext);

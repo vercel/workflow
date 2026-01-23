@@ -819,10 +819,12 @@ export async function cancelRun(
 ): Promise<ServerActionResult<void>> {
   try {
     const world = await getWorldFromEnv(worldEnv);
-    await world.runs.cancel(runId);
+    await world.events.create(runId, { eventType: 'run_cancelled' });
     return createResponse(undefined);
   } catch (error) {
-    return createServerActionError<void>(error, 'world.runs.cancel', { runId });
+    return createServerActionError<void>(error, 'world.events.create', {
+      runId,
+    });
   }
 }
 

@@ -93,12 +93,34 @@ export function createQueue(config?: APIConfig): Queue {
       deploymentId: opts?.deploymentId,
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
-    const { messageId } = await queueClient.send(
-      sanitizedQueueName,
-      encoded,
-      opts
-    );
-    return { messageId: MessageId.parse(messageId) };
+    try {
+      const { messageId } = await queueClient.send(
+        sanitizedQueueName,
+        encoded,
+        opts
+      );
+      return { messageId: MessageId.parse(messageId) };
+    } catch (error) {
+      // Silently handle idempotency key conflicts - the message was already queued
+      // This matches the behavior of world-local and world-postgres
+      if (
+        error instanceof Error &&
+        // TODO: checking the error message is flaky. VQS should throw a special duplicate
+        // error class
+        error.message === 'Duplicate idempotency key detected'
+      ) {
+        // Return a placeholder messageId since the original is not available from the error.
+        // Callers using idempotency keys shouldn't depend on the returned messageId.
+        // TODO : VQS should just return the message ID of the exisitng message, or we should
+        // stop expecting any world to include this
+        return {
+          messageId: MessageId.parse(
+            `msg_duplicate_${opts?.idempotencyKey ?? 'unknown'}`
+          ),
+        };
+      }
+      throw error;
+    }
   };
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {

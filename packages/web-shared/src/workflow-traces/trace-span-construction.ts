@@ -23,7 +23,7 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'step_started',
   'step_retrying',
   'step_failed',
-  'workflow_failed',
+  'run_failed',
   'wait_created',
   'wait_completed',
 ]);

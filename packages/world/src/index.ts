@@ -31,3 +31,10 @@ export {
 } from './shared.js';
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
+export type { SpecVersion } from './spec-version.js';
+export {
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_CURRENT,
+  isLegacySpecVersion,
+  requiresNewerWorld,
+} from './spec-version.js';

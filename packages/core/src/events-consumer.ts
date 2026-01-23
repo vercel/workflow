@@ -78,5 +78,10 @@ export class EventsConsumer {
         return;
       }
     }
+
+    // If we reach here, all callbacks returned NotConsumed.
+    // We do NOT auto-advance - every event must have a consumer.
+    // With proper consumers for run_created/run_started/step_created,
+    // this should not cause events to get stuck.
   };
 }

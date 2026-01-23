@@ -3,6 +3,7 @@ import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
+import { WorkflowRuntimeError } from '@workflow/errors';
 
 export function createSleep(ctx: WorkflowOrchestratorContext) {
   return async function sleepImpl(
@@ -34,11 +35,13 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.NotConsumed;
       }
 
+      if (event.correlationId !== correlationId) {
+        // We're not interested in this event - the correlationId belongs to a different entity
+        return EventConsumerResult.NotConsumed;
+      }
+
       // Check for wait_created event to mark this wait as having the event created
-      if (
-        event?.eventType === 'wait_created' &&
-        event.correlationId === correlationId
-      ) {
+      if (event.eventType === 'wait_created') {
         // Mark this wait as having the created event, but keep it in the queue
         // O(1) lookup using Map
         const queueItem = ctx.invocationsQueue.get(correlationId);
@@ -50,10 +53,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       }
 
       // Check for wait_completed event
-      if (
-        event?.eventType === 'wait_completed' &&
-        event.correlationId === correlationId
-      ) {
+      if (event.eventType === 'wait_completed') {
         // Remove this wait from the invocations queue (O(1) delete using Map)
         ctx.invocationsQueue.delete(correlationId);
 
@@ -64,7 +64,15 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.Finished;
       }
 
-      return EventConsumerResult.NotConsumed;
+      // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      setTimeout(() => {
+        ctx.onWorkflowError(
+          new WorkflowRuntimeError(
+            `Unexpected event type for wait ${correlationId} "${event.eventType}"`
+          )
+        );
+      }, 0);
+      return EventConsumerResult.Finished;
     });
 
     return promise;

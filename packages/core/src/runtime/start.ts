@@ -2,6 +2,7 @@ import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { Run } from '../runtime.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
@@ -98,22 +99,37 @@ export async function start<TArgs extends unknown[], TResult>(
       const { promise: runIdPromise, resolve: resolveRunId } =
         withResolvers<string>();
 
+      // Serialize current trace context to propagate across queue boundary
+      const traceCarrier = await serializeTraceCarrier();
+
+      // Create run via run_created event (event-sourced architecture)
+      // Pass null for runId - the server generates it and returns it in the response
       const workflowArguments = dehydrateWorkflowArguments(
         args,
         ops,
         runIdPromise
       );
-      // Serialize current trace context to propagate across queue boundary
-      const traceCarrier = await serializeTraceCarrier();
 
-      const runResponse = await world.runs.create({
-        deploymentId: deploymentId,
-        workflowName: workflowName,
-        input: workflowArguments,
-        executionContext: { traceCarrier },
+      const result = await world.events.create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: deploymentId,
+          workflowName: workflowName,
+          input: workflowArguments,
+          executionContext: { traceCarrier },
+        },
       });
 
-      resolveRunId(runResponse.runId);
+      // Assert that the run was created
+      if (!result.run) {
+        throw new WorkflowRuntimeError(
+          "Missing 'run' in server response for 'run_created' event"
+        );
+      }
+
+      const runId = result.run.runId;
+      resolveRunId(runId);
 
       waitUntil(
         Promise.all(ops).catch((err) => {
@@ -125,15 +141,15 @@ export async function start<TArgs extends unknown[], TResult>(
       );
 
       span?.setAttributes({
-        ...Attribute.WorkflowRunId(runResponse.runId),
-        ...Attribute.WorkflowRunStatus(runResponse.status),
+        ...Attribute.WorkflowRunId(runId),
+        ...Attribute.WorkflowRunStatus(result.run.status),
         ...Attribute.DeploymentId(deploymentId),
       });
 
       await world.queue(
         `__wkf_workflow_${workflowName}`,
         {
-          runId: runResponse.runId,
+          runId,
           traceCarrier,
         } satisfies WorkflowInvokePayload,
         {
@@ -141,7 +157,7 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       );
 
-      return new Run<TResult>(runResponse.runId);
+      return new Run<TResult>(runId);
     });
   });
 }

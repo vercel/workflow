@@ -2,9 +2,11 @@ import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
+  WorkflowRuntimeError,
 } from '@workflow/errors';
 import {
   type Event,
+  SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type WorkflowRunStatus,
@@ -110,7 +112,10 @@ export class Run<TResult> {
    * Cancels the workflow run.
    */
   async cancel(): Promise<void> {
-    await this.world.runs.cancel(this.runId);
+    await this.world.events.create(this.runId, {
+      eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_CURRENT,
+    });
   }
 
   /**
@@ -288,16 +293,24 @@ export function workflowEntrypoint(
               let workflowRun = await world.runs.get(runId);
 
               if (workflowRun.status === 'pending') {
-                workflowRun = await world.runs.update(runId, {
-                  // This sets the `startedAt` timestamp at the database level
-                  status: 'running',
+                // Transition run to 'running' via event (event-sourced architecture)
+                const result = await world.events.create(runId, {
+                  eventType: 'run_started',
+                  specVersion: SPEC_VERSION_CURRENT,
                 });
+                // Use the run entity from the event response (no extra get call needed)
+                if (!result.run) {
+                  throw new WorkflowRuntimeError(
+                    `Event creation for 'run_started' did not return the run entity for run \"${runId}\"`
+                  );
+                }
+                workflowRun = result.run;
               }
 
               // At this point, the workflow is "running" and `startedAt` should
               // definitely be set.
               if (!workflowRun.startedAt) {
-                throw new Error(
+                throw new WorkflowRuntimeError(
                   `Workflow run "${runId}" has no "startedAt" timestamp`
                 );
               }
@@ -328,25 +341,34 @@ export function workflowEntrypoint(
 
               // Check for any elapsed waits and create wait_completed events
               const now = Date.now();
-              for (const event of events) {
-                if (event.eventType === 'wait_created') {
-                  const resumeAt = event.eventData.resumeAt as Date;
-                  const hasCompleted = events.some(
-                    (e) =>
-                      e.eventType === 'wait_completed' &&
-                      e.correlationId === event.correlationId
-                  );
 
-                  // If wait has elapsed and hasn't been completed yet
-                  if (!hasCompleted && now >= resumeAt.getTime()) {
-                    const completedEvent = await world.events.create(runId, {
-                      eventType: 'wait_completed',
-                      correlationId: event.correlationId,
-                    });
-                    // Add the event to the events array so the workflow can see it
-                    events.push(completedEvent);
-                  }
-                }
+              // Pre-compute completed correlation IDs for O(n) lookup instead of O(n²)
+              const completedWaitIds = new Set(
+                events
+                  .filter((e) => e.eventType === 'wait_completed')
+                  .map((e) => e.correlationId)
+              );
+
+              // Collect all waits that need completion
+              const waitsToComplete = events
+                .filter(
+                  (e): e is typeof e & { correlationId: string } =>
+                    e.eventType === 'wait_created' &&
+                    e.correlationId !== undefined &&
+                    !completedWaitIds.has(e.correlationId) &&
+                    now >= (e.eventData.resumeAt as Date).getTime()
+                )
+                .map((e) => ({
+                  eventType: 'wait_completed' as const,
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: e.correlationId,
+                }));
+
+              // Create all wait_completed events
+              for (const waitEvent of waitsToComplete) {
+                const result = await world.events.create(runId, waitEvent);
+                // Add the event to the events array so the workflow can see it
+                events.push(result.event!);
               }
 
               const result = await runWorkflow(
@@ -355,10 +377,13 @@ export function workflowEntrypoint(
                 events
               );
 
-              // Update the workflow run with the result
-              await world.runs.update(runId, {
-                status: 'completed',
-                output: result as Serializable,
+              // Complete the workflow run via event (event-sourced architecture)
+              await world.events.create(runId, {
+                eventType: 'run_completed',
+                specVersion: SPEC_VERSION_CURRENT,
+                eventData: {
+                  output: result as Serializable,
+                },
               });
 
               span?.setAttributes({
@@ -390,6 +415,10 @@ export function workflowEntrypoint(
                   return { timeoutSeconds: result.timeoutSeconds };
                 }
               } else {
+                // NOTE: this error could be an error thrown in user code, or could also be a WorkflowRuntimeError
+                // (for instance when the event log is corrupted, this is thrown by the event consumer). We could
+                // specially handle these if needed.
+
                 const errorName = getErrorName(err);
                 const errorMessage =
                   err instanceof Error ? err.message : String(err);
@@ -409,14 +438,19 @@ export function workflowEntrypoint(
                 console.error(
                   `${errorName} while running "${runId}" workflow:\n\n${errorStack}`
                 );
-                await world.runs.update(runId, {
-                  status: 'failed',
-                  error: {
-                    message: errorMessage,
-                    stack: errorStack,
+                // Fail the workflow run via event (event-sourced architecture)
+                await world.events.create(runId, {
+                  eventType: 'run_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  eventData: {
+                    error: {
+                      message: errorMessage,
+                      stack: errorStack,
+                    },
                     // TODO: include error codes when we define them
                   },
                 });
+
                 span?.setAttributes({
                   ...Attribute.WorkflowRunStatus('failed'),
                   ...Attribute.WorkflowErrorName(errorName),

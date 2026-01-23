@@ -83,7 +83,7 @@ This allows clients to reconnect and continue receiving data from where they lef
 
 [`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow DevKit makes serializable. These are not custom types - they follow the web standard - but Workflow DevKit adds the ability to pass them between functions while maintaining their streaming capabilities.
 
-Unlike regular values that are fully serialized to the event log, streams maintain their streaming capabilities when passed between functions.
+Unlike regular values that are fully serialized to the [event log](/docs/how-it-works/event-sourcing), streams maintain their streaming capabilities when passed between functions.
 
 **Key properties:**
 - Stream references can be passed between workflow and step functions
@@ -151,7 +151,7 @@ async function processInputStream(input: ReadableStream<Uint8Array>) {
 You cannot read from or write to streams directly within a workflow function. All stream operations must happen in step functions.
 </Callout>
 
-Workflow functions must be deterministic to support replay. Since streams bypass the event log for performance, reading stream data in a workflow would break determinism - each replay could see different data. By requiring all stream operations to happen in steps, the framework ensures consistent behavior.
+Workflow functions must be deterministic to support replay. Since streams bypass the [event log](/docs/how-it-works/event-sourcing) for performance, reading stream data in a workflow would break determinism - each replay could see different data. By requiring all stream operations to happen in steps, the framework ensures consistent behavior.
 
 For more on determinism and replay, see [Workflows and Steps](/docs/foundations/workflows-and-steps).
 
