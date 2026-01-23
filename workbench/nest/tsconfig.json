@@ -20,7 +20,7 @@
     "noFallthroughCasesInSwitch": false,
     "esModuleInterop": true,
     "paths": {
-      "@repo/*": ["../../lib/*"]
+      "@repo/*": ["../../*"]
     }
   },
   "include": ["src/**/*"],
