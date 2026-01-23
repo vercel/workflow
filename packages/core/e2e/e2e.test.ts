@@ -1129,4 +1129,34 @@ describe('e2e', () => {
       expect(runData.output).toBe('pathsAliasHelper');
     }
   );
+
+  test(
+    'serverExternalPackageInWorkflowWorkflow - packages in serverExternalPackages work in workflow code',
+    { timeout: 60_000 },
+    async () => {
+      // Regression test for the "require is not defined" error.
+      // When packages in serverExternalPackages are used in workflow code,
+      // they must be bundled inline (not externalized with require() calls)
+      // because the workflow VM doesn't have require() defined.
+      // See: https://github.com/vercel/workflow/pull/830
+      const run = await triggerWorkflow(
+        'serverExternalPackageInWorkflowWorkflow',
+        []
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // lodash.chunk([1,2,3,4,5,6], 2) should return [[1,2],[3,4],[5,6]]
+      expect(returnValue).toEqual([
+        [1, 2],
+        [3, 4],
+        [5, 6],
+      ]);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+    }
+  );
 });

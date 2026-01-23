@@ -1,5 +1,6 @@
 // Test path alias resolution - imports a helper from outside the workbench directory
 import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
+import chunk from 'lodash.chunk';
 import {
   createHook,
   createWebhook,
@@ -711,4 +712,25 @@ export async function errorFatalCatchable() {
   } catch (e: any) {
     return { caught: true, isFatal: FatalError.is(e) };
   }
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Regression test for workflow VM require() error.
+ *
+ * When packages are listed in serverExternalPackages AND used in workflow code,
+ * the workflow bundle must NOT generate require() calls (since the workflow VM
+ * doesn't have require() defined).
+ *
+ * This test uses lodash.chunk which is in serverExternalPackages (next.config.ts).
+ * Before the fix, this would fail with "ReferenceError: require is not defined".
+ *
+ * See: https://github.com/vercel/workflow/pull/830
+ */
+export async function serverExternalPackageInWorkflowWorkflow() {
+  'use workflow';
+  // Use lodash.chunk directly in workflow code
+  const result = chunk([1, 2, 3, 4, 5, 6], 2);
+  return result;
 }
