@@ -48,6 +48,11 @@ export function hasStepSourceMaps(): boolean {
     return false;
   }
 
+  // NestJS preserves source maps in all builds including prod
+  if (appName === 'nest') {
+    return true;
+  }
+
   // Prod buils for frameworks typically don't consume source maps. So let's disable testing
   // in local prod and local postgres tests
   if (!process.env.DEV_TEST_CONFIG) {
