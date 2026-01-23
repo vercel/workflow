@@ -68,7 +68,7 @@ await sleep("10m");     // 10 minutes
 await sleep("1h");      // 1 hour
 await sleep("7 days");  // 7 days
 await sleep(5000);      // milliseconds
-await sleep(new Date("2025-01-01")); // specific date
+await sleep(new Date("2027-01-01")); // specific date
 ```
 
 ### createHook - Wait for External Input
@@ -177,8 +177,8 @@ import { getWorkflowMetadata } from "workflow";
 
 export async function myWorkflow() {
   "use workflow";
-  const { runId, workflowName } = getWorkflowMetadata();
-  console.log(`Run ${runId} of ${workflowName}`);
+  const { workflowRunId, workflowStartedAt, url } = getWorkflowMetadata();
+  console.log(`Run ${workflowRunId} started at ${workflowStartedAt}`);
 }
 ```
 
@@ -191,7 +191,7 @@ import { getStepMetadata } from "workflow";
 
 async function chargeCard(amount: number) {
   "use step";
-  const { stepId, attemptNumber } = getStepMetadata();
+  const { stepId, attempt, stepStartedAt } = getStepMetadata();
   await stripe.charges.create(
     { amount },
     { idempotencyKey: `charge:${stepId}` }
