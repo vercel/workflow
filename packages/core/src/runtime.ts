@@ -6,6 +6,7 @@ import {
 } from '@workflow/errors';
 import {
   type Event,
+  SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type WorkflowRunStatus,
@@ -113,6 +114,7 @@ export class Run<TResult> {
   async cancel(): Promise<void> {
     await this.world.events.create(this.runId, {
       eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_CURRENT,
     });
   }
 
@@ -294,6 +296,7 @@ export function workflowEntrypoint(
                 // Transition run to 'running' via event (event-sourced architecture)
                 const result = await world.events.create(runId, {
                   eventType: 'run_started',
+                  specVersion: SPEC_VERSION_CURRENT,
                 });
                 // Use the run entity from the event response (no extra get call needed)
                 if (!result.run) {
@@ -357,6 +360,7 @@ export function workflowEntrypoint(
                 )
                 .map((e) => ({
                   eventType: 'wait_completed' as const,
+                  specVersion: SPEC_VERSION_CURRENT,
                   correlationId: e.correlationId,
                 }));
 
@@ -376,6 +380,7 @@ export function workflowEntrypoint(
               // Complete the workflow run via event (event-sourced architecture)
               await world.events.create(runId, {
                 eventType: 'run_completed',
+                specVersion: SPEC_VERSION_CURRENT,
                 eventData: {
                   output: result as Serializable,
                 },
@@ -436,6 +441,7 @@ export function workflowEntrypoint(
                 // Fail the workflow run via event (event-sourced architecture)
                 await world.events.create(runId, {
                   eventType: 'run_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
                   eventData: {
                     error: {
                       message: errorMessage,

@@ -1,7 +1,11 @@
 import type { Span } from '@opentelemetry/api';
 import { waitUntil } from '@vercel/functions';
 import { WorkflowAPIError } from '@workflow/errors';
-import type { CreateEventRequest, World } from '@workflow/world';
+import {
+  type CreateEventRequest,
+  SPEC_VERSION_CURRENT,
+  type World,
+} from '@workflow/world';
 import type {
   HookInvocationQueueItem,
   StepInvocationQueueItem,
@@ -63,6 +67,7 @@ export async function handleSuspension({
         : dehydrateStepArguments(queueItem.metadata, suspension.globalThis);
     return {
       eventType: 'hook_created' as const,
+      specVersion: SPEC_VERSION_CURRENT,
       correlationId: queueItem.correlationId,
       eventData: {
         token: queueItem.token,
@@ -133,6 +138,7 @@ export async function handleSuspension({
           );
           const stepEvent: CreateEventRequest = {
             eventType: 'step_created' as const,
+            specVersion: SPEC_VERSION_CURRENT,
             correlationId: queueItem.correlationId,
             eventData: {
               stepName: queueItem.stepName,
@@ -177,6 +183,7 @@ export async function handleSuspension({
         (async () => {
           const waitEvent: CreateEventRequest = {
             eventType: 'wait_created' as const,
+            specVersion: SPEC_VERSION_CURRENT,
             correlationId: queueItem.correlationId,
             eventData: {
               resumeAt: queueItem.resumeAt,

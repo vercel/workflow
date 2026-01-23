@@ -1,6 +1,10 @@
 import { waitUntil } from '@vercel/functions';
 import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
-import type { Hook, WorkflowInvokePayload } from '@workflow/world';
+import {
+  type Hook,
+  SPEC_VERSION_CURRENT,
+  type WorkflowInvokePayload,
+} from '@workflow/world';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -93,6 +97,7 @@ export async function resumeHook<T = any>(
         // Create a hook_received event with the payload
         await world.events.create(hook.runId, {
           eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
           correlationId: hook.hookId,
           eventData: {
             payload: dehydratedPayload,

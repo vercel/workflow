@@ -7,7 +7,7 @@ import {
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
-import { StepInvokePayloadSchema } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import type { Serializable } from '../schemas.js';
@@ -148,6 +148,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // Fail the step via event (event-sourced architecture)
             await world.events.create(workflowRunId, {
               eventType: 'step_failed',
+              specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
               eventData: {
                 error: errorMessage,
@@ -211,6 +212,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // step_started increments the attempt counter in the World implementation
             const startResult = await world.events.create(workflowRunId, {
               eventType: 'step_started',
+              specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
             });
 
@@ -285,6 +287,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // The event creation atomically updates the step entity
             await world.events.create(workflowRunId, {
               eventType: 'step_completed',
+              specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
               eventData: {
                 result: result as Serializable,
@@ -320,6 +323,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               // Fail the step via event (event-sourced architecture)
               await world.events.create(workflowRunId, {
                 eventType: 'step_failed',
+                specVersion: SPEC_VERSION_CURRENT,
                 correlationId: stepId,
                 eventData: {
                   error: String(err),
@@ -354,6 +358,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 // Fail the step via event (event-sourced architecture)
                 await world.events.create(workflowRunId, {
                   eventType: 'step_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
                     error: errorMessage,
@@ -382,6 +387,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 const errorStack = getErrorStack(err);
                 await world.events.create(workflowRunId, {
                   eventType: 'step_retrying',
+                  specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
                     error: String(err),
