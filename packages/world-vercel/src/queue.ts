@@ -60,12 +60,11 @@ export function createQueue(config?: APIConfig): Queue {
   const queueClient = new Client({
     baseUrl: usingProxy ? baseUrl : undefined,
     // The proxy will strip `/queues` from the path, and add `/api` in front,
-    // so this ends up being `/api/v3` when arriving at the queue server,
+    // so this ends up being `/api/v3/topic` when arriving at the queue server,
     // which is the same as the default basePath in VQS client.
     basePath: usingProxy ? '/queues/v3/topic' : undefined,
     token: usingProxy ? config?.token : undefined,
     headers: Object.fromEntries(headers.entries()),
-    deploymentId: process.env.VERCEL_DEPLOYMENT_ID,
   });
 
   const queue: QueueFunction = async (
