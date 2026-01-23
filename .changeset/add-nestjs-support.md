@@ -4,4 +4,4 @@
 "workflow": patch
 ---
 
-Add NestJS framework support for Workflow DevKit
+Create `@workflow/nest` package and add build support for NestJS
