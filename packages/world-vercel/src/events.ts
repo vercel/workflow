@@ -101,7 +101,7 @@ export async function getWorkflowRunEvents(
 
 export async function createWorkflowRunEvent(
   id: string | null,
-  requestData: AnyEventRequest,
+  data: AnyEventRequest,
   params?: CreateEventParams,
   config?: APIConfig
 ): Promise<EventResult> {
@@ -113,7 +113,7 @@ export async function createWorkflowRunEvent(
   const wireResult = await makeRequest({
     endpoint: `/v2/runs/${runIdPath}/events`,
     options: { method: 'POST' },
-    data: requestData,
+    data,
     config,
     schema: EventResultWireSchema,
   });

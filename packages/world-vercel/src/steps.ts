@@ -156,13 +156,13 @@ export async function listWorkflowRunSteps(
 
 export async function createStep(
   runId: string,
-  requestData: CreateStepRequest,
+  data: CreateStepRequest,
   config?: APIConfig
 ): Promise<Step> {
   const step = await makeRequest({
     endpoint: `/v2/runs/${runId}/steps`,
     options: { method: 'POST' },
-    data: requestData,
+    data,
     config,
     schema: StepWireSchema,
   });
@@ -172,10 +172,10 @@ export async function createStep(
 export async function updateStep(
   runId: string,
   stepId: string,
-  requestData: UpdateStepRequest,
+  data: UpdateStepRequest,
   config?: APIConfig
 ): Promise<Step> {
-  const serialized = serializeError(requestData);
+  const serialized = serializeError(data);
   const step = await makeRequest({
     endpoint: `/v2/runs/${runId}/steps/${stepId}`,
     options: { method: 'PUT' },

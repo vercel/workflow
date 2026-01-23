@@ -85,13 +85,13 @@ export async function getHook(
 
 export async function createHook(
   runId: string,
-  requestData: CreateHookRequest,
+  data: CreateHookRequest,
   config?: APIConfig
 ): Promise<Hook> {
   return makeRequest({
     endpoint: `/v2/hooks/create`,
     options: { method: 'POST' },
-    data: { runId, ...requestData },
+    data: { runId, ...data },
     config,
     schema: HookSchema,
   });

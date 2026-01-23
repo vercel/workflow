@@ -118,13 +118,13 @@ export async function listWorkflowRuns(
 }
 
 export async function createWorkflowRun(
-  requestData: CreateWorkflowRunRequest,
+  data: CreateWorkflowRunRequest,
   config?: APIConfig
 ): Promise<WorkflowRun> {
   const run = await makeRequest({
     endpoint: '/v2/runs/create',
     options: { method: 'POST' },
-    data: requestData,
+    data,
     config,
     schema: WorkflowRunWireSchema,
   });
@@ -166,11 +166,11 @@ export async function getWorkflowRun(
 
 export async function updateWorkflowRun(
   id: string,
-  requestData: UpdateWorkflowRunRequest,
+  data: UpdateWorkflowRunRequest,
   config?: APIConfig
 ): Promise<WorkflowRun> {
   try {
-    const serialized = serializeError(requestData);
+    const serialized = serializeError(data);
     const run = await makeRequest({
       endpoint: `/v2/runs/${id}`,
       options: { method: 'PUT' },
