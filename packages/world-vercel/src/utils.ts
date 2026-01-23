@@ -216,7 +216,10 @@ export async function makeRequest<T>({
   const response = await fetch(request);
 
   if (!response.ok) {
-    const errorData = await parseResponseBody(response).catch(() => ({}));
+    const errorData: { message?: string; code?: string } =
+      await parseResponseBody(response)
+        .then((r) => r.data as { message?: string; code?: string })
+        .catch(() => ({}));
     if (process.env.DEBUG === '1') {
       const stringifiedHeaders = Array.from(headers.entries())
         .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
@@ -232,30 +235,59 @@ export async function makeRequest<T>({
     );
   }
 
+  // Parse the response body (CBOR or JSON)
+  let parseResult: ParseResult;
   try {
-    const data = await parseResponseBody(response);
-    return schema.parse(data);
+    parseResult = await parseResponseBody(response);
   } catch (error) {
+    const contentType = response.headers.get('Content-Type') || 'unknown';
     throw new WorkflowAPIError(
-      `Failed to parse server response for ${request.method} ${endpoint}:\n\n${error}`,
+      `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
       { url, cause: error }
     );
   }
+
+  // Validate against the schema
+  const result = schema.safeParse(parseResult.data);
+  if (!result.success) {
+    throw new WorkflowAPIError(
+      `Schema validation failed for ${request.method} ${endpoint}:\n\n${result.error}\n\nResponse context: ${parseResult.debugContext}`,
+      { url, cause: result.error }
+    );
+  }
+
+  return result.data;
+}
+
+interface ParseResult {
+  data: unknown;
+  /** Debug context for error messages (e.g., "Content-Type: application/json, 1234 bytes, preview: {...}") */
+  debugContext: string;
 }
 
 /**
  * Parse response body based on Content-Type header.
  * Supports both CBOR and JSON responses.
+ * Returns parsed data along with debug context for error reporting.
  */
-async function parseResponseBody(response: Response): Promise<any> {
+async function parseResponseBody(response: Response): Promise<ParseResult> {
   const contentType = response.headers.get('Content-Type') || '';
 
   if (contentType.includes('application/cbor')) {
     const buffer = await response.arrayBuffer();
-    return decode(new Uint8Array(buffer));
+    const data = decode(new Uint8Array(buffer));
+    return {
+      data,
+      debugContext: `Content-Type: ${contentType}, ${buffer.byteLength} bytes (CBOR)`,
+    };
   }
 
   // Fall back to JSON parsing
   const text = await response.text();
-  return JSON.parse(text);
+  const data = JSON.parse(text);
+  const preview = text.length > 500 ? `${text.slice(0, 500)}...` : text;
+  return {
+    data,
+    debugContext: `Content-Type: ${contentType}, ${text.length} bytes, preview: ${preview}`,
+  };
 }
