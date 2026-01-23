@@ -5,6 +5,15 @@ import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import type { z } from 'zod';
 import { version } from './version.js';
 
+/**
+ * Hard-coded workflow-server URL override for testing.
+ * Set this to test against a different workflow-server version.
+ * Leave empty string for production (uses default vercel-workflow.com).
+ *
+ * Example: 'https://workflow-server-git-branch-name.vercel.sh'
+ */
+const WORKFLOW_SERVER_URL_OVERRIDE = '';
+
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
@@ -104,15 +113,6 @@ export interface HttpConfig {
   headers: Headers;
   usingProxy: boolean;
 }
-
-/**
- * Hard-coded workflow-server URL override for testing.
- * Set this to test against a different workflow-server version.
- * Leave empty string for production (uses default vercel-workflow.com).
- *
- * Example: 'https://workflow-server-git-branch-name.vercel.sh'
- */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 export const getHttpUrl = (
   config?: APIConfig

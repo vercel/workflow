@@ -14,6 +14,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  no-test-overrides:
+    name: No Test Overrides
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Check WORKFLOW_SERVER_URL_OVERRIDE is empty
+        run: |
+          # Ensure the test override constant is not accidentally set
+          FILE="packages/world-vercel/src/utils.ts"
+          if grep -q "const WORKFLOW_SERVER_URL_OVERRIDE = '';" "$FILE"; then
+            echo "✓ WORKFLOW_SERVER_URL_OVERRIDE is empty (safe to merge)"
+          else
+            echo "✗ ERROR: WORKFLOW_SERVER_URL_OVERRIDE is set to a non-empty value!"
+            echo "  This constant must be empty string before merging to main."
+            echo ""
+            echo "  Current value:"
+            grep "const WORKFLOW_SERVER_URL_OVERRIDE" "$FILE" || true
+            exit 1
+          fi
+
   docs-links:
     name: Docs Links
     runs-on: ubuntu-latest
