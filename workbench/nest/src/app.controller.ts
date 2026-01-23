@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   HttpException,
   HttpStatus,
   Post,
@@ -250,6 +251,7 @@ export class AppController {
   }
 
   @Post('test-health-check')
+  @HttpCode(HttpStatus.OK)
   async testHealthCheck(@Body() body: { endpoint?: string; timeout?: number }) {
     // This route tests the queue-based health check functionality
     try {
