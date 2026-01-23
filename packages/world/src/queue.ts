@@ -61,7 +61,7 @@ export interface QueueOptions {
   idempotencyKey?: string;
   /**
    * Delay delivery of the message by this many seconds.
-   * Used for implementing sleep() without visibility timeout management.
+   * Used for implementing sleep() via message scheduling.
    * @min 0
    * @max 86400 (24 hours, limited by message retention)
    */

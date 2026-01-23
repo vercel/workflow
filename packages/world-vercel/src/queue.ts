@@ -1,8 +1,4 @@
-import {
-  Client,
-  DuplicateMessageError,
-  type MessageMetadata,
-} from '@vercel/queue';
+import { Client, DuplicateMessageError } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
@@ -11,28 +7,6 @@ import {
 } from '@workflow/world';
 import * as z from 'zod';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
-
-/**
- * Augment @vercel/queue to allow handlers that return Promise<void | undefined>.
- * Our handlers always return undefined (to acknowledge the message) since we use
- * delaySeconds for scheduling instead of visibilityTimeoutSeconds.
- */
-declare module '@vercel/queue' {
-  type WorkflowMessageHandler = (
-    message: unknown,
-    metadata: MessageMetadata
-  ) => Promise<void | undefined>;
-
-  interface WorkflowCallbackHandlers {
-    [topicName: string]: { [consumerGroup: string]: WorkflowMessageHandler };
-  }
-
-  interface Client {
-    handleCallback(
-      handlers: WorkflowCallbackHandlers
-    ): (request: Request) => Promise<Response>;
-  }
-}
 
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
