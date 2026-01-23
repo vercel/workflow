@@ -53,12 +53,13 @@ async function sendWebResponse(
     // Fastify
     res.code(status).headers(headers).send(body);
   } else {
-    // Express
+    // Express - use res.end() instead of res.send() to avoid automatic charset addition
     res.status(status);
     for (const [key, value] of Object.entries(headers)) {
       res.setHeader(key, value);
     }
-    res.send(body);
+    // Use res.end() to send the body without Express modifying headers
+    res.end(body);
   }
 }
 
