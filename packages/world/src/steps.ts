@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { SerializedData } from './serialization.js';
 import {
-  flexibleDateSchema,
   type PaginationOptions,
   type ResolveData,
   type StructuredError,
@@ -36,11 +35,11 @@ export const StepSchema = z.object({
    * When the step first started executing. Set by the first step_started event
    * and not updated on subsequent retries.
    */
-  startedAt: flexibleDateSchema.optional(),
-  completedAt: flexibleDateSchema.optional(),
-  createdAt: flexibleDateSchema,
-  updatedAt: flexibleDateSchema,
-  retryAfter: flexibleDateSchema.optional(),
+  startedAt: z.coerce.date().optional(),
+  completedAt: z.coerce.date().optional(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+  retryAfter: z.coerce.date().optional(),
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
 });

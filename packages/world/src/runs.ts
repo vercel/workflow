@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { SerializedData } from './serialization.js';
 import {
-  flexibleDateSchema,
   type PaginationOptions,
   type ResolveData,
   type StructuredError,
@@ -32,11 +31,11 @@ export const WorkflowRunBaseSchema = z.object({
   input: z.array(z.any()),
   output: z.any().optional(),
   error: StructuredErrorSchema.optional(),
-  expiredAt: flexibleDateSchema.optional(),
-  startedAt: flexibleDateSchema.optional(),
-  completedAt: flexibleDateSchema.optional(),
-  createdAt: flexibleDateSchema,
-  updatedAt: flexibleDateSchema,
+  expiredAt: z.coerce.date().optional(),
+  startedAt: z.coerce.date().optional(),
+  completedAt: z.coerce.date().optional(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
 });
 
 // Discriminated union based on status
@@ -53,21 +52,21 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
     status: z.literal('cancelled'),
     output: z.undefined(),
     error: z.undefined(),
-    completedAt: flexibleDateSchema,
+    completedAt: z.coerce.date(),
   }),
   // Completed state
   WorkflowRunBaseSchema.extend({
     status: z.literal('completed'),
     output: z.any(),
     error: z.undefined(),
-    completedAt: flexibleDateSchema,
+    completedAt: z.coerce.date(),
   }),
   // Failed state
   WorkflowRunBaseSchema.extend({
     status: z.literal('failed'),
     output: z.undefined(),
     error: StructuredErrorSchema,
-    completedAt: flexibleDateSchema,
+    completedAt: z.coerce.date(),
   }),
 ]);
 

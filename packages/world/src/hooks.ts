@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { SerializedData } from './serialization.js';
 import {
-  flexibleDateSchema,
   type PaginationOptions,
   type ResolveData,
   zodJsonSchema,
@@ -16,7 +15,7 @@ export const HookSchema = z.object({
   projectId: z.string(),
   environment: z.string(),
   metadata: zodJsonSchema.optional(),
-  createdAt: flexibleDateSchema,
+  createdAt: z.coerce.date(),
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
 });

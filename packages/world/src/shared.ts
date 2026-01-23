@@ -1,16 +1,5 @@
 import { z } from 'zod';
 
-/**
- * Flexible date schema that accepts either:
- * - ISO 8601 string (from JSON responses)
- * - Date instance (from CBOR responses)
- *
- * This ensures schemas work correctly regardless of the response encoding.
- */
-export const flexibleDateSchema = z
-  .union([z.string(), z.date()])
-  .transform((val) => (val instanceof Date ? val : new Date(val)));
-
 export const zodJsonSchema: z.ZodType<unknown> = z.lazy(() => {
   return z.union([
     z.string(),
