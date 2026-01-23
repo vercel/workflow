@@ -15,6 +15,7 @@ describe.each([
   'hono',
   'express',
   'fastify',
+  'nest',
   'astro',
 ])('e2e', (project) => {
   test('builds without errors', { timeout: 180_000 }, async () => {
