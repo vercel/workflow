@@ -93,3 +93,18 @@ jobs:
               --latest \
               --prerelease=false
           fi
+
+      - name: Post release notes to Slack
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_RELEASE_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_RELEASE_CHANNEL_ID" ]; then
+            echo "Missing Slack secrets: SLACK_BOT_TOKEN and/or SLACK_RELEASE_CHANNEL_ID"
+            exit 1
+          fi
+
+          # Post to Slack via chat.postMessage (payload is chunked to Slack limits)
+          node scripts/generate-release-slack-payload.mjs --post

@@ -1,5 +1,58 @@
 # @workflow/core
 
+## 4.0.1-beta.41
+
+### Patch Changes
+
+- [#816](https://github.com/vercel/workflow/pull/816) [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add health check read stream retry/recovery logic
+
+- Updated dependencies [[`202c524`](https://github.com/vercel/workflow/commit/202c524723932fc5342d33f4b57d26c25c7f9e64), [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916), [`f3785f0`](https://github.com/vercel/workflow/commit/f3785f04fbdf9e6199e0e42c592e3d5ba246a6c6), [`b05dbd7`](https://github.com/vercel/workflow/commit/b05dbd7525c1a4b4027a28e0f4eae9da87ea5788)]:
+  - @workflow/world-local@4.0.1-beta.27
+  - @workflow/world-vercel@4.0.1-beta.28
+
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- [#762](https://github.com/vercel/workflow/pull/762) [`1843704`](https://github.com/vercel/workflow/commit/1843704b83d5aaadcf1e4f5f1c73c150bd0bd2a3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for custom class instance serialization
+
+- [#809](https://github.com/vercel/workflow/pull/809) [`f93e894`](https://github.com/vercel/workflow/commit/f93e894a6a95a194637dc2ea8b19e1ad0b7653eb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Show custom class serialization UI and class names in o11y
+
+- Updated dependencies [[`8621917`](https://github.com/vercel/workflow/commit/8621917f6e03ae0f3833defa0f6e548434103c9d)]:
+  - @workflow/serde@4.0.1-beta.1
+
+## 4.0.1-beta.39
+
+### Patch Changes
+
+- [#792](https://github.com/vercel/workflow/pull/792) [`344c90f`](https://github.com/vercel/workflow/commit/344c90ff9f630addc4b41f72c2296b26e61513bc) Thanks [@ijjk](https://github.com/ijjk)! - Add Next.js pages router entries handling
+
+- [#788](https://github.com/vercel/workflow/pull/788) [`b729d49`](https://github.com/vercel/workflow/commit/b729d49610739ae818fd56853f8ddc557591e9a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow passing custom world to runtime start() call
+
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- [#754](https://github.com/vercel/workflow/pull/754) [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for serializing `this` when invoking step functions
+
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- [#743](https://github.com/vercel/workflow/pull/743) [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add queue-based health check feature
+
+- [#773](https://github.com/vercel/workflow/pull/773) [`3dd5b27`](https://github.com/vercel/workflow/commit/3dd5b2708de56e63c9dce9b3f2eafea63b0e3936) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Make `resumeHook()` accept a `Hook` object or string
+
+- [#776](https://github.com/vercel/workflow/pull/776) [`49f650c`](https://github.com/vercel/workflow/commit/49f650c3a79e7b9b501cb602e3c12b75a3c4fffc) Thanks [@Timer](https://github.com/Timer)! - Fix race condition where step would stay pending forever if process crashed between database write and queue write
+
+- [#678](https://github.com/vercel/workflow/pull/678) [`39e5774`](https://github.com/vercel/workflow/commit/39e5774de2a4c8b6a18574aa4edaf79e9f0d655e) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix stream serialization to resolve when user releases lock instead of waiting for stream to close. This prevents Vercel functions from hanging when users incrementally write to streams within steps (e.g., `await writer.write(data); writer.releaseLock()`). Uses a polling approach to detect when the stream lock is released and all pending writes are flushed.
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66)]:
+  - @workflow/world@4.0.1-beta.13
+  - @workflow/errors@4.0.1-beta.13
+  - @workflow/world-local@4.0.1-beta.26
+  - @workflow/world-vercel@4.0.1-beta.27
+
 ## 4.0.1-beta.36
 
 ### Patch Changes

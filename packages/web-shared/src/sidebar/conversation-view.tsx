@@ -18,7 +18,7 @@ export function ConversationView({ messages }: ConversationViewProps) {
   }
 
   return (
-    <div className="flex flex-col gap-3 max-h-[400px] overflow-y-auto p-3">
+    <div className="flex flex-col gap-3 p-3">
       {messages.map((message, index) => (
         <MessageBubble key={index} message={message} />
       ))}

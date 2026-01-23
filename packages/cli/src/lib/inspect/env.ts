@@ -81,11 +81,21 @@ export const inferLocalWorldEnvVars = async () => {
   const cwd = getWorkflowConfig().workingDir;
   let repoRoot: string | undefined;
 
-  if (!envVars.PORT) {
-    logger.warn(
-      'PORT environment variable is not set, using default port 3000'
+  // Always expose the effective working directory to the web UI/server-side helpers.
+  // This is especially useful when developing the web UI from the workflow repo
+  // while targeting another project directory.
+  if (!process.env.WORKFLOW_OBSERVABILITY_CWD) {
+    writeEnvVars({ WORKFLOW_OBSERVABILITY_CWD: cwd });
+  }
+
+  // Set default base URL for local queue if not already configured
+  // We use WORKFLOW_LOCAL_BASE_URL instead of PORT to avoid conflicts
+  // with other tools (like Next.js) that also use the PORT env var
+  if (!envVars.WORKFLOW_LOCAL_BASE_URL && !envVars.PORT) {
+    logger.debug(
+      'Using default queue target http://localhost:3000, set WORKFLOW_LOCAL_BASE_URL or PORT to override.'
     );
-    envVars.PORT = '3000';
+    envVars.WORKFLOW_LOCAL_BASE_URL = 'http://localhost:3000';
     writeEnvVars(envVars);
   }
 

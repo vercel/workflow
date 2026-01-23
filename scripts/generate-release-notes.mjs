@@ -13,6 +13,19 @@
  *                        If not provided, includes all packages (may include duplicates)
  *
  * Output: JSON with { tag, title, body } for the GitHub release
+ *
+ * Example output:
+ *
+ *   {
+ *     "tag": "workflow@4.0.1-beta.46",
+ *     "title": "workflow@4.0.1-beta.46",
+ *     "body": """
+ *              ## @workflow/core@4.0.1-beta.46
+ *              - [#123](https://github.com/vercel/workflow/pull/123) [`abc1234`](https://github.com/vercel/workflow/commit/abc1234) @someone - Fix thing
+ *              ## @workflow/cli@4.0.1-beta.46
+ *              - [`def5678`](https://github.com/vercel/workflow/commit/def5678) - Improve other thing"
+ *             """
+ *   }
  */
 
 import { execSync } from 'node:child_process';
@@ -120,7 +133,7 @@ function parseChangelog(changelogPath) {
       currentChange = line.slice(2);
     } else if (currentChange && line.trim()) {
       // Continuation of previous change (multi-line description)
-      currentChange += ' ' + line.trim();
+      currentChange += ` ${line.trim()}`;
     } else if (!line.trim() && currentChange) {
       // Empty line ends the current change
       changes.push(currentChange.trim());

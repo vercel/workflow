@@ -19,10 +19,7 @@ export default function RunDetailPage() {
   const selectedId = stepId || eventId || hookId || undefined;
 
   return (
-    <ErrorBoundary
-      title="Run Detail Error"
-      description="Failed to load run details. Please try navigating back to the home page."
-    >
+    <ErrorBoundary title="Failed to load run details">
       <RunDetailView runId={runId} selectedId={selectedId} />
     </ErrorBoundary>
   );

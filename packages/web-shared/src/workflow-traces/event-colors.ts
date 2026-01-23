@@ -19,7 +19,7 @@ export interface EventColorPalette {
 
 /**
  * Get the color palette for an event based on its type
- * - Red for failures (step_failed, workflow_failed)
+ * - Red for failures (step_failed, run_failed)
  * - Orange/yellow for retries (step_retrying)
  * - Purple for webhook-related events
  * - Blue otherwise (default)
@@ -28,7 +28,7 @@ export function getEventColor(
   eventType: Event['eventType']
 ): EventColorPalette {
   // Failures - Red
-  if (eventType === 'step_failed' || eventType === 'workflow_failed') {
+  if (eventType === 'step_failed' || eventType === 'run_failed') {
     return {
       color: 'var(--ds-red-600)',
       background: 'var(--ds-red-100)',

@@ -6,6 +6,7 @@ import {
   type EnvMap,
   ErrorBoundary,
   type Event,
+  EventListView,
   recreateRun,
   type Step,
   StreamViewer,
@@ -50,7 +51,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { buildUrlWithConfig } from '@/lib/config';
 import { mapRunToExecution } from '@/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
 import { useServerConfig } from '@/lib/world-config-context';
@@ -155,6 +155,8 @@ interface RunDetailViewProps {
   selectedId?: string;
 }
 
+type Tab = 'trace' | 'graph' | 'streams' | 'events';
+
 export function RunDetailView({
   runId,
   // TODO: This should open the right sidebar within the trace viewer
@@ -171,8 +173,7 @@ export function RunDetailView({
   const env: EnvMap = useMemo(() => ({}), []);
 
   // Read tab and streamId from URL search params
-  const activeTab =
-    (searchParams.get('tab') as 'trace' | 'graph' | 'streams') || 'trace';
+  const activeTab = (searchParams.get('tab') as Tab) || 'trace';
   const selectedStreamId = searchParams.get('streamId');
 
   // Helper to update URL search params
@@ -192,7 +193,7 @@ export function RunDetailView({
   );
 
   const setActiveTab = useCallback(
-    (tab: 'trace' | 'graph' | 'streams') => {
+    (tab: Tab) => {
       // When switching to trace or graph tab, clear streamId
       if (tab === 'trace' || tab === 'graph') {
         updateSearchParams({ tab, streamId: null });
@@ -284,7 +285,7 @@ export function RunDetailView({
         description: `Run ID: ${newRunId}`,
       });
       // Navigate to the new run
-      router.push(buildUrlWithConfig(`/run/${newRunId}`));
+      router.push(`/run/${newRunId}`);
     } catch (err) {
       console.error('Failed to re-run workflow:', err);
       toast.error('Failed to start new run', {
@@ -364,7 +365,7 @@ export function RunDetailView({
             <BreadcrumbList>
               <BreadcrumbItem>
                 <BreadcrumbLink asChild>
-                  <Link href={buildUrlWithConfig('/')}>Runs</Link>
+                  <Link href="/">Runs</Link>
                 </BreadcrumbLink>
               </BreadcrumbItem>
               <BreadcrumbSeparator />
@@ -526,9 +527,7 @@ export function RunDetailView({
         <div className="mt-4 flex-1 flex flex-col min-h-0">
           <Tabs
             value={activeTab}
-            onValueChange={(v) =>
-              setActiveTab(v as 'trace' | 'graph' | 'streams')
-            }
+            onValueChange={(v) => setActiveTab(v as Tab)}
             className="flex-1 flex flex-col min-h-0"
           >
             <TabsList className="mb-4 flex-none">
@@ -542,6 +541,10 @@ export function RunDetailView({
                   Graph
                 </TabsTrigger>
               )}
+              <TabsTrigger value="events" className="gap-2">
+                <List className="h-4 w-4" />
+                Events
+              </TabsTrigger>
               <TabsTrigger value="streams" className="gap-2">
                 <List className="h-4 w-4" />
                 Streams
@@ -549,10 +552,7 @@ export function RunDetailView({
             </TabsList>
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
-              <ErrorBoundary
-                title="Trace Viewer Error"
-                description="Failed to load trace viewer. Please try refreshing the page."
-              >
+              <ErrorBoundary title="Failed to load trace viewer">
                 <div className="h-full">
                   <WorkflowTraceViewer
                     error={error}
@@ -568,11 +568,16 @@ export function RunDetailView({
               </ErrorBoundary>
             </TabsContent>
 
+            <TabsContent value="events" className="mt-0 flex-1 min-h-0">
+              <ErrorBoundary title="Failed to load events list">
+                <div className="h-full">
+                  <EventListView events={allEvents} env={env} />
+                </div>
+              </ErrorBoundary>
+            </TabsContent>
+
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
-              <ErrorBoundary
-                title="Streams Error"
-                description="Failed to load streams. Please try refreshing the page."
-              >
+              <ErrorBoundary title="Failed to load stream data">
                 <div className="h-full flex gap-4">
                   {/* Stream list sidebar */}
                   <div
@@ -659,10 +664,7 @@ export function RunDetailView({
 
             {isLocalBackend && (
               <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
-                <ErrorBoundary
-                  title="Graph Viewer Error"
-                  description="Failed to load execution graph. Please try refreshing the page."
-                >
+                <ErrorBoundary title="Failed to load execution graph">
                   <div className="h-full min-h-[500px]">
                     <GraphTabContent
                       run={run}

@@ -7,7 +7,10 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
-import type { WorkflowManifest } from './apply-swc-transform.js';
+import {
+  applySwcTransform,
+  type WorkflowManifest,
+} from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
@@ -228,6 +231,26 @@ export abstract class BaseBuilder {
   }
 
   /**
+   * Converts an absolute file path to a normalized relative path for the manifest.
+   */
+  private getRelativeFilepath(absolutePath: string): string {
+    const normalizedFile = absolutePath.replace(/\\/g, '/');
+    const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+    let relativePath = relative(normalizedWorkingDir, normalizedFile).replace(
+      /\\/g,
+      '/'
+    );
+    // Handle files discovered outside the working directory
+    if (relativePath.startsWith('../')) {
+      relativePath = relativePath
+        .split('/')
+        .filter((part) => part !== '..')
+        .join('/');
+    }
+    return relativePath;
+  }
+
+  /**
    * Creates a bundle for workflow step functions.
    * Steps have full Node.js runtime access and handle side effects, API calls, etc.
    *
@@ -368,6 +391,38 @@ export abstract class BaseBuilder {
 
     this.logEsbuildMessages(stepsResult, 'steps bundle creation');
     console.log('Created steps bundle', `${Date.now() - stepsBundleStart}ms`);
+
+    // Handle workflow-only files that may have been tree-shaken from the bundle.
+    // These files have no steps, so esbuild removes them, but we still need their
+    // workflow metadata for the manifest. Transform them separately.
+    const workflowOnlyFiles = workflowFiles.filter(
+      (f) => !stepFiles.includes(f)
+    );
+    await Promise.all(
+      workflowOnlyFiles.map(async (workflowFile) => {
+        try {
+          const source = await readFile(workflowFile, 'utf8');
+          const relativeFilepath = this.getRelativeFilepath(workflowFile);
+          const { workflowManifest: fileManifest } = await applySwcTransform(
+            relativeFilepath,
+            source,
+            'workflow'
+          );
+          if (fileManifest.workflows) {
+            workflowManifest.workflows = Object.assign(
+              workflowManifest.workflows || {},
+              fileManifest.workflows
+            );
+          }
+        } catch (error) {
+          // Log warning but continue - don't fail build for workflow-only file issues
+          console.log(
+            `Warning: Failed to extract workflow metadata from ${workflowFile}:`,
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+      })
+    );
 
     // Create .gitignore in .swc directory
     await this.createSwcGitignore();

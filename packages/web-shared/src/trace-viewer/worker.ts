@@ -13,7 +13,7 @@ let requestId = 0;
 
 self.addEventListener('message', (event) => {
   const data = event.data as WorkerRequest;
-  requestId = Math.max(requestId, data.requestId || 0);
+  requestId = Math.max(requestId, data?.requestId || 0);
 
   switch (data.type) {
     case 'calculateSpanPositions':

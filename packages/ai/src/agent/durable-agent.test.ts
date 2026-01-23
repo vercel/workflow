@@ -1125,7 +1125,8 @@ describe('DurableAgent', () => {
           timestamp: new Date(),
         },
         warnings: [],
-      };
+        // We're missing some properties that aren't relevant for the test
+      } as unknown as StepResult<any>;
       const mockMessages: LanguageModelV2Prompt = [
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
       ];
@@ -1296,7 +1297,8 @@ describe('DurableAgent', () => {
           timestamp: new Date(),
         },
         warnings: [],
-      };
+        // We're missing some properties that aren't relevant for the test
+      } as unknown as StepResult<any>;
       const finalMessages: LanguageModelV2Prompt = [
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
         { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] },
@@ -1521,6 +1523,186 @@ describe('DurableAgent', () => {
           experimental_telemetry: streamTelemetry,
         })
       );
+    });
+  });
+
+  describe('collectUIMessages', () => {
+    it('should return undefined uiMessages when collectUIMessages is false', async () => {
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      const result = await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        collectUIMessages: false,
+      });
+
+      expect(result.uiMessages).toBeUndefined();
+    });
+
+    it('should return undefined uiMessages when collectUIMessages is not set', async () => {
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      const result = await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      expect(result.uiMessages).toBeUndefined();
+    });
+
+    it('should pass collectUIChunks to streamTextIterator when collectUIMessages is true', async () => {
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      let capturedCollectUIChunks: boolean | undefined;
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockImplementation((opts) => {
+        capturedCollectUIChunks = opts.collectUIChunks;
+        return mockIterator as unknown as MockIterator;
+      });
+
+      const result = await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        collectUIMessages: true,
+      });
+
+      // When collectUIMessages is true, collectUIChunks should be passed to streamTextIterator
+      expect(capturedCollectUIChunks).toBe(true);
+
+      // uiMessages should be defined (even if empty, since we're mocking)
+      expect(result.uiMessages).toBeDefined();
+      expect(Array.isArray(result.uiMessages)).toBe(true);
+    });
+
+    it('should work correctly when collectUIMessages is true and sendFinish is false', async () => {
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const writtenChunks: unknown[] = [];
+      const closeFn = vi.fn();
+      const mockWritable = new WritableStream({
+        write: (chunk) => {
+          writtenChunks.push(chunk);
+        },
+        close: closeFn,
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      const result = await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        collectUIMessages: true,
+        sendFinish: false,
+      });
+
+      // uiMessages should still be defined even when sendFinish is false
+      expect(result.uiMessages).toBeDefined();
+      expect(Array.isArray(result.uiMessages)).toBe(true);
+
+      // The original writable should have been closed (since preventClose defaults to false)
+      expect(closeFn).toHaveBeenCalled();
+
+      // No finish chunk should have been written to the client
+      expect(
+        writtenChunks.find((c: any) => c.type === 'finish')
+      ).toBeUndefined();
+    });
+
+    it('should not write finish chunk but still return uiMessages when sendFinish is false', async () => {
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const writtenChunks: unknown[] = [];
+      const mockWritable = new WritableStream({
+        write: (chunk) => {
+          writtenChunks.push(chunk);
+        },
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      const result = await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        collectUIMessages: true,
+        sendFinish: false,
+        preventClose: true,
+      });
+
+      // uiMessages should be available even with sendFinish=false and preventClose=true
+      expect(result.uiMessages).toBeDefined();
+      expect(Array.isArray(result.uiMessages)).toBe(true);
     });
   });
 });

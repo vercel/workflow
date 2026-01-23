@@ -1,4 +1,5 @@
 import { types } from 'node:util';
+import { WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { assert, describe, expect, it } from 'vitest';
 import type { WorkflowSuspension } from './global.js';
@@ -144,6 +145,7 @@ describe('runWorkflow', () => {
     expect(hydrateWorkflowReturnValue(result as any, ops)).toEqual(3);
   });
 
+  // Test that timestamps update correctly as events are consumed
   it('should update the timestamp in the vm context as events are replayed', async () => {
     const ops: Promise<any>[] = [];
     const workflowRunId = 'wrun_123';
@@ -158,7 +160,27 @@ describe('runWorkflow', () => {
       deploymentId: 'test-deployment',
     };
 
+    // Events now include run_created, run_started, and step_created for proper consumption
     const events: Event[] = [
+      {
+        eventId: 'event-run-created',
+        runId: workflowRunId,
+        eventType: 'run_created',
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      },
+      {
+        eventId: 'event-run-started',
+        runId: workflowRunId,
+        eventType: 'run_started',
+        createdAt: new Date('2024-01-01T00:00:00.500Z'),
+      },
+      {
+        eventId: 'event-step1-created',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HF',
+        createdAt: new Date('2024-01-01T00:00:00.600Z'),
+      },
       {
         eventId: 'event-0',
         runId: workflowRunId,
@@ -177,6 +199,13 @@ describe('runWorkflow', () => {
         createdAt: new Date('2024-01-01T00:00:02.000Z'),
       },
       {
+        eventId: 'event-step2-created',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HG',
+        createdAt: new Date('2024-01-01T00:00:02.500Z'),
+      },
+      {
         eventId: 'event-2',
         runId: workflowRunId,
         eventType: 'step_started',
@@ -192,6 +221,13 @@ describe('runWorkflow', () => {
           result: dehydrateStepReturnValue(3, ops),
         },
         createdAt: new Date('2024-01-01T00:00:04.000Z'),
+      },
+      {
+        eventId: 'event-step3-created',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HH',
+        createdAt: new Date('2024-01-01T00:00:04.500Z'),
       },
       {
         eventId: 'event-4',
@@ -228,10 +264,15 @@ describe('runWorkflow', () => {
       workflowRun,
       events
     );
+    // Timestamps:
+    // - Initial: 0s (from startedAt)
+    // - After step 1 completes (at 2s), timestamp advances to step2_created (2.5s)
+    // - After step 2 completes (at 4s), timestamp advances to step3_created (4.5s)
+    // - After step 3 completes: 6s
     expect(hydrateWorkflowReturnValue(result as any, ops)).toEqual([
       new Date('2024-01-01T00:00:00.000Z'),
-      1704067203000,
-      1704067205000,
+      1704067202500, // 2.5s (step2_created timestamp)
+      1704067204500, // 4.5s (step3_created timestamp)
       new Date('2024-01-01T00:00:06.000Z'),
     ]);
   });
@@ -855,8 +896,9 @@ describe('runWorkflow', () => {
       }
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
-      expect(error.message).toEqual('0 steps have not been run yet');
-      expect((error as WorkflowSuspension).steps).toEqual([]);
+      // step_started no longer removes from queue - step stays in queue for re-enqueueing
+      expect(error.message).toEqual('1 step has not been run yet');
+      expect((error as WorkflowSuspension).steps).toHaveLength(1);
     });
 
     it('should throw `WorkflowSuspension` for multiple steps with `Promise.all()`', async () => {
@@ -1598,6 +1640,103 @@ describe('runWorkflow', () => {
         token: 'my-custom-token',
         result: 'success',
       });
+    });
+
+    it('should reject with WorkflowRuntimeError when hook_conflict event is received', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_conflict',
+          correlationId: 'hook_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            token: 'my-duplicate-token',
+          },
+          createdAt: new Date(),
+        },
+      ];
+
+      let error: Error | undefined;
+      try {
+        await runWorkflow(
+          `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          const hook = createHook({ token: 'my-duplicate-token' });
+          const payload = await hook;
+          return payload;
+        }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+
+      expect(error).toBeInstanceOf(WorkflowRuntimeError);
+      expect(error?.message).toContain('already in use by another workflow');
+      expect(error?.message).toContain('my-duplicate-token');
+    });
+
+    it('should reject multiple awaits when hook_conflict is received (iterator pattern)', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_conflict',
+          correlationId: 'hook_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            token: 'conflicting-token',
+          },
+          createdAt: new Date(),
+        },
+      ];
+
+      let error: Error | undefined;
+      try {
+        await runWorkflow(
+          `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          const hook = createHook({ token: 'conflicting-token' });
+          const results = [];
+          for await (const payload of hook) {
+            results.push(payload);
+            if (results.length >= 2) break;
+          }
+          return results;
+        }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        );
+      } catch (err) {
+        error = err as Error;
+      }
+
+      expect(error).toBeInstanceOf(WorkflowRuntimeError);
+      expect(error?.message).toContain('already in use by another workflow');
     });
   });
 

@@ -1,5 +1,54 @@
 # @workflow/world-testing
 
+## 4.0.1-beta.51
+
+### Patch Changes
+
+- Updated dependencies [[`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916)]:
+  - @workflow/cli@4.0.1-beta.50
+  - workflow@4.0.1-beta.50
+
+## 4.0.1-beta.50
+
+### Patch Changes
+
+- Updated dependencies [[`714b233`](https://github.com/vercel/workflow/commit/714b23300561ede1532c894ae770225f260365cd)]:
+  - @workflow/cli@4.0.1-beta.49
+  - workflow@4.0.1-beta.49
+
+## 4.0.1-beta.49
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.0.1-beta.48
+  - workflow@4.0.1-beta.48
+
+## 4.0.1-beta.48
+
+### Patch Changes
+
+- Updated dependencies [[`abdca8f`](https://github.com/vercel/workflow/commit/abdca8fd526f3c83c7da7b96a0522f9552e2bd2f)]:
+  - @workflow/cli@4.0.1-beta.47
+  - workflow@4.0.1-beta.47
+
+## 4.0.1-beta.47
+
+### Patch Changes
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290)]:
+  - workflow@4.0.1-beta.46
+  - @workflow/cli@4.0.1-beta.46
+
+## 4.0.1-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66), [`44dfafe`](https://github.com/vercel/workflow/commit/44dfafe3fcf0c5aa56beb86f6d428894b22d0b0c)]:
+  - @workflow/world@4.0.1-beta.13
+  - @workflow/cli@4.0.1-beta.45
+  - workflow@4.0.1-beta.45
+
 ## 4.0.1-beta.45
 
 ### Patch Changes

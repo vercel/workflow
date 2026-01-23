@@ -24,13 +24,24 @@ export const StepSchema = z.object({
   status: StepStatusSchema,
   input: z.array(z.any()),
   output: z.any().optional(),
+  /**
+   * The error from a step_retrying or step_failed event.
+   * This tracks the most recent error the step encountered, which may
+   * be from a retry attempt (step_retrying) or the final failure (step_failed).
+   */
   error: StructuredErrorSchema.optional(),
   attempt: z.number(),
+  /**
+   * When the step first started executing. Set by the first step_started event
+   * and not updated on subsequent retries.
+   */
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
   retryAfter: z.coerce.date().optional(),
+  // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
+  specVersion: z.number().optional(),
 });
 
 // Inferred types

@@ -36,10 +36,10 @@ export async function processOrderWorkflow(orderId: string) {
 **Key Characteristics:**
 
 - Runs in a sandboxed environment without full Node.js access
-- All step results are persisted to the event log
+- All step results are persisted to the [event log](/docs/how-it-works/event-sourcing)
 - Must be **deterministic** to allow resuming after failures
 
-Determinism in the workflow is required to resume the workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle, each time using an event log to resume the workflow to the correct spot.
+Determinism in the workflow is required to resume the workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle, each time using the [event log](/docs/how-it-works/event-sourcing) to resume the workflow to the correct spot.
 
 The sandboxed environment that workflows run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them, and the framework ensures that the values don't change across replays.
 
@@ -112,7 +112,7 @@ Keep in mind that calling a step function outside of a workflow function will no
 
 ### Suspension and Resumption
 
-Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the event log and no compute resources are used until the workflow resumes execution.
+Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the [event log](/docs/how-it-works/event-sourcing) and no compute resources are used until the workflow resumes execution.
 
 There are multiple ways a workflow can suspend:
 

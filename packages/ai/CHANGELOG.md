@@ -1,5 +1,57 @@
 # @workflow/ai
 
+## 4.0.1-beta.51
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.50
+
+## 4.0.1-beta.50
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.49
+
+## 4.0.1-beta.49
+
+### Patch Changes
+
+- [#784](https://github.com/vercel/workflow/pull/784) [`f491237`](https://github.com/vercel/workflow/commit/f491237e1ed9a0054604b48ed8715dd27edf92c0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `collectUIMessages` option failing in workflow context
+
+## 4.0.1-beta.48
+
+### Patch Changes
+
+- [#790](https://github.com/vercel/workflow/pull/790) [`49a1c5f`](https://github.com/vercel/workflow/commit/49a1c5f2fc1c6726eaed8ed77cbe47010e23c446) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Avoid attempting to serialize the "tool" during tool call execution
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.48
+
+## 4.0.1-beta.47
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.47
+
+## 4.0.1-beta.46
+
+### Patch Changes
+
+- [#768](https://github.com/vercel/workflow/pull/768) [`49bb48a`](https://github.com/vercel/workflow/commit/49bb48a25610c37da0e42e3b2c7aa07d9675688a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Accumulate and return `uiMessages: UIMessage[]` from DurableAgent's `agent.stream`. This allows persisting messages without having to read the run's stream.
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290)]:
+  - workflow@4.0.1-beta.46
+
+## 4.0.1-beta.45
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.0.1-beta.45
+
 ## 4.0.1-beta.44
 
 ### Patch Changes

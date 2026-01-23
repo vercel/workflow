@@ -1,5 +1,19 @@
 # @workflow/swc-plugin
 
+## 4.0.1-beta.14
+
+### Patch Changes
+
+- [#762](https://github.com/vercel/workflow/pull/762) [`1843704`](https://github.com/vercel/workflow/commit/1843704b83d5aaadcf1e4f5f1c73c150bd0bd2a3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for custom class instance serialization
+
+## 4.0.1-beta.13
+
+### Patch Changes
+
+- [#754](https://github.com/vercel/workflow/pull/754) [`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for class reference serialization
+
+- [#753](https://github.com/vercel/workflow/pull/753) [`a2fc53a`](https://github.com/vercel/workflow/commit/a2fc53a0dc2df0648ae9e7fd59aae044a612ebcb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Support class static methods with "use step" / "use workflow"
+
 ## 4.0.1-beta.12
 
 ### Patch Changes

@@ -25,6 +25,8 @@ export const WorkflowRunBaseSchema = z.object({
   status: WorkflowRunStatusSchema,
   deploymentId: z.string(),
   workflowName: z.string(),
+  // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
+  specVersion: z.number().optional(),
   executionContext: z.record(z.string(), z.any()).optional(),
   input: z.array(z.any()),
   output: z.any().optional(),

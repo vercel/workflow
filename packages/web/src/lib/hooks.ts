@@ -15,7 +15,7 @@ export function useWorldsAvailability() {
 
 /**
  * Hook that resolves a dataDir path to WorkflowDataDirInfo.
- * Returns the projectDir, dataDir, and shortName for display purposes.
+ * Returns the dataDir and shortName for display purposes.
  */
 export function useDataDirInfo(dataDir: string) {
   return useSWR<WorkflowDataDirInfo>(

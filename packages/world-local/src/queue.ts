@@ -15,6 +15,12 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
   Infinity;
 
+// Maximum safe delay for setTimeout in Node.js (2^31 - 1 milliseconds ≈ 24.85 days)
+// Larger values cause "TimeoutOverflowWarning: X does not fit into a 32-bit signed integer"
+// When the clamped timeout fires, the handler will recalculate remaining time from
+// persistent state and return another timeoutSeconds if needed.
+const MAX_SAFE_TIMEOUT_MS = 2147483647;
+
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
 const DEFAULT_CONCURRENCY_LIMIT = 100;
@@ -112,7 +118,14 @@ export function createQueue(config: Partial<Config>): Queue {
           if (response.status === 503) {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-              await setTimeout(timeoutSeconds * 1000);
+              // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
+              // When this fires early, the handler recalculates remaining time from
+              // persistent state and returns another timeoutSeconds if needed.
+              const timeoutMs = Math.min(
+                timeoutSeconds * 1000,
+                MAX_SAFE_TIMEOUT_MS
+              );
+              await setTimeout(timeoutMs);
               defaultRetriesLeft++;
               continue;
             } catch {}

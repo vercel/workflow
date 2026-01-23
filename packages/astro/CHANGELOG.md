@@ -1,5 +1,49 @@
 # @workflow/astro
 
+## 4.0.0-beta.24
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.41
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.23
+
+### Patch Changes
+
+- Updated dependencies [[`1843704`](https://github.com/vercel/workflow/commit/1843704b83d5aaadcf1e4f5f1c73c150bd0bd2a3)]:
+  - @workflow/swc-plugin@4.0.1-beta.14
+  - @workflow/builders@4.0.1-beta.40
+  - @workflow/rollup@4.0.0-beta.8
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.22
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.39
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.21
+
+### Patch Changes
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`a2fc53a`](https://github.com/vercel/workflow/commit/a2fc53a0dc2df0648ae9e7fd59aae044a612ebcb)]:
+  - @workflow/swc-plugin@4.0.1-beta.13
+  - @workflow/builders@4.0.1-beta.38
+  - @workflow/rollup@4.0.0-beta.7
+  - @workflow/vite@4.0.0-beta.2
+
+## 4.0.0-beta.20
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.37
+  - @workflow/vite@4.0.0-beta.2
+
 ## 4.0.0-beta.19
 
 ### Patch Changes

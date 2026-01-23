@@ -31,6 +31,7 @@ export const ERROR_SLUGS = {
   WEBHOOK_RESPONSE_NOT_SENT: 'webhook-response-not-sent',
   FETCH_IN_WORKFLOW_FUNCTION: 'fetch-in-workflow',
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
+  HOOK_CONFLICT: 'hook-conflict',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -228,6 +229,31 @@ export class WorkflowRunCancelledError extends WorkflowError {
 
   static is(value: unknown): value is WorkflowRunCancelledError {
     return isError(value) && value.name === 'WorkflowRunCancelledError';
+  }
+}
+
+/**
+ * Thrown when attempting to operate on a workflow run that requires a newer World version.
+ *
+ * This error occurs when a run was created with a newer spec version than the
+ * current World implementation supports. Users should upgrade their @workflow packages.
+ */
+export class RunNotSupportedError extends WorkflowError {
+  readonly runSpecVersion: number;
+  readonly worldSpecVersion: number;
+
+  constructor(runSpecVersion: number, worldSpecVersion: number) {
+    super(
+      `Run requires spec version ${runSpecVersion}, but world supports version ${worldSpecVersion}. ` +
+        `Please upgrade 'workflow' package.`
+    );
+    this.name = 'RunNotSupportedError';
+    this.runSpecVersion = runSpecVersion;
+    this.worldSpecVersion = worldSpecVersion;
+  }
+
+  static is(value: unknown): value is RunNotSupportedError {
+    return isError(value) && value.name === 'RunNotSupportedError';
   }
 }
 

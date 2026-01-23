@@ -89,7 +89,7 @@ export const getCustomSpanEventClassName = (
   const eventName = spanEvent.event.name;
 
   // Failure events - Red
-  if (eventName === 'step_failed' || eventName === 'workflow_failed') {
+  if (eventName === 'step_failed' || eventName === 'run_failed') {
     return styles.eventFailed;
   }
 

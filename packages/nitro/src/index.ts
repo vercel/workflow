@@ -12,9 +12,10 @@ export default {
     const isVercelDeploy =
       !nitro.options.dev && nitro.options.preset === 'vercel';
 
-    // Add transform plugin
+    // Add transform plugin at the BEGINNING to run before other transforms
+    // (especially before class property transforms that rename classes like _ClassName)
     nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
-      (config.plugins as Array<unknown>).push(workflowTransformPlugin());
+      (config.plugins as Array<unknown>).unshift(workflowTransformPlugin());
     });
 
     // NOTE: Temporary workaround for debug unenv mock

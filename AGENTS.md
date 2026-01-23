@@ -14,6 +14,10 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## SWC Plugin
+
+When modifying the SWC compiler plugin (`packages/swc-plugin-workflow`), you must also update the specification document at `packages/swc-plugin-workflow/spec.md` to reflect any changes to the transformation behavior.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

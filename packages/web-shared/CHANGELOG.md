@@ -1,5 +1,65 @@
 # @workflow/web-shared
 
+## 4.0.1-beta.45
+
+### Patch Changes
+
+- [#816](https://github.com/vercel/workflow/pull/816) [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add button to run queue based health checks
+
+- [#828](https://github.com/vercel/workflow/pull/828) [`549ffbe`](https://github.com/vercel/workflow/commit/549ffbee3c75396f7d4362558c957101f59ce400) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Tone down color use on event list view
+
+- Updated dependencies [[`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916), [`f3785f0`](https://github.com/vercel/workflow/commit/f3785f04fbdf9e6199e0e42c592e3d5ba246a6c6)]:
+  - @workflow/core@4.0.1-beta.41
+  - @workflow/world-vercel@4.0.1-beta.28
+
+## 4.0.1-beta.44
+
+### Patch Changes
+
+- [#805](https://github.com/vercel/workflow/pull/805) [`4247c72`](https://github.com/vercel/workflow/commit/4247c727b0e8f51b19b8f13f8636e378ddf82e64) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve styling, error display, and scroll behavior of trace viewer sidebar
+
+- [#809](https://github.com/vercel/workflow/pull/809) [`f93e894`](https://github.com/vercel/workflow/commit/f93e894a6a95a194637dc2ea8b19e1ad0b7653eb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Show custom class serialization UI and class names in o11y
+
+- [#806](https://github.com/vercel/workflow/pull/806) [`d30e5c0`](https://github.com/vercel/workflow/commit/d30e5c0249018083bdd63ac84408449003399099) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - [web] Add view to display a list of all events
+
+- Updated dependencies [[`1843704`](https://github.com/vercel/workflow/commit/1843704b83d5aaadcf1e4f5f1c73c150bd0bd2a3), [`f93e894`](https://github.com/vercel/workflow/commit/f93e894a6a95a194637dc2ea8b19e1ad0b7653eb)]:
+  - @workflow/core@4.0.1-beta.40
+
+## 4.0.1-beta.43
+
+### Patch Changes
+
+- [#788](https://github.com/vercel/workflow/pull/788) [`b729d49`](https://github.com/vercel/workflow/commit/b729d49610739ae818fd56853f8ddc557591e9a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ensure re-running Run from o11y UI will use specified world, instead of inferring from env
+
+- Updated dependencies [[`344c90f`](https://github.com/vercel/workflow/commit/344c90ff9f630addc4b41f72c2296b26e61513bc), [`b729d49`](https://github.com/vercel/workflow/commit/b729d49610739ae818fd56853f8ddc557591e9a1)]:
+  - @workflow/core@4.0.1-beta.39
+
+## 4.0.1-beta.42
+
+### Patch Changes
+
+- [#774](https://github.com/vercel/workflow/pull/774) [`abdca8f`](https://github.com/vercel/workflow/commit/abdca8fd526f3c83c7da7b96a0522f9552e2bd2f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve display of configuration information. Fix opening of Vercel backend when using `--localUi`. Fix world caching in multi-tenant environments. Fix flicker in run table when refreshing. Improve contributor experience by adding `--observabilityCwd` flag to easily iterate on web UI from another directory. Polish navbar UI.
+
+- [#783](https://github.com/vercel/workflow/pull/783) [`125d0a6`](https://github.com/vercel/workflow/commit/125d0a666e3bb899609c55fd6f358bc6d61463d3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix unsafe access of requestId in UI worker for trace viewer
+
+- [#787](https://github.com/vercel/workflow/pull/787) [`7ff6a05`](https://github.com/vercel/workflow/commit/7ff6a05cf9ffd91300b081ec1dfa9cf3cf278ed0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow passing user env variables to vercel backend in o11y UI
+
+## 4.0.1-beta.41
+
+### Patch Changes
+
+- Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290)]:
+  - @workflow/core@4.0.1-beta.38
+
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- Updated dependencies [[`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`61fdb41`](https://github.com/vercel/workflow/commit/61fdb41e1b5cd52c7b23fa3c0f3fcaa50c4189ca), [`3dd5b27`](https://github.com/vercel/workflow/commit/3dd5b2708de56e63c9dce9b3f2eafea63b0e3936), [`0aa835f`](https://github.com/vercel/workflow/commit/0aa835fe30d4d61e2d6dcde693d6fbb24be72c66), [`49f650c`](https://github.com/vercel/workflow/commit/49f650c3a79e7b9b501cb602e3c12b75a3c4fffc), [`39e5774`](https://github.com/vercel/workflow/commit/39e5774de2a4c8b6a18574aa4edaf79e9f0d655e)]:
+  - @workflow/core@4.0.1-beta.37
+  - @workflow/world@4.0.1-beta.13
+  - @workflow/errors@4.0.1-beta.13
+
 ## 4.0.1-beta.39
 
 ### Patch Changes

@@ -3,18 +3,50 @@
 import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { AlertCircle } from 'lucide-react';
-import {
-  createContext,
-  type ReactNode,
-  useContext,
-  useMemo,
-  useState,
-} from 'react';
-import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import type { ReactNode } from 'react';
+import { createContext, useContext, useMemo, useState } from 'react';
+import { ErrorCard } from '../components/ui/error-card';
+import { useDarkMode } from '../hooks/use-dark-mode';
 import { extractConversation, isDoStreamStep } from '../lib/utils';
 import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
+
+/**
+ * Tab button for conversation/JSON toggle
+ */
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
+      style={{
+        // Explicit styles to prevent app-level button overrides when web-shared
+        // is embedded in a self-hosted app.
+        backgroundColor: 'transparent',
+        borderTop: 'none',
+        borderLeft: 'none',
+        borderRight: 'none',
+        borderBottom: `2px solid ${active ? 'var(--ds-blue-600)' : 'transparent'}`,
+        borderRadius: 0,
+        outline: 'none',
+        boxShadow: 'none',
+        cursor: 'pointer',
+        color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-600)',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
 
 /**
  * Tabbed view for conversation and raw JSON
@@ -34,56 +66,36 @@ function ConversationWithTabs({
     <DetailCard summary={`Input (${conversation.length} messages)`}>
       <div
         className="rounded-md border"
-        style={{ borderColor: 'var(--ds-gray-300)' }}
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'transparent',
+        }}
       >
-        {/* Tab buttons */}
         <div
           className="flex gap-1 border-b"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
+          style={{
+            borderColor: 'var(--ds-gray-300)',
+            backgroundColor: 'transparent',
+          }}
         >
-          <button
-            type="button"
+          <TabButton
+            active={activeTab === 'conversation'}
             onClick={() => setActiveTab('conversation')}
-            className="px-3 py-1.5 text-[11px] font-medium transition-colors"
-            style={{
-              color:
-                activeTab === 'conversation'
-                  ? 'var(--ds-gray-1000)'
-                  : 'var(--ds-gray-600)',
-              borderBottom:
-                activeTab === 'conversation'
-                  ? '2px solid var(--ds-blue-600)'
-                  : '2px solid transparent',
-              marginBottom: '-1px',
-            }}
           >
             Conversation
-          </button>
-          <button
-            type="button"
+          </TabButton>
+          <TabButton
+            active={activeTab === 'json'}
             onClick={() => setActiveTab('json')}
-            className="px-3 py-1.5 text-[11px] font-medium transition-colors"
-            style={{
-              color:
-                activeTab === 'json'
-                  ? 'var(--ds-gray-1000)'
-                  : 'var(--ds-gray-600)',
-              borderBottom:
-                activeTab === 'json'
-                  ? '2px solid var(--ds-blue-600)'
-                  : '2px solid transparent',
-              marginBottom: '-1px',
-            }}
           >
             Raw JSON
-          </button>
+          </TabButton>
         </div>
 
-        {/* Tab content */}
         {activeTab === 'conversation' ? (
           <ConversationView messages={conversation} />
         ) : (
-          <div className="p-3 max-h-[400px] overflow-y-auto">
+          <div className="p-3">
             {Array.isArray(args)
               ? args.map((v, i) => (
                   <div className="mt-2 first:mt-0" key={i}>
@@ -139,6 +151,141 @@ const isStreamRef = (value: unknown): value is StreamRef => {
 };
 
 /**
+ * Marker for custom class instance references.
+ * This is duplicated from @workflow/core/observability to avoid pulling in
+ * Node.js dependencies into the client bundle.
+ */
+const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
+
+/**
+ * A class instance reference object that contains the class name and serialized data.
+ * Used in o11y when a custom class instance is encountered but the class is not
+ * registered for deserialization.
+ */
+interface ClassInstanceRef {
+  __type: typeof CLASS_INSTANCE_REF_TYPE;
+  className: string;
+  classId: string;
+  data: unknown;
+}
+
+/**
+ * Check if a value is a ClassInstanceRef object
+ */
+const isClassInstanceRef = (value: unknown): value is ClassInstanceRef => {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    '__type' in value &&
+    value.__type === CLASS_INSTANCE_REF_TYPE &&
+    'className' in value &&
+    typeof value.className === 'string'
+  );
+};
+
+import ColorHash from 'color-hash';
+
+/**
+ * Color hash instance configured for nice saturation and lightness.
+ * Returns HSL values which we can transform for different use cases.
+ */
+const colorHash = new ColorHash({
+  saturation: [0.5, 0.6, 0.7],
+  lightness: [0.4, 0.5, 0.6],
+});
+
+/**
+ * Convert HSL to CSS hsl() string
+ */
+const hslToString = (h: number, s: number, l: number): string => {
+  return `hsl(${h}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
+};
+
+/**
+ * Get consistent colors for a class ID using color-hash and HSL transformations.
+ * Adjusts colors based on light/dark mode for optimal appearance.
+ */
+const getClassColors = (
+  classId: string,
+  isDark: boolean
+): { header: string; body: string; text: string } => {
+  const [h, s, l] = colorHash.hsl(classId);
+
+  if (isDark) {
+    // Dark mode: vibrant header, dark body, light text
+    return {
+      header: hslToString(h, s, Math.min(l + 0.1, 0.6)), // Slightly brighter header
+      body: hslToString(h, s * 0.8, 0.15), // Very dark, slightly desaturated body
+      text: hslToString(h, s * 0.6, 0.8), // Light, slightly desaturated text
+    };
+  } else {
+    // Light mode: vibrant header, light body, dark text
+    return {
+      header: hslToString(h, s, l), // Use base color for header
+      body: hslToString(h, s * 0.4, 0.95), // Very light, desaturated body
+      text: hslToString(h, s * 0.8, 0.25), // Dark, saturated text
+    };
+  }
+};
+
+/**
+ * Renders a ClassInstanceRef as a styled card showing the class name and serialized data.
+ * The header color is determined by hashing the classId for visual distinction.
+ * Reacts to theme changes for proper dark/light mode support.
+ */
+const ClassInstanceRefDisplay = ({
+  classInstanceRef,
+}: {
+  classInstanceRef: ClassInstanceRef;
+}) => {
+  const isDark = useDarkMode();
+  const colors = getClassColors(classInstanceRef.classId, isDark);
+
+  return (
+    <div
+      className="inline-flex flex-col rounded text-[11px] font-mono my-1"
+      style={{
+        backgroundColor: colors.body,
+        border: `1px solid ${colors.header}`,
+      }}
+    >
+      <div
+        className="flex items-center gap-1.5 px-2 py-1 rounded-t"
+        style={{
+          backgroundColor: colors.header,
+          color: '#FFFFFF',
+        }}
+        title={`Custom class: ${classInstanceRef.classId}`}
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <title>Class instance</title>
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+          <line x1="12" y1="22.08" x2="12" y2="12" />
+        </svg>
+        <span className="font-semibold">{classInstanceRef.className}</span>
+      </div>
+      <pre
+        className="px-2 py-1.5 overflow-x-auto whitespace-pre-wrap"
+        style={{ color: colors.text }}
+      >
+        {JSON.stringify(classInstanceRef.data, null, 2)}
+      </pre>
+    </div>
+  );
+};
+
+/**
  * Renders a StreamRef as a styled link/badge
  */
 const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
@@ -178,26 +325,39 @@ const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
         <circle cx="12" cy="12" r="3" />
       </svg>
       {streamRef.streamId.length > 40
-        ? `${streamRef.streamId.slice(0, 20)}...${streamRef.streamId.slice(-15)}`
+        ? `${streamRef.streamId.slice(0, 20)}...${streamRef.streamId.slice(
+            -15
+          )}`
         : streamRef.streamId}
     </button>
   );
 };
 
 /**
- * Recursively transforms a value for JSON display, replacing StreamRef objects
- * with placeholder strings that can be identified and replaced with React elements
+ * Recursively transforms a value for JSON display, replacing StreamRef and
+ * ClassInstanceRef objects with placeholder strings that can be identified
+ * and replaced with React elements.
  */
 const transformValueForDisplay = (
   value: unknown
-): { json: string; streamRefs: Map<string, StreamRef> } => {
+): {
+  json: string;
+  streamRefs: Map<string, StreamRef>;
+  classInstanceRefs: Map<string, ClassInstanceRef>;
+} => {
   const streamRefs = new Map<string, StreamRef>();
+  const classInstanceRefs = new Map<string, ClassInstanceRef>();
   let counter = 0;
 
   const transform = (v: unknown): unknown => {
     if (isStreamRef(v)) {
       const placeholder = `__STREAM_REF_${counter++}__`;
       streamRefs.set(placeholder, v);
+      return placeholder;
+    }
+    if (isClassInstanceRef(v)) {
+      const placeholder = `__CLASS_INSTANCE_REF_${counter++}__`;
+      classInstanceRefs.set(placeholder, v);
       return placeholder;
     }
     if (Array.isArray(v)) {
@@ -217,14 +377,16 @@ const transformValueForDisplay = (
   return {
     json: JSON.stringify(transformed, null, 2),
     streamRefs,
+    classInstanceRefs,
   };
 };
 
 const JsonBlock = (value: unknown) => {
-  const { json, streamRefs } = transformValueForDisplay(value);
+  const { json, streamRefs, classInstanceRefs } =
+    transformValueForDisplay(value);
 
-  // If no stream refs, just render plain JSON
-  if (streamRefs.size === 0) {
+  // If no special refs, just render plain JSON
+  if (streamRefs.size === 0 && classInstanceRefs.size === 0) {
     return (
       <pre
         className="text-[11px] overflow-x-auto rounded-md border p-3"
@@ -239,27 +401,63 @@ const JsonBlock = (value: unknown) => {
     );
   }
 
-  // Split the JSON by stream ref placeholders and render with React elements
-  const parts: ReactNode[] = [];
-  let remaining = json;
+  // Build a combined map of all placeholders to their React elements
+  const placeholderComponents = new Map<string, ReactNode>();
   let keyIndex = 0;
 
   for (const [placeholder, streamRef] of streamRefs) {
-    const index = remaining.indexOf(`"${placeholder}"`);
-    if (index !== -1) {
-      // Add text before the placeholder
-      if (index > 0) {
-        parts.push(remaining.slice(0, index));
-      }
-      // Add the StreamRef component
-      parts.push(<StreamRefDisplay key={keyIndex++} streamRef={streamRef} />);
-      remaining = remaining.slice(index + placeholder.length + 2); // +2 for quotes
-    }
+    placeholderComponents.set(
+      placeholder,
+      <StreamRefDisplay key={keyIndex++} streamRef={streamRef} />
+    );
   }
 
-  // Add any remaining text
-  if (remaining) {
-    parts.push(remaining);
+  for (const [placeholder, classInstanceRef] of classInstanceRefs) {
+    placeholderComponents.set(
+      placeholder,
+      <ClassInstanceRefDisplay
+        key={keyIndex++}
+        classInstanceRef={classInstanceRef}
+      />
+    );
+  }
+
+  // Split the JSON by all placeholders and render with React elements
+  const parts: ReactNode[] = [];
+  let remaining = json;
+
+  // Process placeholders in order of their appearance in the string
+  while (remaining.length > 0) {
+    let earliestIndex = -1;
+    let earliestPlaceholder = '';
+    let earliestComponent: ReactNode = null;
+
+    // Find the earliest placeholder in the remaining string
+    for (const [placeholder, component] of placeholderComponents) {
+      const index = remaining.indexOf(`"${placeholder}"`);
+      if (index !== -1 && (earliestIndex === -1 || index < earliestIndex)) {
+        earliestIndex = index;
+        earliestPlaceholder = placeholder;
+        earliestComponent = component;
+      }
+    }
+
+    if (earliestIndex === -1) {
+      // No more placeholders found, add the rest
+      parts.push(remaining);
+      break;
+    }
+
+    // Add text before the placeholder
+    if (earliestIndex > 0) {
+      parts.push(remaining.slice(0, earliestIndex));
+    }
+
+    // Add the component
+    parts.push(earliestComponent);
+
+    // Move past the placeholder
+    remaining = remaining.slice(earliestIndex + earliestPlaceholder.length + 2); // +2 for quotes
   }
 
   return (
@@ -298,6 +496,7 @@ const attributeOrder: AttributeKey[] = [
   'correlationId',
   'eventType',
   'deploymentId',
+  'specVersion',
   'ownerId',
   'projectId',
   'environment',
@@ -373,6 +572,7 @@ const attributeToDisplayFn: Record<
   correlationId: (value: unknown) => String(value),
   // Project details
   deploymentId: (value: unknown) => String(value),
+  specVersion: (value: unknown) => String(value),
   // Tenancy (we don't show these)
   ownerId: (_value: unknown) => null,
   projectId: (_value: unknown) => null,
@@ -687,13 +887,11 @@ export const AttributePanel = ({
           </div>
         )}
         {error ? (
-          <Alert variant="destructive" className="my-4">
-            <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Failed to load resource details</AlertTitle>
-            <AlertDescription className="text-sm">
-              {error.message}
-            </AlertDescription>
-          </Alert>
+          <ErrorCard
+            title="Failed to load resource details"
+            details={error.message}
+            className="my-4"
+          />
         ) : hasExpired ? (
           <ExpiredDataMessage />
         ) : (

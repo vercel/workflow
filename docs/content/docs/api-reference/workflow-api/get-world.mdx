@@ -7,7 +7,7 @@ Retrieves the World instance for direct access to workflow storage, queuing, and
 Use this function when you need direct access to the underlying workflow infrastructure, such as listing all runs, querying events, or implementing custom workflow management logic.
 
 ```typescript lineNumbers
-import { getWorld } from "workflow/api";
+import { getWorld } from "workflow/runtime";
 
 const world = getWorld();
 ```
@@ -36,7 +36,7 @@ showSections={["returns"]}
 List all workflow runs with pagination:
 
 ```typescript lineNumbers
-import { getWorld } from "workflow/api";
+import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -63,7 +63,7 @@ export async function GET(req: Request) {
 Cancel a running workflow:
 
 ```typescript lineNumbers
-import { getWorld } from "workflow/api";
+import { getWorld } from "workflow/runtime";
 
 export async function POST(req: Request) {
   const { runId } = await req.json();

@@ -101,7 +101,7 @@ export const useStreamingSpans = (
           break;
         }
         case 'updateHighlight': {
-          if (data.requestId !== requestId) return;
+          if (data?.requestId !== requestId) return;
           const { matches } = data;
           setRows((previous) => {
             for (const row of previous) {

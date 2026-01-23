@@ -6,6 +6,7 @@ import {
   type ListWorkflowRunsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  StructuredErrorSchema,
   type UpdateWorkflowRunRequest,
   type WorkflowRun,
   WorkflowRunBaseSchema,
@@ -22,17 +23,18 @@ import {
 
 /**
  * Wire format schema for workflow runs coming from the backend.
- * The backend returns error as a JSON string, not an object, so we need
- * a schema that accepts the wire format before deserialization.
+ * The backend may return error either as:
+ * - A JSON string (legacy format) that needs deserialization
+ * - An already structured object (new format) with { message, stack?, code? }
  *
  * This is used for validation in makeRequest(), then deserializeError()
- * transforms the string into the expected StructuredError object.
+ * normalizes both formats into the expected StructuredError object.
  */
 const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
   error: true,
 }).extend({
-  // Backend returns error as a JSON string, not an object
-  error: z.string().optional(),
+  // Backend returns error as either a JSON string or structured object
+  error: z.union([z.string(), StructuredErrorSchema]).optional(),
 });
 
 // Wire schema for resolved data (full input/output)
@@ -97,7 +99,7 @@ export async function listWorkflowRuns(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs${queryString ? `?${queryString}` : ''}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -121,7 +123,7 @@ export async function createWorkflowRun(
   config?: APIConfig
 ): Promise<WorkflowRun> {
   const run = await makeRequest({
-    endpoint: '/v1/runs/create',
+    endpoint: '/v2/runs/create',
     options: {
       method: 'POST',
       body: JSON.stringify(data, dateToStringReplacer),
@@ -144,7 +146,7 @@ export async function getWorkflowRun(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${id}${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({
@@ -173,7 +175,7 @@ export async function updateWorkflowRun(
   try {
     const serialized = serializeError(data);
     const run = await makeRequest({
-      endpoint: `/v1/runs/${id}`,
+      endpoint: `/v2/runs/${id}`,
       options: {
         method: 'PUT',
         body: JSON.stringify(serialized, dateToStringReplacer),
@@ -202,7 +204,7 @@ export async function cancelWorkflowRun(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}/cancel${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${id}/cancel${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({

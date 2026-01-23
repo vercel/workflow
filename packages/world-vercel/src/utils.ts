@@ -54,19 +54,20 @@ export function serializeError<T extends { error?: StructuredError }>(
 
 /**
  * Helper to deserialize error field from the backend into a StructuredError object.
- * Handles backwards compatibility:
+ * Handles multiple formats from the backend:
+ * - If error is already a structured object → validate and use directly
  * - If error is a JSON string with {message, stack, code} → parse into StructuredError
  * - If error is a plain string → treat as error message with no stack
  * - If no error → undefined
  *
- * This function transforms objects from wire format (where error is a JSON string)
- * to domain format (where error is a StructuredError object). The generic type
- * parameter should be the expected output type (WorkflowRun or Step).
+ * This function transforms objects from wire format (where error may be a JSON string
+ * or already structured) to domain format (where error is a StructuredError object).
+ * The generic type parameter should be the expected output type (WorkflowRun or Step).
  *
  * Note: The type assertion is necessary because the wire format types from Zod schemas
- * have `error?: string` while the domain types have complex error types (e.g., discriminated
- * unions with `error: void` or `error: StructuredError` depending on status), but the
- * transformation preserves all other fields correctly.
+ * have `error?: string | StructuredError` while the domain types have complex error types
+ * (e.g., discriminated unions with `error: void` or `error: StructuredError` depending on
+ * status), but the transformation preserves all other fields correctly.
  */
 export function deserializeError<T extends Record<string, any>>(obj: any): T {
   const { error, ...rest } = obj;
@@ -75,26 +76,47 @@ export function deserializeError<T extends Record<string, any>>(obj: any): T {
     return obj as T;
   }
 
-  // Try to parse as structured error JSON
-  try {
-    const parsed = StructuredErrorSchema.parse(JSON.parse(error));
-    return {
-      ...rest,
-      error: {
-        message: parsed.message,
-        stack: parsed.stack,
-        code: parsed.code,
-      },
-    } as T;
-  } catch {
-    // Backwards compatibility: error is just a plain string
-    return {
-      ...rest,
-      error: {
-        message: error,
-      },
-    } as T;
+  // If error is already an object (new format), validate and use directly
+  if (typeof error === 'object' && error !== null) {
+    const result = StructuredErrorSchema.safeParse(error);
+    if (result.success) {
+      return {
+        ...rest,
+        error: {
+          message: result.data.message,
+          stack: result.data.stack,
+          code: result.data.code,
+        },
+      } as T;
+    }
+    // Fall through to treat as unknown format
   }
+
+  // If error is a string, try to parse as structured error JSON
+  if (typeof error === 'string') {
+    try {
+      const parsed = StructuredErrorSchema.parse(JSON.parse(error));
+      return {
+        ...rest,
+        error: {
+          message: parsed.message,
+          stack: parsed.stack,
+          code: parsed.code,
+        },
+      } as T;
+    } catch {
+      // Backwards compatibility: error is just a plain string
+      return {
+        ...rest,
+        error: {
+          message: error,
+        },
+      } as T;
+    }
+  }
+
+  // Unknown format - return as-is and let downstream handle it
+  return obj as T;
 }
 
 const getUserAgent = () => {

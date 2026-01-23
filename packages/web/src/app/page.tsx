@@ -6,7 +6,6 @@ import { HooksTable } from '@/components/hooks-table';
 import { RunsTable } from '@/components/runs-table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { WorkflowsList } from '@/components/workflows-list';
-import { buildUrlWithConfig } from '@/lib/config';
 import { useHookIdState, useSidebarState, useTabState } from '@/lib/url-state';
 import { useServerConfig } from '@/lib/world-config-context';
 
@@ -26,22 +25,17 @@ export default function Home() {
 
   const handleRunClick = (runId: string, streamId?: string) => {
     if (!streamId) {
-      router.push(buildUrlWithConfig(`/run/${runId}`));
+      router.push(`/run/${runId}`);
     } else {
-      router.push(buildUrlWithConfig(`/run/${runId}/streams/${streamId}`));
+      router.push(`/run/${runId}/streams/${streamId}`);
     }
   };
 
   const handleHookSelect = (hookId: string, runId?: string) => {
     if (hookId) {
-      router.push(
-        buildUrlWithConfig(`/run/${runId}`, {
-          sidebar: 'hook',
-          hookId,
-        })
-      );
+      router.push(`/run/${runId}?sidebar=hook&hookId=${hookId}`);
     } else {
-      router.push(buildUrlWithConfig(`/run/${runId}`));
+      router.push(`/run/${runId}`);
     }
   };
 
@@ -56,18 +50,12 @@ export default function Home() {
           )}
         </TabsList>
         <TabsContent value="runs">
-          <ErrorBoundary
-            title="Runs Error"
-            description="Failed to load workflow runs. Please try refreshing the page."
-          >
+          <ErrorBoundary title="Failed to load workflow runs">
             <RunsTable onRunClick={handleRunClick} />
           </ErrorBoundary>
         </TabsContent>
         <TabsContent value="hooks">
-          <ErrorBoundary
-            title="Hooks Error"
-            description="Failed to load hooks. Please try refreshing the page."
-          >
+          <ErrorBoundary title="Failed to load hooks">
             <HooksTable
               onHookClick={handleHookSelect}
               selectedHookId={selectedHookId}
@@ -76,10 +64,7 @@ export default function Home() {
         </TabsContent>
         {isLocalBackend && (
           <TabsContent value="workflows">
-            <ErrorBoundary
-              title="Workflows Error"
-              description="Failed to load workflow graph data. Please try refreshing the page."
-            >
+            <ErrorBoundary title="Failed to load workflow graph data">
               <WorkflowsList />
             </ErrorBoundary>
           </TabsContent>

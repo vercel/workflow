@@ -531,6 +531,9 @@ importers:
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
+      '@workflow/serde':
+        specifier: workspace:*
+        version: link:../serde
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
@@ -776,6 +779,15 @@ importers:
         specifier: ^4.53.2
         version: 4.53.2
 
+  packages/serde:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.19.0
+      '@workflow/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+
   packages/sveltekit:
     dependencies:
       '@swc/core':
@@ -881,15 +893,9 @@ importers:
 
   packages/web:
     dependencies:
-      '@xyflow/react':
-        specifier: 12.9.3
-        version: 12.9.3(@types/react@19.1.13)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       next:
         specifier: 16.0.10
         version: 16.0.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
-      nuqs:
-        specifier: ^2.2.5
-        version: 2.8.3(next@16.0.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react-router@7.10.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react@19.1.0)
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
@@ -948,6 +954,9 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
+      '@xyflow/react':
+        specifier: 12.9.3
+        version: 12.9.3(@types/react@19.1.13)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -963,12 +972,18 @@ importers:
       next-themes:
         specifier: 0.4.6
         version: 0.4.6(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      nuqs:
+        specifier: ^2.2.5
+        version: 2.8.3(next@16.0.10(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react-router@7.10.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react@19.1.0)
       react:
         specifier: 19.1.0
         version: 19.1.0
       react-dom:
         specifier: 19.1.0
         version: 19.1.0(react@19.1.0)
+      shiki:
+        specifier: 3.13.0
+        version: 3.13.0
       sonner:
         specifier: 2.0.7
         version: 2.0.7(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -996,15 +1011,24 @@ importers:
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
+      '@workflow/world-vercel':
+        specifier: workspace:*
+        version: link:../world-vercel
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
       clsx:
         specifier: 2.1.1
         version: 2.1.1
+      color-hash:
+        specifier: 2.0.2
+        version: 2.0.2
       date-fns:
         specifier: 4.1.0
         version: 4.1.0
@@ -1017,6 +1041,9 @@ importers:
       react-dom:
         specifier: 19.1.0
         version: 19.1.0(react@19.1.0)
+      shiki:
+        specifier: 3.13.0
+        version: 3.13.0
       sonner:
         specifier: 2.0.7
         version: 2.0.7(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -1036,6 +1063,9 @@ importers:
       '@biomejs/biome':
         specifier: 'catalog:'
         version: 2.3.3
+      '@types/color-hash':
+        specifier: 2.0.0
+        version: 2.0.0
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
@@ -6356,6 +6386,9 @@ packages:
   '@types/chai@5.2.2':
     resolution: {integrity: sha512-8kB30R7Hwqf40JPiKhVzodJs2Qc1ZJ5zuT3uzw5Hq/dhNCl3G3l83jfpdI1e20BP348+fV7VIL/+FxaXkqBmWg==}
 
+  '@types/color-hash@2.0.0':
+    resolution: {integrity: sha512-wVZU2AthjkuxcK8IQl2lpVzWZxu/nuOoQfEBv0cxsbV8mVlCiPExNaw9/Z1PBC0ostupYr8KbTmT2J4+qrOW7w==}
+
   '@types/connect@3.4.38':
     resolution: {integrity: sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==}
 
@@ -7535,6 +7568,9 @@ packages:
   color-convert@3.1.2:
     resolution: {integrity: sha512-UNqkvCDXstVck3kdowtOTWROIJQwafjOfXSmddoDrXo4cewMKmusCeF22Q24zvjR8nwWib/3S/dfyzPItPEiJg==}
     engines: {node: '>=14.6'}
+
+  color-hash@2.0.2:
+    resolution: {integrity: sha512-6exeENAqBTuIR1wIo36mR8xVVBv6l1hSLd7Qmvf6158Ld1L15/dbahR9VUOiX7GmGJBCnQyS0EY+I8x+wa7egg==}
 
   color-name@1.1.4:
     resolution: {integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==}
@@ -18997,6 +19033,8 @@ snapshots:
     dependencies:
       '@types/deep-eql': 4.0.2
 
+  '@types/color-hash@2.0.0': {}
+
   '@types/connect@3.4.38':
     dependencies:
       '@types/node': 24.6.2
@@ -20604,6 +20642,8 @@ snapshots:
   color-convert@3.1.2:
     dependencies:
       color-name: 2.1.0
+
+  color-hash@2.0.2: {}
 
   color-name@1.1.4: {}
 

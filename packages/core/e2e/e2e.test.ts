@@ -4,6 +4,7 @@ import path from 'path';
 import { afterAll, assert, describe, expect, test } from 'vitest';
 import { dehydrateWorkflowArguments } from '../src/serialization';
 import {
+  cliHealthJson,
   cliInspectJson,
   getProtectionBypassHeaders,
   hasStepSourceMaps,
@@ -48,9 +49,13 @@ function writeE2EMetadata() {
 
 async function triggerWorkflow(
   workflow: string | { workflowFile: string; workflowFn: string },
-  args: any[]
+  args: any[],
+  options?: { usePagesRouter?: boolean }
 ): Promise<{ runId: string }> {
-  const url = new URL('/api/trigger', deploymentUrl);
+  const endpoint = options?.usePagesRouter
+    ? '/api/trigger-pages'
+    : '/api/trigger';
+  const url = new URL(endpoint, deploymentUrl);
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;
   const workflowFile =
@@ -956,6 +961,65 @@ describe('e2e', () => {
   );
 
   test(
+    'concurrent hook token conflict - two workflows cannot use the same hook token simultaneously',
+    { timeout: 60_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      // Start first workflow - it will create a hook and wait for a payload
+      const run1 = await triggerWorkflow('hookCleanupTestWorkflow', [
+        token,
+        customData,
+      ]);
+
+      // Wait for the hook to be registered by workflow 1
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Start second workflow with the SAME token while first is still running
+      // This should fail because the hook token is already in use
+      const run2 = await triggerWorkflow('hookCleanupTestWorkflow', [
+        token,
+        customData,
+      ]);
+
+      // The second workflow should fail with a hook token conflict error
+      const run2Result = await getWorkflowReturnValue(run2.runId);
+      expect(run2Result.name).toBe('WorkflowRunFailedError');
+      expect(run2Result.cause.message).toContain(
+        'already in use by another workflow'
+      );
+
+      // Verify workflow 2 failed
+      const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
+      expect(run2Data.status).toBe('failed');
+
+      // Now send a payload to complete workflow 1
+      const hookUrl = new URL('/api/hook', deploymentUrl);
+      const res = await fetch(hookUrl, {
+        method: 'POST',
+        headers: getProtectionBypassHeaders(),
+        body: JSON.stringify({
+          token,
+          data: { message: 'test-concurrent', customData },
+        }),
+      });
+      expect(res.status).toBe(200);
+
+      // Verify workflow 1 completed successfully
+      const run1Result = await getWorkflowReturnValue(run1.runId);
+      expect(run1Result).toMatchObject({
+        message: 'test-concurrent',
+        customData,
+        hookCleanupTestData: 'workflow_completed',
+      });
+
+      const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
+      expect(run1Data.status).toBe('completed');
+    }
+  );
+
+  test(
     'stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)',
     { timeout: 60_000 },
     async () => {
@@ -1156,6 +1220,37 @@ describe('e2e', () => {
   );
 
   test(
+    'health check (CLI) - workflow health command reports healthy endpoints',
+    { timeout: 60_000 },
+    async () => {
+      // NOTE: This tests the `workflow health` CLI command which uses the
+      // queue-based health check under the hood. The CLI provides a convenient
+      // way to check endpoint health from the command line.
+
+      // Test checking both endpoints (default behavior)
+      const result = await cliHealthJson({ timeout: 30000 });
+      expect(result.json.allHealthy).toBe(true);
+      expect(result.json.results).toHaveLength(2);
+
+      // Verify workflow endpoint result
+      const workflowResult = result.json.results.find(
+        (r: { endpoint: string }) => r.endpoint === 'workflow'
+      );
+      expect(workflowResult).toBeDefined();
+      expect(workflowResult.healthy).toBe(true);
+      expect(workflowResult.latencyMs).toBeGreaterThan(0);
+
+      // Verify step endpoint result
+      const stepResult = result.json.results.find(
+        (r: { endpoint: string }) => r.endpoint === 'step'
+      );
+      expect(stepResult).toBeDefined();
+      expect(stepResult.healthy).toBe(true);
+      expect(stepResult.latencyMs).toBeGreaterThan(0);
+    }
+  );
+
+  test(
     'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
     { timeout: 60_000 },
     async () => {
@@ -1175,4 +1270,200 @@ describe('e2e', () => {
       expect(runData.output).toBe('pathsAliasHelper');
     }
   );
+
+  // ==================== STATIC METHOD STEP/WORKFLOW TESTS ====================
+  // Tests for static methods on classes with "use step" and "use workflow" directives.
+
+  test(
+    'Calculator.calculate - static workflow method using static step methods from another class',
+    { timeout: 60_000 },
+    async () => {
+      // Calculator.calculate(5, 3) should:
+      // 1. MathService.add(5, 3) = 8
+      // 2. MathService.multiply(8, 2) = 16
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'Calculator.calculate',
+        },
+        [5, 3]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(16);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(16);
+    }
+  );
+
+  test(
+    'AllInOneService.processNumber - static workflow method using sibling static step methods',
+    { timeout: 60_000 },
+    async () => {
+      // AllInOneService.processNumber(10) should:
+      // 1. AllInOneService.double(10) = 20
+      // 2. AllInOneService.triple(10) = 30
+      // 3. return 20 + 30 = 50
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'AllInOneService.processNumber',
+        },
+        [10]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(50);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(50);
+    }
+  );
+
+  test(
+    'ChainableService.processWithThis - static step methods using `this` to reference the class',
+    { timeout: 60_000 },
+    async () => {
+      // ChainableService.processWithThis(5) should:
+      // - ChainableService.multiplyByClassValue(5) uses `this.multiplier` (10) -> 5 * 10 = 50
+      // - ChainableService.doubleAndMultiply(5) uses `this.multiplier` (10) -> 5 * 2 * 10 = 100
+      // - sum = 50 + 100 = 150
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'ChainableService.processWithThis',
+        },
+        [5]
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toEqual({
+        multiplied: 50, // 5 * 10
+        doubledAndMultiplied: 100, // 5 * 2 * 10
+        sum: 150, // 50 + 100
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        multiplied: 50,
+        doubledAndMultiplied: 100,
+        sum: 150,
+      });
+    }
+  );
+
+  test(
+    'thisSerializationWorkflow - step function invoked with .call() and .apply()',
+    { timeout: 60_000 },
+    async () => {
+      // thisSerializationWorkflow(10) should:
+      // 1. multiplyByFactor.call({ factor: 2 }, 10) = 20
+      // 2. multiplyByFactor.apply({ factor: 3 }, [20]) = 60
+      // 3. multiplyByFactor.call({ factor: 5 }, 60) = 300
+      // Total: 10 * 2 * 3 * 5 = 300
+      const run = await triggerWorkflow('thisSerializationWorkflow', [10]);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toBe(300);
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toBe(300);
+    }
+  );
+
+  test(
+    'customSerializationWorkflow - custom class serialization with WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow tests custom serialization of user-defined class instances.
+      // The Point class uses WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE symbols
+      // to define how instances are serialized/deserialized across workflow/step boundaries.
+      //
+      // customSerializationWorkflow(3, 4) should:
+      // 1. Create Point(3, 4)
+      // 2. transformPoint(point, 2) -> Point(6, 8)
+      // 3. transformPoint(scaled, 3) -> Point(18, 24)
+      // 4. sumPoints([Point(1,2), Point(3,4), Point(5,6)]) -> Point(9, 12)
+      const run = await triggerWorkflow('customSerializationWorkflow', [3, 4]);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      expect(returnValue).toEqual({
+        original: { x: 3, y: 4 },
+        scaled: { x: 6, y: 8 }, // 3*2, 4*2
+        scaledAgain: { x: 18, y: 24 }, // 6*3, 8*3
+        sum: { x: 9, y: 12 }, // 1+3+5, 2+4+6
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        original: { x: 3, y: 4 },
+        scaled: { x: 6, y: 8 },
+        scaledAgain: { x: 18, y: 24 },
+        sum: { x: 9, y: 12 },
+      });
+    }
+  );
+
+  // ==================== PAGES ROUTER TESTS ====================
+  // Tests for Next.js Pages Router API endpoint (only runs for nextjs-turbopack and nextjs-webpack)
+  const isNextJsApp =
+    process.env.APP_NAME === 'nextjs-turbopack' ||
+    process.env.APP_NAME === 'nextjs-webpack';
+
+  describe.skipIf(!isNextJsApp)('pages router', () => {
+    test('addTenWorkflow via pages router', { timeout: 60_000 }, async () => {
+      const run = await triggerWorkflow(
+        {
+          workflowFile: 'workflows/99_e2e.ts',
+          workflowFn: 'addTenWorkflow',
+        },
+        [123],
+        { usePagesRouter: true }
+      );
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue).toBe(133);
+    });
+
+    test(
+      'promiseAllWorkflow via pages router',
+      { timeout: 60_000 },
+      async () => {
+        const run = await triggerWorkflow('promiseAllWorkflow', [], {
+          usePagesRouter: true,
+        });
+        const returnValue = await getWorkflowReturnValue(run.runId);
+        expect(returnValue).toBe('ABC');
+      }
+    );
+
+    test('sleepingWorkflow via pages router', { timeout: 60_000 }, async () => {
+      const run = await triggerWorkflow('sleepingWorkflow', [], {
+        usePagesRouter: true,
+      });
+      const returnValue = await getWorkflowReturnValue(run.runId);
+      expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
+      expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
+    });
+  });
 });

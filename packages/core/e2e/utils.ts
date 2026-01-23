@@ -94,20 +94,28 @@ function getCliArgs(): string {
   return `--backend vercel --verbose`;
 }
 
-const awaitCommand = async (command: string, args: string[], cwd: string) => {
+const awaitCommand = async (
+  command: string,
+  args: string[],
+  cwd: string,
+  timeout = 5_000,
+  envOverrides?: Record<string, string | undefined>
+) => {
   console.log(`[Debug]: Executing ${command} ${args.join(' ')}`);
   console.log(`[Debug]: in CWD: ${cwd}`);
+
   return await new Promise<{ stdout: string; stderr: string }>(
     (resolve, reject) => {
       const child = spawn(command, args, {
         shell: true,
-        timeout: 5_000,
+        timeout,
         cwd,
         env: {
           ...process.env,
           DEBUG: '1',
+          ...envOverrides,
         },
-      } as any);
+      });
 
       let stdout = '';
       let stderr = '';
@@ -172,6 +180,64 @@ export const cliInspectJson = async (args: string) => {
     console.error('Stdout:', result.stdout);
     console.error('Stderr:', result.stderr);
     err.message = `Error parsing JSON result from CLI: ${err.message}`;
+    throw err;
+  }
+};
+
+/**
+ * Executes the `workflow health` CLI command and returns the parsed JSON result.
+ * Uses --json flag for machine-readable output.
+ */
+export const cliHealthJson = async (options?: {
+  endpoint?: 'workflow' | 'step' | 'both';
+  timeout?: number;
+}) => {
+  const cliAppPath = getWorkbenchAppPath();
+  const cliArgs = getCliArgs();
+
+  const command = `node ./node_modules/workflow/bin/run.js health`;
+  const args = ['--json'];
+
+  if (options?.endpoint) {
+    args.push(`--endpoint=${options.endpoint}`);
+  }
+  if (options?.timeout) {
+    args.push(`--timeout=${options.timeout}`);
+  }
+  if (cliArgs) {
+    args.push(cliArgs);
+  }
+
+  // Build environment overrides for the CLI process
+  const envOverrides: Record<string, string> = {};
+
+  // For local deployments, set WORKFLOW_LOCAL_BASE_URL from DEPLOYMENT_URL
+  // since different frameworks use different default ports (Astro: 4321, SvelteKit: 5173, etc.)
+  if (isLocalDeployment() && process.env.DEPLOYMENT_URL) {
+    envOverrides.WORKFLOW_LOCAL_BASE_URL = process.env.DEPLOYMENT_URL;
+  }
+
+  // The CLI health check runs outside Vercel and needs the proxy for authentication.
+  // WORKFLOW_VERCEL_SKIP_PROXY is only for code running INSIDE Vercel deployments,
+  // so we explicitly set it to empty string to disable skip-proxy behavior.
+  envOverrides.WORKFLOW_VERCEL_SKIP_PROXY = '';
+
+  const result = await awaitCommand(
+    command,
+    args,
+    cliAppPath,
+    45_000,
+    envOverrides
+  );
+  try {
+    console.log('Health check result:', result.stdout);
+    const json = JSON.parse(result.stdout || '{}');
+    return { json, stdout: result.stdout, stderr: result.stderr };
+  } catch (err) {
+    console.error('Stdout:', result.stdout);
+    console.error('Stderr:', result.stderr);
+    (err as Error).message =
+      `Error parsing JSON result from health CLI: ${(err as Error).message}`;
     throw err;
   }
 };

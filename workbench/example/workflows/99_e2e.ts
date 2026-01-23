@@ -1,4 +1,5 @@
 // Test path alias resolution - imports a helper from outside the workbench directory
+/** biome-ignore-all lint/complexity/noStaticOnlyClass: <explanation> */
 import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
@@ -380,6 +381,131 @@ export async function promiseRaceStressTestWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+async function stepThatRetriesAndSucceeds() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepThatRetriesAndSucceeds - attempt: ${attempt}`);
+
+  // Fail on attempts 1 and 2, succeed on attempt 3
+  if (attempt < 3) {
+    console.log(`Attempt ${attempt} - throwing error to trigger retry`);
+    throw new Error(`Failed on attempt ${attempt}`);
+  }
+
+  console.log(`Attempt ${attempt} - succeeding`);
+  return attempt;
+}
+
+export async function retryAttemptCounterWorkflow() {
+  'use workflow';
+  console.log('Starting retry attempt counter workflow');
+
+  // This step should fail twice and succeed on the third attempt
+  const finalAttempt = await stepThatRetriesAndSucceeds();
+
+  console.log(`Workflow completed with final attempt: ${finalAttempt}`);
+  return { finalAttempt };
+}
+
+//////////////////////////////////////////////////////////
+
+async function stepThatThrowsRetryableError() {
+  'use step';
+  const { attempt, stepStartedAt } = getStepMetadata();
+  if (attempt === 1) {
+    throw new RetryableError('Retryable error', {
+      retryAfter: '10s',
+    });
+  }
+  return {
+    attempt,
+    stepStartedAt,
+    duration: Date.now() - stepStartedAt.getTime(),
+  };
+}
+
+export async function crossFileErrorWorkflow() {
+  'use workflow';
+  // This will throw an error from the imported helpers.ts file
+  callThrower();
+  return 'never reached';
+}
+
+//////////////////////////////////////////////////////////
+
+export async function retryableAndFatalErrorWorkflow() {
+  'use workflow';
+
+  const retryableResult = await stepThatThrowsRetryableError();
+
+  let gotFatalError = false;
+  try {
+    await stepThatFails();
+  } catch (error: any) {
+    if (FatalError.is(error)) {
+      gotFatalError = true;
+    }
+  }
+
+  return { retryableResult, gotFatalError };
+}
+
+//////////////////////////////////////////////////////////
+
+// Test that maxRetries = 0 means the step runs once but does not retry on failure
+async function stepWithNoRetries() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetries - attempt: ${attempt}`);
+  // Always fail - with maxRetries = 0, this should only run once
+  throw new Error(`Failed on attempt ${attempt}`);
+}
+stepWithNoRetries.maxRetries = 0;
+
+// Test that maxRetries = 0 works when the step succeeds
+async function stepWithNoRetriesThatSucceeds() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetriesThatSucceeds - attempt: ${attempt}`);
+  return { attempt };
+}
+stepWithNoRetriesThatSucceeds.maxRetries = 0;
+
+export async function maxRetriesZeroWorkflow() {
+  'use workflow';
+  console.log('Starting maxRetries = 0 workflow');
+
+  // First, verify that a step with maxRetries = 0 can still succeed
+  const successResult = await stepWithNoRetriesThatSucceeds();
+
+  // Now test that a failing step with maxRetries = 0 does NOT retry
+  let failedAttempt: number | null = null;
+  let gotError = false;
+  try {
+    await stepWithNoRetries();
+  } catch (error: any) {
+    gotError = true;
+    console.log('Received error', typeof error, error, error.message);
+    // Extract the attempt number from the error message
+    const match = error.message?.match(/attempt (\d+)/);
+    if (match) {
+      failedAttempt = parseInt(match[1], 10);
+    }
+  }
+
+  console.log(
+    `Workflow completed: successResult=${JSON.stringify(successResult)}, gotError=${gotError}, failedAttempt=${failedAttempt}`
+  );
+
+  return {
+    successResult,
+    gotError,
+    failedAttempt,
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function hookCleanupTestWorkflow(
   token: string,
   customData: string
@@ -711,4 +837,243 @@ export async function errorFatalCatchable() {
   } catch (e: any) {
     return { caught: true, isFatal: FatalError.is(e) };
   }
+}
+
+// ============================================================
+// STATIC METHOD STEP/WORKFLOW TESTS
+// ============================================================
+// Tests for static methods on classes with "use step" and "use workflow" directives.
+// ============================================================
+
+/**
+ * Service class with static step methods for math operations.
+ * These methods are transformed to be callable as workflow steps.
+ */
+export class MathService {
+  /** Static step: add two numbers */
+  static async add(a: number, b: number): Promise<number> {
+    'use step';
+    return a + b;
+  }
+
+  /** Static step: multiply two numbers */
+  static async multiply(a: number, b: number): Promise<number> {
+    'use step';
+    return a * b;
+  }
+}
+
+/**
+ * Workflow class with a static workflow method that uses static step methods.
+ */
+export class Calculator {
+  /** Static workflow: uses MathService static step methods */
+  static async calculate(x: number, y: number): Promise<number> {
+    'use workflow';
+    // Add x + y, then multiply by 2
+    const sum = await MathService.add(x, y);
+    const result = await MathService.multiply(sum, 2);
+    return result;
+  }
+}
+
+/**
+ * Alternative pattern: both step and workflow methods in the same class.
+ */
+export class AllInOneService {
+  static async double(n: number): Promise<number> {
+    'use step';
+    return n * 2;
+  }
+
+  static async triple(n: number): Promise<number> {
+    'use step';
+    return n * 3;
+  }
+
+  /** Static workflow: double(n) + triple(n) = 2n + 3n = 5n */
+  static async processNumber(n: number): Promise<number> {
+    'use workflow';
+    const doubled = await AllInOneService.double(n);
+    const tripled = await AllInOneService.triple(n);
+    return doubled + tripled;
+  }
+}
+
+/**
+ * Class that uses `this` in static step methods to reference the class itself.
+ * This tests that the class constructor is properly serialized when `this` is used.
+ */
+export class ChainableService {
+  /** The multiplier used by the multiply step */
+  static multiplier = 10;
+
+  /** Static step that uses `this` to access class properties */
+  static async multiplyByClassValue(
+    this: typeof ChainableService,
+    n: number
+  ): Promise<number> {
+    'use step';
+    // Use `this` to reference the class and access its static property
+    // `this` is the class constructor, so `this.multiplier` accesses the static property
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    return n * this.multiplier;
+  }
+
+  /** Static step that uses `this` to call another static method */
+  static async doubleAndMultiply(
+    this: typeof ChainableService,
+    n: number
+  ): Promise<number> {
+    'use step';
+    // Use `this` to access the static property on the class
+    // Note: We can't call another step from within a step, so we just reference a static property
+    // biome-ignore lint/complexity/noThisInStatic: Testing `this` serialization for static methods
+    return n * 2 * this.multiplier;
+  }
+
+  /** Static workflow that demonstrates `this` serialization with static methods */
+  static async processWithThis(n: number): Promise<{
+    multiplied: number;
+    doubledAndMultiplied: number;
+    sum: number;
+  }> {
+    'use workflow';
+    // When calling static methods via ClassName.method(), `this` inside the step
+    // will be the class constructor (ChainableService). The class constructor
+    // is serialized with its classId and passed to the step handler.
+    //
+    // NOTE: We use `ChainableService.method()` here instead of `this.method()` because
+    // the `this` argument is not currently passed through when invoking a workflow via
+    // `start()`. Workflows are executed as standalone functions, so `this` inside the
+    // workflow body is undefined. This could be revisited in the future if needed.
+    const multiplied = await ChainableService.multiplyByClassValue(n);
+    const doubledAndMultiplied = await ChainableService.doubleAndMultiply(n);
+
+    return {
+      multiplied, // n * 10
+      doubledAndMultiplied, // n * 2 * 10 = n * 20
+      sum: multiplied + doubledAndMultiplied, // n * 10 + n * 20 = n * 30
+    };
+  }
+}
+
+//////////////////////////////////////////////////////////
+// E2E test for `this` serialization with .call() and .apply()
+//////////////////////////////////////////////////////////
+
+/**
+ * A step function that uses `this` to access properties.
+ */
+async function multiplyByFactor(this: { factor: number }, value: number) {
+  'use step';
+  return value * this.factor;
+}
+
+/**
+ * Workflow that tests calling step functions with explicit `this` via .call() and .apply()
+ */
+export async function thisSerializationWorkflow(baseValue: number) {
+  'use workflow';
+  // Test .call() - multiply baseValue by 2
+  const result1 = await multiplyByFactor.call({ factor: 2 }, baseValue);
+
+  // Test .apply() - multiply result1 by 3
+  const result2 = await multiplyByFactor.apply({ factor: 3 }, [result1]);
+
+  // Test .call() again - multiply result2 by 5
+  const result3 = await multiplyByFactor.call({ factor: 5 }, result2);
+
+  // baseValue * 2 * 3 * 5 = baseValue * 30
+  return result3;
+}
+
+//////////////////////////////////////////////////////////
+// Custom Serialization E2E Test
+//////////////////////////////////////////////////////////
+
+/**
+ * A custom class with user-defined serialization using Symbol.for() directly.
+ * The SWC plugin detects these symbols and generates the classId and registration automatically.
+ *
+ * Note: The SWC plugin also supports named imports (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
+ * from the "@workflow/serde" package. We use Symbol.for() directly here for simplicity since
+ * the SWC plugin has its own tests for the named import case.
+ */
+export class Point {
+  constructor(
+    public x: number,
+    public y: number
+  ) {}
+
+  /** Custom serialization - converts instance to plain object */
+  static [Symbol.for('workflow-serialize')](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  /** Custom deserialization - reconstructs instance from plain object */
+  static [Symbol.for('workflow-deserialize')](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+
+  /** Helper method to compute distance from origin */
+  distanceFromOrigin(): number {
+    return Math.sqrt(this.x * this.x + this.y * this.y);
+  }
+}
+
+/**
+ * Step that receives a Point instance and returns a new Point
+ */
+async function transformPoint(point: Point, scale: number) {
+  'use step';
+  // Verify the point was properly deserialized and has its methods
+  // (calling distanceFromOrigin proves the prototype chain is intact)
+  console.log('Point distance from origin:', point.distanceFromOrigin());
+  // Create and return a new Point (will be serialized on return)
+  return new Point(point.x * scale, point.y * scale);
+}
+
+/**
+ * Step that receives an array of Points
+ */
+async function sumPoints(points: Point[]) {
+  'use step';
+  let totalX = 0;
+  let totalY = 0;
+  for (const p of points) {
+    totalX += p.x;
+    totalY += p.y;
+  }
+  return new Point(totalX, totalY);
+}
+
+/**
+ * Workflow that tests custom serialization of user-defined class instances.
+ * The Point class uses WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE symbols
+ * to define how instances should be serialized/deserialized across the
+ * workflow/step boundary.
+ */
+export async function customSerializationWorkflow(x: number, y: number) {
+  'use workflow';
+
+  // Create a Point instance
+  const point = new Point(x, y);
+
+  // Pass it to a step - tests serialization of workflow -> step
+  const scaled = await transformPoint(point, 2);
+
+  // The returned Point should also work - tests serialization of step -> workflow
+  const scaledAgain = await transformPoint(scaled, 3);
+
+  // Test with an array of Points
+  const points = [new Point(1, 2), new Point(3, 4), new Point(5, 6)];
+  const sum = await sumPoints(points);
+
+  return {
+    original: { x: point.x, y: point.y },
+    scaled: { x: scaled.x, y: scaled.y },
+    scaledAgain: { x: scaledAgain.x, y: scaledAgain.y },
+    sum: { x: sum.x, y: sum.y },
+  };
 }

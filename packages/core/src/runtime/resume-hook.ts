@@ -1,6 +1,10 @@
 import { waitUntil } from '@vercel/functions';
 import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
-import type { Hook, WorkflowInvokePayload } from '@workflow/world';
+import {
+  type Hook,
+  SPEC_VERSION_CURRENT,
+  type WorkflowInvokePayload,
+} from '@workflow/world';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -33,7 +37,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
  * This function is called externally (e.g., from an API route or server action)
  * to send data to a hook and resume the associated workflow run.
  *
- * @param token - The unique token identifying the hook
+ * @param tokenOrHook - The unique token identifying the hook, or the hook object itself
  * @param payload - The data payload to send to the hook
  * @returns Promise resolving to the hook
  * @throws Error if the hook is not found or if there's an error during the process
@@ -57,7 +61,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
  * ```
  */
 export async function resumeHook<T = any>(
-  token: string,
+  tokenOrHook: string | Hook,
   payload: T
 ): Promise<Hook> {
   return await waitedUntil(() => {
@@ -65,10 +69,13 @@ export async function resumeHook<T = any>(
       const world = getWorld();
 
       try {
-        const hook = await getHookByToken(token);
+        const hook =
+          typeof tokenOrHook === 'string'
+            ? await getHookByToken(tokenOrHook)
+            : tokenOrHook;
 
         span?.setAttributes({
-          ...Attribute.HookToken(token),
+          ...Attribute.HookToken(hook.token),
           ...Attribute.HookId(hook.hookId),
           ...Attribute.WorkflowRunId(hook.runId),
         });
@@ -90,6 +97,7 @@ export async function resumeHook<T = any>(
         // Create a hook_received event with the payload
         await world.events.create(hook.runId, {
           eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
           correlationId: hook.hookId,
           eventData: {
             payload: dehydratedPayload,
@@ -129,7 +137,9 @@ export async function resumeHook<T = any>(
         return hook;
       } catch (err) {
         span?.setAttributes({
-          ...Attribute.HookToken(token),
+          ...Attribute.HookToken(
+            typeof tokenOrHook === 'string' ? tokenOrHook : tokenOrHook.token
+          ),
           ...Attribute.HookFound(false),
         });
         throw err;
@@ -206,7 +216,7 @@ export async function resumeWebhook(
     response = new Response(null, { status: 202 });
   }
 
-  await resumeHook(hook.token, request);
+  await resumeHook(hook, request);
 
   if (responseReadable) {
     // Wait for the readable stream to emit one chunk,

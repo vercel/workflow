@@ -34,14 +34,136 @@ describe('createQueue', () => {
     it('should send message with payload and queueName', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
 
-      const queue = createQueue();
-      await queue.queue('__wkf_workflow_test', { runId: 'run-123' });
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      const sentPayload = mockSend.mock.calls[0][1];
+      try {
+        const queue = createQueue();
+        await queue.queue('__wkf_workflow_test', { runId: 'run-123' });
 
-      expect(sentPayload.payload).toEqual({ runId: 'run-123' });
-      expect(sentPayload.queueName).toBe('__wkf_workflow_test');
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const sentPayload = mockSend.mock.calls[0][1];
+
+        expect(sentPayload.payload).toEqual({ runId: 'run-123' });
+        expect(sentPayload.queueName).toBe('__wkf_workflow_test');
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it('should throw when no deploymentId and VERCEL_DEPLOYMENT_ID is not set', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+
+      // Ensure VERCEL_DEPLOYMENT_ID is not set
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      delete process.env.VERCEL_DEPLOYMENT_ID;
+
+      try {
+        const queue = createQueue();
+        await expect(
+          queue.queue('__wkf_workflow_test', { runId: 'run-123' })
+        ).rejects.toThrow(
+          'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set'
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        }
+      }
+    });
+
+    it('should not throw when deploymentId is provided in options', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+
+      // Ensure VERCEL_DEPLOYMENT_ID is not set
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      delete process.env.VERCEL_DEPLOYMENT_ID;
+
+      try {
+        const queue = createQueue();
+        await expect(
+          queue.queue(
+            '__wkf_workflow_test',
+            { runId: 'run-123' },
+            { deploymentId: 'dpl_123' }
+          )
+        ).resolves.toEqual({ messageId: 'msg-123' });
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        }
+      }
+    });
+
+    it('should not throw when VERCEL_DEPLOYMENT_ID is set', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_env_123';
+
+      try {
+        const queue = createQueue();
+        await expect(
+          queue.queue('__wkf_workflow_test', { runId: 'run-123' })
+        ).resolves.toEqual({ messageId: 'msg-123' });
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it('should silently handle idempotency key conflicts', async () => {
+      mockSend.mockRejectedValue(
+        new Error('Duplicate idempotency key detected')
+      );
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        const result = await queue.queue(
+          '__wkf_workflow_test',
+          { runId: 'run-123' },
+          { idempotencyKey: 'my-key' }
+        );
+
+        // Should not throw, and should return a placeholder messageId
+        expect(result.messageId).toBe('msg_duplicate_my-key');
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it('should rethrow non-idempotency errors', async () => {
+      mockSend.mockRejectedValue(new Error('Some other error'));
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        await expect(
+          queue.queue('__wkf_workflow_test', { runId: 'run-123' })
+        ).rejects.toThrow('Some other error');
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
     });
   });
 
@@ -118,6 +240,7 @@ describe('createQueue', () => {
         {
           payload: { runId: 'run-123' },
           queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_original', // Include deploymentId for re-enqueueing
         },
         { messageId: 'msg-123', deliveryCount: 1, createdAt: oldMessageTime }
       );
@@ -184,6 +307,7 @@ describe('createQueue', () => {
         {
           payload: stepPayload,
           queueName: '__wkf_step_myStep',
+          deploymentId: 'dpl_original', // Include deploymentId for re-enqueueing
         },
         { messageId: 'msg-123', deliveryCount: 1, createdAt: oldMessageTime }
       );
