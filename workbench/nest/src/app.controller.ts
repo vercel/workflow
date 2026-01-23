@@ -22,9 +22,9 @@ import { allWorkflows } from './_workflows.js';
 @Controller('api')
 export class AppController {
   @Post('hook')
-  @HttpCode(HttpStatus.OK)
   async resumeWorkflowHook(
-    @Body() body: { token: string; data: any } | string
+    @Body() body: { token: string; data: any } | string,
+    @Res() res: Response
   ) {
     // Handle body as string (when Content-Type is not application/json) or object
     const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
@@ -36,11 +36,8 @@ export class AppController {
       console.log('hook', hook);
     } catch (error) {
       console.log('error during getHookByToken', error);
-      // Return 422 for invalid token (matching other workbench apps)
-      throw new HttpException(
-        { message: null },
-        HttpStatus.UNPROCESSABLE_ENTITY
-      );
+      // Return 422 for invalid token with null body (matching other workbench apps)
+      return res.status(HttpStatus.UNPROCESSABLE_ENTITY).json(null);
     }
 
     await resumeHook(hook.token, {
@@ -49,7 +46,7 @@ export class AppController {
       customData: hook.metadata?.customData,
     });
 
-    return hook;
+    return res.status(HttpStatus.OK).json(hook);
   }
 
   @Post('trigger')
