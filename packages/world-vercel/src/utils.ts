@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
@@ -251,7 +252,7 @@ export async function makeRequest<T>({
   const result = schema.safeParse(parseResult.data);
   if (!result.success) {
     throw new WorkflowAPIError(
-      `Schema validation failed for ${request.method} ${endpoint}:\n\n${result.error}\n\nResponse context: ${parseResult.debugContext}`,
+      `Schema validation failed for ${request.method} ${endpoint}:\n\n${result.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
       { url, cause: result.error }
     );
   }
@@ -261,14 +262,27 @@ export async function makeRequest<T>({
 
 interface ParseResult {
   data: unknown;
-  /** Debug context for error messages (e.g., "Content-Type: application/json, 1234 bytes, preview: {...}") */
-  debugContext: string;
+  /** Lazily generates debug context for error messages (only called on failure) */
+  getDebugContext: () => string;
+}
+
+/** Max length for response preview in error messages */
+const MAX_PREVIEW_LENGTH = 500;
+
+/**
+ * Create a truncated preview of data for error messages.
+ */
+function createPreview(data: unknown): string {
+  const str = inspect(data, { depth: 3, maxArrayLength: 10, breakLength: 120 });
+  return str.length > MAX_PREVIEW_LENGTH
+    ? `${str.slice(0, MAX_PREVIEW_LENGTH)}...`
+    : str;
 }
 
 /**
  * Parse response body based on Content-Type header.
  * Supports both CBOR and JSON responses.
- * Returns parsed data along with debug context for error reporting.
+ * Returns parsed data along with a lazy debug context generator for error reporting.
  */
 async function parseResponseBody(response: Response): Promise<ParseResult> {
   const contentType = response.headers.get('Content-Type') || '';
@@ -278,16 +292,17 @@ async function parseResponseBody(response: Response): Promise<ParseResult> {
     const data = decode(new Uint8Array(buffer));
     return {
       data,
-      debugContext: `Content-Type: ${contentType}, ${buffer.byteLength} bytes (CBOR)`,
+      getDebugContext: () =>
+        `Content-Type: ${contentType}, ${buffer.byteLength} bytes (CBOR), preview: ${createPreview(data)}`,
     };
   }
 
   // Fall back to JSON parsing
   const text = await response.text();
   const data = JSON.parse(text);
-  const preview = text.length > 500 ? `${text.slice(0, 500)}...` : text;
   return {
     data,
-    debugContext: `Content-Type: ${contentType}, ${text.length} bytes, preview: ${preview}`,
+    getDebugContext: () =>
+      `Content-Type: ${contentType}, ${text.length} bytes, preview: ${createPreview(data)}`,
   };
 }
