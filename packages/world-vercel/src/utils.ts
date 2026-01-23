@@ -129,7 +129,10 @@ export const getHttpUrl = (
   return { baseUrl, usingProxy };
 };
 
-export const getHeaders = (config?: APIConfig): Headers => {
+export const getHeaders = (
+  config: APIConfig | undefined,
+  options: { usingProxy: boolean }
+): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
   headers.set('User-Agent', getUserAgent());
@@ -145,19 +148,22 @@ export const getHeaders = (config?: APIConfig): Headers => {
       headers.set('x-vercel-team-id', projectConfig.teamId);
     }
   }
-  if (WORKFLOW_SERVER_URL_OVERRIDE) {
+  // Only set workflow-api-url header when using the proxy, since the proxy
+  // forwards it to the workflow-server. When not using proxy, requests go
+  // directly to the workflow-server so this header has no effect.
+  if (WORKFLOW_SERVER_URL_OVERRIDE && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
   }
   return headers;
 };
 
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
-  const headers = getHeaders(config);
+  const { baseUrl, usingProxy } = getHttpUrl(config);
+  const headers = getHeaders(config, { usingProxy });
   const token = config?.token ?? (await getVercelOidcToken());
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
-  const { baseUrl, usingProxy } = getHttpUrl(config);
   return { baseUrl, headers, usingProxy };
 }
 
