@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import type { PaginationOptions, ResolveData } from './shared.js';
+import {
+  flexibleDateSchema,
+  type PaginationOptions,
+  type ResolveData,
+} from './shared.js';
 
 // Event type enum
 export const EventTypeSchema = z.enum([
@@ -139,7 +143,7 @@ const WaitCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('wait_created'),
   correlationId: z.string(),
   eventData: z.object({
-    resumeAt: z.coerce.date(),
+    resumeAt: flexibleDateSchema,
   }),
 });
 
@@ -260,7 +264,7 @@ export const EventSchema = AllEventsSchema.and(
   z.object({
     runId: z.string(),
     eventId: z.string(),
-    createdAt: z.coerce.date(),
+    createdAt: flexibleDateSchema,
     specVersion: z.number().optional(),
   })
 );

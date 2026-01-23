@@ -5,6 +5,7 @@ import {
   type EventResult,
   EventSchema,
   EventTypeSchema,
+  flexibleDateSchema,
   HookSchema,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
@@ -48,7 +49,7 @@ const EventWithRefsSchema = z.object({
   eventType: EventTypeSchema,
   correlationId: z.string().optional(),
   eventDataRef: z.any().optional(),
-  createdAt: z.coerce.date(),
+  createdAt: flexibleDateSchema,
   specVersion: z.number().default(1),
 });
 

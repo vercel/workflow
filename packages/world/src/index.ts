@@ -26,6 +26,7 @@ export {
 } from './runs.js';
 export type * from './shared.js';
 export {
+  flexibleDateSchema,
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';

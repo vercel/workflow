@@ -1,5 +1,13 @@
 import { z } from 'zod/v4';
 
+/**
+ * Flexible date schema that accepts either ISO string or Date instance.
+ * Defined inline since this file uses zod/v4.
+ */
+const flexibleDate = z
+  .union([z.string(), z.date()])
+  .transform((val) => (val instanceof Date ? val : new Date(val)));
+
 export const QueuePrefix = z.union([
   z.literal('__wkf_step_'),
   z.literal('__wkf_workflow_'),
@@ -24,7 +32,7 @@ export type TraceCarrier = z.infer<typeof TraceCarrierSchema>;
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
-  requestedAt: z.coerce.date().optional(),
+  requestedAt: flexibleDate.optional(),
 });
 
 export const StepInvokePayloadSchema = z.object({
@@ -33,7 +41,7 @@ export const StepInvokePayloadSchema = z.object({
   workflowStartedAt: z.number(),
   stepId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
-  requestedAt: z.coerce.date().optional(),
+  requestedAt: flexibleDate.optional(),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
