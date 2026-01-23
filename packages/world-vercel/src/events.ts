@@ -15,11 +15,7 @@ import {
 import z from 'zod';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import type { APIConfig } from './utils.js';
-import {
-  DEFAULT_RESOLVE_DATA_OPTION,
-  dateToStringReplacer,
-  makeRequest,
-} from './utils.js';
+import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
 
 // Helper to filter event data based on resolveData setting
 function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
@@ -105,7 +101,7 @@ export async function getWorkflowRunEvents(
 
 export async function createWorkflowRunEvent(
   id: string | null,
-  data: AnyEventRequest,
+  requestData: AnyEventRequest,
   params?: CreateEventParams,
   config?: APIConfig
 ): Promise<EventResult> {
@@ -116,10 +112,8 @@ export async function createWorkflowRunEvent(
 
   const wireResult = await makeRequest({
     endpoint: `/v2/runs/${runIdPath}/events`,
-    options: {
-      method: 'POST',
-      body: JSON.stringify(data, dateToStringReplacer),
-    },
+    options: { method: 'POST' },
+    data: requestData,
     config,
     schema: EventResultWireSchema,
   });
