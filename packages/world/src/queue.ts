@@ -59,6 +59,13 @@ export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 export interface QueueOptions {
   deploymentId?: string;
   idempotencyKey?: string;
+  /**
+   * Delay delivery of the message by this many seconds.
+   * Used for implementing sleep() without visibility timeout management.
+   * @min 0
+   * @max 86400 (24 hours, limited by message retention)
+   */
+  delaySeconds?: number;
 }
 
 export interface Queue {

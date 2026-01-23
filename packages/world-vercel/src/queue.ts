@@ -13,15 +13,15 @@ import * as z from 'zod';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 
 /**
- * Augment @vercel/queue to support handlers that return visibility timeout.
- * VQS's built-in types only support void returns, but the runtime accepts
- * timeout objects for controlling message redelivery.
+ * Augment @vercel/queue to allow handlers that return Promise<void | undefined>.
+ * Our handlers always return undefined (to acknowledge the message) since we use
+ * delaySeconds for scheduling instead of visibilityTimeoutSeconds.
  */
 declare module '@vercel/queue' {
   type WorkflowMessageHandler = (
     message: unknown,
     metadata: MessageMetadata
-  ) => Promise<void | { timeoutSeconds: number }>;
+  ) => Promise<void | undefined>;
 
   interface WorkflowCallbackHandlers {
     [topicName: string]: { [consumerGroup: string]: WorkflowMessageHandler };
@@ -45,39 +45,31 @@ const MessageWrapper = z.object({
 });
 
 /**
- * Message Lifetime Management
+ * Sleep Implementation via Message Delays
  *
- * Vercel Queue messages have a maximum lifetime of 24 hours. After this period,
- * messages are automatically deleted regardless of their visibility timeout.
- * This creates a problem for long-running sleep() or retryAfter delays that
- * exceed 24 hours - the message would be deleted before the handler fires.
+ * VQS v3 supports `delaySeconds` which delays the initial delivery of a message.
+ * We use this for implementing sleep() by creating a new message with the delay,
+ * rather than using visibility timeouts on the same message.
  *
- * To handle delays longer than the message lifetime, we use a two-part strategy:
+ * Benefits of this approach:
+ * - Fresh 24-hour lifetime with each message (no message age tracking needed)
+ * - Messages fire at the scheduled time (no short-circuit + recheck pattern)
+ * - Simpler conceptual model: messages are triggers with delivery schedules
  *
- * 1. **Timeout Clamping**: If the requested timeoutSeconds would cause the message
- *    to expire before the next processing, we clamp the timeout to fit within
- *    the remaining message lifetime. The handler stores the target time in
- *    persistent state (step.retryAfter or wait_created event), so when the
- *    clamped timeout fires, it recalculates the remaining time and returns
- *    another timeout if needed.
+ * For sleeps > 24 hours (max delay), we use chaining:
+ * 1. Schedule message with max delay (~23h, leaving buffer)
+ * 2. When it fires, workflow checks if sleep is complete
+ * 3. If not, another delayed message is queued for remaining time
+ * 4. Process repeats until the full sleep duration has elapsed
  *
- * 2. **Message Re-enqueueing**: If the message is already at or past its safe
- *    lifetime limit (lifetime - buffer), we enqueue a fresh message and
- *    acknowledge the current one. The new message gets a fresh 24-hour clock.
- *    It fires immediately, and the handler short-circuits by checking the
- *    persistent state and returning the remaining timeoutSeconds.
- *
- * TODO: Once Vercel Queue supports NBF (not before) functionality, we can use
- * that when re-enqueueing to schedule the new message for the remaining delay
- * instead of having it fire immediately and short-circuit.
+ * The workflow runtime handles this via event sourcing - the `wait_created` event
+ * stores the `resumeAt` timestamp, and on each invocation the runtime checks
+ * if `now >= resumeAt`. If not, it returns another `timeoutSeconds`.
  *
  * These constants can be overridden via environment variables for testing.
  */
-const VERCEL_QUEUE_MESSAGE_LIFETIME = Number(
-  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME || 86400 // 24 hours in seconds
-);
-const MESSAGE_LIFETIME_BUFFER = Number(
-  process.env.VERCEL_QUEUE_MESSAGE_LIFETIME_BUFFER || 3600 // 1 hour buffer before lifetime expires
+const MAX_DELAY_SECONDS = Number(
+  process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS || 82800 // 23 hours - leave 1h buffer before 24h retention limit
 );
 
 export function createQueue(config?: APIConfig): Queue {
@@ -91,6 +83,7 @@ export function createQueue(config?: APIConfig): Queue {
     basePath: usingProxy ? '/queues/v3' : undefined,
     token: usingProxy ? config?.token : undefined,
     headers: Object.fromEntries(headers.entries()),
+    deploymentId: process.env.VERCEL_DEPLOYMENT_ID,
   });
 
   const queue: Queue['queue'] = async (queueName, payload, opts) => {
@@ -115,6 +108,7 @@ export function createQueue(config?: APIConfig): Queue {
     const encoder = hasEncoder
       ? MessageWrapper.encode
       : (data: z.infer<typeof MessageWrapper>) => data;
+
     const encoded = encoder({
       payload,
       queueName,
@@ -126,7 +120,10 @@ export function createQueue(config?: APIConfig): Queue {
       const { messageId } = await queueClient.send(
         sanitizedQueueName,
         encoded,
-        opts
+        {
+          idempotencyKey: opts?.idempotencyKey,
+          delaySeconds: opts?.delaySeconds,
+        }
       );
       return { messageId: MessageId.parse(messageId) };
     } catch (error) {
@@ -158,29 +155,30 @@ export function createQueue(config?: APIConfig): Queue {
             messageId: MessageId.parse(meta.messageId),
             attempt: meta.deliveryCount,
           });
+
           if (typeof result?.timeoutSeconds === 'number') {
-            const now = Date.now();
+            // Use delaySeconds approach: send new message with delay, then delete current
+            // Clamp to max delay (23h) - for longer sleeps, the workflow will chain
+            // multiple delayed messages until the full sleep duration has elapsed
+            const delaySeconds = Math.min(
+              result.timeoutSeconds,
+              MAX_DELAY_SECONDS
+            );
 
-            // Calculate how old this message is using the queue's createdAt timestamp
-            const messageAge = (now - meta.createdAt.getTime()) / 1000; // Convert to seconds
+            // Send new message with delay BEFORE acknowledging current message
+            // This ensures crash safety: if process dies after send but before ack,
+            // we may get a duplicate invocation but won't lose the scheduled wakeup
+            await queue(queueName, payload, {
+              deploymentId,
+              delaySeconds,
+            });
 
-            // Calculate the maximum timeout this message can handle before expiring
-            const maxAllowedTimeout =
-              VERCEL_QUEUE_MESSAGE_LIFETIME -
-              MESSAGE_LIFETIME_BUFFER -
-              messageAge;
-
-            if (maxAllowedTimeout <= 0) {
-              // Message is at its lifetime limit - re-enqueue to get a fresh 24-hour clock
-              // Preserve the original deploymentId to ensure routing to the same deployment
-              await queue(queueName, payload, { deploymentId });
-              return undefined;
-            } else if (result.timeoutSeconds > maxAllowedTimeout) {
-              // Clamp timeout to fit within remaining message lifetime
-              result.timeoutSeconds = maxAllowedTimeout;
-            }
+            // Delete current message by returning undefined
+            return undefined;
           }
-          return result;
+
+          // No timeout - message will be deleted (acknowledged)
+          return undefined;
         },
       },
     });

@@ -190,7 +190,7 @@ describe('createQueue', () => {
   });
 
   describe('createQueueHandler()', () => {
-    // Helper to simulate handleCallback behavior
+    // Helper to simulate handleCallback behavior and capture the internal handler
     function setupHandler(handlerResult: { timeoutSeconds: number } | void) {
       const capturedHandlers: Record<
         string,
@@ -210,93 +210,65 @@ describe('createQueue', () => {
       return capturedHandlers[handlerKey].default;
     }
 
-    it('should pass through timeoutSeconds when message is fresh', async () => {
-      const handler = setupHandler({ timeoutSeconds: 50000 });
+    it('should send new message with delaySeconds when handler returns timeoutSeconds', async () => {
+      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+      const handler = setupHandler({ timeoutSeconds: 300 }); // 5 minutes
 
       const result = await handler(
         {
           payload: { runId: 'run-123' },
           queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_original',
         },
         { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
       );
 
-      // Should pass through unchanged since message is fresh
-      expect(result).toEqual({ timeoutSeconds: 50000 });
-      expect(mockSend).not.toHaveBeenCalled(); // No re-enqueue
-    });
-
-    it('should clamp timeoutSeconds when message has limited lifetime remaining', async () => {
-      const handler = setupHandler({ timeoutSeconds: 7200 }); // 2 hours
-
-      // Message that was created 22 hours ago
-      // maxAllowedTimeout = 86400 - 3600 - 79200 = 3600s (1 hour)
-      const oldMessageTime = new Date(Date.now() - 22 * 60 * 60 * 1000);
-
-      const result = await handler(
-        {
-          payload: { runId: 'run-123' },
-          queueName: '__wkf_workflow_test',
-        },
-        { messageId: 'msg-123', deliveryCount: 1, createdAt: oldMessageTime }
-      );
-
-      // Should clamp to maxAllowedTimeout (~3600s)
-      expect(result).toBeDefined();
-      expect((result as { timeoutSeconds: number }).timeoutSeconds).toBeCloseTo(
-        3600,
-        0
-      );
-      expect(mockSend).not.toHaveBeenCalled(); // No re-enqueue, just clamping
-    });
-
-    it('should re-enqueue when message has no lifetime remaining', async () => {
-      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
-      const handler = setupHandler({ timeoutSeconds: 3600 }); // 1 hour
-
-      // Message that was created 23 hours ago (at the buffer limit)
-      // maxAllowedTimeout = 86400 - 3600 - 82800 = 0s
-      const oldMessageTime = new Date(Date.now() - 23 * 60 * 60 * 1000);
-
-      const result = await handler(
-        {
-          payload: { runId: 'run-123' },
-          queueName: '__wkf_workflow_test',
-          deploymentId: 'dpl_original', // Include deploymentId for re-enqueueing
-        },
-        { messageId: 'msg-123', deliveryCount: 1, createdAt: oldMessageTime }
-      );
-
-      // Should return undefined (acknowledge old message)
+      // Should return undefined (message will be deleted/acknowledged)
       expect(result).toBeUndefined();
 
-      // Should have re-enqueued
+      // Should have sent a new message with delaySeconds
       expect(mockSend).toHaveBeenCalledTimes(1);
-      const sentPayload = mockSend.mock.calls[0][1];
-      expect(sentPayload.payload).toEqual({ runId: 'run-123' });
-      expect(sentPayload.queueName).toBe('__wkf_workflow_test');
+      expect(mockSend).toHaveBeenCalledWith(
+        '__wkf_workflow_test', // Underscores are preserved by sanitization
+        expect.objectContaining({
+          payload: { runId: 'run-123' },
+          queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_original',
+        }),
+        expect.objectContaining({
+          delaySeconds: 300,
+        })
+      );
     });
 
-    it('should not re-enqueue when message has enough lifetime remaining', async () => {
-      const handler = setupHandler({ timeoutSeconds: 7200 }); // 2 hours
-
-      // Message that was created 10 hours ago (plenty of time remaining)
-      const messageTime = new Date(Date.now() - 10 * 60 * 60 * 1000);
+    it('should clamp delaySeconds to max 23 hours for long sleeps', async () => {
+      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+      const handler = setupHandler({ timeoutSeconds: 100000 }); // ~27.8 hours
 
       const result = await handler(
         {
           payload: { runId: 'run-123' },
           queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_original',
         },
-        { messageId: 'msg-123', deliveryCount: 1, createdAt: messageTime }
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
       );
 
-      // Should return the timeout (not re-enqueue)
-      expect(result).toEqual({ timeoutSeconds: 7200 });
-      expect(mockSend).not.toHaveBeenCalled();
+      // Should return undefined (message will be deleted)
+      expect(result).toBeUndefined();
+
+      // Should have sent a new message with delaySeconds clamped to 82800 (23h)
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledWith(
+        '__wkf_workflow_test', // Underscores are preserved by sanitization
+        expect.any(Object),
+        expect.objectContaining({
+          delaySeconds: 82800, // MAX_DELAY_SECONDS (23 hours)
+        })
+      );
     });
 
-    it('should pass through result when no timeoutSeconds', async () => {
+    it('should return undefined without sending when handler returns void', async () => {
       const handler = setupHandler(undefined);
 
       const result = await handler(
@@ -307,16 +279,34 @@ describe('createQueue', () => {
         { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
       );
 
+      // Should return undefined (acknowledge message)
       expect(result).toBeUndefined();
+
+      // Should NOT have sent a new message
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('should preserve deploymentId when sending delayed message', async () => {
+      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+      const handler = setupHandler({ timeoutSeconds: 3600 }); // 1 hour
+
+      await handler(
+        {
+          payload: { runId: 'run-123' },
+          queueName: '__wkf_workflow_test',
+          deploymentId: 'dpl_original',
+        },
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const sentPayload = mockSend.mock.calls[0][1];
+      expect(sentPayload.deploymentId).toBe('dpl_original');
     });
 
     it('should handle step payloads correctly', async () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
       const handler = setupHandler({ timeoutSeconds: 3600 }); // 1 hour
-
-      // Old message approaching expiry
-      const oldMessageTime = new Date(Date.now() - 23 * 60 * 60 * 1000);
 
       const stepPayload = {
         workflowName: 'test-workflow',
@@ -329,14 +319,15 @@ describe('createQueue', () => {
         {
           payload: stepPayload,
           queueName: '__wkf_step_myStep',
-          deploymentId: 'dpl_original', // Include deploymentId for re-enqueueing
+          deploymentId: 'dpl_original',
         },
-        { messageId: 'msg-123', deliveryCount: 1, createdAt: oldMessageTime }
+        { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
       );
 
       expect(mockSend).toHaveBeenCalledTimes(1);
       const sentPayload = mockSend.mock.calls[0][1];
       expect(sentPayload.payload).toEqual(stepPayload);
+      expect(sentPayload.queueName).toBe('__wkf_step_myStep');
     });
   });
 });
