@@ -124,24 +124,46 @@ describe('createQueue', () => {
         new Error('Duplicate idempotency key detected')
       );
 
-      const queue = createQueue();
-      const result = await queue.queue(
-        '__wkf_workflow_test',
-        { runId: 'run-123' },
-        { idempotencyKey: 'my-key' }
-      );
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
 
-      // Should not throw, and should return a placeholder messageId
-      expect(result.messageId).toBe('msg_duplicate_my-key');
+      try {
+        const queue = createQueue();
+        const result = await queue.queue(
+          '__wkf_workflow_test',
+          { runId: 'run-123' },
+          { idempotencyKey: 'my-key' }
+        );
+
+        // Should not throw, and should return a placeholder messageId
+        expect(result.messageId).toBe('msg_duplicate_my-key');
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
     });
 
     it('should rethrow non-idempotency errors', async () => {
       mockSend.mockRejectedValue(new Error('Some other error'));
 
-      const queue = createQueue();
-      await expect(
-        queue.queue('__wkf_workflow_test', { runId: 'run-123' })
-      ).rejects.toThrow('Some other error');
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        await expect(
+          queue.queue('__wkf_workflow_test', { runId: 'run-123' })
+        ).rejects.toThrow('Some other error');
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
     });
   });
 
