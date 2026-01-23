@@ -35,7 +35,7 @@ cd "$TARGET_DIR"
 # Function to resolve a workflows directory symlink
 resolve_workflows_symlink() {
   local workflows_path="$1"
-  
+
   if [ -L "$workflows_path" ]; then
     workflows_target=$(readlink "$workflows_path")
     # Resolve relative path
