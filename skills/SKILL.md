@@ -199,10 +199,30 @@ async function chargeCard(amount: number) {
 }
 ```
 
+## Custom Class Serialization
+
+Class instances can be serialized by implementing static methods:
+
+```typescript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+class Point {
+  constructor(public x: number, public y: number) {}
+
+  static [WORKFLOW_SERIALIZE](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+}
+```
+
 ## What Cannot Be Serialized
 
-- Functions/callbacks - define logic in steps
-- Class instances with methods - use plain objects
+- Functions/callbacks (except step functions) - define logic in steps
+- Class instances without custom serialization methods
 - Symbols, WeakMap, WeakSet
 - Node.js modules (fs, http, crypto) - use in steps only
 
