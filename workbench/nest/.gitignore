@@ -7,9 +7,6 @@
 /src/_workflows.ts
 /.swc
 
-# Copied workflow files (not symlinked)
-/src/workflows/*.ts
-
 # Logs
 logs
 *.log

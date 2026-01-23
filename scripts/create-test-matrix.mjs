@@ -60,6 +60,7 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: '.nestjs/workflow/workflows.mjs',
     apiFilePath: './src/app.controller.ts',
     apiFileImportPath: '..',
+    workflowsDir: 'src/workflows',
   },
   astro: {
     generatedStepPath: 'src/pages/.well-known/workflow/v1/step.js',
