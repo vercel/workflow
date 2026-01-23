@@ -22,6 +22,7 @@ import { allWorkflows } from './_workflows.js';
 @Controller('api')
 export class AppController {
   @Post('hook')
+  @HttpCode(HttpStatus.OK)
   async resumeWorkflowHook(
     @Body() body: { token: string; data: any } | string
   ) {
