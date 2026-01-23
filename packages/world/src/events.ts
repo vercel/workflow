@@ -29,6 +29,8 @@ export const EventTypeSchema = z.enum([
 // TODO: Event data on all specific event schemas can actually be undefined,
 // as the world may omit eventData when resolveData is set to 'none'.
 // Changing the type here will mainly improve type safety for o11y consumers.
+// Note: specVersion is optional for backwards compatibility with legacy data in storage,
+// but is always sent by the runtime on new events.
 export const BaseEventSchema = z.object({
   eventType: EventTypeSchema,
   correlationId: z.string().optional(),
@@ -253,6 +255,7 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
 ]);
 
 // Server response includes runId, eventId, and createdAt
+// specVersion is optional in database for backwards compatibility
 export const EventSchema = AllEventsSchema.and(
   z.object({
     runId: z.string(),

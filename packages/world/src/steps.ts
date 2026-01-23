@@ -40,6 +40,7 @@ export const StepSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
   retryAfter: z.coerce.date().optional(),
+  // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
 });
 

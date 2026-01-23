@@ -50,7 +50,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         effectiveRunId = runId;
       }
 
-      // Use client-provided specVersion, default to current if not provided
+      // specVersion is always sent by the runtime, but we provide a fallback for safety
       const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
       // Helper to check if run is in terminal state

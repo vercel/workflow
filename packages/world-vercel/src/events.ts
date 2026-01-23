@@ -41,6 +41,7 @@ const EventResultWireSchema = z.object({
 
 // Would usually "EventSchema.omit({ eventData: true })" but that doesn't work
 // on zod unions. Re-creating the schema manually.
+// specVersion defaults to 1 (legacy) when parsing responses from storage
 const EventWithRefsSchema = z.object({
   eventId: z.string(),
   runId: z.string(),
@@ -48,7 +49,7 @@ const EventWithRefsSchema = z.object({
   correlationId: z.string().optional(),
   eventDataRef: z.any().optional(),
   createdAt: z.coerce.date(),
-  specVersion: z.number().optional(),
+  specVersion: z.number().default(1),
 });
 
 // Functions

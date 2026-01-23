@@ -1,4 +1,5 @@
 import type { Hook, Step, Storage, WorkflowRun } from '@workflow/world';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 
 /**
  * Test helper functions for creating and updating storage entities through events.
@@ -19,6 +20,7 @@ export async function createRun(
 ): Promise<WorkflowRun> {
   const result = await storage.events.create(null, {
     eventType: 'run_created',
+    specVersion: SPEC_VERSION_CURRENT,
     eventData: data,
   });
   if (!result.run) {
@@ -38,6 +40,7 @@ export async function updateRun(
 ): Promise<WorkflowRun> {
   const result = await storage.events.create(runId, {
     eventType,
+    specVersion: SPEC_VERSION_CURRENT,
     eventData,
   } as any);
   if (!result.run) {
@@ -60,6 +63,7 @@ export async function createStep(
 ): Promise<Step> {
   const result = await storage.events.create(runId, {
     eventType: 'step_created',
+    specVersion: SPEC_VERSION_CURRENT,
     correlationId: data.stepId,
     eventData: { stepName: data.stepName, input: data.input },
   });
@@ -81,6 +85,7 @@ export async function updateStep(
 ): Promise<Step> {
   const result = await storage.events.create(runId, {
     eventType,
+    specVersion: SPEC_VERSION_CURRENT,
     correlationId: stepId,
     eventData,
   } as any);
@@ -104,6 +109,7 @@ export async function createHook(
 ): Promise<Hook> {
   const result = await storage.events.create(runId, {
     eventType: 'hook_created',
+    specVersion: SPEC_VERSION_CURRENT,
     correlationId: data.hookId,
     eventData: { token: data.token, metadata: data.metadata },
   });
@@ -123,6 +129,7 @@ export async function disposeHook(
 ): Promise<void> {
   await storage.events.create(runId, {
     eventType: 'hook_disposed',
+    specVersion: SPEC_VERSION_CURRENT,
     correlationId: hookId,
   });
 }

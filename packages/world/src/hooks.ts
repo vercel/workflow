@@ -16,6 +16,7 @@ export const HookSchema = z.object({
   environment: z.string(),
   metadata: zodJsonSchema.optional(),
   createdAt: z.coerce.date(),
+  // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
 });
 
