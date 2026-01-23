@@ -3,7 +3,7 @@
 /**
  * Auto-generates _workflows.ts registry file for workbenches
  *
- * Usage: node generate-workflows-registry.js [workflowsDir] [outputPath] [--esm]
+ * Usage: node generate-workflows-registry.js [workflowsDir] [outputPath] [--esm] [--runtime-path <path>]
  *
  * Defaults:
  *   workflowsDir: ./workflows
@@ -11,6 +11,7 @@
  *
  * Options:
  *   --esm: Add .js extension to imports (required for ESM with NodeNext moduleResolution)
+ *   --runtime-path <path>: Override the import path for runtime (useful when workflows are compiled to a different location)
  */
 
 const fs = require('node:fs');
@@ -19,17 +20,31 @@ const path = require('node:path');
 // Parse arguments
 const args = process.argv.slice(2);
 const esmMode = args.includes('--esm');
-const nonFlagArgs = args.filter((arg) => !arg.startsWith('--'));
+
+// Parse --runtime-path option
+let runtimePath = null;
+const runtimePathIndex = args.indexOf('--runtime-path');
+if (runtimePathIndex !== -1 && args[runtimePathIndex + 1]) {
+  runtimePath = args[runtimePathIndex + 1];
+}
+
+const nonFlagArgs = args.filter((arg, idx) => {
+  if (arg.startsWith('--')) return false;
+  // Skip the value after --runtime-path
+  if (idx > 0 && args[idx - 1] === '--runtime-path') return false;
+  return true;
+});
 
 // Get arguments or use defaults
 const workflowsDir = nonFlagArgs[0] || './workflows';
 const outputPath = nonFlagArgs[1] || './_workflows.ts';
 
 // Calculate relative path from output to workflows directory
+// If runtime-path is provided, use that instead
 const outputDir = path.dirname(outputPath);
-const relativeWorkflowsPath = path
-  .relative(outputDir, workflowsDir)
-  .replace(/\\/g, '/');
+const relativeWorkflowsPath = runtimePath
+  ? runtimePath
+  : path.relative(outputDir, workflowsDir).replace(/\\/g, '/');
 
 // Files to skip
 const SKIP_FILES = ['helpers.ts'];
