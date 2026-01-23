@@ -68,7 +68,6 @@ const statusConfig = {
 export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
   const [copied, setCopied] = useState(false);
 
-  const isExternalDocs = world.docs.startsWith('http');
   const installCommand = `npm i ${world.package}`;
 
   const handleCopy = () => {
@@ -201,24 +200,6 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                   </a>
                 </Button>
               )}
-              {isExternalDocs && world.docs !== world.repository && (
-                <Button
-                  asChild
-                  variant="outline"
-                  size="lg"
-                  className="h-[44px] text-base"
-                >
-                  <a
-                    href={world.docs}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2"
-                  >
-                    Documentation
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
-                </Button>
-              )}
             </div>
           )}
         </div>
@@ -249,7 +230,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                 </span>
               </a>
             </TooltipTrigger>
-            <TooltipContent side="left" className="max-w-[200px]">
+            <TooltipContent side="top" align="start" className="max-w-[200px]">
               <p className="text-xs">E2E Test Suite Coverage</p>
             </TooltipContent>
           </Tooltip>
@@ -280,7 +261,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                 </span>
               </a>
             </TooltipTrigger>
-            <TooltipContent side="left" className="max-w-[260px]">
+            <TooltipContent side="top" align="start" className="max-w-[260px]">
               <p className="text-xs">
                 Avg time to run a 10 step workflow where each step sleeps 1
                 second

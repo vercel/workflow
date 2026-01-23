@@ -59,12 +59,12 @@ export function Globe({ className }: GlobeProps) {
       phi: 0,
       theta: 0.3,
       dark: isDark ? 1 : 0,
-      diffuse: isDark ? 3 : 1.2,
+      diffuse: isDark ? 2 : 1.2,
       mapSamples: 16000,
-      mapBrightness: isDark ? 1.2 : 6,
-      baseColor: isDark ? [0.4, 0.4, 0.4] : [1, 1, 1],
+      mapBrightness: isDark ? 4 : 2,
+      baseColor: isDark ? [0.3, 0.3, 0.3] : [1, 1, 1],
       markerColor: [0.251, 0.678, 1],
-      glowColor: isDark ? [0.1, 0.1, 0.1] : [0.8, 0.8, 0.8],
+      glowColor: isDark ? [0.15, 0.15, 0.15] : [0.95, 0.95, 0.95],
       markers: [],
       onRender: (state) => {
         if (pointerInteracting.current === null) {

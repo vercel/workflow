@@ -12,8 +12,6 @@ interface WorldInstructionsProps {
  * Official worlds use MDX content directly instead of this component.
  */
 export function WorldInstructions({ id, world }: WorldInstructionsProps) {
-  const isExternalDocs = world.docs.startsWith('http');
-
   return (
     <section className="py-8 sm:py-12 border-t" id="installation">
       <div className="space-y-6">
@@ -35,19 +33,6 @@ export function WorldInstructions({ id, world }: WorldInstructionsProps) {
                 className="inline-flex items-center gap-2"
               >
                 View on GitHub
-                <ExternalLink className="h-4 w-4" />
-              </a>
-            </Button>
-          )}
-          {isExternalDocs && world.docs !== world.repository && (
-            <Button asChild variant="outline">
-              <a
-                href={world.docs}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2"
-              >
-                Documentation
                 <ExternalLink className="h-4 w-4" />
               </a>
             </Button>
