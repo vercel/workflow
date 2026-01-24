@@ -27,9 +27,14 @@ export const Folder = ({ item, level, children }: FolderProps) => {
   const isActive = pathname === item.index?.url;
 
   // Check if any child is active (current path starts with folder's index URL)
-  const hasActiveChild = item.index?.url
-    ? pathname.startsWith(item.index.url + '/')
-    : false;
+  // Use trailing slash to avoid false positives (e.g., /docs-other matching /docs)
+  const folderUrl = item.index?.url;
+  const hasActiveChild =
+    folderUrl && folderUrl.length > 0
+      ? pathname.startsWith(
+          folderUrl.endsWith('/') ? folderUrl : folderUrl + '/'
+        )
+      : false;
 
   const linkInner = item.index ? (
     <Link

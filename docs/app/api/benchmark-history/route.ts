@@ -82,10 +82,22 @@ async function fetchBenchmarkFile(
       { next: { revalidate: 3600 } }
     );
 
-    if (!fileRes.ok) return null;
+    if (!fileRes.ok) {
+      // 404 is expected for commits without benchmark data
+      if (fileRes.status !== 404) {
+        console.error(
+          `Failed to fetch benchmark file for ${ghPagesSha}: ${fileRes.status}`
+        );
+      }
+      return null;
+    }
 
     return (await fileRes.json()) as CIResultsData;
-  } catch {
+  } catch (error) {
+    console.error(
+      `Error fetching/parsing benchmark file for ${ghPagesSha}:`,
+      error
+    );
     return null;
   }
 }
@@ -117,7 +129,13 @@ async function buildBenchmarkSnapshotMap(): Promise<
     return snapshotMap;
   }
 
-  const ghPagesCommits = (await ghPagesCommitsRes.json()) as GitHubCommit[];
+  let ghPagesCommits: GitHubCommit[];
+  try {
+    ghPagesCommits = (await ghPagesCommitsRes.json()) as GitHubCommit[];
+  } catch (error) {
+    console.error('Failed to parse gh-pages commits JSON:', error);
+    return snapshotMap;
+  }
 
   // Fetch benchmark data for each gh-pages commit in batches
   const BATCH_SIZE = 10;

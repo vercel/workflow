@@ -14,7 +14,13 @@ export function Globe({ className }: GlobeProps) {
   const pointerInteracting = useRef<number | null>(null);
   const pointerInteractionMovement = useRef(0);
   const [size, setSize] = useState(1200);
+  const [mounted, setMounted] = useState(false);
   const { resolvedTheme } = useTheme();
+
+  // Defer theme-dependent rendering until mounted to avoid hydration mismatch
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const updatePointerInteraction = useCallback((value: number | null) => {
     pointerInteracting.current = value;
@@ -46,7 +52,7 @@ export function Globe({ className }: GlobeProps) {
   }, []);
 
   useEffect(() => {
-    if (!canvasRef.current || size === 0) return;
+    if (!canvasRef.current || size === 0 || !mounted) return;
 
     let phi = 0;
     const canvasSize = size * 2; // For retina displays
@@ -90,7 +96,7 @@ export function Globe({ className }: GlobeProps) {
     return () => {
       globe.destroy();
     };
-  }, [size, resolvedTheme]);
+  }, [size, resolvedTheme, mounted]);
 
   return (
     <div ref={containerRef} className={className} style={{ aspectRatio: '1' }}>
