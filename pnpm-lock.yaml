@@ -657,15 +657,9 @@ importers:
 
   packages/nest:
     dependencies:
-      '@swc/core':
-        specifier: 'catalog:'
-        version: 1.15.3
       '@workflow/builders':
         specifier: workspace:*
         version: link:../builders
-      '@workflow/swc-plugin':
-        specifier: workspace:*
-        version: link:../swc-plugin-workflow
       pathe:
         specifier: 2.0.3
         version: 2.0.3
