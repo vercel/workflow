@@ -114,7 +114,6 @@ export abstract class BaseBuilder {
     };
 
     const discoverStart = Date.now();
-
     try {
       await esbuild.build({
         treeShaking: true,
