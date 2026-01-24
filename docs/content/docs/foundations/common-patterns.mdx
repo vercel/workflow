@@ -247,10 +247,8 @@ With background execution, the parent workflow continues immediately after start
 **Choose direct await when:**
 - The parent needs the child's result before continuing
 - You want a single, unified event log
-- The child workflow is short-lived
 
 **Choose background execution when:**
-- The child workflow is long-running
 - The parent doesn't need to wait for the result
+- You want separate workflow runs for observability
 - You want independent retry and failure handling
-- You need to track the child workflow separately
