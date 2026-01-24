@@ -85,6 +85,25 @@ export default async function WorldsPage() {
           </div>
         </section>
 
+        {/* Last Updated */}
+        <div className="px-4 pb-8 text-center text-xs text-muted-foreground">
+          Last updated: {new Date(data.lastUpdated).toLocaleString()}
+          {data.commit && (
+            <>
+              {' · '}
+              Commit:{' '}
+              <a
+                href={`https://github.com/vercel/workflow/commit/${data.commit}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono hover:underline"
+              >
+                {data.commit.slice(0, 7)}
+              </a>
+            </>
+          )}
+        </div>
+
         {/* Provider Benchmarks Section */}
         <section className="border-t px-4 py-12 sm:py-16">
           <div className="max-w-4xl mx-auto">
@@ -182,25 +201,6 @@ export default async function WorldsPage() {
             </div>
           </div>
         </section>
-
-        {/* Last Updated Footer */}
-        <div className="border-t px-4 py-6 text-center text-xs text-muted-foreground">
-          Last updated: {new Date(data.lastUpdated).toLocaleString()}
-          {data.commit && (
-            <>
-              {' · '}
-              Commit:{' '}
-              <a
-                href={`https://github.com/vercel/workflow/commit/${data.commit}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-mono hover:underline"
-              >
-                {data.commit.slice(0, 7)}
-              </a>
-            </>
-          )}
-        </div>
       </div>
     </div>
   );
