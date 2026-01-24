@@ -111,6 +111,11 @@ export default withWorkflow(nextConfig, {
 If you need workflows in both app routes and a dedicated directory:
 
 ```typescript title="next.config.ts" lineNumbers
+import { withWorkflow } from "workflow/next";
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {};
+
 export default withWorkflow(nextConfig, {
   dirs: ['app/api', 'workflows'], // [!code highlight]
 });
