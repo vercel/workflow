@@ -355,8 +355,9 @@ describe('Workflow Performance Benchmarks', () => {
   const concurrentStepCounts = [
     { count: 10, skip: false, time: 30000 },
     { count: 25, skip: false, time: 30000 },
-    { count: 100, skip: true, time: 60000 },
-    { count: 500, skip: true, time: 120000 },
+    { count: 50, skip: false, time: 30000 },
+    { count: 100, skip: false, time: 60000 },
+    { count: 500, skip: false, time: 120000 },
     { count: 1000, skip: true, time: 180000 },
   ] as const;
 
