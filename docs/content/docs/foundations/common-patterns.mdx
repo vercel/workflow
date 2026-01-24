@@ -70,6 +70,57 @@ export async function runExternalTask(userId: string) {
 }
 ```
 
+## A Full Example
+
+Here's a simplified example taken from the [birthday card generator demo](https://github.com/vercel/workflow-examples/tree/main/birthday-card-generator), to illustrate how sequential and parallel execution can be combined.
+
+```typescript lineNumbers
+import { createWebhook, sleep, type Webhook } from "workflow"
+declare function makeCardText(prompt: string): Promise<string>; // @setup
+declare function makeCardImage(text: string): Promise<string>; // @setup
+declare function sendRSVPEmail(friend: string, webhook: Webhook): Promise<void>; // @setup
+declare function sendBirthdayCard(text: string, image: string, rsvps: unknown[], email: string): Promise<void>; // @setup
+
+async function birthdayWorkflow(
+    prompt: string,
+    email: string,
+    friends: string[],
+    birthday: Date
+) {
+    "use workflow";
+
+    // Generate a birthday card with sequential steps
+    const text = await makeCardText(prompt)
+    const image = await makeCardImage(text)
+
+    // Create webhooks for each friend who's invited to the birthday party
+    const webhooks = friends.map(_ => createWebhook())
+
+    // Send out all the RSVP invites in parallel steps
+    await Promise.all(
+        friends.map(
+            (friend, i) => sendRSVPEmail(friend, webhooks[i])
+        )
+    )
+
+    // Collect RSVPs as they are made without blocking the workflow
+    let rsvps = []
+    webhooks.map(
+        webhook => webhook
+            .then(req => req.json())
+            .then(( { rsvp } ) => rsvps.push(rsvp))
+    )
+
+    // Wait until the birthday
+    await sleep(birthday)
+
+    // Send birthday card with as many rsvps were collected
+    await sendBirthdayCard(text, image, rsvps, email)
+
+    return { text, image, status: "Sent" }
+}
+```
+
 ## Timeout Pattern
 
 A common requirement is adding timeouts to operations that might take too long. Use `Promise.race` with `sleep()` to implement this pattern.
@@ -203,54 +254,3 @@ With background execution, the parent workflow continues immediately after start
 - The parent doesn't need to wait for the result
 - You want independent retry and failure handling
 - You need to track the child workflow separately
-
-## A Full Example
-
-Here's a simplified example taken from the [birthday card generator demo](https://github.com/vercel/workflow-examples/tree/main/birthday-card-generator), to illustrate how more complex orchestration can be modelled in promises.
-
-```typescript lineNumbers
-import { createWebhook, sleep, type Webhook } from "workflow"
-declare function makeCardText(prompt: string): Promise<string>; // @setup
-declare function makeCardImage(text: string): Promise<string>; // @setup
-declare function sendRSVPEmail(friend: string, webhook: Webhook): Promise<void>; // @setup
-declare function sendBirthdayCard(text: string, image: string, rsvps: unknown[], email: string): Promise<void>; // @setup
-
-async function birthdayWorkflow(
-    prompt: string,
-    email: string,
-    friends: string[],
-    birthday: Date
-) {
-    "use workflow";
-
-    // Generate a birthday card with sequential steps
-    const text = await makeCardText(prompt)
-    const image = await makeCardImage(text)
-
-    // Create webhooks for each friend who's invited to the birthday party
-    const webhooks = friends.map(_ => createWebhook())
-
-    // Send out all the RSVP invites in parallel steps
-    await Promise.all(
-        friends.map(
-            (friend, i) => sendRSVPEmail(friend, webhooks[i])
-        )
-    )
-
-    // Collect RSVPs as they are made without blocking the workflow
-    let rsvps = []
-    webhooks.map(
-        webhook => webhook
-            .then(req => req.json())
-            .then(( { rsvp } ) => rsvps.push(rsvp))
-    )
-
-    // Wait until the birthday
-    await sleep(birthday)
-
-    // Send birthday card with as many rsvps were collected
-    await sendBirthdayCard(text, image, rsvps, email)
-
-    return { text, image, status: "Sent" }
-}
-```
