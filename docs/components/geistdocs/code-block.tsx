@@ -5,6 +5,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useCallback,
+  useEffect,
   useRef,
   useState,
 } from 'react';
@@ -32,6 +33,20 @@ export const CodeBlock = ({
 }: CodeBlockProps) => {
   const ref = useRef<HTMLPreElement>(null);
   const [isCopied, setIsCopied] = useState(false);
+
+  // Filter out lines marked with `// @setup` after component mounts
+  // This allows doc authors to include setup code (like type declarations)
+  // that's needed for type checking but shouldn't be shown in rendered output
+  useEffect(() => {
+    if (!ref.current) return;
+
+    const lines = ref.current.querySelectorAll('.line');
+    for (const line of lines) {
+      if (line.textContent?.includes('// @setup')) {
+        (line as HTMLElement).style.display = 'none';
+      }
+    }
+  }, [children]);
 
   const copyToClipboard = useCallback(async () => {
     if (typeof window === 'undefined' || !navigator?.clipboard?.writeText) {

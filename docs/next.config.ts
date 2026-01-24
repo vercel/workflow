@@ -71,6 +71,12 @@ const config: NextConfig = {
         destination: '/worlds',
         permanent: true,
       },
+      // Redirect old control-flow-patterns to common-patterns
+      {
+        source: '/docs/foundations/control-flow-patterns',
+        destination: '/docs/foundations/common-patterns',
+        permanent: true,
+      },
     ];
   },
 };
