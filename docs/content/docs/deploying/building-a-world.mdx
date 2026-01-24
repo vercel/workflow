@@ -20,6 +20,7 @@ A World connects workflows to the infrastructure that powers them. The World int
 2. **Queue** — Enqueuing and processing workflow and step invocations
 3. **Streamer** — Managing real-time data streams between workflows and clients
 
+{/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface World extends Storage, Queue, Streamer {
   start?(): Promise<void>;
@@ -38,6 +39,7 @@ Events fall into three categories: run lifecycle events, step lifecycle events, 
 
 The Storage interface provides read access to materialized entities and write access through events:
 
+{/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface Storage {
   runs: {
@@ -86,6 +88,7 @@ interface Storage {
 
 The Queue interface handles asynchronous execution of workflows and steps:
 
+{/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface Queue {
   getDeploymentId(): Promise<string>;
@@ -114,6 +117,7 @@ Queue names follow a specific pattern:
 Two types of messages flow through queues:
 
 **Workflow Invocations:**
+{/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface WorkflowInvokePayload {
   runId: string;
@@ -123,6 +127,7 @@ interface WorkflowInvokePayload {
 ```
 
 **Step Invocations:**
+{/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface StepInvokePayload {
   workflowName: string;
@@ -145,6 +150,7 @@ interface StepInvokePayload {
 
 The Streamer interface enables real-time data streaming:
 
+{/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface Streamer {
   writeToStream(
