@@ -154,52 +154,21 @@ export default async function WorldsPage() {
           </div>
         </section>
 
-        {/* What is a World? Section */}
-        <section className="border-t px-4 py-8 sm:py-12 sm:px-12">
-          <div className="max-w-3xl mx-auto space-y-6">
-            <h2 className="font-semibold text-2xl tracking-tight sm:text-3xl text-center">
-              What is a World?
-            </h2>
-            <div className="grid gap-6 sm:grid-cols-3">
-              <div>
-                <h3 className="font-semibold mb-2">Workflow Storage</h3>
-                <p className="text-sm text-muted-foreground">
-                  Persists workflow state and event logs across function
-                  invocations.
-                </p>
-              </div>
-              <div>
-                <h3 className="font-semibold mb-2">Step Execution</h3>
-                <p className="text-sm text-muted-foreground">
-                  Manages step function invocations with retries and error
-                  handling.
-                </p>
-              </div>
-              <div>
-                <h3 className="font-semibold mb-2">Message Passing</h3>
-                <p className="text-sm text-muted-foreground">
-                  Handles communication between the orchestrator and step
-                  functions.
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Contributing Section */}
+        {/* Learn More Section */}
         <section className="border-t px-4 py-8 sm:py-12 sm:px-12">
           <div className="max-w-2xl mx-auto text-center space-y-4">
             <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-              Build Your Own World
+              Learn more about worlds
             </h2>
             <p className="text-muted-foreground">
-              Want to create a World for your infrastructure? Check out the
-              World interface documentation and add your implementation to this
-              dashboard.
+              To learn more about how worlds work or to create your own, check
+              the docs.
             </p>
             <div className="flex justify-center gap-3">
               <Button asChild variant="outline">
-                <Link href="/docs/deploying/world">World Interface Docs</Link>
+                <Link href="/docs/deploying/building-a-world">
+                  World Interface Docs
+                </Link>
               </Button>
               <Button asChild variant="outline">
                 <a
@@ -207,7 +176,7 @@ export default async function WorldsPage() {
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Add Your World
+                  Submit Your World
                 </a>
               </Button>
             </div>
