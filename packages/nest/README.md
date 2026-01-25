@@ -32,6 +32,8 @@ echo '/.swcrc' >> .gitignore
 
 Ensure your `nest-cli.json` has SWC as the builder:
 
+{/*@skip-typecheck: Shows nest-cli.json configuration*/}
+
 ```json
 {
   "compilerOptions": {
@@ -43,6 +45,8 @@ Ensure your `nest-cli.json` has SWC as the builder:
 ### 3. Import the WorkflowModule
 
 In your `app.module.ts`:
+
+{/*@skip-typecheck: Shows WorkflowModule import*/}
 
 ```typescript
 import { Module } from '@nestjs/common';
@@ -57,6 +61,8 @@ export class AppModule {}
 ### 4. Create Workflow Files
 
 Create workflow files in your `src/` directory with `"use workflow"` and `"use step"` directives:
+
+{/*@skip-typecheck: Shows workflow file*/}
 
 ```typescript
 // src/workflows/example.ts
@@ -86,6 +92,8 @@ Add scripts to regenerate configuration before builds:
 ```
 
 ## Configuration Options
+
+{/*@skip-typecheck: Shows WorkflowModule.forRoot options*/}
 
 ```typescript
 WorkflowModule.forRoot({
@@ -122,6 +130,7 @@ When you run `npx @workflow/nest init`, it:
 3. Configures client-mode transformation for workflow files
 
 This approach ensures:
+
 - End users don't need to install or configure SWC dependencies directly
 - No pnpm hoisting configuration required in `.npmrc`
 - The plugin is always resolved from the correct location
@@ -133,6 +142,8 @@ NestJS's SWC builder only compiles files within the `sourceRoot` directory (typi
 ## API Reference
 
 ### WorkflowModule
+
+{/*@skip-typecheck: Shows WorkflowModule usage*/}
 
 ```typescript
 import { WorkflowModule } from '@workflow/nest';
