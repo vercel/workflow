@@ -6,6 +6,7 @@
 /.nestjs
 /src/_workflows.ts
 /.swc
+/.swcrc
 
 # Logs
 logs

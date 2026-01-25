@@ -6,10 +6,10 @@ import {
 } from '@nestjs/common';
 import { createBuildQueue } from '@workflow/builders';
 import { join } from 'pathe';
-import { NestLocalBuilder, type NestBuilderOptions } from './builder.js';
+import { type NestBuilderOptions, NestLocalBuilder } from './builder.js';
 import {
-  WorkflowController,
   configureWorkflowController,
+  WorkflowController,
 } from './workflow.controller.js';
 
 export interface WorkflowModuleOptions extends NestBuilderOptions {
@@ -72,8 +72,9 @@ export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    if (WorkflowModule.builder) {
-      await WorkflowModule.buildQueue(() => WorkflowModule.builder!.build());
+    const builder = WorkflowModule.builder;
+    if (builder) {
+      await WorkflowModule.buildQueue(() => builder.build());
     }
   }
 
