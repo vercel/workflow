@@ -778,6 +778,13 @@ export const Frameworks = () => {
             <SvelteKit className="size-[56px] relative z-10" />
             <SvelteKit className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
           </Link>
+          <Link
+            href="/docs/getting-started/nestjs"
+            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
+          >
+            <Nest className="size-[56px] relative z-10" />
+            <Nest className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
+          </Link>
         </div>
         <div>
           <Badge
@@ -787,13 +794,6 @@ export const Frameworks = () => {
             Coming soon
           </Badge>
           <div className="flex flex-wrap gap-6 items-center mt-4">
-            <div
-              className="group relative cursor-pointer"
-              onClick={() => handleRequest('NestJS')}
-            >
-              <NestGray className="size-[56px] opacity-70 transition-all duration-200 group-hover:opacity-0 ease-out" />
-              <Nest className="size-[56px] absolute inset-0 opacity-0 transition-all duration-200 group-hover:opacity-100 ease-out" />
-            </div>
             <div
               className="group relative cursor-pointer"
               onClick={() => handleRequest('TanStack')}
