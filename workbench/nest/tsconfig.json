@@ -23,6 +23,7 @@
       "@repo/*": ["../../*"]
     }
   },
+  "plugins": [{ "name": "workflow" }],
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", ".nestjs"]
 }
