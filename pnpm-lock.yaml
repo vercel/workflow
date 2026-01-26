@@ -1528,9 +1528,24 @@ importers:
       '@nestjs/platform-express':
         specifier: ^11.0.1
         version: 11.1.12(@nestjs/common@11.1.12(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.12)
+      '@workflow/nest':
+        specifier: workspace:*
+        version: link:../../packages/nest
+      '@workflow/world-postgres':
+        specifier: workspace:*
+        version: link:../../packages/world-postgres
+      ai:
+        specifier: 'catalog:'
+        version: 5.0.104(zod@4.1.11)
       express:
         specifier: ^5.1.0
         version: 5.2.1
+      lodash.chunk:
+        specifier: ^4.2.0
+        version: 4.2.0
+      openai:
+        specifier: ^6.1.0
+        version: 6.9.1(ws@8.18.3)(zod@4.1.11)
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -1547,30 +1562,9 @@ importers:
       '@nestjs/schematics':
         specifier: ^11.0.0
         version: 11.0.9(chokidar@4.0.3)(typescript@5.9.3)
-      '@types/express':
-        specifier: ^5.0.0
-        version: 5.0.5
       '@types/node':
         specifier: ^22.10.7
         version: 22.19.0
-      '@workflow/ai':
-        specifier: workspace:*
-        version: link:../../packages/ai
-      '@workflow/nest':
-        specifier: workspace:*
-        version: link:../../packages/nest
-      '@workflow/world-postgres':
-        specifier: workspace:*
-        version: link:../../packages/world-postgres
-      ai:
-        specifier: 'catalog:'
-        version: 5.0.104(zod@4.1.11)
-      lodash.chunk:
-        specifier: ^4.2.0
-        version: 4.2.0
-      openai:
-        specifier: ^6.1.0
-        version: 6.9.1(ws@8.18.3)(zod@4.1.11)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -21104,14 +21098,6 @@ snapshots:
       chai: 5.2.1
       tinyrainbow: 2.0.0
 
-  '@vitest/mocker@3.2.4(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))':
-    dependencies:
-      '@vitest/spy': 3.2.4
-      estree-walker: 3.0.3
-      magic-string: 0.30.21
-    optionalDependencies:
-      vite: 7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
-
   '@vitest/mocker@3.2.4(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))':
     dependencies:
       '@vitest/spy': 3.2.4
@@ -29981,7 +29967,7 @@ snapshots:
     dependencies:
       '@types/chai': 5.2.2
       '@vitest/expect': 3.2.4
-      '@vitest/mocker': 3.2.4(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
+      '@vitest/mocker': 3.2.4(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
       '@vitest/pretty-format': 3.2.4
       '@vitest/runner': 3.2.4
       '@vitest/snapshot': 3.2.4
