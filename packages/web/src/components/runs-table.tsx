@@ -1,6 +1,6 @@
 'use client';
 
-import { parseWorkflowName } from '@workflow/core/parse-name';
+import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   cancelRun,
   type EnvMap,

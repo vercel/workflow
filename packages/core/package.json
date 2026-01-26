@@ -32,10 +32,6 @@
       "node": "./dist/observability.js",
       "default": "./dist/observability.js"
     },
-    "./parse-name": {
-      "types": "./dist/parse-name.d.ts",
-      "default": "./dist/parse-name.js"
-    },
     "./_workflow": "./dist/workflow/index.js"
   },
   "scripts": {

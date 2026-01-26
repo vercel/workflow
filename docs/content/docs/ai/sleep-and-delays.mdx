@@ -63,7 +63,8 @@ export const flightBookingTools = {
 
 To round it off, extend the UI to display the tool call status. This can be done either by displaying the tool call information directly, or by emitting custom data parts to the stream (see [Streaming Updates from Tools](/docs/ai/streaming-updates-from-tools) for more details). In this case, since there aren't any fine-grained progress updates to show, we'll just display the tool call information directly:
 
-{/* @skip-typecheck: incomplete code sample */}
+{/*@skip-typecheck: incomplete code sample*/}
+
 ```typescript title="app/page.tsx" lineNumbers
 export default function ChatPage() {
 
@@ -163,39 +164,6 @@ async function callRateLimitedAPI(endpoint: string) {
     });
   }
 
-  return response.json();
-}
-```
-
-### Polling with Backoff
-
-Poll for a result with increasing delays:
-
-```typescript lineNumbers
-export async function pollForResult(jobId: string) {
-  "use workflow";
-
-  let attempt = 0;
-  const maxAttempts = 10;
-
-  while (attempt < maxAttempts) {
-    const result = await checkJobStatus(jobId);
-
-    if (result.status === "complete") {
-      return result.data;
-    }
-
-    attempt++;
-    await sleep(Math.min(1000 * 2 ** attempt, 60000)); // Exponential backoff, max 1 minute
-  }
-
-  throw new Error("Job did not complete in time");
-}
-
-async function checkJobStatus(jobId: string) {
-  "use step";
-  // Check job status...
-  const response = await fetch(`/api/jobs/${jobId}`);
   return response.json();
 }
 ```

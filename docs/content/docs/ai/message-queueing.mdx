@@ -40,33 +40,34 @@ interface PrepareStepResult {
 
 Once you have a [multi-turn workflow](/docs/ai/chat-session-modeling#multi-turn-workflows), you can combine a message queue with `prepareStep` to inject messages that arrive during processing:
 
-```typescript title="workflows/chat/workflow.ts" lineNumbers
+```typescript title="workflows/chat/index.ts" lineNumbers
 import { DurableAgent } from "@workflow/ai/agent";
-import type { UIMessageChunk } from "ai";
-import { getWritable } from "workflow";
+import { getWritable, getWorkflowMetadata } from "workflow";
 import { chatMessageHook } from "./hooks/chat-message";
 import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from "./steps/tools";
+import type { UIMessageChunk, ModelMessage } from "ai";
 
-export async function chatWorkflow(threadId: string, initialMessage: string) {
+export async function chat(initialMessages: ModelMessage[]) {
   "use workflow";
 
+  const { workflowRunId: runId } = getWorkflowMetadata();
   const writable = getWritable<UIMessageChunk>();
   const messageQueue: Array<{ role: "user"; content: string }> = []; // [!code highlight]
 
   const agent = new DurableAgent({
-    model: "bedrock/claude-4-5-haiku-20251001-v1",
+    model: "bedrock/claude-haiku-4-5-20251001-v1",
     system: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
 
   // Listen for messages in background (non-blocking) // [!code highlight]
-  const hook = chatMessageHook.create({ token: `thread:${threadId}` }); // [!code highlight]
+  const hook = chatMessageHook.create({ token: runId }); // [!code highlight]
   hook.then(({ message }) => { // [!code highlight]
     messageQueue.push({ role: "user", content: message }); // [!code highlight]
   }); // [!code highlight]
 
   await agent.stream({
-    messages: [{ role: "user", content: initialMessage }],
+    messages: initialMessages,
     writable,
     prepareStep: ({ messages: currentMessages }) => { // [!code highlight]
       // Inject any queued messages before the next LLM call // [!code highlight]
@@ -75,7 +76,7 @@ export async function chatWorkflow(threadId: string, initialMessage: string) {
         return { // [!code highlight]
           messages: [ // [!code highlight]
             ...currentMessages, // [!code highlight]
-            ...newMessages.map(m => ({ // [!code highlight]
+            ...newMessages.map((m) => ({ // [!code highlight]
               role: m.role, // [!code highlight]
               content: [{ type: "text" as const, text: m.content }], // [!code highlight]
             })), // [!code highlight]
@@ -93,6 +94,69 @@ Messages sent via `chatMessageHook.resume()` accumulate in the queue and get inj
 <Callout type="info">
 The `prepareStep` callback receives messages in `LanguageModelV2Prompt` format (with content arrays), which is the internal format used by the AI SDK.
 </Callout>
+
+## Combining with Multi-Turn Sessions
+
+You can also combine message queueing with the standard multi-turn pattern:
+
+```typescript title="workflows/chat/index.ts" lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable, getWorkflowMetadata } from "workflow";
+import { chatMessageHook } from "./hooks/chat-message";
+import type { UIMessageChunk, ModelMessage } from "ai";
+
+export async function chat(initialMessages: ModelMessage[]) {
+  "use workflow";
+
+  const { workflowRunId: runId } = getWorkflowMetadata();
+  const writable = getWritable<UIMessageChunk>();
+  const messages: ModelMessage[] = [...initialMessages];
+  const messageQueue: Array<{ role: "user"; content: string }> = [];
+
+  const agent = new DurableAgent({ /* ... */ });
+  const hook = chatMessageHook.create({ token: runId });
+
+  while (true) {
+    // Set up non-blocking listener for mid-turn messages // [!code highlight]
+    let pendingMessage: string | null = null; // [!code highlight]
+    hook.then(({ message }) => { // [!code highlight]
+      if (message === "/done") return; // [!code highlight]
+      messageQueue.push({ role: "user", content: message }); // [!code highlight]
+      pendingMessage = message; // [!code highlight]
+    }); // [!code highlight]
+
+    const result = await agent.stream({
+      messages,
+      writable,
+      preventClose: true,
+      prepareStep: ({ messages: currentMessages }) => {
+        // Inject queued messages during turn // [!code highlight]
+        if (messageQueue.length > 0) {
+          const newMessages = messageQueue.splice(0);
+          return {
+            messages: [
+              ...currentMessages,
+              ...newMessages.map((m) => ({
+                role: m.role,
+                content: [{ type: "text" as const, text: m.content }],
+              })),
+            ],
+          };
+        }
+        return {};
+      },
+    });
+
+    messages.push(...result.messages.slice(messages.length));
+
+    // Wait for next message (either queued during turn or new) // [!code highlight]
+    const { message: followUp } = pendingMessage ? { message: pendingMessage } : await hook; // [!code highlight]
+    if (followUp === "/done") break;
+
+    messages.push({ role: "user", content: followUp });
+  }
+}
+```
 
 ## Related Documentation
 

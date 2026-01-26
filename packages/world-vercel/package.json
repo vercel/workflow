@@ -34,6 +34,7 @@
     "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
+    "cbor-x": "1.6.0",
     "zod": "catalog:"
   },
   "devDependencies": {

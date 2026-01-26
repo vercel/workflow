@@ -1,0 +1,253 @@
+---
+title: Common Patterns
+---
+
+Common distributed patterns are simple to implement in workflows and require learning no new syntax. You can just use familiar async/await patterns.
+
+## Sequential Execution
+
+The simplest way to orchestrate steps is to execute them one after another, where each step can be dependent on the previous step.
+
+```typescript lineNumbers
+declare function validateData(data: unknown): Promise<string>; // @setup
+declare function processData(data: string): Promise<string>; // @setup
+declare function storeData(data: string): Promise<string>; // @setup
+
+export async function dataPipelineWorkflow(data: unknown) {
+  "use workflow";
+
+  const validated = await validateData(data);
+  const processed = await processData(validated);
+  const stored = await storeData(processed);
+
+  return stored;
+}
+```
+
+## Parallel Execution
+
+When you need to execute multiple steps in parallel, you can use `Promise.all` to run them all at the same time.
+
+```typescript lineNumbers
+declare function fetchUser(userId: string): Promise<{ name: string }>; // @setup
+declare function fetchOrders(userId: string): Promise<{ items: string[] }>; // @setup
+declare function fetchPreferences(userId: string): Promise<{ theme: string }>; // @setup
+
+export async function fetchUserData(userId: string) {
+  "use workflow";
+
+  const [user, orders, preferences] = await Promise.all([ // [!code highlight]
+    fetchUser(userId), // [!code highlight]
+    fetchOrders(userId), // [!code highlight]
+    fetchPreferences(userId) // [!code highlight]
+  ]); // [!code highlight]
+
+  return { user, orders, preferences };
+}
+```
+
+This not only applies to steps - since [`sleep()`](/docs/api-reference/workflow/sleep) and [`webhook`](/docs/api-reference/workflow/create-webhook) are also just promises, we can await those in parallel too.
+We can also use `Promise.race` instead of `Promise.all` to stop executing promises after the first one completes.
+
+```typescript lineNumbers
+import { sleep, createWebhook } from "workflow";
+declare function executeExternalTask(webhookUrl: string): Promise<void>; // @setup
+
+export async function runExternalTask(userId: string) {
+  "use workflow";
+
+  const webhook = createWebhook();
+  await executeExternalTask(webhook.url); // Send the webhook somewhere
+
+  // Wait for the external webhook to be hit, with a timeout of 1 day,
+  // whichever comes first
+  await Promise.race([ // [!code highlight]
+    webhook, // [!code highlight]
+    sleep("1 day"), // [!code highlight]
+  ]); // [!code highlight]
+
+  console.log("Done")
+}
+```
+
+## A Full Example
+
+Here's a simplified example taken from the [birthday card generator demo](https://github.com/vercel/workflow-examples/tree/main/birthday-card-generator), to illustrate how sequential and parallel execution can be combined.
+
+```typescript lineNumbers
+import { createWebhook, sleep, type Webhook } from "workflow"
+declare function makeCardText(prompt: string): Promise<string>; // @setup
+declare function makeCardImage(text: string): Promise<string>; // @setup
+declare function sendRSVPEmail(friend: string, webhook: Webhook): Promise<void>; // @setup
+declare function sendBirthdayCard(text: string, image: string, rsvps: unknown[], email: string): Promise<void>; // @setup
+
+async function birthdayWorkflow(
+    prompt: string,
+    email: string,
+    friends: string[],
+    birthday: Date
+) {
+    "use workflow";
+
+    // Generate a birthday card with sequential steps
+    const text = await makeCardText(prompt)
+    const image = await makeCardImage(text)
+
+    // Create webhooks for each friend who's invited to the birthday party
+    const webhooks = friends.map(_ => createWebhook())
+
+    // Send out all the RSVP invites in parallel steps
+    await Promise.all(
+        friends.map(
+            (friend, i) => sendRSVPEmail(friend, webhooks[i])
+        )
+    )
+
+    // Collect RSVPs as they are made without blocking the workflow
+    let rsvps = []
+    webhooks.map(
+        webhook => webhook
+            .then(req => req.json())
+            .then(( { rsvp } ) => rsvps.push(rsvp))
+    )
+
+    // Wait until the birthday
+    await sleep(birthday)
+
+    // Send birthday card with as many rsvps were collected
+    await sendBirthdayCard(text, image, rsvps, email)
+
+    return { text, image, status: "Sent" }
+}
+```
+
+## Timeout Pattern
+
+A common requirement is adding timeouts to operations that might take too long. Use `Promise.race` with `sleep()` to implement this pattern.
+
+```typescript lineNumbers
+import { sleep } from "workflow";
+declare function processData(data: string): Promise<string>; // @setup
+
+export async function processWithTimeout(data: string) {
+  "use workflow";
+
+  const result = await Promise.race([ // [!code highlight]
+    processData(data), // [!code highlight]
+    sleep("30s").then(() => "timeout" as const), // [!code highlight]
+  ]); // [!code highlight]
+
+  if (result === "timeout") {
+    // In workflows, any thrown error exits the workflow (FatalError is for steps)
+    throw new Error("Processing timed out after 30 seconds");
+  }
+
+  return result;
+}
+```
+
+This pattern works with any promise-returning operation including steps, hooks, and webhooks. For example, you can add a timeout to a webhook that waits for external input:
+
+```typescript lineNumbers
+import { sleep, createWebhook } from "workflow";
+declare function sendApprovalRequest(requestId: string, webhookUrl: string): Promise<void>; // @setup
+
+export async function waitForApproval(requestId: string) {
+  "use workflow";
+
+  const webhook = createWebhook<{ approved: boolean }>();
+  await sendApprovalRequest(requestId, webhook.url);
+
+  const result = await Promise.race([ // [!code highlight]
+    webhook.then((req) => req.json()), // [!code highlight]
+    sleep("7 days").then(() => ({ timedOut: true }) as const), // [!code highlight]
+  ]); // [!code highlight]
+
+  if ("timedOut" in result) {
+    throw new Error("Approval request expired after 7 days");
+  }
+
+  return result.approved;
+}
+```
+
+## Workflow Composition
+
+Workflows can call other workflows, enabling you to break complex processes into reusable building blocks. There are two approaches depending on your needs.
+
+### Direct Await (Flattening)
+
+Call a child workflow directly using `await`. This "flattens" the child workflow into the parent - the child's steps execute inline within the parent workflow's context.
+
+```typescript lineNumbers
+declare function sendEmail(userId: string): Promise<void>; // @setup
+declare function sendPushNotification(userId: string): Promise<void>; // @setup
+declare function createAccount(userId: string): Promise<void>; // @setup
+declare function setupPreferences(userId: string): Promise<void>; // @setup
+
+// Child workflow
+export async function sendNotifications(userId: string) {
+  "use workflow";
+
+  await sendEmail(userId);
+  await sendPushNotification(userId);
+  return { notified: true };
+}
+
+// Parent workflow calls child directly
+export async function onboardUser(userId: string) {
+  "use workflow";
+
+  await createAccount(userId);
+  await sendNotifications(userId); // [!code highlight]
+  await setupPreferences(userId);
+
+  return { userId, status: "onboarded" };
+}
+```
+
+With direct await, the parent workflow waits for the child to complete before continuing. The child's steps appear in the parent's event log as if they were called directly from the parent.
+
+### Background Execution via Step
+
+To run a child workflow independently without blocking the parent, use a step that calls [`start()`](/docs/api-reference/workflow-api/start). This launches the child workflow in the background.
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+declare function generateReport(reportId: string): Promise<void>; // @setup
+declare function fulfillOrder(orderId: string): Promise<{ id: string }>; // @setup
+declare function sendConfirmation(orderId: string): Promise<void>; // @setup
+
+// Step that starts a workflow in the background
+async function triggerReportGeneration(reportId: string) {
+  "use step";
+
+  const run = await start(generateReport, [reportId]); // [!code highlight]
+  return run.runId;
+}
+
+// Parent workflow
+export async function processOrder(orderId: string) {
+  "use workflow";
+
+  const order = await fulfillOrder(orderId);
+
+  // Fire off report generation without waiting
+  const reportRunId = await triggerReportGeneration(orderId); // [!code highlight]
+
+  // Continue immediately - report generates in background
+  await sendConfirmation(orderId);
+
+  return { orderId, reportRunId };
+}
+```
+
+With background execution, the parent workflow continues immediately after starting the child. The child workflow runs independently with its own event log and can be monitored separately using the returned `runId`.
+
+**Choose direct await when:**
+- The parent needs the child's result before continuing
+- You want a single, unified event log
+
+**Choose background execution when:**
+- The parent doesn't need to wait for the result
+- You want separate workflow runs for observability

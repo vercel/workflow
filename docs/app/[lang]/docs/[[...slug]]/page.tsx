@@ -23,8 +23,13 @@ import { Separator } from '@/components/ui/separator';
 import { getLLMText, source } from '@/lib/geistdocs/source';
 import { TSDoc } from '@/lib/tsdoc';
 
+// No-op component for world MDX files rendered outside /worlds/ context
+// These pages redirect to /worlds/[id] but still get statically generated
+const WorldTestingPerformanceNoop = () => null;
+
 const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
   const { slug, lang } = await params;
+
   const page = source.getPage(slug, lang);
 
   if (!page) {
@@ -69,6 +74,8 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
             ...AccordionComponents,
             Tabs,
             Tab,
+            // No-op for world MDX files (they redirect to /worlds/[id])
+            WorldTestingPerformance: WorldTestingPerformanceNoop,
           })}
         />
       </DocsBody>

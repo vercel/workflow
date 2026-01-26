@@ -4,7 +4,7 @@
  */
 
 import { inspect } from 'node:util';
-import { parseClassName } from './parse-name.js';
+import { parseClassName } from '@workflow/utils/parse-name';
 import {
   hydrateStepArguments,
   hydrateStepReturnValue,

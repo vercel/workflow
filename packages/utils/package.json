@@ -28,6 +28,10 @@
     "./check-data-dir": {
       "types": "./dist/check-data-dir.d.ts",
       "default": "./dist/check-data-dir.js"
+    },
+    "./parse-name": {
+      "types": "./dist/parse-name.d.ts",
+      "default": "./dist/parse-name.js"
     }
   },
   "scripts": {

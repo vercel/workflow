@@ -48,7 +48,7 @@ Add a tool that allows the agent to deliberately pause execution until a human a
 
 Create a typed hook with a Zod schema for validation:
 
-```typescript title="workflow/steps/tools.ts" lineNumbers
+```typescript title="workflow/hooks/booking-approval.ts" lineNumbers
 import { defineHook } from "workflow";
 import { z } from "zod";
 // ... existing imports ...
@@ -71,9 +71,10 @@ export const bookingApprovalHook = defineHook({
 
 Create a tool that creates a hook instance using the tool call ID as the token. The UI will use this ID to submit the approval.
 
-{/* @skip-typecheck: incomplete code sample */}
+{/*@skip-typecheck: incomplete code sample*/}
+
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
-import { z } from "zod";
+import { bookingApprovalHook } from "@/workflows/hooks/booking-approval"; // [!code highlight]
 
 // ...
 
@@ -95,6 +96,8 @@ async function executeBookingApproval( // [!code highlight]
 
   return `Booking approved for ${passengerName} on flight ${flightNumber}${comment ? ` - Note: ${comment}` : ""}`;
 }
+
+// ...
 
 // Adding the tool to the existing tool definitions
 export const flightBookingTools = {
@@ -123,8 +126,8 @@ Note that the `defineHook().create()` function must be called from within a work
 
 Create a new API endpoint that the UI will call to submit the approval decision:
 
-```typescript title="app/api/approve-booking/route.ts" lineNumbers
-import { bookingApprovalHook } from "@/workflow/steps/tools";
+```typescript title="app/api/hooks/approval/route.ts" lineNumbers
+import { bookingApprovalHook } from "@/workflows/hooks/booking-approval"; // [!code highlight]
 
 export async function POST(request: Request) {
   const { toolCallId, approved, comment } = await request.json();
@@ -155,7 +158,7 @@ import { useState } from "react";
 
 interface BookingApprovalProps {
   toolCallId: string;
-  input: {
+  input?: {
     flightNumber: string;
     passengerName: string;
     price: number;
@@ -167,19 +170,30 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
   const [comment, setComment] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // If we have output, the approval has been processed
+    // If we have output, the approval has been processed
   if (output) {
-    return (
-      <div className="border rounded-lg p-4">
-        <p className="text-sm text-muted-foreground">{output}</p>
-      </div>
-    );
+    try {
+      const json = JSON.parse(output) as { output: { value: string } };
+      return (
+        <div className="border rounded-lg p-4">
+          <p className="text-sm text-muted-foreground">{json.output.value}</p>
+        </div>
+      );
+    } catch (error) {
+      return (
+        <div className="border rounded-lg p-4">
+          <p className="text-sm text-muted-foreground">
+            Error parsing approval result: {(error as Error).message}
+          </p>
+        </div>
+      );
+    }
   }
 
   const handleSubmit = async (approved: boolean) => {
     setIsSubmitting(true);
     try {
-      await fetch("/api/approve-booking", { // [!code highlight]
+      await fetch("/api/hooks/approval", { // [!code highlight]
         method: "POST", // [!code highlight]
         headers: { "Content-Type": "application/json" }, // [!code highlight]
         body: JSON.stringify({ toolCallId, approved, comment }), // [!code highlight]
@@ -194,9 +208,13 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
       <div className="space-y-2">
         <p className="font-medium">Approve this booking?</p>
         <div className="text-sm text-muted-foreground">
-          <div>Flight: {input.flightNumber}</div>
-          <div>Passenger: {input.passengerName}</div>
-          <div>Price: ${input.price}</div>
+          {input && (
+            <div className="space-y-2">
+              <div>Flight: {input.flightNumber}</div>
+              <div>Passenger: {input.passengerName}</div>
+              <div>Price: ${input.price}</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -210,6 +228,7 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
 
       <div className="flex gap-2">
         <button
+          type="button"
           onClick={() => handleSubmit(true)}
           disabled={isSubmitting}
           className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
@@ -217,6 +236,7 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
           {isSubmitting ? "Submitting..." : "Approve"}
         </button>
         <button
+          type="button"
           onClick={() => handleSubmit(false)}
           disabled={isSubmitting}
           className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
@@ -237,7 +257,8 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
 
 Use the component we just created to render the tool call and approval controls in your chat interface:
 
-{/* @skip-typecheck: incomplete code sample */}
+{/*@skip-typecheck: incomplete code sample*/}
+
 ```typescript title="app/page.tsx" lineNumbers
 // ... existing imports ...
 import { BookingApproval } from "@/components/booking-approval";
@@ -285,8 +306,8 @@ export default function ChatPage() {
                           <BookingApproval // [!code highlight]
                             key={partIndex} // [!code highlight]
                             toolCallId={part.toolCallId} // [!code highlight]
-                            input={part.input} // [!code highlight]
-                            output={part.output} // [!code highlight]
+                            input={part.input as any} // [!code highlight]
+                            output={part.output as any} // [!code highlight]
                           /> // [!code highlight]
                         ); // [!code highlight]
                       } // [!code highlight]
