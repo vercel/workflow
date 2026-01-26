@@ -29,6 +29,14 @@ server.addContentTypeParser(
   server.getDefaultJsonParser('ignore', 'ignore')
 );
 
+server.addContentTypeParser(
+  'application/octet-stream',
+  { parseAs: 'buffer' },
+  (req, body, done) => {
+    done(null, body);
+  }
+);
+
 // allow fastify to parse empty json requests
 server.addContentTypeParser(
   'application/json',
@@ -109,12 +117,10 @@ server.post('/api/trigger', async (req: any, reply) => {
       return Number.isNaN(num) ? arg.trim() : num;
     });
   } else {
-    // Args from body
+    // Args from body (binary serialized data)
     const body = req.body;
-    if (body && typeof body === 'string') {
-      args = hydrateWorkflowArguments(JSON.parse(body), globalThis);
-    } else if (body && typeof body === 'object') {
-      args = hydrateWorkflowArguments(body, globalThis);
+    if (Buffer.isBuffer(body) && body.byteLength > 0) {
+      args = hydrateWorkflowArguments(new Uint8Array(body), globalThis);
     } else {
       args = [42];
     }

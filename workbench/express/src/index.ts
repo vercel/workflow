@@ -12,6 +12,7 @@ const app = express();
 
 app.use(express.json());
 app.use(express.text({ type: 'text/*' }));
+app.use(express.raw({ type: 'application/octet-stream' }));
 
 app.post('/api/hook', async (req, res) => {
   const { token, data } = JSON.parse(req.body);
@@ -78,12 +79,10 @@ app.post('/api/trigger', async (req, res) => {
       return Number.isNaN(num) ? arg.trim() : num;
     });
   } else {
-    // Args from body
+    // Args from body (binary serialized data)
     const body = req.body;
-    if (body && typeof body === 'string') {
-      args = hydrateWorkflowArguments(JSON.parse(body), globalThis);
-    } else if (body && typeof body === 'object') {
-      args = hydrateWorkflowArguments(body, globalThis);
+    if (Buffer.isBuffer(body) && body.byteLength > 0) {
+      args = hydrateWorkflowArguments(new Uint8Array(body), globalThis);
     } else {
       args = [42];
     }
