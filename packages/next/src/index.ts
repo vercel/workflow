@@ -80,7 +80,9 @@ export function withWorkflow(
                 any: [
                   ...(existingRules[key]?.condition.any || []),
                   {
-                    content: /(use workflow|use step)/,
+                    // Match files with workflow directives or custom serialization patterns
+                    content:
+                      /(use workflow|use step|from\s+['"]@workflow\/serde['"]|Symbol\.for\s*\(\s*['"]workflow-(?:serialize|deserialize)['"]\s*\))/,
                   },
                 ],
               },

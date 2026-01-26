@@ -18,7 +18,8 @@ interface WorkflowHotUpdatePluginOptions {
  * Vite plugin that watches for workflow/step file changes and triggers rebuilds.
  *
  * This plugin detects changes to files containing `"use workflow"` or `"use step"`
- * directives and calls the builder to regenerate routes.
+ * directives, or custom serialization patterns (`@workflow/serde` imports or
+ * `Symbol.for('workflow-serialize')`), and calls the builder to regenerate routes.
  */
 export function workflowHotUpdatePlugin(
   options: WorkflowHotUpdatePluginOptions
@@ -61,8 +62,18 @@ export function workflowHotUpdatePlugin(
 
       const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
       const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
+      // Patterns for custom class serialization
+      const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
+      const workflowSerdeSymbolPattern =
+        /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
 
-      if (!useWorkflowPattern.test(content) && !useStepPattern.test(content)) {
+      const hasDirective =
+        useWorkflowPattern.test(content) || useStepPattern.test(content);
+      const hasSerde =
+        workflowSerdeImportPattern.test(content) ||
+        workflowSerdeSymbolPattern.test(content);
+
+      if (!hasDirective && !hasSerde) {
         return;
       }
 
