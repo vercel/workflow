@@ -3,6 +3,9 @@ import { transform } from '@swc/core';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
 
+// Pattern to detect generated workflow route files that should be excluded from transformation
+const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
+
 // Patterns for detecting custom class serialization:
 // - Import from '@workflow/serde'
 // - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
@@ -16,6 +19,11 @@ export function workflowTransformPlugin(): Plugin {
     // This transform applies the "use workflow"/"use step"
     // client transformation
     async transform(code: string, id: string) {
+      // Skip generated workflow route files to avoid re-processing them
+      if (generatedWorkflowPathPattern.test(id)) {
+        return null;
+      }
+
       // Check if file needs transformation:
       // - Contains 'use step' or 'use workflow' directives
       // - Contains custom serialization patterns (@workflow/serde import or Symbol.for usage)

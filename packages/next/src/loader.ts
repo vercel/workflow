@@ -28,6 +28,9 @@ async function getDecoratorOptions(
   return promise;
 }
 
+// Pattern to detect generated workflow route files that should be excluded from transformation
+const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
+
 // Patterns for detecting custom class serialization:
 // - Import from '@workflow/serde'
 // - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
@@ -46,6 +49,11 @@ export default async function workflowLoader(
 ): Promise<string> {
   const filename = this.resourcePath;
   const normalizedSource = source.toString();
+
+  // Skip generated workflow route files to avoid re-processing them
+  if (generatedWorkflowPathPattern.test(filename)) {
+    return normalizedSource;
+  }
 
   // Check if file needs transformation:
   // - Contains 'use step' or 'use workflow' directives

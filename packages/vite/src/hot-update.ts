@@ -49,6 +49,13 @@ export function workflowHotUpdatePlugin(
         return;
       }
 
+      // Skip generated workflow route files to avoid infinite rebuild loops
+      const generatedWorkflowPathPattern =
+        /[/\\]\.well-known[/\\]workflow[/\\]/;
+      if (generatedWorkflowPathPattern.test(file)) {
+        return;
+      }
+
       // Read the file to check for workflow/step directives
       let content: string;
       try {
