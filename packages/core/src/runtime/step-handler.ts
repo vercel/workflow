@@ -10,7 +10,6 @@ import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
-import type { Serializable } from '../schemas.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -285,12 +284,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
             // Complete the step via event (event-sourced architecture)
             // The event creation atomically updates the step entity
+            // result was dehydrated above by dehydrateStepReturnValue, which returns Uint8Array
             await world.events.create(workflowRunId, {
               eventType: 'step_completed',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
               eventData: {
-                result: result as Serializable,
+                result: result as Uint8Array,
               },
             });
 

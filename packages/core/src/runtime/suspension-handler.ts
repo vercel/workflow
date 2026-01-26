@@ -3,6 +3,7 @@ import { waitUntil } from '@vercel/functions';
 import { WorkflowAPIError } from '@workflow/errors';
 import {
   type CreateEventRequest,
+  type SerializedData,
   SPEC_VERSION_CURRENT,
   type World,
 } from '@workflow/world';
@@ -12,7 +13,6 @@ import type {
   WaitInvocationQueueItem,
   WorkflowSuspension,
 } from '../global.js';
-import type { Serializable } from '../schemas.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
@@ -61,10 +61,13 @@ export async function handleSuspension({
 
   // Build hook_created events (World will atomically create hook entities)
   const hookEvents: CreateEventRequest[] = hookItems.map((queueItem) => {
-    const hookMetadata =
+    const hookMetadata: SerializedData | undefined =
       typeof queueItem.metadata === 'undefined'
         ? undefined
-        : dehydrateStepArguments(queueItem.metadata, suspension.globalThis);
+        : (dehydrateStepArguments(
+            queueItem.metadata,
+            suspension.globalThis
+          ) as SerializedData);
     return {
       eventType: 'hook_created' as const,
       specVersion: SPEC_VERSION_CURRENT,
@@ -142,7 +145,7 @@ export async function handleSuspension({
             correlationId: queueItem.correlationId,
             eventData: {
               stepName: queueItem.stepName,
-              input: dehydratedInput as Serializable,
+              input: dehydratedInput as SerializedData,
             },
           };
           try {

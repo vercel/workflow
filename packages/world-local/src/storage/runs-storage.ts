@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
-import type { Storage } from '@workflow/world';
+import type { Storage, WorkflowRunWithoutData } from '@workflow/world';
 import { WorkflowRunSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { paginatedFileSystemQuery, readJSON } from '../fs.js';
@@ -13,7 +13,7 @@ import { getObjectCreatedAt } from './helpers.js';
  */
 export function createRunsStorage(basedir: string): Storage['runs'] {
   return {
-    async get(id, params) {
+    get: (async (id: string, params?: any) => {
       const runPath = path.join(basedir, 'runs', `${id}.json`);
       const run = await readJSON(runPath, WorkflowRunSchema);
       if (!run) {
@@ -21,9 +21,9 @@ export function createRunsStorage(basedir: string): Storage['runs'] {
       }
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       return filterRunData(run, resolveData);
-    },
+    }) as Storage['runs']['get'],
 
-    async list(params) {
+    list: (async (params?: any) => {
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'runs'),
@@ -47,19 +47,19 @@ export function createRunsStorage(basedir: string): Storage['runs'] {
         getId: (run) => run.runId,
       });
 
-      // If resolveData is "none", replace input/output with empty data
+      // If resolveData is "none", replace input/output with undefined
       if (resolveData === 'none') {
         return {
           ...result,
           data: result.data.map((run) => ({
             ...run,
-            input: [],
+            input: undefined,
             output: undefined,
-          })),
+          })) as WorkflowRunWithoutData[],
         };
       }
 
       return result;
-    },
+    }) as Storage['runs']['list'],
   };
 }

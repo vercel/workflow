@@ -13,12 +13,14 @@ import type {
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WorkflowRun,
+  WorkflowRunWithoutData,
 } from './runs.js';
 import type { PaginatedResponse } from './shared.js';
 import type {
   GetStepParams,
   ListWorkflowRunStepsParams,
   Step,
+  StepWithoutData,
 } from './steps.js';
 
 export interface Streamer {
@@ -52,19 +54,56 @@ export interface Streamer {
  */
 export interface Storage {
   runs: {
-    get(id: string, params?: GetWorkflowRunParams): Promise<WorkflowRun>;
+    get(
+      id: string,
+      params: GetWorkflowRunParams & { resolveData: 'none' }
+    ): Promise<WorkflowRunWithoutData>;
+    get(
+      id: string,
+      params?: GetWorkflowRunParams & { resolveData?: 'all' }
+    ): Promise<WorkflowRun>;
+    get(
+      id: string,
+      params?: GetWorkflowRunParams
+    ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+
+    list(
+      params: ListWorkflowRunsParams & { resolveData: 'none' }
+    ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
+    list(
+      params?: ListWorkflowRunsParams & { resolveData?: 'all' }
+    ): Promise<PaginatedResponse<WorkflowRun>>;
     list(
       params?: ListWorkflowRunsParams
-    ): Promise<PaginatedResponse<WorkflowRun>>;
+    ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
   };
 
   steps: {
     get(
       runId: string | undefined,
       stepId: string,
-      params?: GetStepParams
+      params: GetStepParams & { resolveData: 'none' }
+    ): Promise<StepWithoutData>;
+    get(
+      runId: string | undefined,
+      stepId: string,
+      params?: GetStepParams & { resolveData?: 'all' }
     ): Promise<Step>;
-    list(params: ListWorkflowRunStepsParams): Promise<PaginatedResponse<Step>>;
+    get(
+      runId: string | undefined,
+      stepId: string,
+      params?: GetStepParams
+    ): Promise<Step | StepWithoutData>;
+
+    list(
+      params: ListWorkflowRunStepsParams & { resolveData: 'none' }
+    ): Promise<PaginatedResponse<StepWithoutData>>;
+    list(
+      params: ListWorkflowRunStepsParams & { resolveData?: 'all' }
+    ): Promise<PaginatedResponse<Step>>;
+    list(
+      params: ListWorkflowRunStepsParams
+    ): Promise<PaginatedResponse<Step | StepWithoutData>>;
   };
 
   events: {

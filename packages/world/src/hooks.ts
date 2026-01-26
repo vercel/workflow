@@ -1,10 +1,6 @@
 import { z } from 'zod';
-import type { SerializedData } from './serialization.js';
-import {
-  type PaginationOptions,
-  type ResolveData,
-  zodJsonSchema,
-} from './shared.js';
+import { SerializedDataSchema, type SerializedData } from './serialization.js';
+import { type PaginationOptions, type ResolveData } from './shared.js';
 
 // Hook schemas
 export const HookSchema = z.object({
@@ -14,7 +10,7 @@ export const HookSchema = z.object({
   ownerId: z.string(),
   projectId: z.string(),
   environment: z.string(),
-  metadata: zodJsonSchema.optional(),
+  metadata: SerializedDataSchema.optional(),
   createdAt: z.coerce.date(),
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
@@ -37,7 +33,7 @@ export type Hook = z.infer<typeof HookSchema> & {
   /** The environment (e.g., "production", "preview", "development") where this hook was created. */
   environment: string;
   /** Optional metadata associated with the hook, set when the hook was created. */
-  metadata?: unknown;
+  metadata?: SerializedData;
   /** The timestamp when this hook was created. */
   createdAt: Date;
   /** The spec version when this hook was created. */

@@ -11,7 +11,9 @@ import type {
   ListEventsParams,
   PaginationOptions,
   Step,
+  StepWithoutData,
   WorkflowRun,
+  WorkflowRunWithoutData,
   World,
 } from '@workflow/world';
 import chalk from 'chalk';
@@ -543,7 +545,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     }
   }
 
-  await setupListPagination<WorkflowRun>({
+  await setupListPagination<WorkflowRun | WorkflowRunWithoutData>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
     fetchPage: async (cursor) => {
@@ -681,7 +683,7 @@ export const listSteps = async (
     }
   }
 
-  await setupListPagination<Step>({
+  await setupListPagination<Step | StepWithoutData>({
     initialCursor: opts.cursor,
     interactive: opts.interactive,
     fetchPage: async (cursor) => {

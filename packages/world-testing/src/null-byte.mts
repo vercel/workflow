@@ -1,4 +1,5 @@
 import { expect, test, vi } from 'vitest';
+import { hydrateWorkflowReturnValue } from 'workflow/internal/serialization';
 import { createFetcher, startServer } from './util.mjs';
 
 export function nullByte(world: string) {
@@ -10,18 +11,19 @@ export function nullByte(world: string) {
       []
     );
     expect(result.runId).toMatch(/^wrun_.+/);
-    await vi.waitFor(
+    const run = await vi.waitFor(
       async () => {
         const run = await server.getRun(result.runId);
-        expect(run).toMatchObject<Partial<typeof run>>({
-          status: 'completed',
-          output: ['null byte \0'],
-        });
+        expect(run.status).toBe('completed');
+        expect(run.output).toBeInstanceOf(Uint8Array);
+        return run;
       },
       {
         interval: 200,
         timeout: 10_000,
       }
     );
+    const output = await hydrateWorkflowReturnValue(run.output!, [], run.runId);
+    expect(output).toEqual('null byte \0');
   });
 }

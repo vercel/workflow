@@ -4,6 +4,7 @@ import type {
   Event,
   EventResult,
   Hook,
+  SerializedData,
   Step,
   Storage,
   WorkflowRun,
@@ -246,7 +247,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         const runData = data.eventData as {
           deploymentId: string;
           workflowName: string;
-          input: any[];
+          input: SerializedData;
           executionContext?: Record<string, any>;
         };
         run = {
@@ -257,7 +258,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           // Propagate specVersion from the event to the run entity
           specVersion: effectiveSpecVersion,
           executionContext: runData.executionContext,
-          input: runData.input || [],
+          input: runData.input,
           output: undefined,
           error: undefined,
           startedAt: undefined,

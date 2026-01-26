@@ -1,4 +1,11 @@
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type {
+  Event,
+  Hook,
+  Step,
+  StepWithoutData,
+  WorkflowRun,
+  WorkflowRunWithoutData,
+} from '@workflow/world';
 
 /**
  * Filter run data based on resolveData setting.
@@ -6,14 +13,26 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
  */
 export function filterRunData(
   run: WorkflowRun,
+  resolveData: 'none'
+): WorkflowRunWithoutData;
+export function filterRunData(
+  run: WorkflowRun,
+  resolveData: 'all'
+): WorkflowRun;
+export function filterRunData(
+  run: WorkflowRun,
   resolveData: 'none' | 'all'
-): WorkflowRun {
+): WorkflowRun | WorkflowRunWithoutData;
+export function filterRunData(
+  run: WorkflowRun,
+  resolveData: 'none' | 'all'
+): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
     return {
       ...run,
-      input: [],
+      input: undefined,
       output: undefined,
-    };
+    } as WorkflowRunWithoutData;
   }
   return run;
 }
@@ -22,13 +41,25 @@ export function filterRunData(
  * Filter step data based on resolveData setting.
  * When resolveData is 'none', strips input/output to reduce payload size.
  */
-export function filterStepData(step: Step, resolveData: 'none' | 'all'): Step {
+export function filterStepData(
+  step: Step,
+  resolveData: 'none'
+): StepWithoutData;
+export function filterStepData(step: Step, resolveData: 'all'): Step;
+export function filterStepData(
+  step: Step,
+  resolveData: 'none' | 'all'
+): Step | StepWithoutData;
+export function filterStepData(
+  step: Step,
+  resolveData: 'none' | 'all'
+): Step | StepWithoutData {
   if (resolveData === 'none') {
     return {
       ...step,
-      input: [],
+      input: undefined,
       output: undefined,
-    };
+    } as StepWithoutData;
   }
   return step;
 }

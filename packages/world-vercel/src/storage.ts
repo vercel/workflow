@@ -9,12 +9,16 @@ export function createStorage(config?: APIConfig): Storage {
   return {
     // Storage interface with namespaced methods
     runs: {
-      get: (id, params) => getWorkflowRun(id, params, config),
-      list: (params) => listWorkflowRuns(params, config),
+      get: ((id: string, params?: any) =>
+        getWorkflowRun(id, params, config)) as Storage['runs']['get'],
+      list: ((params?: any) =>
+        listWorkflowRuns(params, config)) as Storage['runs']['list'],
     },
     steps: {
-      get: (runId, stepId, params) => getStep(runId, stepId, params, config),
-      list: (params) => listWorkflowRunSteps(params, config),
+      get: ((runId: string | undefined, stepId: string, params?: any) =>
+        getStep(runId, stepId, params, config)) as Storage['steps']['get'],
+      list: ((params: any) =>
+        listWorkflowRunSteps(params, config)) as Storage['steps']['list'],
     },
     events: {
       create: (runId, data, params) =>

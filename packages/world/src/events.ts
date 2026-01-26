@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
 // Event type enum
@@ -42,7 +43,7 @@ const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),
   eventData: z.object({
-    result: z.any(),
+    result: SerializedDataSchema,
   }),
 });
 
@@ -89,7 +90,7 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     stepName: z.string(),
-    input: z.any(), // SerializedData
+    input: SerializedDataSchema,
   }),
 });
 
@@ -102,7 +103,7 @@ const HookCreatedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     token: z.string(),
-    metadata: z.any().optional(), // SerializedData
+    metadata: SerializedDataSchema.optional(),
   }),
 });
 
@@ -110,7 +111,7 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_received'),
   correlationId: z.string(),
   eventData: z.object({
-    payload: z.any(), // Serialized payload
+    payload: SerializedDataSchema,
   }),
 });
 
@@ -161,7 +162,7 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     deploymentId: z.string(),
     workflowName: z.string(),
-    input: z.array(z.any()), // SerializedData[]
+    input: SerializedDataSchema,
     executionContext: z.record(z.string(), z.any()).optional(),
   }),
 });
@@ -181,7 +182,7 @@ const RunStartedEventSchema = BaseEventSchema.extend({
 const RunCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_completed'),
   eventData: z.object({
-    output: z.any().optional(), // SerializedData
+    output: SerializedDataSchema.optional(),
   }),
 });
 

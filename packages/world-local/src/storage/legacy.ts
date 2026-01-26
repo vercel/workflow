@@ -48,7 +48,11 @@ export async function handleLegacyEvent(
       await writeJSON(runPath, run, { overwrite: true });
       await deleteAllHooksForRun(basedir, runId);
       // Return without event (legacy behavior skips event storage)
-      return { event: undefined, run: filterRunData(run, resolveData) };
+      // Type assertion: EventResult expects WorkflowRun, filterRunData may return WorkflowRunWithoutData
+      return {
+        event: undefined,
+        run: filterRunData(run, resolveData) as WorkflowRun,
+      };
     }
 
     case 'wait_completed':

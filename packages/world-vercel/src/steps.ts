@@ -48,8 +48,8 @@ const StepWireWithRefsSchema = StepWireSchema.omit({
   // We discard the results of the refs, so we don't care about the type here
   inputRef: z.any().optional(),
   outputRef: z.any().optional(),
-  input: z.array(z.any()).optional(),
-  output: z.any().optional(),
+  input: z.instanceof(Uint8Array).optional(),
+  output: z.instanceof(Uint8Array).optional(),
 });
 
 /**
@@ -107,7 +107,7 @@ function filterStepData(step: any, resolveData: 'none' | 'all'): Step {
     const deserialized = deserializeStep(rest);
     return {
       ...deserialized,
-      input: [],
+      input: new Uint8Array(),
       output: undefined,
     };
   }

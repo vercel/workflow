@@ -8,9 +8,11 @@ import type {
   PaginatedResponse,
   ResolveData,
   Step,
+  StepWithoutData,
   Storage,
   StructuredError,
   WorkflowRun,
+  WorkflowRunWithoutData,
 } from '@workflow/world';
 import {
   EventSchema,
@@ -98,7 +100,7 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
     .prepare('workflow_runs_get');
 
   return {
-    async get(id, params) {
+    get: (async (id, params) => {
       const [value] = await get.execute({ id });
       if (!value) {
         throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
@@ -111,8 +113,8 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
       const parsed = WorkflowRunSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
       return filterRunData(parsed, resolveData);
-    },
-    async list(params) {
+    }) as Storage['runs']['get'],
+    list: (async (params) => {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
 
@@ -145,7 +147,7 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
         hasMore,
         cursor: values.at(-1)?.runId ?? null,
       };
-    },
+    }) as Storage['runs']['list'],
   };
 }
 
@@ -197,9 +199,13 @@ async function handleLegacyEventPostgres(
         .limit(1);
 
       // Return without event (legacy behavior skips event storage)
+      // Type assertion: EventResult expects WorkflowRun, filterRunData may return WorkflowRunWithoutData
       return {
         run: updatedRun
-          ? filterRunData(deserializeRunError(compact(updatedRun)), resolveData)
+          ? (filterRunData(
+              deserializeRunError(compact(updatedRun)),
+              resolveData
+            ) as WorkflowRun)
           : undefined,
       };
     }
@@ -1035,7 +1041,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
   const { steps } = Schema;
 
   return {
-    async get(runId, stepId, params) {
+    get: (async (runId, stepId, params) => {
       // If runId is not provided, query only by stepId
       const whereClause = runId
         ? and(eq(steps.stepId, stepId), eq(steps.runId, runId))
@@ -1059,8 +1065,8 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
       const parsed = StepSchema.parse(deserialized);
       const resolveData = params?.resolveData ?? 'all';
       return filterStepData(parsed, resolveData);
-    },
-    async list(params) {
+    }) as Storage['steps']['get'],
+    list: (async (params) => {
       const limit = params?.pagination?.limit ?? 20;
       const fromCursor = params?.pagination?.cursor;
 
@@ -1091,27 +1097,45 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
         hasMore,
         cursor: values.at(-1)?.stepId ?? null,
       };
-    },
+    }) as Storage['steps']['list'],
   };
 }
 
-function filterStepData(step: Step, resolveData: ResolveData): Step {
+function filterStepData(step: Step, resolveData: 'none'): StepWithoutData;
+function filterStepData(step: Step, resolveData: 'all'): Step;
+function filterStepData(
+  step: Step,
+  resolveData: ResolveData
+): Step | StepWithoutData;
+function filterStepData(
+  step: Step,
+  resolveData: ResolveData
+): Step | StepWithoutData {
   if (resolveData === 'none') {
     const { input: _, output: __, ...rest } = step;
 
-    return { input: [], output: undefined, ...rest };
+    return { input: undefined, output: undefined, ...rest };
   }
   return step;
 }
 
 function filterRunData(
   run: WorkflowRun,
+  resolveData: 'none'
+): WorkflowRunWithoutData;
+function filterRunData(run: WorkflowRun, resolveData: 'all'): WorkflowRun;
+function filterRunData(
+  run: WorkflowRun,
   resolveData: ResolveData
-): WorkflowRun {
+): WorkflowRun | WorkflowRunWithoutData;
+function filterRunData(
+  run: WorkflowRun,
+  resolveData: ResolveData
+): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
     const { input: _, output: __, ...rest } = run;
 
-    return { input: [], output: undefined, ...rest };
+    return { input: undefined, output: undefined, ...rest };
   }
   return run;
 }

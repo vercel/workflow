@@ -24,7 +24,7 @@ export function errors(world: string) {
         timeout: 50_000,
       }
     );
-    const output = await hydrateWorkflowReturnValue(run.output, [], run.runId);
+    const output = await hydrateWorkflowReturnValue(run.output!, [], run.runId);
     expect(output).toEqual({
       gotFatalError: true,
       retryableResult: {

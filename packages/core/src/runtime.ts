@@ -24,7 +24,6 @@ import {
 } from './runtime/helpers.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld, getWorldHandlers } from './runtime/world.js';
-import type { Serializable } from './schemas.js';
 import {
   getExternalRevivers,
   hydrateWorkflowReturnValue,
@@ -382,7 +381,7 @@ export function workflowEntrypoint(
                 eventType: 'run_completed',
                 specVersion: SPEC_VERSION_CURRENT,
                 eventData: {
-                  output: result as Serializable,
+                  output: result,
                 },
               });
 

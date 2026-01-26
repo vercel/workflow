@@ -92,7 +92,19 @@ export function createFetcher(control: Control) {
       const x = await fetch(
         `http://localhost:${control.info.port}/runs/${encodeURIComponent(id)}`
       );
-      const data = await x.json();
+      const text = await x.text();
+      // Custom JSON reviver to decode base64 back to Uint8Array
+      const data = JSON.parse(text, (_key, value) => {
+        if (
+          value !== null &&
+          typeof value === 'object' &&
+          (value as any).__type === 'Uint8Array' &&
+          typeof (value as any).data === 'string'
+        ) {
+          return new Uint8Array(Buffer.from((value as any).data, 'base64'));
+        }
+        return value;
+      });
       return WorkflowRunSchema.parseAsync(data);
     },
     async getReadable(id: string): Promise<ReadableStream<Uint8Array>> {

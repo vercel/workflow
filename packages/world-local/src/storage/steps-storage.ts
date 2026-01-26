@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { Step, Storage } from '@workflow/world';
+import type { Storage, StepWithoutData } from '@workflow/world';
 import { StepSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { listJSONFiles, paginatedFileSystemQuery, readJSON } from '../fs.js';
@@ -12,11 +12,7 @@ import { getObjectCreatedAt } from './helpers.js';
  */
 export function createStepsStorage(basedir: string): Storage['steps'] {
   return {
-    async get(
-      runId: string | undefined,
-      stepId: string,
-      params
-    ): Promise<Step> {
+    get: (async (runId: string | undefined, stepId: string, params?: any) => {
       if (!runId) {
         const fileIds = await listJSONFiles(path.join(basedir, 'steps'));
         const fileId = fileIds.find((fileId) => fileId.endsWith(`-${stepId}`));
@@ -33,9 +29,9 @@ export function createStepsStorage(basedir: string): Storage['steps'] {
       }
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       return filterStepData(step, resolveData);
-    },
+    }) as Storage['steps']['get'],
 
-    async list(params) {
+    list: (async (params: any) => {
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'steps'),
@@ -48,19 +44,19 @@ export function createStepsStorage(basedir: string): Storage['steps'] {
         getId: (step) => step.stepId,
       });
 
-      // If resolveData is "none", replace input/output with empty data
+      // If resolveData is "none", replace input/output with undefined
       if (resolveData === 'none') {
         return {
           ...result,
           data: result.data.map((step) => ({
             ...step,
-            input: [],
+            input: undefined,
             output: undefined,
-          })),
+          })) as StepWithoutData[],
         };
       }
 
       return result;
-    },
+    }) as Storage['steps']['list'],
   };
 }

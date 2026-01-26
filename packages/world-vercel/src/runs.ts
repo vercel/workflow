@@ -10,6 +10,7 @@ import {
   type UpdateWorkflowRunRequest,
   type WorkflowRun,
   WorkflowRunBaseSchema,
+  type WorkflowRunWithoutData,
 } from '@workflow/world';
 import { z } from 'zod';
 import type { APIConfig } from './utils.js';
@@ -47,22 +48,33 @@ const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   // We discard the results of the refs, so we don't care about the type here
   inputRef: z.any().optional(),
   outputRef: z.any().optional(),
-  input: z.array(z.any()).optional(),
-  output: z.any().optional(),
+  input: z.instanceof(Uint8Array).optional(),
+  output: z.instanceof(Uint8Array).optional(),
   blobStorageBytes: z.number().optional(),
   streamStorageBytes: z.number().optional(),
 });
 
-// Helper to filter run data based on resolveData setting
-function filterRunData(run: any, resolveData: 'none' | 'all'): WorkflowRun {
+// Overloaded function signatures for filterRunData
+function filterRunData(run: any, resolveData: 'none'): WorkflowRunWithoutData;
+function filterRunData(run: any, resolveData: 'all'): WorkflowRun;
+function filterRunData(
+  run: any,
+  resolveData: 'none' | 'all'
+): WorkflowRun | WorkflowRunWithoutData;
+
+// Implementation
+function filterRunData(
+  run: any,
+  resolveData: 'none' | 'all'
+): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
     const deserialized = deserializeError<WorkflowRun>(rest);
     return {
       ...deserialized,
-      input: [],
+      input: undefined,
       output: undefined,
-    };
+    } as WorkflowRunWithoutData;
   }
   return deserializeError<WorkflowRun>(run);
 }
@@ -74,9 +86,21 @@ function filterRunData(run: any, resolveData: 'none' | 'all'): WorkflowRun {
  * uses CH to resolve this instead of scanning a dynamo table.
  */
 export async function listWorkflowRuns(
+  params: ListWorkflowRunsParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
+export async function listWorkflowRuns(
+  params?: ListWorkflowRunsParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<PaginatedResponse<WorkflowRun>>;
+export async function listWorkflowRuns(
+  params?: ListWorkflowRunsParams,
+  config?: APIConfig
+): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
+export async function listWorkflowRuns(
   params: ListWorkflowRunsParams = {},
   config?: APIConfig
-): Promise<PaginatedResponse<WorkflowRun>> {
+): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>> {
   const {
     workflowName,
     status,
@@ -133,9 +157,24 @@ export async function createWorkflowRun(
 
 export async function getWorkflowRun(
   id: string,
+  params: GetWorkflowRunParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<WorkflowRunWithoutData>;
+export async function getWorkflowRun(
+  id: string,
+  params?: GetWorkflowRunParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<WorkflowRun>;
+export async function getWorkflowRun(
+  id: string,
   params?: GetWorkflowRunParams,
   config?: APIConfig
-): Promise<WorkflowRun> {
+): Promise<WorkflowRun | WorkflowRunWithoutData>;
+export async function getWorkflowRun(
+  id: string,
+  params?: GetWorkflowRunParams,
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
 
@@ -189,9 +228,24 @@ export async function updateWorkflowRun(
 
 export async function cancelWorkflowRun(
   id: string,
+  params: CancelWorkflowRunParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<WorkflowRunWithoutData>;
+export async function cancelWorkflowRun(
+  id: string,
+  params?: CancelWorkflowRunParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<WorkflowRun>;
+export async function cancelWorkflowRun(
+  id: string,
   params?: CancelWorkflowRunParams,
   config?: APIConfig
-): Promise<WorkflowRun> {
+): Promise<WorkflowRun | WorkflowRunWithoutData>;
+export async function cancelWorkflowRun(
+  id: string,
+  params?: CancelWorkflowRunParams,
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
 

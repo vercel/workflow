@@ -5,6 +5,8 @@ export {
   EventSchema,
   EventTypeSchema,
 } from './events.js';
+export type { SerializedData } from './serialization.js';
+export { SerializedDataSchema } from './serialization.js';
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';

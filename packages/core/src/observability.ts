@@ -227,7 +227,7 @@ const hydrateStepIO = <
   return {
     ...step,
     input:
-      step.input && Array.isArray(step.input) && step.input.length
+      step.input instanceof Uint8Array && step.input.byteLength > 0
         ? hydrateStepArguments(
             step.input,
             [],
@@ -236,9 +236,10 @@ const hydrateStepIO = <
             streamPrintRevivers
           )
         : step.input,
-    output: step.output
-      ? hydrateStepReturnValue(step.output, globalThis, streamPrintRevivers)
-      : step.output,
+    output:
+      step.output instanceof Uint8Array
+        ? hydrateStepReturnValue(step.output, globalThis, streamPrintRevivers)
+        : step.output,
   };
 };
 
@@ -250,22 +251,23 @@ const hydrateWorkflowIO = <
   return {
     ...workflow,
     input:
-      workflow.input && Array.isArray(workflow.input) && workflow.input.length
+      workflow.input instanceof Uint8Array && workflow.input.byteLength > 0
         ? hydrateWorkflowArguments(
             workflow.input,
             globalThis,
             streamPrintRevivers
           )
         : workflow.input,
-    output: workflow.output
-      ? hydrateWorkflowReturnValue(
-          workflow.output,
-          [],
-          workflow.runId as string,
-          globalThis,
-          streamPrintRevivers
-        )
-      : workflow.output,
+    output:
+      workflow.output instanceof Uint8Array
+        ? hydrateWorkflowReturnValue(
+            workflow.output,
+            [],
+            workflow.runId as string,
+            globalThis,
+            streamPrintRevivers
+          )
+        : workflow.output,
   };
 };
 

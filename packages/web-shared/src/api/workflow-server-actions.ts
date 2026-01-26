@@ -5,9 +5,9 @@ import path from 'node:path';
 import { hydrateResourceIO } from '@workflow/core/observability';
 import {
   createWorld,
-  healthCheck,
   type HealthCheckEndpoint,
   type HealthCheckResult,
+  healthCheck,
   resumeHook as resumeHookRuntime,
   start,
 } from '@workflow/core/runtime';
@@ -638,7 +638,8 @@ export async function fetchSteps(
       resolveData: 'none',
     });
     return createResponse({
-      data: (result.data as Step[]).map(hydrate),
+      // StepWithoutData has undefined input/output, but after hydration the structure is compatible
+      data: (result.data as unknown as Step[]).map(hydrate),
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
     });
@@ -838,9 +839,10 @@ export async function recreateRun(
     const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const hydratedRun = hydrate(run as WorkflowRun);
+    // hydrateResourceIO deserializes the binary input back to the original array
     const newRun = await start(
       { workflowId: run.workflowName },
-      hydratedRun.input,
+      hydratedRun.input as unknown as unknown[],
       {
         deploymentId: deploymentId ?? run.deploymentId,
         world,

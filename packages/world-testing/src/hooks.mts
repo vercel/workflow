@@ -67,7 +67,7 @@ export function hooks(world: string) {
       }
     );
 
-    const output = await hydrateWorkflowReturnValue(run.output, [], run.runId);
+    const output = await hydrateWorkflowReturnValue(run.output!, [], run.runId);
     expect(output).toEqual({
       collected: [
         {

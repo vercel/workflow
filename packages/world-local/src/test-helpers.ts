@@ -1,4 +1,10 @@
-import type { Hook, Step, Storage, WorkflowRun } from '@workflow/world';
+import type {
+  Hook,
+  SerializedData,
+  Step,
+  Storage,
+  WorkflowRun,
+} from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 
 /**
@@ -14,7 +20,7 @@ export async function createRun(
   data: {
     deploymentId: string;
     workflowName: string;
-    input: unknown[];
+    input: SerializedData;
     executionContext?: Record<string, unknown>;
   }
 ): Promise<WorkflowRun> {
@@ -58,7 +64,7 @@ export async function createStep(
   data: {
     stepId: string;
     stepName: string;
-    input: unknown[];
+    input: SerializedData;
   }
 ): Promise<Step> {
   const result = await storage.events.create(runId, {
@@ -104,7 +110,7 @@ export async function createHook(
   data: {
     hookId: string;
     token: string;
-    metadata?: unknown;
+    metadata?: SerializedData;
   }
 ): Promise<Hook> {
   const result = await storage.events.create(runId, {

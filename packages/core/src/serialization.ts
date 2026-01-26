@@ -1,6 +1,6 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { DevalueError, parse, stringify, unflatten } from 'devalue';
+import { DevalueError, parse, stringify } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { getSerializationClass } from './class-serialization.js';
 import {
@@ -259,12 +259,6 @@ type Reducers = {
 type Revivers = {
   [K in keyof SerializableSpecial]: (value: SerializableSpecial[K]) => any;
 };
-
-function revive(str: string) {
-  // biome-ignore lint/security/noGlobalEval: Eval is safe here - we are only passing value from `devalue.stringify()`
-  // biome-ignore lint/complexity/noCommaOperator: This is how you do global scope eval
-  return (0, eval)(`(${str})`);
-}
 
 function getCommonReducers(global: Record<string, any> = globalThis) {
   const abToBase64 = (
@@ -1078,17 +1072,17 @@ function getStepRevivers(
  * @param value
  * @param global
  * @param runId
- * @returns The dehydrated value, ready to be inserted into the database
+ * @returns The dehydrated value as binary data (Uint8Array)
  */
 export function dehydrateWorkflowArguments(
   value: unknown,
   ops: Promise<void>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis
-) {
+): Uint8Array {
   try {
     const str = stringify(value, getExternalReducers(global, ops, runId));
-    return revive(str);
+    return new TextEncoder().encode(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('workflow arguments', error),
@@ -1101,17 +1095,18 @@ export function dehydrateWorkflowArguments(
  * Called from workflow execution environment to hydrate the workflow
  * arguments from the database at the start of workflow execution.
  *
- * @param value
- * @param ops
+ * @param value - Binary serialized data (Uint8Array)
  * @param global
+ * @param extraRevivers
  * @returns The hydrated value
  */
 export function hydrateWorkflowArguments(
-  value: Parameters<typeof unflatten>[0],
+  value: Uint8Array,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const obj = unflatten(value, {
+  const str = new TextDecoder().decode(value);
+  const obj = parse(str, {
     ...getWorkflowRevivers(global),
     ...extraRevivers,
   });
@@ -1124,15 +1119,15 @@ export function hydrateWorkflowArguments(
  *
  * @param value
  * @param global
- * @returns The dehydrated value, ready to be inserted into the database
+ * @returns The dehydrated value as binary data (Uint8Array)
  */
 export function dehydrateWorkflowReturnValue(
   value: unknown,
   global: Record<string, any> = globalThis
-) {
+): Uint8Array {
   try {
     const str = stringify(value, getWorkflowReducers(global));
-    return revive(str);
+    return new TextEncoder().encode(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('workflow return value', error),
@@ -1146,7 +1141,7 @@ export function dehydrateWorkflowReturnValue(
  * the workflow run was initiated from) to hydrate the workflow
  * return value of a completed workflow run.
  *
- * @param value
+ * @param value - Binary serialized data (Uint8Array)
  * @param ops
  * @param global
  * @param extraRevivers
@@ -1154,13 +1149,14 @@ export function dehydrateWorkflowReturnValue(
  * @returns The hydrated return value, ready to be consumed by the client
  */
 export function hydrateWorkflowReturnValue(
-  value: Parameters<typeof unflatten>[0],
+  value: Uint8Array,
   ops: Promise<void>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const obj = unflatten(value, {
+  const str = new TextDecoder().decode(value);
+  const obj = parse(str, {
     ...getExternalRevivers(global, ops, runId),
     ...extraRevivers,
   });
@@ -1174,15 +1170,15 @@ export function hydrateWorkflowReturnValue(
  *
  * @param value
  * @param global
- * @returns The dehydrated value, ready to be inserted into the database
+ * @returns The dehydrated value as binary data (Uint8Array)
  */
 export function dehydrateStepArguments(
   value: unknown,
   global: Record<string, any>
-) {
+): Uint8Array {
   try {
     const str = stringify(value, getWorkflowReducers(global));
-    return revive(str);
+    return new TextEncoder().encode(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('step arguments', error),
@@ -1195,7 +1191,7 @@ export function dehydrateStepArguments(
  * Called from the step handler to hydrate the arguments of a step
  * from the database at the start of the step execution.
  *
- * @param value
+ * @param value - Binary serialized data (Uint8Array)
  * @param ops
  * @param global
  * @param extraRevivers
@@ -1203,13 +1199,14 @@ export function dehydrateStepArguments(
  * @returns The hydrated value, ready to be consumed by the step user-code function
  */
 export function hydrateStepArguments(
-  value: Parameters<typeof unflatten>[0],
+  value: Uint8Array,
   ops: Promise<any>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const obj = unflatten(value, {
+  const str = new TextDecoder().decode(value);
+  const obj = parse(str, {
     ...getStepRevivers(global, ops, runId),
     ...extraRevivers,
   });
@@ -1225,17 +1222,17 @@ export function hydrateStepArguments(
  * @param ops
  * @param global
  * @param runId
- * @returns The dehydrated value, ready to be inserted into the database
+ * @returns The dehydrated value as binary data (Uint8Array)
  */
 export function dehydrateStepReturnValue(
   value: unknown,
   ops: Promise<any>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis
-) {
+): Uint8Array {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId));
-    return revive(str);
+    return new TextEncoder().encode(str);
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('step return value', error),
@@ -1248,18 +1245,18 @@ export function dehydrateStepReturnValue(
  * Called from the workflow handler when replaying the event log of a `step_completed` event.
  * Hydrates the return value of a step from the database.
  *
- * @param value
+ * @param value - Binary serialized data (Uint8Array)
  * @param global
  * @param extraRevivers
- * @param runId
  * @returns The hydrated return value of a step, ready to be consumed by the workflow handler
  */
 export function hydrateStepReturnValue(
-  value: Parameters<typeof unflatten>[0],
+  value: Uint8Array,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const obj = unflatten(value, {
+  const str = new TextDecoder().decode(value);
+  const obj = parse(str, {
     ...getWorkflowRevivers(global),
     ...extraRevivers,
   });
