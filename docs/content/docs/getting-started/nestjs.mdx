@@ -34,6 +34,12 @@ npm i workflow
 
 NestJS supports SWC as an alternative compiler for faster builds. The Workflow DevKit uses an SWC plugin to transform workflow files.
 
+Install the required SWC packages:
+
+```package-install
+npm i -D @swc/cli @swc/core
+```
+
 Ensure your `nest-cli.json` has SWC as the builder:
 
 ```json title="nest-cli.json" lineNumbers

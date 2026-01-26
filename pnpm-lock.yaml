@@ -660,6 +660,9 @@ importers:
 
   packages/nest:
     dependencies:
+      '@swc/cli':
+        specifier: '>=0.4.0'
+        version: 0.6.0(@swc/core@1.15.3)(chokidar@4.0.3)
       '@swc/core':
         specifier: 'catalog:'
         version: 1.15.3

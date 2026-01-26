@@ -10,6 +10,14 @@ npm install @workflow/nest
 pnpm add @workflow/nest
 ```
 
+You also need to install the SWC packages required by NestJS's SWC builder:
+
+```bash
+npm install -D @swc/cli @swc/core
+# or
+pnpm add -D @swc/cli @swc/core
+```
+
 ## Quick Start
 
 ### 1. Initialize SWC Configuration
@@ -131,7 +139,7 @@ When you run `npx @workflow/nest init`, it:
 
 This approach ensures:
 
-- End users don't need to install or configure SWC dependencies directly
+- No manual SWC plugin configuration required
 - No pnpm hoisting configuration required in `.npmrc`
 - The plugin is always resolved from the correct location
 
