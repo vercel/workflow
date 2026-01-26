@@ -1,7 +1,9 @@
 import os from 'node:os';
+import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
+import { decode } from 'cbor-x';
 import type { z } from 'zod';
 import { version } from './version.js';
 
@@ -202,6 +204,7 @@ export async function makeRequest<T>({
 }): Promise<T> {
   const { baseUrl, headers } = await getHttpConfig(config);
   headers.set('Content-Type', 'application/json');
+  headers.set('Accept', 'application/cbor');
   // NOTE: Add a unique header to bypass RSC request memoization.
   // See: https://github.com/vercel/workflow/issues/618
   headers.set('X-Request-Time', Date.now().toString());
@@ -214,7 +217,10 @@ export async function makeRequest<T>({
   const response = await fetch(request);
 
   if (!response.ok) {
-    const errorData = (await response.json().catch(() => ({}))) as any;
+    const errorData: { message?: string; code?: string } =
+      await parseResponseBody(response)
+        .then((r) => r.data as { message?: string; code?: string })
+        .catch(() => ({}));
     if (process.env.DEBUG === '1') {
       const stringifiedHeaders = Array.from(headers.entries())
         .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
@@ -230,14 +236,73 @@ export async function makeRequest<T>({
     );
   }
 
-  const text = await response.text();
-
+  // Parse the response body (CBOR or JSON)
+  let parseResult: ParseResult;
   try {
-    return schema.parse(JSON.parse(text));
+    parseResult = await parseResponseBody(response);
   } catch (error) {
+    const contentType = response.headers.get('Content-Type') || 'unknown';
     throw new WorkflowAPIError(
-      `Failed to parse server response for ${request.method} ${endpoint}:\n\n${error}\n\nResponse body: ${text}`,
+      `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
       { url, cause: error }
     );
   }
+
+  // Validate against the schema
+  const result = schema.safeParse(parseResult.data);
+  if (!result.success) {
+    throw new WorkflowAPIError(
+      `Schema validation failed for ${request.method} ${endpoint}:\n\n${result.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
+      { url, cause: result.error }
+    );
+  }
+
+  return result.data;
+}
+
+interface ParseResult {
+  data: unknown;
+  /** Lazily generates debug context for error messages (only called on failure) */
+  getDebugContext: () => string;
+}
+
+/** Max length for response preview in error messages */
+const MAX_PREVIEW_LENGTH = 500;
+
+/**
+ * Create a truncated preview of data for error messages.
+ */
+function createPreview(data: unknown): string {
+  const str = inspect(data, { depth: 3, maxArrayLength: 10, breakLength: 120 });
+  return str.length > MAX_PREVIEW_LENGTH
+    ? `${str.slice(0, MAX_PREVIEW_LENGTH)}...`
+    : str;
+}
+
+/**
+ * Parse response body based on Content-Type header.
+ * Supports both CBOR and JSON responses.
+ * Returns parsed data along with a lazy debug context generator for error reporting.
+ */
+async function parseResponseBody(response: Response): Promise<ParseResult> {
+  const contentType = response.headers.get('Content-Type') || '';
+
+  if (contentType.includes('application/cbor')) {
+    const buffer = await response.arrayBuffer();
+    const data = decode(new Uint8Array(buffer));
+    return {
+      data,
+      getDebugContext: () =>
+        `Content-Type: ${contentType}, ${buffer.byteLength} bytes (CBOR), preview: ${createPreview(data)}`,
+    };
+  }
+
+  // Fall back to JSON parsing
+  const text = await response.text();
+  const data = JSON.parse(text);
+  return {
+    data,
+    getDebugContext: () =>
+      `Content-Type: ${contentType}, ${text.length} bytes, preview: ${createPreview(data)}`,
+  };
 }

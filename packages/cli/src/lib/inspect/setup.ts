@@ -1,8 +1,6 @@
-import { join } from 'node:path';
 import { createWorld } from '@workflow/core/runtime';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
-import XDGAppPaths from 'xdg-app-paths';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
 import { checkForUpdateCached } from '../update-check.js';
 import {
@@ -10,18 +8,6 @@ import {
   inferVercelEnvVars,
   writeEnvVars,
 } from './env.js';
-
-// Get XDG-compliant cache directory for workflow
-const getXDGAppPaths = (app: string) => {
-  return (
-    XDGAppPaths as unknown as (app: string) => { dataDirs: () => string[] }
-  )(app);
-};
-
-const getWorkflowCacheDir = (): string => {
-  const dirs = getXDGAppPaths('workflow').dataDirs();
-  return dirs[0];
-};
 
 /**
  * Setup CLI world configuration.
@@ -45,8 +31,7 @@ export const setupCliWorld = async (
   setVerboseMode(Boolean(flags.verbose));
 
   // Check for updates
-  const cacheFile = join(getWorkflowCacheDir(), 'version-check.json');
-  const updateCheck = await checkForUpdateCached(version, cacheFile);
+  const updateCheck = await checkForUpdateCached(version);
 
   const withAnsiLinks = flags.json ? false : true;
   const docsUrl = withAnsiLinks

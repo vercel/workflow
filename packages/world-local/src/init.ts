@@ -1,18 +1,69 @@
 import {
-  accessSync,
+  access,
   constants,
-  mkdirSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+  mkdir,
+  readFile,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-/** Package name for version tracking */
-export const PACKAGE_NAME = '@workflow/world-local';
+/** Package name - hardcoded since it doesn't change */
+const PACKAGE_NAME = '@workflow/world-local';
 
-/** Current package version - imported at build time */
-export const PACKAGE_VERSION = '4.0.1-beta.20';
+interface PackageInfo {
+  name: string;
+  version: string;
+}
+
+let cachedPackageInfo: PackageInfo | null = null;
+
+/**
+ * Get the directory path for this module.
+ * Works in ESM and falls back to a constant in CJS contexts (which shouldn't happen)
+ */
+function getModuleDir(): string | null {
+  // In bundled CJS contexts, import.meta.url may be undefined or empty
+  if (typeof import.meta.url === 'string' && import.meta.url) {
+    return path.dirname(fileURLToPath(import.meta.url));
+  }
+  return null;
+}
+
+/**
+ * Returns the package name and version from package.json.
+ * The result is cached after the first read.
+ *
+ * In bundled contexts where package.json cannot be read,
+ * returns 'bundled' as the version.
+ */
+export async function getPackageInfo(): Promise<PackageInfo> {
+  if (cachedPackageInfo) {
+    return cachedPackageInfo;
+  }
+
+  const moduleDir = getModuleDir();
+  if (moduleDir) {
+    try {
+      const content = await readFile(
+        path.join(moduleDir, '../package.json'),
+        'utf-8'
+      );
+      cachedPackageInfo = JSON.parse(content) as PackageInfo;
+      return cachedPackageInfo;
+    } catch {
+      // Fall through to bundled fallback
+    }
+  }
+
+  // Bundled context - package.json not accessible
+  cachedPackageInfo = {
+    name: PACKAGE_NAME,
+    version: 'bundled',
+  };
+  return cachedPackageInfo;
+}
 
 /** Filename for storing version information in the data directory */
 const VERSION_FILENAME = 'version.txt';
@@ -157,12 +208,12 @@ export function upgradeVersion(
  * @param dataDir - The path to the data directory
  * @throws {DataDirAccessError} If the directory cannot be created or accessed
  */
-export function ensureDataDir(dataDir: string): void {
+export async function ensureDataDir(dataDir: string): Promise<void> {
   const absolutePath = path.resolve(dataDir);
 
   // Try to create the directory if it doesn't exist
   try {
-    mkdirSync(absolutePath, { recursive: true });
+    await mkdir(absolutePath, { recursive: true });
   } catch (error: unknown) {
     const nodeError = error as NodeJS.ErrnoException;
     // EEXIST is fine - directory already exists
@@ -177,7 +228,7 @@ export function ensureDataDir(dataDir: string): void {
 
   // Verify the directory is accessible (readable)
   try {
-    accessSync(absolutePath, constants.R_OK);
+    await access(absolutePath, constants.R_OK);
   } catch (error: unknown) {
     const nodeError = error as NodeJS.ErrnoException;
     throw new DataDirAccessError(
@@ -193,8 +244,8 @@ export function ensureDataDir(dataDir: string): void {
     `.workflow-write-test-${Date.now()}`
   );
   try {
-    writeFileSync(testFile, '');
-    unlinkSync(testFile);
+    await writeFile(testFile, '');
+    await unlink(testFile);
   } catch (error: unknown) {
     const nodeError = error as NodeJS.ErrnoException;
     throw new DataDirAccessError(
@@ -211,14 +262,14 @@ export function ensureDataDir(dataDir: string): void {
  * @param dataDir - Path to the data directory
  * @returns The parsed version info, or null if the file doesn't exist
  */
-function readVersionFile(dataDir: string): {
+async function readVersionFile(dataDir: string): Promise<{
   packageName: string;
   version: ParsedVersion;
-} | null {
+} | null> {
   const versionFilePath = path.join(path.resolve(dataDir), VERSION_FILENAME);
 
   try {
-    const content = readFileSync(versionFilePath, 'utf-8');
+    const content = await readFile(versionFilePath, 'utf-8');
     return parseVersionFile(content);
   } catch (error: unknown) {
     const nodeError = error as NodeJS.ErrnoException;
@@ -235,10 +286,14 @@ function readVersionFile(dataDir: string): {
  * @param dataDir - Path to the data directory
  * @param version - The version to write
  */
-function writeVersionFile(dataDir: string, version: ParsedVersion): void {
+async function writeVersionFile(
+  dataDir: string,
+  version: ParsedVersion
+): Promise<void> {
   const versionFilePath = path.join(path.resolve(dataDir), VERSION_FILENAME);
-  const content = formatVersionFile(PACKAGE_NAME, version);
-  writeFileSync(versionFilePath, content);
+  const packageInfo = await getPackageInfo();
+  const content = formatVersionFile(packageInfo.name, version);
+  await writeFile(versionFilePath, content);
 }
 
 /**
@@ -266,18 +321,19 @@ function getSuggestedDowngradeVersion(
  * @param dataDir - The path to the data directory
  * @throws {DataDirAccessError} If the directory cannot be created or accessed
  */
-export function initDataDir(dataDir: string): void {
+export async function initDataDir(dataDir: string): Promise<void> {
   // First ensure the directory exists and is accessible
-  ensureDataDir(dataDir);
+  await ensureDataDir(dataDir);
 
-  const currentVersion = parseVersion(PACKAGE_VERSION);
+  const packageInfo = await getPackageInfo();
+  const currentVersion = parseVersion(packageInfo.version);
 
   // Read existing version file
-  const existingVersionInfo = readVersionFile(dataDir);
+  const existingVersionInfo = await readVersionFile(dataDir);
 
   if (existingVersionInfo === null) {
     // New data directory - write the current version
-    writeVersionFile(dataDir, currentVersion);
+    await writeVersionFile(dataDir, currentVersion);
     return;
   }
 
@@ -292,7 +348,7 @@ export function initDataDir(dataDir: string): void {
   try {
     upgradeVersion(oldVersion, currentVersion);
     // Upgrade succeeded - write the new version
-    writeVersionFile(dataDir, currentVersion);
+    await writeVersionFile(dataDir, currentVersion);
   } catch (error: unknown) {
     const suggestedVersion =
       error instanceof DataDirVersionError ? error.suggestedVersion : undefined;
@@ -308,7 +364,7 @@ export function initDataDir(dataDir: string): void {
     );
     console.error(
       `[world-local] Data is not compatible with the current version. ` +
-        `Please downgrade to ${PACKAGE_NAME}@${downgradeTarget}`
+        `Please downgrade to ${packageInfo.name}@${downgradeTarget}`
     );
 
     throw error;
