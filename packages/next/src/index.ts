@@ -77,8 +77,13 @@ export function withWorkflow(
           ? {
               condition: {
                 ...existingRules[key]?.condition,
+                // Exclude generated workflow route files from transformation
+                not: {
+                  ...existingRules[key]?.condition?.not,
+                  path: /[/\\]\.well-known[/\\]workflow[/\\]/,
+                },
                 any: [
-                  ...(existingRules[key]?.condition.any || []),
+                  ...(existingRules[key]?.condition?.any || []),
                   {
                     // Match files with workflow directives or custom serialization patterns
                     content:
