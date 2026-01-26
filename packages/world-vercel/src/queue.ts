@@ -57,15 +57,6 @@ type QueueFunction = (
 export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
-  const queueClient = new Client({
-    baseUrl: usingProxy ? baseUrl : undefined,
-    // The proxy will strip `/queues` from the path, and add `/api` in front,
-    // so this ends up being `/api/v3/topic` when arriving at the queue server,
-    // which is the same as the default basePath in VQS client.
-    basePath: usingProxy ? '/queues/v3/topic' : undefined,
-    token: usingProxy ? config?.token : undefined,
-    headers: Object.fromEntries(headers.entries()),
-  });
 
   const queue: QueueFunction = async (
     queueName,
@@ -81,6 +72,17 @@ export function createQueue(config?: APIConfig): Queue {
           'Either set VERCEL_DEPLOYMENT_ID or provide deploymentId in options.'
       );
     }
+
+    const sendMessageClient = new Client({
+      baseUrl: usingProxy ? baseUrl : undefined,
+      // The proxy will strip `/queues` from the path, and add `/api` in front,
+      // so this ends up being `/api/v3/topic` when arriving at the queue server,
+      // which is the same as the default basePath in VQS client.
+      basePath: usingProxy ? '/queues/v3/topic' : undefined,
+      token: usingProxy ? config?.token : undefined,
+      headers: Object.fromEntries(headers.entries()),
+      deploymentId,
+    });
 
     // zod v3 doesn't have the `encode` method. We only support zod v4 officially,
     // but codebases that pin zod v3 are still common.
@@ -102,7 +104,7 @@ export function createQueue(config?: APIConfig): Queue {
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     try {
-      const { messageId } = await queueClient.send(
+      const { messageId } = await sendMessageClient.send(
         sanitizedQueueName,
         encoded,
         {
@@ -129,8 +131,17 @@ export function createQueue(config?: APIConfig): Queue {
     }
   };
 
+  const handleCallbackClient = new Client({
+    baseUrl: usingProxy ? baseUrl : undefined,
+    // The proxy will strip `/queues` from the path, and add `/api` in front,
+    // so this ends up being `/api/v3/topic` when arriving at the queue server,
+    // which is the same as the default basePath in VQS client.
+    basePath: usingProxy ? '/queues/v3/topic' : undefined,
+    token: usingProxy ? config?.token : undefined,
+    headers: Object.fromEntries(headers.entries()),
+  });
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
-    return queueClient.handleCallback({
+    return handleCallbackClient.handleCallback({
       [`${prefix}*`]: {
         default: async (body, meta) => {
           const { payload, queueName, deploymentId } =
@@ -158,11 +169,10 @@ export function createQueue(config?: APIConfig): Queue {
               delaySeconds,
             });
 
-            // Delete current message by returning undefined
+            // Acknowledge current message by returning undefined
             return undefined;
           }
 
-          // No timeout - message will be deleted (acknowledged)
           return undefined;
         },
       },
