@@ -56,7 +56,7 @@ type QueueFunction = (
 
 export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
-  const headers = getHeaders(config);
+  const headers = getHeaders(config, { usingProxy });
   const queueClient = new Client({
     baseUrl: usingProxy ? baseUrl : undefined,
     // The proxy will strip `/queues` from the path, and add `/api` in front,

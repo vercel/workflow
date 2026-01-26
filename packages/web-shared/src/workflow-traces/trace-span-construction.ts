@@ -2,7 +2,7 @@
  * Functions for constructing OpenTelemetry spans from workflow entities
  */
 
-import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
+import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Step, WorkflowRun } from '@workflow/world';
 import type { Span, SpanEvent } from '../trace-viewer/types';
 import { shouldShowVerticalLine } from './event-colors';

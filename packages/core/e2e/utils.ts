@@ -217,11 +217,6 @@ export const cliHealthJson = async (options?: {
     envOverrides.WORKFLOW_LOCAL_BASE_URL = process.env.DEPLOYMENT_URL;
   }
 
-  // The CLI health check runs outside Vercel and needs the proxy for authentication.
-  // WORKFLOW_VERCEL_SKIP_PROXY is only for code running INSIDE Vercel deployments,
-  // so we explicitly set it to empty string to disable skip-proxy behavior.
-  envOverrides.WORKFLOW_VERCEL_SKIP_PROXY = '';
-
   const result = await awaitCommand(
     command,
     args,
