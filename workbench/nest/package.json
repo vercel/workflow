@@ -31,6 +31,11 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
     "@workflow/ai": "workspace:*",
+    "@workflow/nest": "workspace:*",
+    "@workflow/world-postgres": "workspace:*",
+    "ai": "catalog:",
+    "lodash.chunk": "^4.2.0",
+    "openai": "^6.1.0",
     "typescript": "catalog:",
     "zod": "catalog:"
   }
