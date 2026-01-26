@@ -28,6 +28,13 @@ async function getDecoratorOptions(
   return promise;
 }
 
+// Patterns for detecting custom class serialization:
+// - Import from '@workflow/serde'
+// - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
+const workflowSerdeSymbolPattern =
+  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
+
 // This loader applies the "use workflow"/"use step"
 // client transformation
 export default async function workflowLoader(
@@ -40,8 +47,15 @@ export default async function workflowLoader(
   const filename = this.resourcePath;
   const normalizedSource = source.toString();
 
-  // only apply the transform if file needs it
-  if (!normalizedSource.match(/(use step|use workflow)/)) {
+  // Check if file needs transformation:
+  // - Contains 'use step' or 'use workflow' directives
+  // - Contains custom serialization patterns (@workflow/serde import or Symbol.for usage)
+  const hasDirective = /(use step|use workflow)/.test(normalizedSource);
+  const hasSerde =
+    workflowSerdeImportPattern.test(normalizedSource) ||
+    workflowSerdeSymbolPattern.test(normalizedSource);
+
+  if (!hasDirective && !hasSerde) {
     return normalizedSource;
   }
 

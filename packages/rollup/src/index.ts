@@ -3,14 +3,28 @@ import { transform } from '@swc/core';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
 
+// Patterns for detecting custom class serialization:
+// - Import from '@workflow/serde'
+// - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
+const workflowSerdeSymbolPattern =
+  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
+
 export function workflowTransformPlugin(): Plugin {
   return {
     name: 'workflow:transform',
     // This transform applies the "use workflow"/"use step"
     // client transformation
     async transform(code: string, id: string) {
-      // only apply the transform if file needs it
-      if (!code.match(/(use step|use workflow)/)) {
+      // Check if file needs transformation:
+      // - Contains 'use step' or 'use workflow' directives
+      // - Contains custom serialization patterns (@workflow/serde import or Symbol.for usage)
+      const hasDirective = /(use step|use workflow)/.test(code);
+      const hasSerde =
+        workflowSerdeImportPattern.test(code) ||
+        workflowSerdeSymbolPattern.test(code);
+
+      if (!hasDirective && !hasSerde) {
         return null;
       }
 
