@@ -225,6 +225,7 @@ Taking a look at this code:
 
 To invoke your new workflow, update your controller with a new endpoint:
 
+{/* @skip-typecheck - NestJS decorators require special TypeScript config */}
 ```typescript title="src/app.controller.ts" lineNumbers
 import { Body, Controller, Post } from '@nestjs/common';
 import { start } from 'workflow/api';
@@ -283,6 +284,7 @@ npx workflow inspect runs
 
 The `WorkflowModule.forRoot()` method accepts optional configuration:
 
+{/* @skip-typecheck - Configuration snippet, WorkflowModule not imported */}
 ```typescript
 WorkflowModule.forRoot({
   // Directory to scan for workflow files (default: ['src'])
