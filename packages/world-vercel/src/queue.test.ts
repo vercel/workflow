@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Use vi.hoisted to define mocks that will be available to vi.mock
-const { mockSend, mockHandleCallback, MockDuplicateMessageError } = vi.hoisted(
-  () => {
-    // DuplicateMessageError mock class
+const { mockSend, mockHandleCallback, MockDuplicateMessageError, MockClient } =
+  vi.hoisted(() => {
     class MockDuplicateMessageError extends Error {
       public readonly idempotencyKey?: string;
       constructor(message: string, idempotencyKey?: string) {
@@ -13,19 +12,23 @@ const { mockSend, mockHandleCallback, MockDuplicateMessageError } = vi.hoisted(
       }
     }
 
+    const mockSend = vi.fn();
+    const mockHandleCallback = vi.fn();
+    const MockClient = vi.fn().mockImplementation(() => ({
+      send: mockSend,
+      handleCallback: mockHandleCallback,
+    }));
+
     return {
-      mockSend: vi.fn(),
-      mockHandleCallback: vi.fn(),
+      mockSend,
+      mockHandleCallback,
       MockDuplicateMessageError,
+      MockClient,
     };
-  }
-);
+  });
 
 vi.mock('@vercel/queue', () => ({
-  Client: vi.fn().mockImplementation(() => ({
-    send: mockSend,
-    handleCallback: mockHandleCallback,
-  })),
+  Client: MockClient,
   DuplicateMessageError: MockDuplicateMessageError,
 }));
 
@@ -110,6 +113,10 @@ describe('createQueue', () => {
             { deploymentId: 'dpl_123' }
           )
         ).resolves.toEqual({ messageId: 'msg-123' });
+
+        expect(MockClient).toHaveBeenCalledWith(
+          expect.objectContaining({ deploymentId: 'dpl_123' })
+        );
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -128,6 +135,10 @@ describe('createQueue', () => {
         await expect(
           queue.queue('__wkf_workflow_test', { runId: 'run-123' })
         ).resolves.toEqual({ messageId: 'msg-123' });
+
+        expect(MockClient).toHaveBeenCalledWith(
+          expect.objectContaining({ deploymentId: 'dpl_env_123' })
+        );
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -302,6 +313,15 @@ describe('createQueue', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
       const sentPayload = mockSend.mock.calls[0][1];
       expect(sentPayload.deploymentId).toBe('dpl_original');
+
+      // Verify the Client was instantiated with the deploymentId for re-queueing
+      const clientCalls = MockClient.mock.calls;
+      const sendClientCall = clientCalls.find(
+        (call: unknown[]) =>
+          (call[0] as { deploymentId?: string })?.deploymentId ===
+          'dpl_original'
+      );
+      expect(sendClientCall).toBeDefined();
     });
 
     it('should handle step payloads correctly', async () => {

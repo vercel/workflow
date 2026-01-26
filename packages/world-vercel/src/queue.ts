@@ -58,6 +58,16 @@ export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
+  const baseClientOptions = {
+    baseUrl: usingProxy ? baseUrl : undefined,
+    // The proxy will strip `/queues` from the path, and add `/api` in front,
+    // so this ends up being `/api/v3/topic` when arriving at the queue server,
+    // which is the same as the default basePath in VQS client.
+    basePath: usingProxy ? '/queues/v3/topic' : undefined,
+    token: usingProxy ? config?.token : undefined,
+    headers: Object.fromEntries(headers.entries()),
+  };
+
   const queue: QueueFunction = async (
     queueName,
     payload,
@@ -74,13 +84,7 @@ export function createQueue(config?: APIConfig): Queue {
     }
 
     const sendMessageClient = new Client({
-      baseUrl: usingProxy ? baseUrl : undefined,
-      // The proxy will strip `/queues` from the path, and add `/api` in front,
-      // so this ends up being `/api/v3/topic` when arriving at the queue server,
-      // which is the same as the default basePath in VQS client.
-      basePath: usingProxy ? '/queues/v3/topic' : undefined,
-      token: usingProxy ? config?.token : undefined,
-      headers: Object.fromEntries(headers.entries()),
+      ...baseClientOptions,
       deploymentId,
     });
 
@@ -132,13 +136,7 @@ export function createQueue(config?: APIConfig): Queue {
   };
 
   const handleCallbackClient = new Client({
-    baseUrl: usingProxy ? baseUrl : undefined,
-    // The proxy will strip `/queues` from the path, and add `/api` in front,
-    // so this ends up being `/api/v3/topic` when arriving at the queue server,
-    // which is the same as the default basePath in VQS client.
-    basePath: usingProxy ? '/queues/v3/topic' : undefined,
-    token: usingProxy ? config?.token : undefined,
-    headers: Object.fromEntries(headers.entries()),
+    ...baseClientOptions,
   });
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return handleCallbackClient.handleCallback({
