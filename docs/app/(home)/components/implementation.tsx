@@ -10,7 +10,7 @@ import {
 } from "./steps"
 
 export async function userSignup(email) {
-  "use workflow";
+  "use workflow"; // [!code highlight]
 
   // Create the user and send the welcome email
   const user = await createUser(email);
@@ -30,7 +30,7 @@ export async function userSignup(email) {
 import { FatalError } from 'workflow'; 
 
 export async function sendWelcomeEmail(email) {
-  "use step"
+  "use step"; // [!code highlight]
 
   const resend = new Resend('YOUR_API_KEY');
 

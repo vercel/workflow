@@ -21,6 +21,7 @@
     "@mdx-js/mdx": "^3.1.1",
     "@radix-ui/react-presence": "^1.1.5",
     "@radix-ui/react-tabs": "^1.1.13",
+    "@shikijs/transformers": "3.19.0",
     "@tailwindcss/postcss": "^4.1.13",
     "@types/mdx": "^2.0.13",
     "@types/node": "catalog:",

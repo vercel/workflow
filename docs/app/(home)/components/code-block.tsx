@@ -1,3 +1,4 @@
+import { transformerNotationHighlight } from '@shikijs/transformers';
 import { codeToHtml } from 'shiki';
 import { cn } from '@/lib/utils';
 
@@ -17,6 +18,7 @@ export const CodeBlock = async ({ code, lang, codeblock }: CodeBlockProps) => {
       dark: 'github-dark-default',
     },
     defaultColor: false,
+    transformers: [transformerNotationHighlight()],
   });
 
   return (
