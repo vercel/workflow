@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Hook, Step, WorkflowRun } from '@workflow/world';
+import { encode } from 'cbor-x';
 import postgres from 'postgres';
 import {
   afterAll,
@@ -27,7 +28,7 @@ async function createRun(
   data: {
     deploymentId: string;
     workflowName: string;
-    input: unknown[];
+    input: Uint8Array;
     executionContext?: Record<string, unknown>;
   }
 ): Promise<WorkflowRun> {
@@ -63,7 +64,7 @@ async function createStep(
   data: {
     stepId: string;
     stepName: string;
-    input: unknown[];
+    input: Uint8Array;
   }
 ): Promise<Step> {
   const result = await events.create(runId, {
@@ -170,7 +171,7 @@ describe('Storage (Postgres integration)', () => {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
           executionContext: { userId: 'user-1' },
-          input: ['arg1', 'arg2'],
+          input: new Uint8Array([1, 2]),
         };
 
         const run = await createRun(events, runData);
@@ -180,7 +181,7 @@ describe('Storage (Postgres integration)', () => {
         expect(run.status).toBe('pending');
         expect(run.workflowName).toBe('test-workflow');
         expect(run.executionContext).toEqual({ userId: 'user-1' });
-        expect(run.input).toEqual(['arg1', 'arg2']);
+        expect(run.input).toEqual(new Uint8Array([1, 2]));
         expect(run.output).toBeUndefined();
         expect(run.error).toBeUndefined();
         expect(run.startedAt).toBeUndefined();
@@ -193,13 +194,13 @@ describe('Storage (Postgres integration)', () => {
         const runData = {
           deploymentId: 'deployment-123',
           workflowName: 'minimal-workflow',
-          input: [],
+          input: new Uint8Array(),
         };
 
         const run = await createRun(events, runData);
 
         expect(run.executionContext).toBeUndefined();
-        expect(run.input).toEqual([]);
+        expect(run.input).toEqual(new Uint8Array());
       });
     });
 
@@ -208,13 +209,13 @@ describe('Storage (Postgres integration)', () => {
         const created = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: ['arg'],
+          input: new Uint8Array([1]),
         });
 
         const retrieved = await runs.get(created.runId);
         expect(retrieved.runId).toBe(created.runId);
         expect(retrieved.workflowName).toBe('test-workflow');
-        expect(retrieved.input).toEqual(['arg']);
+        expect(retrieved.input).toEqual(new Uint8Array([1]));
       });
 
       it('should throw error for non-existent run', async () => {
@@ -229,7 +230,7 @@ describe('Storage (Postgres integration)', () => {
         const created = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const updated = await updateRun(events, created.runId, 'run_started');
@@ -241,7 +242,7 @@ describe('Storage (Postgres integration)', () => {
         const created = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const updated = await updateRun(
@@ -249,19 +250,19 @@ describe('Storage (Postgres integration)', () => {
           created.runId,
           'run_completed',
           {
-            output: [{ result: 42 }],
+            output: new Uint8Array([42]),
           }
         );
         expect(updated.status).toBe('completed');
         expect(updated.completedAt).toBeInstanceOf(Date);
-        expect(updated.output).toEqual([{ result: 42 }]);
+        expect(updated.output).toEqual(new Uint8Array([42]));
       });
 
       it('should update run status to failed via run_failed event', async () => {
         const created = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const updated = await updateRun(events, created.runId, 'run_failed', {
@@ -279,7 +280,7 @@ describe('Storage (Postgres integration)', () => {
         const run1 = await createRun(events, {
           deploymentId: 'deployment-1',
           workflowName: 'workflow-1',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Small delay to ensure different timestamps in createdAt
@@ -288,7 +289,7 @@ describe('Storage (Postgres integration)', () => {
         const run2 = await createRun(events, {
           deploymentId: 'deployment-2',
           workflowName: 'workflow-2',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result = await runs.list();
@@ -306,12 +307,12 @@ describe('Storage (Postgres integration)', () => {
         await createRun(events, {
           deploymentId: 'deployment-1',
           workflowName: 'workflow-1',
-          input: [],
+          input: new Uint8Array(),
         });
         const run2 = await createRun(events, {
           deploymentId: 'deployment-2',
           workflowName: 'workflow-2',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result = await runs.list({ workflowName: 'workflow-2' });
@@ -326,7 +327,7 @@ describe('Storage (Postgres integration)', () => {
           await createRun(events, {
             deploymentId: `deployment-${i}`,
             workflowName: `workflow-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -354,7 +355,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -364,7 +365,7 @@ describe('Storage (Postgres integration)', () => {
         const stepData = {
           stepId: 'step-123',
           stepName: 'test-step',
-          input: ['input1', 'input2'],
+          input: new Uint8Array([1, 2]),
         };
 
         const step = await createStep(events, testRunId, stepData);
@@ -374,7 +375,7 @@ describe('Storage (Postgres integration)', () => {
           stepId: 'step-123',
           stepName: 'test-step',
           status: 'pending',
-          input: ['input1', 'input2'],
+          input: new Uint8Array([1, 2]),
           output: undefined,
           error: undefined,
           attempt: 0, // steps are created with attempt 0
@@ -392,7 +393,7 @@ describe('Storage (Postgres integration)', () => {
         const created = await createStep(events, testRunId, {
           stepId: 'step-123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const retrieved = await steps.get(testRunId, 'step-123');
@@ -404,7 +405,7 @@ describe('Storage (Postgres integration)', () => {
         const created = await createStep(events, testRunId, {
           stepId: 'unique-step-123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const retrieved = await steps.get(undefined, 'unique-step-123');
@@ -424,7 +425,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step-123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const updated = await updateStep(
@@ -444,7 +445,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step-123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const updated = await updateStep(
@@ -452,19 +453,19 @@ describe('Storage (Postgres integration)', () => {
           testRunId,
           'step-123',
           'step_completed',
-          { result: ['ok'] }
+          { result: new Uint8Array([1]) }
         );
 
         expect(updated.status).toBe('completed');
         expect(updated.completedAt).toBeInstanceOf(Date);
-        expect(updated.output).toEqual(['ok']);
+        expect(updated.output).toEqual(new Uint8Array([1]));
       });
 
       it('should update step status to failed via step_failed event', async () => {
         await createStep(events, testRunId, {
           stepId: 'step-123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const updated = await updateStep(
@@ -486,12 +487,12 @@ describe('Storage (Postgres integration)', () => {
         const step1 = await createStep(events, testRunId, {
           stepId: 'step-1',
           stepName: 'first-step',
-          input: [],
+          input: new Uint8Array(),
         });
         const step2 = await createStep(events, testRunId, {
           stepId: 'step-2',
           stepName: 'second-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result = await steps.list({
@@ -513,7 +514,7 @@ describe('Storage (Postgres integration)', () => {
           await createStep(events, testRunId, {
             stepId: `step-${i}`,
             stepName: `step-name-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -543,7 +544,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -554,7 +555,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'corr_123',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const eventData = {
@@ -576,7 +577,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'corr_123_null',
           stepName: 'test-step-null',
-          input: [],
+          input: new Uint8Array(),
         });
         await events.create(testRunId, {
           eventType: 'step_started',
@@ -599,7 +600,7 @@ describe('Storage (Postgres integration)', () => {
       it('should handle run completed events', async () => {
         const eventData = {
           eventType: 'run_completed' as const,
-          eventData: { output: { result: 'done' } },
+          eventData: { output: new Uint8Array([1]) },
         };
 
         const result = await events.create(testRunId, eventData);
@@ -622,7 +623,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'corr-step-1',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result2 = await events.create(testRunId, {
@@ -658,7 +659,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'corr-step-1',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result2 = await events.create(testRunId, {
@@ -689,7 +690,7 @@ describe('Storage (Postgres integration)', () => {
           await createStep(events, testRunId, {
             stepId: `corr_${i}`,
             stepName: `test-step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
           // Start the step before completing
           await events.create(testRunId, {
@@ -699,7 +700,7 @@ describe('Storage (Postgres integration)', () => {
           await events.create(testRunId, {
             eventType: 'step_completed',
             correlationId: `corr_${i}`,
-            eventData: { result: i },
+            eventData: { result: new Uint8Array([i]) },
           });
         }
 
@@ -729,7 +730,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Create events with the target correlation ID
@@ -743,14 +744,14 @@ describe('Storage (Postgres integration)', () => {
         const result2 = await events.create(testRunId, {
           eventType: 'step_completed',
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         // Create events with different correlation IDs (should be filtered out)
         await createStep(events, testRunId, {
           stepId: 'different-step',
           stepName: 'different-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await events.create(testRunId, {
           eventType: 'step_started',
@@ -758,7 +759,7 @@ describe('Storage (Postgres integration)', () => {
         });
         await events.create(testRunId, {
           eventType: 'run_completed',
-          eventData: { output: { result: 'done' } },
+          eventData: { output: new Uint8Array([1]) },
         });
 
         const result = await events.listByCorrelationId({
@@ -782,7 +783,7 @@ describe('Storage (Postgres integration)', () => {
         const run2 = await createRun(events, {
           deploymentId: 'deployment-456',
           workflowName: 'test-workflow-2',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Create events in both runs with same correlation ID
@@ -797,7 +798,7 @@ describe('Storage (Postgres integration)', () => {
         const result2 = await events.create(run2.runId, {
           eventType: 'hook_received',
           correlationId,
-          eventData: { payload: { data: 'test' } },
+          eventData: { payload: new Uint8Array([1, 2, 3]) },
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -826,7 +827,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'existing-step',
           stepName: 'existing-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await events.create(testRunId, {
           eventType: 'step_started',
@@ -850,7 +851,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Create multiple events
@@ -880,7 +881,7 @@ describe('Storage (Postgres integration)', () => {
         await events.create(testRunId, {
           eventType: 'step_completed',
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         // Get first page (step_created, step_started, step_retrying)
@@ -908,7 +909,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step-with-data',
           stepName: 'step-with-data',
-          input: [],
+          input: new Uint8Array(),
         });
         // Start the step before completing
         await events.create(testRunId, {
@@ -918,7 +919,7 @@ describe('Storage (Postgres integration)', () => {
         await events.create(testRunId, {
           eventType: 'step_completed',
           correlationId: 'step-with-data',
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         // Note: resolveData parameter is ignored by the PG World storage implementation
@@ -939,7 +940,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Create events with slight delays to ensure different timestamps
@@ -953,7 +954,7 @@ describe('Storage (Postgres integration)', () => {
         const result2 = await events.create(testRunId, {
           eventType: 'step_completed',
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         const result = await events.listByCorrelationId({
@@ -977,7 +978,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result1 = await events.create(testRunId, {
@@ -990,7 +991,7 @@ describe('Storage (Postgres integration)', () => {
         const result2 = await events.create(testRunId, {
           eventType: 'step_completed',
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         const result = await events.listByCorrelationId({
@@ -1022,7 +1023,7 @@ describe('Storage (Postgres integration)', () => {
         const received1Result = await events.create(testRunId, {
           eventType: 'hook_received' as const,
           correlationId: hookId,
-          eventData: { payload: { request: 1 } },
+          eventData: { payload: new Uint8Array([1]) },
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -1030,7 +1031,7 @@ describe('Storage (Postgres integration)', () => {
         const received2Result = await events.create(testRunId, {
           eventType: 'hook_received' as const,
           correlationId: hookId,
-          eventData: { payload: { request: 2 } },
+          eventData: { payload: new Uint8Array([2]) },
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -1070,7 +1071,7 @@ describe('Storage (Postgres integration)', () => {
         const run2 = await createRun(events, {
           deploymentId: 'deployment-456',
           workflowName: 'test-workflow-2',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Try to create another hook with the same token - should return hook_conflict event
@@ -1108,7 +1109,7 @@ describe('Storage (Postgres integration)', () => {
         const run2 = await createRun(events, {
           deploymentId: 'deployment-789',
           workflowName: 'test-workflow-3',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Now creating a hook with the same token should succeed
@@ -1131,7 +1132,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -1141,7 +1142,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step_terminal_1',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           events,
@@ -1149,7 +1150,7 @@ describe('Storage (Postgres integration)', () => {
           'step_terminal_1',
           'step_completed',
           {
-            result: 'done',
+            result: new Uint8Array([1]),
           }
         );
 
@@ -1162,7 +1163,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step_terminal_2',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           events,
@@ -1170,13 +1171,13 @@ describe('Storage (Postgres integration)', () => {
           'step_terminal_2',
           'step_completed',
           {
-            result: 'done',
+            result: new Uint8Array([1]),
           }
         );
 
         await expect(
           updateStep(events, testRunId, 'step_terminal_2', 'step_completed', {
-            result: 'done again',
+            result: new Uint8Array([2]),
           })
         ).rejects.toThrow(/terminal/i);
       });
@@ -1185,7 +1186,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step_terminal_3',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           events,
@@ -1193,7 +1194,7 @@ describe('Storage (Postgres integration)', () => {
           'step_terminal_3',
           'step_completed',
           {
-            result: 'done',
+            result: new Uint8Array([1]),
           }
         );
 
@@ -1210,7 +1211,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step_failed_1',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(events, testRunId, 'step_failed_1', 'step_failed', {
           error: 'Failed permanently',
@@ -1225,7 +1226,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step_failed_2',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(events, testRunId, 'step_failed_2', 'step_failed', {
           error: 'Failed permanently',
@@ -1233,7 +1234,7 @@ describe('Storage (Postgres integration)', () => {
 
         await expect(
           updateStep(events, testRunId, 'step_failed_2', 'step_completed', {
-            result: 'Should not work',
+            result: new Uint8Array([3]),
           })
         ).rejects.toThrow(/terminal/i);
       });
@@ -1242,7 +1243,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step_failed_3',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(events, testRunId, 'step_failed_3', 'step_failed', {
           error: 'Failed once',
@@ -1259,7 +1260,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step_failed_retry',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           events,
@@ -1284,7 +1285,7 @@ describe('Storage (Postgres integration)', () => {
         await createStep(events, testRunId, {
           stepId: 'step_completed_retry',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           events,
@@ -1292,7 +1293,7 @@ describe('Storage (Postgres integration)', () => {
           'step_completed_retry',
           'step_completed',
           {
-            result: 'done',
+            result: new Uint8Array([1]),
           }
         );
 
@@ -1317,9 +1318,11 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
-        await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+        await updateRun(events, run.runId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
 
         await expect(
           updateRun(events, run.runId, 'run_started')
@@ -1330,9 +1333,11 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
-        await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+        await updateRun(events, run.runId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
 
         await expect(
           updateRun(events, run.runId, 'run_failed', {
@@ -1345,9 +1350,11 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
-        await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+        await updateRun(events, run.runId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
 
         await expect(
           events.create(run.runId, { eventType: 'run_cancelled' })
@@ -1360,7 +1367,7 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(events, run.runId, 'run_failed', { error: 'Failed' });
 
@@ -1373,13 +1380,13 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(events, run.runId, 'run_failed', { error: 'Failed' });
 
         await expect(
           updateRun(events, run.runId, 'run_completed', {
-            output: 'Should not work',
+            output: new Uint8Array([2]),
           })
         ).rejects.toThrow(/terminal/i);
       });
@@ -1388,7 +1395,7 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(events, run.runId, 'run_failed', { error: 'Failed' });
 
@@ -1403,7 +1410,7 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -1416,13 +1423,13 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await events.create(run.runId, { eventType: 'run_cancelled' });
 
         await expect(
           updateRun(events, run.runId, 'run_completed', {
-            output: 'Should not work',
+            output: new Uint8Array([2]),
           })
         ).rejects.toThrow(/terminal/i);
       });
@@ -1431,7 +1438,7 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -1449,19 +1456,21 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create and start a step (making it in-progress)
       await createStep(events, run.runId, {
         stepId: 'step_in_progress',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(events, run.runId, 'step_in_progress', 'step_started');
 
       // Complete the run while step is still running
-      await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
 
       // Should succeed - completing an in-progress step on a terminal run is allowed
       const result = await updateStep(
@@ -1469,7 +1478,7 @@ describe('Storage (Postgres integration)', () => {
         run.runId,
         'step_in_progress',
         'step_completed',
-        { result: 'step done' }
+        { result: new Uint8Array([1]) }
       );
       expect(result.status).toBe('completed');
     });
@@ -1478,14 +1487,14 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create and start a step
       await createStep(events, run.runId, {
         stepId: 'step_in_progress_fail',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(
         events,
@@ -1495,7 +1504,9 @@ describe('Storage (Postgres integration)', () => {
       );
 
       // Complete the run
-      await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
 
       // Should succeed - failing an in-progress step on a terminal run is allowed
       const result = await updateStep(
@@ -1512,7 +1523,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create a hook
@@ -1522,7 +1533,9 @@ describe('Storage (Postgres integration)', () => {
       });
 
       // Complete the run - this auto-deletes the hook
-      await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
 
       // The hook should no longer exist because run completion auto-deletes hooks
       // This is intentional behavior to allow token reuse across runs
@@ -1540,15 +1553,17 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
-      await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
 
       await expect(
         createStep(events, run.runId, {
           stepId: 'new_step',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         })
       ).rejects.toThrow(/terminal/i);
     });
@@ -1557,18 +1572,20 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create a step but don't start it
       await createStep(events, run.runId, {
         stepId: 'pending_step',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Complete the run
-      await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
 
       // Should reject - cannot start a pending step on a terminal run
       await expect(
@@ -1580,9 +1597,11 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
-      await updateRun(events, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
 
       await expect(
         createHook(events, run.runId, {
@@ -1596,7 +1615,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateRun(events, run.runId, 'run_failed', { error: 'Failed' });
 
@@ -1604,7 +1623,7 @@ describe('Storage (Postgres integration)', () => {
         createStep(events, run.runId, {
           stepId: 'new_step_failed',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         })
       ).rejects.toThrow(/terminal/i);
     });
@@ -1613,7 +1632,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -1621,7 +1640,7 @@ describe('Storage (Postgres integration)', () => {
         createStep(events, run.runId, {
           stepId: 'new_step_cancelled',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         })
       ).rejects.toThrow(/terminal/i);
     });
@@ -1630,7 +1649,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateRun(events, run.runId, 'run_failed', { error: 'Failed' });
 
@@ -1646,7 +1665,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -1664,7 +1683,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -1683,7 +1702,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -1692,7 +1711,7 @@ describe('Storage (Postgres integration)', () => {
       await createStep(events, testRunId, {
         stepId: 'step_retry_1',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(events, testRunId, 'step_retry_1', 'step_started');
 
@@ -1714,7 +1733,7 @@ describe('Storage (Postgres integration)', () => {
       await createStep(events, testRunId, {
         stepId: 'step_retry_2',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // First attempt
@@ -1747,7 +1766,7 @@ describe('Storage (Postgres integration)', () => {
       await createStep(events, testRunId, {
         stepId: 'step_retry_completed',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(
         events,
@@ -1755,7 +1774,7 @@ describe('Storage (Postgres integration)', () => {
         'step_retry_completed',
         'step_completed',
         {
-          result: 'done',
+          result: new Uint8Array([1]),
         }
       );
 
@@ -1772,7 +1791,7 @@ describe('Storage (Postgres integration)', () => {
       await createStep(events, testRunId, {
         stepId: 'step_retry_failed',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(events, testRunId, 'step_retry_failed', 'step_failed', {
         error: 'Permanent failure',
@@ -1793,14 +1812,14 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create and start a step
       await createStep(events, run.runId, {
         stepId: 'step_in_flight',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(events, run.runId, 'step_in_flight', 'step_started');
 
@@ -1813,7 +1832,7 @@ describe('Storage (Postgres integration)', () => {
         run.runId,
         'step_in_flight',
         'step_completed',
-        { result: 'done' }
+        { result: new Uint8Array([1]) }
       );
       expect(result.status).toBe('completed');
     });
@@ -1822,7 +1841,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -1830,7 +1849,7 @@ describe('Storage (Postgres integration)', () => {
         createStep(events, run.runId, {
           stepId: 'new_step_after_cancel',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         })
       ).rejects.toThrow(/terminal/i);
     });
@@ -1839,14 +1858,14 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create a step but don't start it
       await createStep(events, run.runId, {
         stepId: 'pending_after_cancel',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Cancel the run
@@ -1866,7 +1885,7 @@ describe('Storage (Postgres integration)', () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -1876,7 +1895,7 @@ describe('Storage (Postgres integration)', () => {
         events.create(testRunId, {
           eventType: 'step_completed',
           correlationId: 'nonexistent_step',
-          eventData: { result: 'done' },
+          eventData: { result: new Uint8Array([1]) },
         })
       ).rejects.toThrow(/not found/i);
     });
@@ -1904,7 +1923,7 @@ describe('Storage (Postgres integration)', () => {
       await createStep(events, testRunId, {
         stepId: 'instant_complete',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Should succeed - instant completion without starting
@@ -1913,7 +1932,7 @@ describe('Storage (Postgres integration)', () => {
         testRunId,
         'instant_complete',
         'step_completed',
-        { result: 'instant' }
+        { result: new Uint8Array([1]) }
       );
       expect(result.status).toBe('completed');
     });
@@ -1932,7 +1951,7 @@ describe('Storage (Postgres integration)', () => {
         events.create(testRunId, {
           eventType: 'hook_received',
           correlationId: 'nonexistent_hook_received',
-          eventData: { payload: {} },
+          eventData: { payload: new Uint8Array() },
         })
       ).rejects.toThrow(/not found/i);
     });
@@ -1982,7 +2001,7 @@ describe('Storage (Postgres integration)', () => {
         const result = await events.create(runId, {
           eventType: 'wait_completed',
           correlationId: 'wait_123',
-          eventData: { result: 'waited' },
+          eventData: { result: new Uint8Array([1]) },
         } as any);
 
         // Legacy behavior: event is stored but no entity mutation
@@ -1998,7 +2017,7 @@ describe('Storage (Postgres integration)', () => {
         const result = await events.create(runId, {
           eventType: 'hook_received',
           correlationId: 'hook_123',
-          eventData: { payload: { data: 'test' } },
+          eventData: { payload: new Uint8Array([1, 2, 3]) },
         } as any);
 
         // Legacy behavior: event is stored but no entity mutation
@@ -2022,7 +2041,7 @@ describe('Storage (Postgres integration)', () => {
         await expect(
           events.create(runId, {
             eventType: 'run_completed',
-            eventData: { output: 'done' },
+            eventData: { output: new Uint8Array([1]) },
           })
         ).rejects.toThrow(/not supported for legacy runs/i);
 
@@ -2081,7 +2100,7 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'current-deployment',
           workflowName: 'current-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Should work normally
@@ -2099,9 +2118,10 @@ describe('Storage (Postgres integration)', () => {
         const runId = 'wrun_legacy_error';
         // Create a run with legacy error format (error column is the text/JSON one)
         // Failed runs need completed_at set
+        const inputCbor = encode(new Uint8Array());
         await sql`
-          INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input, error, created_at, updated_at, completed_at)
-          VALUES (${runId}, 'deployment', 'workflow', 2, 'failed', '[]'::jsonb, '{"message":"Legacy error","stack":"at foo()"}', NOW(), NOW(), NOW())
+          INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input_cbor, error, created_at, updated_at, completed_at)
+          VALUES (${runId}, 'deployment', 'workflow', 2, 'failed', ${inputCbor}, '{"message":"Legacy error","stack":"at foo()"}', NOW(), NOW(), NOW())
         `;
 
         const run = await runs.get(runId);
@@ -2113,9 +2133,10 @@ describe('Storage (Postgres integration)', () => {
         const runId = 'wrun_legacy_string_error';
         // Create a run with plain string error
         // Failed runs need completed_at set
+        const inputCbor = encode(new Uint8Array());
         await sql`
-          INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input, error, created_at, updated_at, completed_at)
-          VALUES (${runId}, 'deployment', 'workflow', 2, 'failed', '[]'::jsonb, '"Simple error message"', NOW(), NOW(), NOW())
+          INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input_cbor, error, created_at, updated_at, completed_at)
+          VALUES (${runId}, 'deployment', 'workflow', 2, 'failed', ${inputCbor}, '"Simple error message"', NOW(), NOW(), NOW())
         `;
 
         const run = await runs.get(runId);
@@ -2127,14 +2148,15 @@ describe('Storage (Postgres integration)', () => {
         const run = await createRun(events, {
           deploymentId: 'deployment',
           workflowName: 'workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Insert a step directly with legacy error format (error column is the text/JSON one)
         // Failed steps need completed_at set
+        const inputCbor = encode(new Uint8Array());
         await sql`
-          INSERT INTO workflow.workflow_steps (run_id, step_id, step_name, status, input, error, attempt, created_at, updated_at, completed_at)
-          VALUES (${run.runId}, 'step_legacy_err', 'test-step', 'failed', '[]'::jsonb, '{"message":"Step error","stack":"at bar()"}', 1, NOW(), NOW(), NOW())
+          INSERT INTO workflow.workflow_steps (run_id, step_id, step_name, status, input_cbor, error, attempt, created_at, updated_at, completed_at)
+          VALUES (${run.runId}, 'step_legacy_err', 'test-step', 'failed', ${inputCbor}, '{"message":"Step error","stack":"at bar()"}', 1, NOW(), NOW(), NOW())
         `;
 
         const step = await steps.get(run.runId, 'step_legacy_err');

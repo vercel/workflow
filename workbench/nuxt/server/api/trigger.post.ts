@@ -1,4 +1,9 @@
-import { defineEventHandler, getRequestURL, readRawBody } from 'h3';
+import {
+  defineEventHandler,
+  getRequestURL,
+  readRawBody,
+  toWebRequest,
+} from 'h3';
 import { start } from 'workflow/api';
 import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from '../../_workflows.js';
@@ -52,10 +57,11 @@ export default defineEventHandler(async (event) => {
       return Number.isNaN(num) ? arg.trim() : num;
     });
   } else {
-    // Args from body
-    const body = await readRawBody(event);
-    if (body) {
-      args = hydrateWorkflowArguments(JSON.parse(body), globalThis);
+    // Args from body (binary serialized data)
+    const req = toWebRequest(event);
+    const buffer = await req.arrayBuffer();
+    if (buffer.byteLength > 0) {
+      args = hydrateWorkflowArguments(new Uint8Array(buffer), globalThis);
     } else {
       args = [42];
     }
