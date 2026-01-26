@@ -12,6 +12,15 @@ export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 export const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 export const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
 
+// Matches imports from '@workflow/serde' (for custom class serialization)
+// e.g.: import { WORKFLOW_SERIALIZE } from '@workflow/serde';
+export const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
+
+// Matches direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+// e.g.: static [Symbol.for('workflow-serialize')](instance) { ... }
+export const workflowSerdeSymbolPattern =
+  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
+
 // parent -> child relationship
 export const importParents = new Map<string, string>();
 
@@ -77,6 +86,14 @@ export function createDiscoverEntriesPlugin(state: {
           const hasUseWorkflow = useWorkflowPattern.test(source);
           const hasUseStep = useStepPattern.test(source);
 
+          // Check for custom class serialization patterns:
+          // - Import from '@workflow/serde' (e.g., `import { WORKFLOW_SERIALIZE } from '@workflow/serde'`)
+          // - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+          // Files with these patterns need to be transformed so registerSerializationClass is called
+          const hasSerdeImport = workflowSerdeImportPattern.test(source);
+          const hasSerdeSymbol = workflowSerdeSymbolPattern.test(source);
+          const hasSerde = hasSerdeImport || hasSerdeSymbol;
+
           // Normalize path separators to forward slashes for cross-platform compatibility
           // This is critical for Windows where paths contain backslashes
           const normalizedPath = args.path.replace(/\\/g, '/');
@@ -85,7 +102,9 @@ export function createDiscoverEntriesPlugin(state: {
             state.discoveredWorkflows.push(normalizedPath);
           }
 
-          if (hasUseStep) {
+          if (hasUseStep || hasSerde) {
+            // Files with serde patterns are treated like step files so they get
+            // bundled and transformed, which registers serialization classes
             state.discoveredSteps.push(normalizedPath);
           }
 
