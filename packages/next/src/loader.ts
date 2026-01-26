@@ -31,6 +31,12 @@ async function getDecoratorOptions(
 // Pattern to detect generated workflow route files that should be excluded from transformation
 const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
 
+// Pattern to detect @workflow SDK packages that should be excluded from transformation
+// These packages are already built and don't need client-side transformation
+// Matches both: node_modules/@workflow/* and monorepo packages/*/dist paths
+const workflowSdkPathPattern =
+  /[/\\](?:@workflow[/\\]|packages[/\\](?:builders|core|rollup|vite|next|nitro|serde|workflow|swc-plugin-workflow)[/\\])/;
+
 // Patterns for detecting custom class serialization:
 // - Import from '@workflow/serde'
 // - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
@@ -52,6 +58,11 @@ export default async function workflowLoader(
 
   // Skip generated workflow route files to avoid re-processing them
   if (generatedWorkflowPathPattern.test(filename)) {
+    return normalizedSource;
+  }
+
+  // Skip @workflow SDK packages - they're already built and don't need transformation
+  if (workflowSdkPathPattern.test(filename)) {
     return normalizedSource;
   }
 

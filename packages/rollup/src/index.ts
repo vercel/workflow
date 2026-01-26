@@ -6,6 +6,12 @@ import type { Plugin } from 'rollup';
 // Pattern to detect generated workflow route files that should be excluded from transformation
 const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
 
+// Pattern to detect @workflow SDK packages that should be excluded from transformation
+// These packages are already built and don't need client-side transformation
+// Matches both: node_modules/@workflow/* and monorepo packages/*/dist paths
+const workflowSdkPathPattern =
+  /[/\\](?:@workflow[/\\]|packages[/\\](?:builders|core|rollup|vite|next|nitro|serde|workflow|swc-plugin-workflow)[/\\])/;
+
 // Patterns for detecting custom class serialization:
 // - Import from '@workflow/serde'
 // - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
@@ -21,6 +27,11 @@ export function workflowTransformPlugin(): Plugin {
     async transform(code: string, id: string) {
       // Skip generated workflow route files to avoid re-processing them
       if (generatedWorkflowPathPattern.test(id)) {
+        return null;
+      }
+
+      // Skip @workflow SDK packages - they're already built and don't need transformation
+      if (workflowSdkPathPattern.test(id)) {
         return null;
       }
 
