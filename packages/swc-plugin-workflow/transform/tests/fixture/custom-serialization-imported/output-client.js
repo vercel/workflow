@@ -1,3 +1,4 @@
+import { registerSerializationClass } from "workflow/internal/class-serialization";
 // Test custom serialization with imported symbols from '@workflow/serde'
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 // Class using imported symbols
@@ -37,3 +38,5 @@ export class Color {
         return new Color(data.r, data.g, data.b);
     }
 }
+registerSerializationClass("class//input.js//Color", Color);
+registerSerializationClass("class//input.js//Vector", Vector);
