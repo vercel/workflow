@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
 import { createContext } from './vm/index.js';
 
@@ -38,7 +39,7 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          result: [3],
+          result: dehydrateStepReturnValue(3),
         },
         createdAt: new Date(),
       },
@@ -189,7 +190,7 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          result: [undefined],
+          result: dehydrateStepReturnValue(undefined),
         },
         createdAt: new Date(),
       },
@@ -408,7 +409,7 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          result: [42],
+          result: dehydrateStepReturnValue(42),
         },
         createdAt: new Date(),
       },

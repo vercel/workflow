@@ -73,7 +73,10 @@ async function triggerWorkflow(
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: getProtectionBypassHeaders(),
+    headers: {
+      ...getProtectionBypassHeaders(),
+      'Content-Type': 'application/octet-stream',
+    },
     body: dehydratedArgs.buffer as BodyInit,
   });
   if (!res.ok) {
