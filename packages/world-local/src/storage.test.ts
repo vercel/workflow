@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Storage } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { writeJSON } from './fs.js';
 import { createStorage } from './storage.js';
 import {
   createHook,
@@ -40,7 +41,7 @@ describe('Storage', () => {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
           executionContext: { userId: 'user-1' },
-          input: ['arg1', 'arg2'],
+          input: new Uint8Array([1, 2]),
         };
 
         const run = await createRun(storage, runData);
@@ -50,7 +51,7 @@ describe('Storage', () => {
         expect(run.status).toBe('pending');
         expect(run.workflowName).toBe('test-workflow');
         expect(run.executionContext).toEqual({ userId: 'user-1' });
-        expect(run.input).toEqual(['arg1', 'arg2']);
+        expect(run.input).toEqual(new Uint8Array([1, 2]));
         expect(run.output).toBeUndefined();
         expect(run.error).toBeUndefined();
         expect(run.startedAt).toBeUndefined();
@@ -71,13 +72,13 @@ describe('Storage', () => {
         const runData = {
           deploymentId: 'deployment-123',
           workflowName: 'minimal-workflow',
-          input: [],
+          input: new Uint8Array(),
         };
 
         const run = await createRun(storage, runData);
 
         expect(run.executionContext).toBeUndefined();
-        expect(run.input).toEqual([]);
+        expect(run.input).toEqual(new Uint8Array());
       });
     });
 
@@ -86,7 +87,7 @@ describe('Storage', () => {
         const created = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const retrieved = await storage.runs.get(created.runId);
@@ -106,7 +107,7 @@ describe('Storage', () => {
         const created = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Small delay to ensure different timestamps
@@ -125,7 +126,7 @@ describe('Storage', () => {
         const created = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const updated = await updateRun(
@@ -133,12 +134,12 @@ describe('Storage', () => {
           created.runId,
           'run_completed',
           {
-            output: { result: 'success' },
+            output: new Uint8Array([1]),
           }
         );
 
         expect(updated.status).toBe('completed');
-        expect(updated.output).toEqual({ result: 'success' });
+        expect(updated.output).toBeInstanceOf(Uint8Array);
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
 
@@ -146,7 +147,7 @@ describe('Storage', () => {
         const created = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const updated = await updateRun(storage, created.runId, 'run_failed', {
@@ -164,7 +165,7 @@ describe('Storage', () => {
         const run1 = await createRun(storage, {
           deploymentId: 'deployment-1',
           workflowName: 'workflow-1',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Small delay to ensure different timestamps in ULIDs
@@ -173,7 +174,7 @@ describe('Storage', () => {
         const run2 = await createRun(storage, {
           deploymentId: 'deployment-2',
           workflowName: 'workflow-2',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result = await storage.runs.list();
@@ -191,12 +192,12 @@ describe('Storage', () => {
         await createRun(storage, {
           deploymentId: 'deployment-1',
           workflowName: 'workflow-1',
-          input: [],
+          input: new Uint8Array(),
         });
         const run2 = await createRun(storage, {
           deploymentId: 'deployment-2',
           workflowName: 'workflow-2',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result = await storage.runs.list({ workflowName: 'workflow-2' });
@@ -211,7 +212,7 @@ describe('Storage', () => {
           await createRun(storage, {
             deploymentId: `deployment-${i}`,
             workflowName: `workflow-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -239,7 +240,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -249,7 +250,7 @@ describe('Storage', () => {
         const stepData = {
           stepId: 'step_123',
           stepName: 'test-step',
-          input: ['input1', 'input2'],
+          input: new Uint8Array([1, 2]),
         };
 
         const step = await createStep(storage, testRunId, stepData);
@@ -258,7 +259,7 @@ describe('Storage', () => {
         expect(step.stepId).toBe('step_123');
         expect(step.stepName).toBe('test-step');
         expect(step.status).toBe('pending');
-        expect(step.input).toEqual(['input1', 'input2']);
+        expect(step.input).toEqual(new Uint8Array([1, 2]));
         expect(step.output).toBeUndefined();
         expect(step.error).toBeUndefined();
         expect(step.attempt).toBe(0);
@@ -286,7 +287,7 @@ describe('Storage', () => {
         const created = await createStep(storage, testRunId, {
           stepId: 'step_123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const retrieved = await storage.steps.get(testRunId, 'step_123');
@@ -298,7 +299,7 @@ describe('Storage', () => {
         const created = await createStep(storage, testRunId, {
           stepId: 'unique_step_123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const retrieved = await storage.steps.get(undefined, 'unique_step_123');
@@ -318,7 +319,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const updated = await updateStep(
@@ -338,7 +339,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const updated = await updateStep(
@@ -346,11 +347,11 @@ describe('Storage', () => {
           testRunId,
           'step_123',
           'step_completed',
-          { result: { result: 'done' } }
+          { result: new Uint8Array([1]) }
         );
 
         expect(updated.status).toBe('completed');
-        expect(updated.output).toEqual({ result: 'done' });
+        expect(updated.output).toEqual(new Uint8Array([1]));
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
 
@@ -358,7 +359,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_123',
           stepName: 'test-step',
-          input: ['input1'],
+          input: new Uint8Array([1]),
         });
 
         const updated = await updateStep(
@@ -380,12 +381,12 @@ describe('Storage', () => {
         const step1 = await createStep(storage, testRunId, {
           stepId: 'step_1',
           stepName: 'first-step',
-          input: [],
+          input: new Uint8Array(),
         });
         const step2 = await createStep(storage, testRunId, {
           stepId: 'step_2',
           stepName: 'second-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const result = await storage.steps.list({
@@ -407,7 +408,7 @@ describe('Storage', () => {
           await createStep(storage, testRunId, {
             stepId: `step_${i}`,
             stepName: `step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -434,7 +435,7 @@ describe('Storage', () => {
           await createStep(storage, testRunId, {
             stepId: `step_${i}`,
             stepName: `step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -454,7 +455,7 @@ describe('Storage', () => {
           await createStep(storage, testRunId, {
             stepId: `step_${i}`,
             stepName: `step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -494,7 +495,7 @@ describe('Storage', () => {
           await createStep(storage, testRunId, {
             stepId: `step_${i}`,
             stepName: `step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -526,7 +527,7 @@ describe('Storage', () => {
           await createStep(storage, testRunId, {
             stepId: `step_${i}`,
             stepName: `step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -567,7 +568,7 @@ describe('Storage', () => {
           await createStep(storage, testRunId, {
             stepId: `step_${i}`,
             stepName: `step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -589,7 +590,7 @@ describe('Storage', () => {
           await createStep(storage, testRunId, {
             stepId: `step_${i}`,
             stepName: `step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
         }
 
@@ -641,7 +642,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -652,7 +653,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'corr_123',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const eventData = {
@@ -684,7 +685,7 @@ describe('Storage', () => {
       it('should handle run completed events', async () => {
         const eventData = {
           eventType: 'run_completed' as const,
-          eventData: { output: { result: 'done' } },
+          eventData: { output: new Uint8Array([2]) },
         };
 
         const { event } = await storage.events.create(testRunId, eventData);
@@ -708,7 +709,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'corr_step_1',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -748,7 +749,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'corr_step_1',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -781,12 +782,12 @@ describe('Storage', () => {
           await createStep(storage, testRunId, {
             stepId: `corr_${i}`,
             stepName: `step-${i}`,
-            input: [],
+            input: new Uint8Array(),
           });
           await storage.events.create(testRunId, {
             eventType: 'step_completed' as const,
             correlationId: `corr_${i}`,
-            eventData: { result: i },
+            eventData: { result: new Uint8Array([i]) },
           });
         }
 
@@ -816,14 +817,14 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Create step for the different correlation ID too
         await createStep(storage, testRunId, {
           stepId: 'different-step',
           stepName: 'different-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Create events with the target correlation ID
@@ -837,7 +838,7 @@ describe('Storage', () => {
         const { event: event2 } = await storage.events.create(testRunId, {
           eventType: 'step_completed' as const,
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         // Create events with different correlation IDs (should be filtered out)
@@ -847,7 +848,7 @@ describe('Storage', () => {
         });
         await storage.events.create(testRunId, {
           eventType: 'run_completed' as const,
-          eventData: { output: { result: 'done' } },
+          eventData: { output: new Uint8Array([2]) },
         });
 
         const result = await storage.events.listByCorrelationId({
@@ -873,14 +874,17 @@ describe('Storage', () => {
         const run2 = await createRun(storage, {
           deploymentId: 'deployment-456',
           workflowName: 'test-workflow-2',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Create events in both runs with same correlation ID
         const { event: event1 } = await storage.events.create(testRunId, {
           eventType: 'hook_created' as const,
           correlationId,
-          eventData: { token: `test-token-${correlationId}`, metadata: {} },
+          eventData: {
+            token: `test-token-${correlationId}`,
+            metadata: undefined,
+          },
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -888,7 +892,7 @@ describe('Storage', () => {
         const { event: event2 } = await storage.events.create(run2.runId, {
           eventType: 'hook_received' as const,
           correlationId,
-          eventData: { payload: { data: 'test' } },
+          eventData: { payload: new Uint8Array([1, 2, 3]) },
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -917,7 +921,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'existing-step',
           stepName: 'existing-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         await storage.events.create(testRunId, {
@@ -942,7 +946,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Create multiple events
@@ -971,7 +975,7 @@ describe('Storage', () => {
         await storage.events.create(testRunId, {
           eventType: 'step_completed' as const,
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         // Get first page (step_created + step_started = 2)
@@ -1001,13 +1005,13 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         await storage.events.create(testRunId, {
           eventType: 'step_completed' as const,
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         const result = await storage.events.listByCorrelationId({
@@ -1030,7 +1034,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -1046,7 +1050,7 @@ describe('Storage', () => {
         const { event: event2 } = await storage.events.create(testRunId, {
           eventType: 'step_completed' as const,
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         const result = await storage.events.listByCorrelationId({
@@ -1072,7 +1076,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: correlationId,
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -1087,7 +1091,7 @@ describe('Storage', () => {
         const { event: event2 } = await storage.events.create(testRunId, {
           eventType: 'step_completed' as const,
           correlationId,
-          eventData: { result: 'success' },
+          eventData: { result: new Uint8Array([1]) },
         });
 
         const result = await storage.events.listByCorrelationId({
@@ -1113,7 +1117,7 @@ describe('Storage', () => {
         const { event: created } = await storage.events.create(testRunId, {
           eventType: 'hook_created' as const,
           correlationId: hookId,
-          eventData: { token: `test-token-${hookId}`, metadata: {} },
+          eventData: { token: `test-token-${hookId}`, metadata: undefined },
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -1121,7 +1125,7 @@ describe('Storage', () => {
         const { event: received1 } = await storage.events.create(testRunId, {
           eventType: 'hook_received' as const,
           correlationId: hookId,
-          eventData: { payload: { request: 1 } },
+          eventData: { payload: new Uint8Array([1]) },
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -1129,7 +1133,7 @@ describe('Storage', () => {
         const { event: received2 } = await storage.events.create(testRunId, {
           eventType: 'hook_received' as const,
           correlationId: hookId,
-          eventData: { payload: { request: 2 } },
+          eventData: { payload: new Uint8Array([2]) },
         });
 
         await new Promise((resolve) => setTimeout(resolve, 2));
@@ -1164,7 +1168,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -1270,7 +1274,7 @@ describe('Storage', () => {
         const run2 = await createRun(storage, {
           deploymentId: 'deployment-456',
           workflowName: 'another-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         const token = 'shared-token-across-runs';
@@ -1405,7 +1409,7 @@ describe('Storage', () => {
         const run2 = await createRun(storage, {
           deploymentId: 'deployment-456',
           workflowName: 'test-workflow-2',
-          input: [],
+          input: new Uint8Array(),
         });
 
         await createHook(storage, testRunId, {
@@ -1510,7 +1514,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -1520,7 +1524,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_terminal_1',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           storage,
@@ -1528,7 +1532,7 @@ describe('Storage', () => {
           'step_terminal_1',
           'step_completed',
           {
-            result: 'done',
+            result: new Uint8Array([1]),
           }
         );
 
@@ -1541,7 +1545,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_terminal_2',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           storage,
@@ -1549,13 +1553,13 @@ describe('Storage', () => {
           'step_terminal_2',
           'step_completed',
           {
-            result: 'done',
+            result: new Uint8Array([1]),
           }
         );
 
         await expect(
           updateStep(storage, testRunId, 'step_terminal_2', 'step_completed', {
-            result: 'done again',
+            result: new Uint8Array([2]),
           })
         ).rejects.toThrow(/terminal/i);
       });
@@ -1564,7 +1568,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_terminal_3',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           storage,
@@ -1572,7 +1576,7 @@ describe('Storage', () => {
           'step_terminal_3',
           'step_completed',
           {
-            result: 'done',
+            result: new Uint8Array([1]),
           }
         );
 
@@ -1589,7 +1593,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_failed_1',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(storage, testRunId, 'step_failed_1', 'step_failed', {
           error: 'Failed permanently',
@@ -1604,7 +1608,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_failed_2',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(storage, testRunId, 'step_failed_2', 'step_failed', {
           error: 'Failed permanently',
@@ -1612,7 +1616,7 @@ describe('Storage', () => {
 
         await expect(
           updateStep(storage, testRunId, 'step_failed_2', 'step_completed', {
-            result: 'Should not work',
+            result: new Uint8Array([3]),
           })
         ).rejects.toThrow(/terminal/i);
       });
@@ -1621,7 +1625,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_failed_3',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(storage, testRunId, 'step_failed_3', 'step_failed', {
           error: 'Failed once',
@@ -1638,7 +1642,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_failed_retry',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           storage,
@@ -1663,7 +1667,7 @@ describe('Storage', () => {
         await createStep(storage, testRunId, {
           stepId: 'step_completed_retry',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateStep(
           storage,
@@ -1671,7 +1675,7 @@ describe('Storage', () => {
           'step_completed_retry',
           'step_completed',
           {
-            result: 'done',
+            result: new Uint8Array([1]),
           }
         );
 
@@ -1696,10 +1700,10 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(storage, run.runId, 'run_completed', {
-          output: 'done',
+          output: new Uint8Array([3]),
         });
 
         await expect(
@@ -1711,10 +1715,10 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(storage, run.runId, 'run_completed', {
-          output: 'done',
+          output: new Uint8Array([3]),
         });
 
         await expect(
@@ -1728,10 +1732,10 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(storage, run.runId, 'run_completed', {
-          output: 'done',
+          output: new Uint8Array([3]),
         });
 
         await expect(
@@ -1745,7 +1749,7 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(storage, run.runId, 'run_failed', { error: 'Failed' });
 
@@ -1758,13 +1762,13 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(storage, run.runId, 'run_failed', { error: 'Failed' });
 
         await expect(
           updateRun(storage, run.runId, 'run_completed', {
-            output: 'Should not work',
+            output: new Uint8Array([4]),
           })
         ).rejects.toThrow(/terminal/i);
       });
@@ -1773,7 +1777,7 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await updateRun(storage, run.runId, 'run_failed', { error: 'Failed' });
 
@@ -1788,7 +1792,7 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await storage.events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -1801,13 +1805,13 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await storage.events.create(run.runId, { eventType: 'run_cancelled' });
 
         await expect(
           updateRun(storage, run.runId, 'run_completed', {
-            output: 'Should not work',
+            output: new Uint8Array([4]),
           })
         ).rejects.toThrow(/terminal/i);
       });
@@ -1816,7 +1820,7 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'deployment-123',
           workflowName: 'test-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
         await storage.events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -1834,19 +1838,21 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create and start a step (making it in-progress)
       await createStep(storage, run.runId, {
         stepId: 'step_in_progress',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(storage, run.runId, 'step_in_progress', 'step_started');
 
       // Complete the run while step is still running
-      await updateRun(storage, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
 
       // Should succeed - completing an in-progress step on a terminal run is allowed
       const result = await updateStep(
@@ -1854,7 +1860,7 @@ describe('Storage', () => {
         run.runId,
         'step_in_progress',
         'step_completed',
-        { result: 'step done' }
+        { result: new Uint8Array([1]) }
       );
       expect(result.status).toBe('completed');
     });
@@ -1863,14 +1869,14 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create and start a step
       await createStep(storage, run.runId, {
         stepId: 'step_in_progress_fail',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(
         storage,
@@ -1880,7 +1886,9 @@ describe('Storage', () => {
       );
 
       // Complete the run
-      await updateRun(storage, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
 
       // Should succeed - failing an in-progress step on a terminal run is allowed
       const result = await updateStep(
@@ -1897,7 +1905,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create a hook
@@ -1911,7 +1919,9 @@ describe('Storage', () => {
       expect(hookBefore).toBeDefined();
 
       // Complete the run - this auto-deletes hooks in world-local
-      await updateRun(storage, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
 
       // Hook should be auto-deleted
       await expect(storage.hooks.get('hook_auto_delete')).rejects.toThrow(
@@ -1925,15 +1935,17 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
-      await updateRun(storage, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
 
       await expect(
         createStep(storage, run.runId, {
           stepId: 'new_step',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         })
       ).rejects.toThrow(/terminal/i);
     });
@@ -1942,18 +1954,20 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create a step but don't start it
       await createStep(storage, run.runId, {
         stepId: 'pending_step',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Complete the run
-      await updateRun(storage, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
 
       // Should reject - cannot start a pending step on a terminal run
       await expect(
@@ -1965,9 +1979,11 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
-      await updateRun(storage, run.runId, 'run_completed', { output: 'done' });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
 
       await expect(
         createHook(storage, run.runId, {
@@ -1981,7 +1997,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateRun(storage, run.runId, 'run_failed', { error: 'Failed' });
 
@@ -1989,7 +2005,7 @@ describe('Storage', () => {
         createStep(storage, run.runId, {
           stepId: 'new_step_failed',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         })
       ).rejects.toThrow(/terminal/i);
     });
@@ -1998,7 +2014,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await storage.events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -2006,7 +2022,7 @@ describe('Storage', () => {
         createStep(storage, run.runId, {
           stepId: 'new_step_cancelled',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         })
       ).rejects.toThrow(/terminal/i);
     });
@@ -2015,7 +2031,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateRun(storage, run.runId, 'run_failed', { error: 'Failed' });
 
@@ -2031,7 +2047,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await storage.events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -2049,7 +2065,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await storage.events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -2068,7 +2084,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -2077,7 +2093,7 @@ describe('Storage', () => {
       await createStep(storage, testRunId, {
         stepId: 'step_retry_1',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(storage, testRunId, 'step_retry_1', 'step_started');
 
@@ -2099,7 +2115,7 @@ describe('Storage', () => {
       await createStep(storage, testRunId, {
         stepId: 'step_retry_2',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // First attempt
@@ -2132,7 +2148,7 @@ describe('Storage', () => {
       await createStep(storage, testRunId, {
         stepId: 'step_retry_completed',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(
         storage,
@@ -2140,7 +2156,7 @@ describe('Storage', () => {
         'step_retry_completed',
         'step_completed',
         {
-          result: 'done',
+          result: new Uint8Array([1]),
         }
       );
 
@@ -2157,7 +2173,7 @@ describe('Storage', () => {
       await createStep(storage, testRunId, {
         stepId: 'step_retry_failed',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(storage, testRunId, 'step_retry_failed', 'step_failed', {
         error: 'Permanent failure',
@@ -2178,14 +2194,14 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create and start a step
       await createStep(storage, run.runId, {
         stepId: 'step_in_flight',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
       await updateStep(storage, run.runId, 'step_in_flight', 'step_started');
 
@@ -2198,7 +2214,7 @@ describe('Storage', () => {
         run.runId,
         'step_in_flight',
         'step_completed',
-        { result: 'done' }
+        { result: new Uint8Array([1]) }
       );
       expect(result.status).toBe('completed');
     });
@@ -2207,7 +2223,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       await storage.events.create(run.runId, { eventType: 'run_cancelled' });
 
@@ -2215,7 +2231,7 @@ describe('Storage', () => {
         createStep(storage, run.runId, {
           stepId: 'new_step_after_cancel',
           stepName: 'test-step',
-          input: [],
+          input: new Uint8Array(),
         })
       ).rejects.toThrow(/terminal/i);
     });
@@ -2224,14 +2240,14 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Create a step but don't start it
       await createStep(storage, run.runId, {
         stepId: 'pending_after_cancel',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Cancel the run
@@ -2251,7 +2267,7 @@ describe('Storage', () => {
       const run = await createRun(storage, {
         deploymentId: 'deployment-123',
         workflowName: 'test-workflow',
-        input: [],
+        input: new Uint8Array(),
       });
       testRunId = run.runId;
     });
@@ -2261,7 +2277,7 @@ describe('Storage', () => {
         storage.events.create(testRunId, {
           eventType: 'step_completed',
           correlationId: 'nonexistent_step',
-          eventData: { result: 'done' },
+          eventData: { result: new Uint8Array([1]) },
         })
       ).rejects.toThrow(/not found/i);
     });
@@ -2289,7 +2305,7 @@ describe('Storage', () => {
       await createStep(storage, testRunId, {
         stepId: 'instant_complete',
         stepName: 'test-step',
-        input: [],
+        input: new Uint8Array(),
       });
 
       // Should succeed - instant completion without starting
@@ -2298,7 +2314,7 @@ describe('Storage', () => {
         testRunId,
         'instant_complete',
         'step_completed',
-        { result: 'instant' }
+        { result: new Uint8Array([1]) }
       );
       expect(result.status).toBe('completed');
     });
@@ -2337,14 +2353,11 @@ describe('Storage', () => {
         workflowName: 'legacy-workflow',
         specVersion,
         status: 'running',
-        input: [],
+        input: new Uint8Array(),
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      await fs.writeFile(
-        path.join(runsDir, `${runId}.json`),
-        JSON.stringify(run, null, 2)
-      );
+      await writeJSON(path.join(runsDir, `${runId}.json`), run);
       return run;
     }
 
@@ -2422,7 +2435,7 @@ describe('Storage', () => {
         await expect(
           storage.events.create(runId, {
             eventType: 'run_completed',
-            eventData: { output: 'done' },
+            eventData: { output: new Uint8Array([3]) },
           })
         ).rejects.toThrow(/not supported for legacy runs/i);
 
@@ -2487,7 +2500,7 @@ describe('Storage', () => {
         const run = await createRun(storage, {
           deploymentId: 'current-deployment',
           workflowName: 'current-workflow',
-          input: [],
+          input: new Uint8Array(),
         });
 
         // Should work normally

@@ -74,7 +74,7 @@ async function triggerWorkflow(
   const res = await fetch(url, {
     method: 'POST',
     headers: getProtectionBypassHeaders(),
-    body: JSON.stringify(dehydratedArgs),
+    body: dehydratedArgs.buffer as BodyInit,
   });
   if (!res.ok) {
     throw new Error(
