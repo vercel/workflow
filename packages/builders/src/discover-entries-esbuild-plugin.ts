@@ -46,6 +46,7 @@ export function parentHasChild(parent: string, childToFind: string) {
 export function createDiscoverEntriesPlugin(state: {
   discoveredSteps: string[];
   discoveredWorkflows: string[];
+  discoveredSerdeFiles: string[];
 }): Plugin {
   return {
     name: 'discover-entries-esbuild-plugin',
@@ -109,6 +110,15 @@ export function createDiscoverEntriesPlugin(state: {
           // be treated as user entry points.
           if (patterns.hasSerde && !patterns.hasUseStep && !isSdkFile) {
             state.discoveredSteps.push(normalizedPath);
+          }
+
+          // Track all serde files separately for cross-context class registration.
+          // Classes need to be registered in all bundle contexts (step, workflow, client)
+          // to support serialization across execution boundaries.
+          if (patterns.hasSerde && !isSdkFile) {
+            if (!state.discoveredSerdeFiles.includes(normalizedPath)) {
+              state.discoveredSerdeFiles.push(normalizedPath);
+            }
           }
 
           const { code: transformedCode } = await applySwcTransform(

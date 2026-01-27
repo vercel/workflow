@@ -90,6 +90,7 @@ export abstract class BaseBuilder {
     {
       discoveredSteps: string[];
       discoveredWorkflows: string[];
+      discoveredSerdeFiles: string[];
     }
   > = new WeakMap();
 
@@ -99,6 +100,7 @@ export abstract class BaseBuilder {
   ): Promise<{
     discoveredSteps: string[];
     discoveredWorkflows: string[];
+    discoveredSerdeFiles: string[];
   }> {
     const previousResult = this.discoveredEntries.get(inputs);
 
@@ -108,9 +110,11 @@ export abstract class BaseBuilder {
     const state: {
       discoveredSteps: string[];
       discoveredWorkflows: string[];
+      discoveredSerdeFiles: string[];
     } = {
       discoveredSteps: [],
       discoveredWorkflows: [],
+      discoveredSerdeFiles: [],
     };
 
     const discoverStart = Date.now();
@@ -462,35 +466,49 @@ export abstract class BaseBuilder {
     interimBundleCtx: esbuild.BuildContext;
     bundleFinal: (interimBundleResult: string) => Promise<void>;
   }> {
-    const { discoveredWorkflows: workflowFiles } = await this.discoverEntries(
-      inputFiles,
-      dirname(outfile)
-    );
+    const {
+      discoveredWorkflows: workflowFiles,
+      discoveredSerdeFiles: serdeFiles,
+    } = await this.discoverEntries(inputFiles, dirname(outfile));
+
+    // Include serde files that aren't already workflow files for cross-context class registration.
+    // Classes need to be registered in the workflow bundle so they can be deserialized
+    // when receiving data from steps or when serializing data to send to steps.
+    const workflowFilesSet = new Set(workflowFiles);
+    const serdeOnlyFiles = serdeFiles.filter((f) => !workflowFilesSet.has(f));
 
     // log the workflow files for debugging
-    await this.writeDebugFile(outfile, { workflowFiles });
+    await this.writeDebugFile(outfile, { workflowFiles, serdeOnlyFiles });
+
+    // Helper to create import statement from file path
+    const createImport = (file: string) => {
+      // Normalize both paths to forward slashes before calling relative()
+      // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+      const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+      const normalizedFile = file.replace(/\\/g, '/');
+      // Calculate relative path from working directory to the file
+      let relativePath = relative(normalizedWorkingDir, normalizedFile).replace(
+        /\\/g,
+        '/'
+      );
+      // Ensure relative paths start with ./ so esbuild resolves them correctly
+      if (!relativePath.startsWith('.')) {
+        relativePath = `./${relativePath}`;
+      }
+      return `import '${relativePath}';`;
+    };
 
     // Create a virtual entry that imports all workflow files
     // The SWC plugin in workflow mode emits `globalThis.__private_workflows.set(workflowId, fn)`
     // calls directly, so we just need to import the files (Map is initialized via banner)
-    const imports = workflowFiles
-      .map((file) => {
-        // Normalize both paths to forward slashes before calling relative()
-        // This is critical on Windows where relative() can produce unexpected results with mixed path formats
-        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
-        const normalizedFile = file.replace(/\\/g, '/');
-        // Calculate relative path from working directory to the file
-        let relativePath = relative(
-          normalizedWorkingDir,
-          normalizedFile
-        ).replace(/\\/g, '/');
-        // Ensure relative paths start with ./ so esbuild resolves them correctly
-        if (!relativePath.startsWith('.')) {
-          relativePath = `./${relativePath}`;
-        }
-        return `import '${relativePath}';`;
-      })
-      .join('\n');
+    const workflowImports = workflowFiles.map(createImport).join('\n');
+
+    // Include serde-only files for class registration side effects
+    const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
+
+    const imports = serdeImports
+      ? `${workflowImports}\n// Serde files for cross-context class registration\n${serdeImports}`
+      : workflowImports;
 
     const bundleStartTime = Date.now();
     const workflowManifest: WorkflowManifest = {};
@@ -683,10 +701,46 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
     const inputFiles = await this.getInputFiles();
 
-    // Create a virtual entry that imports all files
-    const imports = inputFiles
+    // Discover serde files from the input files' dependency tree for cross-context class registration.
+    // Classes need to be registered in the client bundle so they can be serialized
+    // when passing data to workflows via start() and deserialized when receiving workflow results.
+    const { discoveredSerdeFiles } = await this.discoverEntries(
+      inputFiles,
+      outputDir
+    );
+
+    // Identify serde files that aren't in the inputFiles (deduplicated)
+    const inputFilesNormalized = new Set(
+      inputFiles.map((f) => f.replace(/\\/g, '/'))
+    );
+    const serdeOnlyFiles = discoveredSerdeFiles.filter(
+      (f) => !inputFilesNormalized.has(f)
+    );
+
+    // Re-exports for input files (user's workflow/step definitions)
+    const reexports = inputFiles
       .map((file) => `export * from '${file}';`)
       .join('\n');
+
+    // Side-effect imports for serde files not in inputFiles (for class registration)
+    const serdeImports = serdeOnlyFiles
+      .map((file) => {
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        let relativePath = relative(normalizedWorkingDir, file).replace(
+          /\\/g,
+          '/'
+        );
+        if (!relativePath.startsWith('.')) {
+          relativePath = `./${relativePath}`;
+        }
+        return `import '${relativePath}';`;
+      })
+      .join('\n');
+
+    // Combine: serde imports (for registration side effects) + re-exports
+    const entryContent = serdeImports
+      ? `// Serde files for cross-context class registration\n${serdeImports}\n${reexports}`
+      : reexports;
 
     // Bundle with esbuild and our custom SWC plugin
     const clientResult = await esbuild.build({
@@ -694,7 +748,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
       },
       stdin: {
-        contents: imports,
+        contents: entryContent,
         resolveDir: this.config.workingDir,
         sourcefile: 'virtual-entry.js',
         loader: 'js',

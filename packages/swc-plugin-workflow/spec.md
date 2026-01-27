@@ -537,6 +537,26 @@ Files containing classes with custom serialization are automatically discovered 
 
 This allows serialization classes to be defined in separate files (such as Next.js API routes or utility modules) and still be registered in the serialization system when the application is built.
 
+### Cross-Context Class Registration
+
+Classes with custom serialization are automatically included in **all bundle contexts** (step, workflow, client) to ensure they can be properly serialized and deserialized when crossing execution boundaries:
+
+| Boundary | Serializer | Deserializer | Example |
+|----------|------------|--------------|---------|
+| Client → Workflow | Client mode | Workflow mode | Passing a `Point` instance to `start(workflow)` |
+| Workflow → Step | Workflow mode | Step mode | Passing a `Point` instance as step argument |
+| Step → Workflow | Step mode | Workflow mode | Returning a `Point` instance from a step |
+| Workflow → Client | Workflow mode | Client mode | Returning a `Point` instance from a workflow |
+
+The build system automatically discovers all files containing serializable classes and includes them in each bundle, regardless of where the class is originally defined. This ensures the class registry has all necessary classes for any serialization boundary the data may cross.
+
+For example, if a class `Point` is defined in `models/point.ts` and only used in step code:
+- The **step bundle** includes `Point` because the step file imports it
+- The **workflow bundle** also includes `Point` so it can deserialize step return values
+- The **client bundle** also includes `Point` so it can deserialize workflow return values
+
+This cross-registration happens automatically during the build process - no manual configuration is required.
+
 ---
 
 ## Default Exports
