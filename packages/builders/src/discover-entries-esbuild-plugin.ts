@@ -117,20 +117,25 @@ export function createDiscoverEntriesPlugin(state: {
           // This is critical for Windows where paths contain backslashes
           const normalizedPath = args.path.replace(/\\/g, '/');
 
-          // Skip @workflow SDK packages - they should not be treated as user entry points.
-          // User npm packages with workflows/steps/serde SHOULD still be discovered.
+          // For @workflow SDK packages, only discover files with actual directives,
+          // not files that just match serde patterns (which are internal SDK implementation files)
           const isWorkflowSdkFile = workflowSdkPathPattern.test(args.path);
 
-          if (!isWorkflowSdkFile) {
-            if (hasUseWorkflow) {
-              state.discoveredWorkflows.push(normalizedPath);
-            }
+          if (hasUseWorkflow) {
+            state.discoveredWorkflows.push(normalizedPath);
+          }
 
-            if (hasUseStep || hasSerde) {
-              // Files with serde patterns are treated like step files so they get
-              // bundled and transformed, which registers serialization classes
-              state.discoveredSteps.push(normalizedPath);
-            }
+          if (hasUseStep) {
+            state.discoveredSteps.push(normalizedPath);
+          }
+
+          // Files with serde patterns are treated like step files so they get
+          // bundled and transformed, which registers serialization classes.
+          // However, skip @workflow SDK packages for serde-only detection since those
+          // are internal implementation files (like serialization.js) that shouldn't
+          // be treated as user entry points.
+          if (hasSerde && !hasUseStep && !isWorkflowSdkFile) {
+            state.discoveredSteps.push(normalizedPath);
           }
 
           const { code: transformedCode } = await applySwcTransform(

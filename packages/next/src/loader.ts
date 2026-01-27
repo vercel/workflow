@@ -61,11 +61,6 @@ export default async function workflowLoader(
     return normalizedSource;
   }
 
-  // Skip @workflow SDK packages - they're already built and don't need transformation
-  if (workflowSdkPathPattern.test(filename)) {
-    return normalizedSource;
-  }
-
   // Check if file needs transformation:
   // - Contains 'use step' or 'use workflow' directives
   // - Contains custom serialization patterns (@workflow/serde import or Symbol.for usage)
@@ -73,6 +68,13 @@ export default async function workflowLoader(
   const hasSerde =
     workflowSerdeImportPattern.test(normalizedSource) ||
     workflowSerdeSymbolPattern.test(normalizedSource);
+
+  // For @workflow SDK packages, only transform files with actual directives,
+  // not files that just match serde patterns (which are internal SDK implementation files)
+  const isWorkflowSdkFile = workflowSdkPathPattern.test(filename);
+  if (isWorkflowSdkFile && !hasDirective) {
+    return normalizedSource;
+  }
 
   if (!hasDirective && !hasSerde) {
     return normalizedSource;
