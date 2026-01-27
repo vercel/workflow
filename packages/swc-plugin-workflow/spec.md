@@ -315,6 +315,46 @@ export async function myWorkflow(data) {
 myWorkflow.workflowId = "workflow//input.js//myWorkflow";
 ```
 
+### Custom Serialization in Client Mode
+
+Classes with custom serialization methods are also registered in client mode so that they can be properly serialized when passed to `start(workflow)`:
+
+Input:
+```javascript
+export class Point {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  static [Symbol.for("workflow-serialize")](instance) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  static [Symbol.for("workflow-deserialize")](data) {
+    return new Point(data.x, data.y);
+  }
+}
+```
+
+Output (Client Mode):
+```javascript
+import { registerSerializationClass } from "workflow/internal/class-serialization";
+export class Point {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+    }
+    static [Symbol.for("workflow-serialize")](instance) {
+        return { x: instance.x, y: instance.y };
+    }
+    static [Symbol.for("workflow-deserialize")](data) {
+        return new Point(data.x, data.y);
+    }
+}
+registerSerializationClass("class//input.js//Point", Point);
+```
+
 ---
 
 ## Static Methods
