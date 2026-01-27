@@ -1,23 +1,13 @@
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
+import {
+  detectWorkflowPatterns,
+  isGeneratedWorkflowFile,
+  isWorkflowSdkFile,
+  shouldTransformFile,
+} from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
-
-// Pattern to detect generated workflow route files that should be excluded from transformation
-const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
-
-// Pattern to detect @workflow SDK packages that should be excluded from transformation
-// These packages are already built and don't need client-side transformation
-// Matches both: node_modules/@workflow/* and monorepo packages/*/dist paths
-const workflowSdkPathPattern =
-  /[/\\](?:@workflow[/\\]|packages[/\\](?:builders|core|rollup|vite|next|nitro|serde|workflow|swc-plugin-workflow)[/\\])/;
-
-// Patterns for detecting custom class serialization:
-// - Import from '@workflow/serde'
-// - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
-const workflowSerdeSymbolPattern =
-  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
 
 export function workflowTransformPlugin(): Plugin {
   return {
@@ -26,26 +16,19 @@ export function workflowTransformPlugin(): Plugin {
     // client transformation
     async transform(code: string, id: string) {
       // Skip generated workflow route files to avoid re-processing them
-      if (generatedWorkflowPathPattern.test(id)) {
+      if (isGeneratedWorkflowFile(id)) {
         return null;
       }
 
-      // Check if file needs transformation:
-      // - Contains 'use step' or 'use workflow' directives
-      // - Contains custom serialization patterns (@workflow/serde import or Symbol.for usage)
-      const hasDirective = /(use step|use workflow)/.test(code);
-      const hasSerde =
-        workflowSerdeImportPattern.test(code) ||
-        workflowSerdeSymbolPattern.test(code);
+      const patterns = detectWorkflowPatterns(code);
 
       // For @workflow SDK packages, only transform files with actual directives,
       // not files that just match serde patterns (which are internal SDK implementation files)
-      const isWorkflowSdkFile = workflowSdkPathPattern.test(id);
-      if (isWorkflowSdkFile && !hasDirective) {
+      if (isWorkflowSdkFile(id) && !patterns.hasDirective) {
         return null;
       }
 
-      if (!hasDirective && !hasSerde) {
+      if (!shouldTransformFile(id, patterns)) {
         return null;
       }
 

@@ -28,9 +28,11 @@
     "clean": "tsc --build --clean && rm -rf dist",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@workflow/builders": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@workflow/builders": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "vite": "7.1.12"
   }
