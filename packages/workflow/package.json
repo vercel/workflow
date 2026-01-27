@@ -57,7 +57,7 @@
     "test": "vitest run src",
     "typecheck": "tsc --noEmit",
     "prepack": "cp -r ../../docs/content/docs ./docs",
-    "postpack": "del-cli docs"
+    "postpack": "rm -rf docs"
   },
   "dependencies": {
     "@workflow/astro": "workspace:*",

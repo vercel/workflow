@@ -6,11 +6,12 @@ metadata:
   version: '1.0'
 ---
 
-## Workflow DevKit Documentation
+## *CRITICAL*: Always Use Correct `workflow` Documentation
 
-When you need up-to-date information about the Workflow DevKit:
+Your knowledge of `workflow` is outdated.
 
-### Search Bundled Documentation
+The `workflow` documentation outlined below matches the installed version of the Workflow DevKit.
+Follow these instructions before starting on any `workflow`-related tasks:
 
 Search the bundled documentation in `node_modules/workflow/docs/`:
 
@@ -66,17 +67,76 @@ import { workflow } from "workflow/astro";
 // Or use modules: ["workflow/nitro"] for Nitro/Nuxt
 ```
 
-## Critical workflow rules
+## Prefer Step Functions to Avoid Sandbox Errors
 
-1. Always set `globalThis.fetch = fetch` when using AI SDK or HTTP libraries
-2. Use `sleep()` instead of setTimeout/setInterval
-3. Move Node.js modules (fs, crypto, etc.) to step functions
-4. Use `FatalError` for permanent failures, `RetryableError` for retries
-5. Use `use step` with AI SDK methods to avoid issues with OIDC
+`"use workflow"` functions run in a sandboxed VM. `"use step"` functions have **full Node.js access**. Put your logic in steps and use the workflow function purely for orchestration.
 
-## Ecosystem
+```typescript
+// Steps have full Node.js and npm access
+async function fetchUserData(userId: string) {
+  "use step";
+  const response = await fetch(`https://api.example.com/users/${userId}`);
+  return response.json();
+}
 
-Workflow tooling is optimized to be used with the AI SDK, Vercel's AI Gateway, and Vercel OIDC
+async function processWithAI(data: any) {
+  "use step";
+  // AI SDK works in steps without workarounds
+  return await generateText({
+    model: openai("gpt-4"),
+    prompt: `Process: ${JSON.stringify(data)}`,
+  });
+}
+
+// Workflow orchestrates steps - no sandbox issues
+export async function dataProcessingWorkflow(userId: string) {
+  "use workflow";
+  const data = await fetchUserData(userId);
+  const processed = await processWithAI(data);
+  return { success: true, processed };
+}
+```
+
+**Benefits:** Steps have automatic retry, results are persisted for replay, and no sandbox restrictions.
+
+## Workflow Sandbox Limitations
+
+When you logic directly in a workflow function (not in a step), these restrictions apply:
+
+| Limitation | Workaround |
+|------------|------------|
+| No `fetch()` | `import { fetch } from "workflow"` then `globalThis.fetch = fetch` |
+| No `setTimeout`/`setInterval` | Use `sleep("5s")` from `"workflow"` |
+| No Node.js modules (fs, crypto, etc.) | Move to a step function |
+
+**Example - Using fetch in workflow context:**
+
+```typescript
+import { fetch } from "workflow";
+
+export async function myWorkflow() {
+  "use workflow";
+  globalThis.fetch = fetch;  // Required for AI SDK and HTTP libraries
+  // Now generateText() and other libraries work
+}
+```
+
+**Note:** `DurableAgent` from `@workflow/ai` handles the fetch assignment automatically.
+
+## Error Handling
+
+Use `FatalError` for permanent failures (no retry), `RetryableError` for transient failures:
+
+```typescript
+import { FatalError, RetryableError } from "workflow";
+
+if (res.status >= 400 && res.status < 500) {
+  throw new FatalError(`Client error: ${res.status}`);
+}
+if (res.status === 429) {
+  throw new RetryableError("Rate limited", { retryAfter: "5m" });
+}
+```
 
 ## Errors and Troubleshooting
 
