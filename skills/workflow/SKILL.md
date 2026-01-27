@@ -72,5 +72,6 @@ import { workflow } from "workflow/astro";
 2. Use `sleep()` instead of setTimeout/setInterval
 3. Move Node.js modules (fs, crypto, etc.) to step functions
 4. Use `FatalError` for permanent failures, `RetryableError` for retries
+5. Use `use step` with AI SDK methods to avoid issues with OIDC
 
 For common errors and troubleshooting, see [Common Errors Reference](references/common-errors.md).
