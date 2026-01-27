@@ -1,0 +1,209 @@
+---
+title: Building a World
+---
+
+A **World** is the abstraction that allows workflows to run on any infrastructure. It handles workflow storage, step execution queuing, and data streaming. This guide explains the World interface and how to implement your own.
+
+<Callout>
+  Before building a custom World, check the [Worlds Ecosystem](/worlds) page — there may already be a community implementation for your infrastructure.
+</Callout>
+
+<Callout type="info">
+  **Reference Implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of how to implement the World interface with a database backend and pg-boss for queuing.
+</Callout>
+
+## What is a World?
+
+A World connects workflows to the infrastructure that powers them. The World interface abstracts three core responsibilities:
+
+1. **Storage** — Persisting workflow runs, steps, hooks, and the event log
+2. **Queue** — Enqueuing and processing workflow and step invocations
+3. **Streamer** — Managing real-time data streams between workflows and clients
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface World extends Storage, Queue, Streamer {
+  start?(): Promise<void>;
+}
+```
+
+The optional `start()` method initializes any background tasks needed by your World (e.g., queue polling).
+
+## The Event Log Model
+
+Workflow storage is built on an **append-only event log**. All state changes happen through events — you never modify runs, steps, or hooks directly. Instead, you create events that update the materialized state.
+
+Events fall into three categories: run lifecycle events, step lifecycle events, and hook lifecycle events. See the [Event Sourcing](/docs/how-it-works/event-sourcing) documentation for a complete list of event types and their semantics.
+
+## Storage Interface
+
+The Storage interface provides read access to materialized entities and write access through events:
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface Storage {
+  runs: {
+    get(id: string, params?: GetWorkflowRunParams): Promise<WorkflowRun>;
+    list(params?: ListWorkflowRunsParams): Promise<PaginatedResponse<WorkflowRun>>;
+  };
+
+  steps: {
+    get(runId: string | undefined, stepId: string, params?: GetStepParams): Promise<Step>;
+    list(params: ListWorkflowRunStepsParams): Promise<PaginatedResponse<Step>>;
+  };
+
+  events: {
+    // Create a new workflow run (runId must be null - server generates it)
+    create(runId: null, data: RunCreatedEventRequest, params?: CreateEventParams): Promise<EventResult>;
+    
+    // Create an event for an existing run
+    create(runId: string, data: CreateEventRequest, params?: CreateEventParams): Promise<EventResult>;
+    
+    list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
+    listByCorrelationId(params: ListEventsByCorrelationIdParams): Promise<PaginatedResponse<Event>>;
+  };
+
+  hooks: {
+    get(hookId: string, params?: GetHookParams): Promise<Hook>;
+    getByToken(token: string, params?: GetHookParams): Promise<Hook>;
+    list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
+  };
+}
+```
+
+### Key Implementation Details
+
+**Event Creation:** When `events.create()` is called, your implementation must:
+1. Persist the event to the event log
+2. Atomically update the affected entity (run, step, or hook)
+3. Return both the created event and the updated entity
+
+**Run Creation:** For `run_created` events, the `runId` parameter is `null`. Your World generates and returns a new `runId`.
+
+**Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an existing token, return a `hook_conflict` event instead.
+
+**Automatic Hook Disposal:** When a workflow reaches a terminal state (`completed`, `failed`, or `cancelled`), automatically dispose of all associated hooks to release tokens for reuse.
+
+## Queue Interface
+
+The Queue interface handles asynchronous execution of workflows and steps:
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface Queue {
+  getDeploymentId(): Promise<string>;
+
+  queue(
+    queueName: ValidQueueName,
+    message: QueuePayload,
+    opts?: QueueOptions
+  ): Promise<{ messageId: MessageId }>;
+
+  createQueueHandler(
+    queueNamePrefix: QueuePrefix,
+    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<void | { timeoutSeconds: number }>
+  ): (req: Request) => Promise<Response>;
+}
+```
+
+### Queue Names
+
+Queue names follow a specific pattern:
+- `__wkf_workflow_<name>` — For workflow invocations
+- `__wkf_step_<name>` — For step invocations
+
+### Message Payloads
+
+Two types of messages flow through queues:
+
+**Workflow Invocations:**
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface WorkflowInvokePayload {
+  runId: string;
+  traceCarrier?: Record<string, string>;  // OpenTelemetry context
+  requestedAt?: Date;
+}
+```
+
+**Step Invocations:**
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface StepInvokePayload {
+  workflowName: string;
+  workflowRunId: string;
+  workflowStartedAt: number;
+  stepId: string;
+  traceCarrier?: Record<string, string>;
+  requestedAt?: Date;
+}
+```
+
+### Implementation Considerations
+
+- Messages must be delivered at-least-once
+- Support configurable retry policies
+- Track attempt counts for observability
+- Implement idempotency using the `idempotencyKey` option when provided
+
+## Streamer Interface
+
+The Streamer interface enables real-time data streaming:
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface Streamer {
+  writeToStream(
+    name: string,
+    runId: string | Promise<string>,
+    chunk: string | Uint8Array
+  ): Promise<void>;
+
+  closeStream(
+    name: string,
+    runId: string | Promise<string>
+  ): Promise<void>;
+
+  readFromStream(
+    name: string,
+    startIndex?: number
+  ): Promise<ReadableStream<Uint8Array>>;
+
+  listStreamsByRunId(runId: string): Promise<string[]>;
+}
+```
+
+Streams are identified by a combination of `runId` and `name`. Each workflow run can have multiple named streams.
+
+## Reference Implementations
+
+Study these implementations for guidance:
+
+- **[Local World](https://github.com/vercel/workflow/tree/main/packages/world-local)** — Filesystem-based, great for understanding the basics
+- **[Postgres World](https://github.com/vercel/workflow/tree/main/packages/world-postgres)** — Database-backed with pg-boss for queuing
+
+## Testing Your World
+
+Workflow DevKit includes an E2E test suite that validates World implementations. Once your World is published to npm:
+
+1. Add your world to [`worlds-manifest.json`](https://github.com/vercel/workflow/blob/main/worlds-manifest.json)
+2. Open a PR to the Workflow repository
+3. CI will automatically run the E2E test suite against your implementation
+
+Your world will then appear on the [Worlds Ecosystem](/worlds) page with its compatibility status and performance benchmarks.
+
+## Publishing Your World
+
+1. **Package your World** — Export a default World instance from your package
+2. **Publish to npm** — Publish your package to npm
+3. **Add to the manifest** — Submit a PR adding your world to [`worlds-manifest.json`](https://github.com/vercel/workflow/blob/main/worlds-manifest.json)
+4. **Document configuration** — Clearly document any required environment variables
+
+```json
+// worlds-manifest.json entry
+{
+  "package": "your-world-package",
+  "repository": "https://github.com/you/your-world",
+  "docs": "https://github.com/you/your-world#readme"
+}
+```

@@ -1,0 +1,40 @@
+{
+  "name": "@workflow/example-nest",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js ./src/workflows ./src/_workflows.ts --esm",
+    "setup:swcrc": "node ../../packages/nest/dist/cli.js init --force",
+    "predev": "pnpm generate:workflows && pnpm setup:swcrc",
+    "prebuild": "pnpm generate:workflows && pnpm setup:swcrc",
+    "dev": "nest start --watch",
+    "build": "nest build",
+    "start": "node dist/main.js"
+  },
+  "engines": {
+    "npm": ">=10.0.0",
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.17",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/platform-express": "^11.0.1",
+    "@workflow/nest": "workspace:*",
+    "@workflow/world-postgres": "workspace:*",
+    "ai": "catalog:",
+    "express": "^5.1.0",
+    "lodash.chunk": "^4.2.0",
+    "openai": "^6.1.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+    "@types/node": "^22.10.7",
+    "typescript": "catalog:",
+    "zod": "catalog:"
+  }
+}

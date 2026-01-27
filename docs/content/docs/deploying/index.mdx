@@ -1,79 +1,85 @@
 ---
 title: Deploying
-icon: FlaskConical
+icon: Rocket
 ---
 
+Workflows are designed to be highly portable. The same workflow code can run locally during development, on Vercel with zero configuration, or on any infrastructure using **Worlds** — pluggable adapters that handle storage, queuing, and communication.
+
+## Local Development
+
+During local development, workflows automatically use the **Local World** — no configuration required. The Local World stores workflow data in a `.workflow-data/` directory and processes steps synchronously, making it perfect for development and testing.
+
+```bash
+# Just run your dev server - workflows work out of the box
+npm run dev
+```
+
+You can inspect local workflow data using the CLI:
+
+```bash
+npx workflow inspect runs
+```
+
 <Callout>
-  This section is currently experimental and subject to change. Try it out and share your feedback on [GitHub](https://github.com/vercel/workflow/discussions).
+  Learn more about the [Local World](/worlds/local) configuration and internals.
 </Callout>
 
-Workflows can run on any infrastructure through **Worlds**. A World is an adapter responsible for handling workflow storage, queuing, authentication, and streaming through a given backend.
+## Deploying to Vercel
 
-## What are Worlds?
+The easiest way to deploy workflows to production is on Vercel. When you deploy to Vercel, workflows automatically use the **Vercel World** — again, with zero configuration.
 
-A **World** connects workflows to the infrastructure that powers them. Think of it as the "environment" where your workflows live and execute. The World interface abstracts away the differences between local development and production deployments, allowing the same workflow code to run seamlessly across different environments.
+The Vercel World provides:
 
-## Default Behavior
+- **Durable storage** - Workflow state persists across function invocations
+- **Managed queuing** - Steps are processed reliably with automatic retries
+- **Automatic scaling** - Workflows scale with your application
+- **Built-in observability** - View workflow runs in the Vercel dashboard
 
-Worlds are automatically configured depending on the scenario:
+Simply deploy your application:
 
-- **Local development** - Automatically uses the Local World
-- **Vercel deployments** - Automatically uses the Vercel World
+```bash
+vercel deploy
+```
 
-When using other worlds, you can explicitly set the configuration through environment variables. Reference the documentation for the appropriate world for configuration details.
+<Callout>
+  Learn more about the [Vercel World](/worlds/vercel) and its capabilities.
+</Callout>
 
-## Built-in Worlds
+## Self-Hosting & Other Providers
 
-Workflow DevKit ships with two world implementations:
+For self-hosting or deploying to other cloud providers, you can use community-maintained Worlds or build your own.
 
 <Cards>
-  <Card title="Local World" href="/docs/deploying/world/local-world">
-    Filesystem-based backend for local development, storing data in `.workflow-data/` directory.
+  <Card title="Explore Worlds" href="/worlds">
+    Browse official and community World implementations with compatibility status and performance benchmarks.
   </Card>
-  <Card title="Vercel World" href="/docs/deploying/world/vercel-world">
-    Production-ready backend for Vercel deployments, integrated with Vercel's infrastructure.
-    </Card>
+  <Card title="Build Your Own" href="/docs/deploying/building-a-world">
+    Learn how to implement a custom World for your infrastructure.
+  </Card>
 </Cards>
 
-## Building a World
+### Using a Third-Party World
 
-On top of the default Worlds provided by Workflow DevKit, you can also build new world implementations for custom infrastructure:
+To use a different World implementation, set the `WORKFLOW_TARGET_WORLD` environment variable:
 
-- Database backends (PostgreSQL, MySQL, MongoDB, etc.)
-- Cloud providers (AWS, GCP, Azure, etc.)
-- Custom queue systems
-- Third-party platforms
+```bash
+export WORKFLOW_TARGET_WORLD=@workflow-worlds/postgres
+# Plus any world-specific configuration
+export DATABASE_URL=postgres://...
+```
 
-To build a custom world, use a community-implemented `World`, or implement the `World` interface yourself. The following interfaces are required:
-
-- **Storage** - Persisting workflow runs, steps, hooks, and metadata
-- **Queue** - Enqueuing and processing workflow steps asynchronously
-- **AuthProvider** - Handling authentication for API access
-- **Streamer** - Managing readable and writable streams
-
-See the [World API Reference](/docs/deploying/world) for implementation details.
-
-### Using a third-party World
-
-For custom backends and third-party world implementations, refer to the specific world's documentation for configuration details. Each world may have its own set of required environment variables and configuration options.
+Each World may have its own configuration requirements — refer to the specific World's documentation for details.
 
 ## Observability
 
-The [Observability tools](/docs/observability) (CLI and Web UI) can connect to any world backend to inspect workflow data. By default, they connect to your local environment, but they can also be configured to inspect remote environments:
+The [Observability tools](/docs/observability) work with any World backend. By default they connect to your local environment, but can be configured to inspect remote deployments:
 
 ```bash
 # Inspect local workflows
 npx workflow inspect runs
 
-# Inspect remote workflows (custom worlds)
-npx workflow inspect runs --backend <your-world-name>
+# Inspect remote workflows
+npx workflow inspect runs --backend @workflow-worlds/postgres
 ```
 
 Learn more about [Observability](/docs/observability) tools.
-
-## Learn More
-
-- [Local World](/docs/deploying/world/local-world) - Local development backend
-- [Vercel World](/docs/deploying/world/vercel-world) - Production backend for Vercel
-- [World API Reference](/docs/deploying/world) - Building custom worlds
-- [Observability](/docs/observability) - Inspecting workflow data

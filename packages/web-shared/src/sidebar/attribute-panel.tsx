@@ -1,6 +1,6 @@
 'use client';
 
-import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
+import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import type { ReactNode } from 'react';

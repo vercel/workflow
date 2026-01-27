@@ -7,10 +7,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import {
   resumeHook,
+  unwrapServerActionResult,
   useWorkflowResourceData,
   wakeUpRun,
 } from '../api/workflow-api-client';
-import type { EnvMap } from '../api/workflow-server-actions';
+import { fetchHook, type EnvMap } from '../api/workflow-server-actions';
 import { useTraceViewer } from '../trace-viewer';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
@@ -34,6 +35,9 @@ export function EntityDetailPanel({
   const [stoppingSleep, setStoppingSleep] = useState(false);
   const [showResolveHookModal, setShowResolveHookModal] = useState(false);
   const [resolvingHook, setResolvingHook] = useState(false);
+  const [resolvedHookToken, setResolvedHookToken] = useState<
+    string | undefined
+  >(undefined);
 
   const data = selected?.span.attributes?.data as
     | Step
@@ -110,13 +114,6 @@ export function EntityDetailPanel({
     return true;
   }, [resource, spanEvents, spanEventsLength, run.status]);
 
-  // Get the hook token for resolving
-  const hookToken = useMemo(() => {
-    if (resource !== 'hook') return undefined;
-    const hook = data as Hook;
-    return hook?.token;
-  }, [resource, data]);
-
   // Fetch full resource data with events
   const {
     data: fetchedData,
@@ -128,6 +125,41 @@ export function EntityDetailPanel({
     resourceId ?? '',
     { runId }
   );
+
+  useEffect(() => {
+    if (resource !== 'hook' || !resourceId) {
+      setResolvedHookToken(undefined);
+      return;
+    }
+
+    let isMounted = true;
+
+    const fetchToken = async () => {
+      const { error, result } = await unwrapServerActionResult(
+        fetchHook(env, resourceId)
+      );
+      if (!isMounted) return;
+      if (error) {
+        console.error('Failed to fetch hook token:', error);
+        return;
+      }
+      setResolvedHookToken(result.token);
+    };
+
+    fetchToken();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [env, resource, resourceId]);
+
+  // Get the hook token for resolving (prefer fetched data when available)
+  const hookToken = useMemo(() => {
+    if (resource !== 'hook') return undefined;
+    if (resolvedHookToken) return resolvedHookToken;
+    const hook = (fetchedData ?? data) as Hook | undefined;
+    return hook?.token;
+  }, [resource, resolvedHookToken, fetchedData, data]);
 
   useEffect(() => {
     if (error && selected && resource) {
@@ -168,7 +200,14 @@ export function EntityDetailPanel({
 
   const handleResolveHook = useCallback(
     async (payload: unknown) => {
-      if (resolvingHook || !hookToken) return;
+      if (resolvingHook) return;
+      if (!hookToken) {
+        toast.error('Unable to resolve hook', {
+          description:
+            'Missing hook token. Try refreshing the run data and retry.',
+        });
+        return;
+      }
 
       try {
         setResolvingHook(true);
@@ -232,8 +271,7 @@ export function EntityDetailPanel({
             disabled={resolvingHook}
             className={clsx(
               'flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md w-full',
-              'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200',
-              'hover:bg-blue-200 dark:hover:bg-blue-900/50',
+              'bg-primary text-primary-foreground hover:bg-primary/90',
               'disabled:opacity-50 disabled:cursor-not-allowed',
               'transition-colors',
               resolvingHook ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'

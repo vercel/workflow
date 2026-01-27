@@ -1,10 +1,10 @@
 import { hydrateResourceIO } from '@workflow/core/observability';
-import { parseStepName, parseWorkflowName } from '@workflow/core/parse-name';
 import {
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
+import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type {
   Event,
   Hook,

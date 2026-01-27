@@ -15,7 +15,6 @@ import { z } from 'zod';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
-  dateToStringReplacer,
   deserializeError,
   makeRequest,
   serializeError,
@@ -124,10 +123,8 @@ export async function createWorkflowRun(
 ): Promise<WorkflowRun> {
   const run = await makeRequest({
     endpoint: '/v2/runs/create',
-    options: {
-      method: 'POST',
-      body: JSON.stringify(data, dateToStringReplacer),
-    },
+    options: { method: 'POST' },
+    data,
     config,
     schema: WorkflowRunWireSchema,
   });
@@ -176,10 +173,8 @@ export async function updateWorkflowRun(
     const serialized = serializeError(data);
     const run = await makeRequest({
       endpoint: `/v2/runs/${id}`,
-      options: {
-        method: 'PUT',
-        body: JSON.stringify(serialized, dateToStringReplacer),
-      },
+      options: { method: 'PUT' },
+      data: serialized,
       config,
       schema: WorkflowRunWireSchema,
     });

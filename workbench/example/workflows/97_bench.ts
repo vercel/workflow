@@ -33,7 +33,7 @@ export async function tenSequentialStepsWorkflow() {
 // Workflow with 10 parallel steps
 export async function tenParallelStepsWorkflow() {
   'use workflow';
-  const promises = [];
+  const promises: Promise<number>[] = [];
   for (let i = 0; i < 10; i++) {
     promises.push(doWork());
   }
