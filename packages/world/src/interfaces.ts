@@ -29,6 +29,24 @@ export interface Streamer {
     runId: string | Promise<string>,
     chunk: string | Uint8Array
   ): Promise<void>;
+
+  /**
+   * Write multiple chunks to a stream in a single operation.
+   * This is an optional optimization for world implementations that can
+   * batch multiple writes efficiently (e.g., single HTTP request for world-vercel).
+   *
+   * If not implemented, the caller should fall back to sequential writeToStream() calls.
+   *
+   * @param name - The stream name
+   * @param runId - The run ID (can be a promise)
+   * @param chunks - Array of chunks to write, in order
+   */
+  writeToStreamMulti?(
+    name: string,
+    runId: string | Promise<string>,
+    chunks: (string | Uint8Array)[]
+  ): Promise<void>;
+
   closeStream(name: string, runId: string | Promise<string>): Promise<void>;
   readFromStream(
     name: string,

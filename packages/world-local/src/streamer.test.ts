@@ -194,6 +194,99 @@ describe('streamer', () => {
       });
     });
 
+    describe('writeToStreamMulti', () => {
+      it('should write multiple chunks in a single call', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const streamName = 'multi-stream';
+
+        await streamer.writeToStreamMulti!(streamName, TEST_RUN_ID, [
+          'chunk1',
+          'chunk2',
+          'chunk3',
+        ]);
+
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const files = await fs.readdir(chunksDir);
+
+        expect(files).toHaveLength(3);
+        expect(files.every((f) => f.startsWith(`${streamName}-`))).toBe(true);
+      });
+
+      it('should preserve chunk ordering', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'ordered-multi-stream';
+
+        await streamer.writeToStreamMulti!(streamName, TEST_RUN_ID, [
+          'first',
+          'second',
+          'third',
+        ]);
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const readable = await streamer.readFromStream(streamName);
+        const reader = readable.getReader();
+        const decoder = new TextDecoder();
+        const chunks: string[] = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(decoder.decode(value));
+        }
+
+        expect(chunks).toEqual(['first', 'second', 'third']);
+      });
+
+      it('should handle empty chunks array', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const streamName = 'empty-multi-stream';
+
+        await streamer.writeToStreamMulti!(streamName, TEST_RUN_ID, []);
+
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const dirExists = await fs
+          .access(chunksDir)
+          .then(() => true)
+          .catch(() => false);
+
+        // Directory might not exist if no chunks were written
+        if (dirExists) {
+          const files = await fs.readdir(chunksDir);
+          const streamFiles = files.filter((f) =>
+            f.startsWith(`${streamName}-`)
+          );
+          expect(streamFiles).toHaveLength(0);
+        }
+      });
+
+      it('should handle mixed string and Uint8Array chunks', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'mixed-multi-stream';
+
+        await streamer.writeToStreamMulti!(streamName, TEST_RUN_ID, [
+          'string-chunk',
+          new Uint8Array([1, 2, 3, 4]),
+          Buffer.from('buffer-chunk'),
+        ]);
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const readable = await streamer.readFromStream(streamName);
+        const reader = readable.getReader();
+        const chunks: Uint8Array[] = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+
+        expect(chunks).toHaveLength(3);
+        expect(new TextDecoder().decode(chunks[0])).toBe('string-chunk');
+        expect(chunks[1]).toEqual(new Uint8Array([1, 2, 3, 4]));
+        expect(new TextDecoder().decode(chunks[2])).toBe('buffer-chunk');
+      });
+    });
+
     describe('closeStream', () => {
       it('should close an empty stream', async () => {
         const { testDir, streamer } = await setupStreamer();

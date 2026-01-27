@@ -87,6 +87,17 @@ export function createStreamer(basedir: string): Streamer {
     registeredStreams.add(cacheKey);
   }
 
+  // Helper to convert a chunk to a Buffer
+  function toBuffer(chunk: string | Uint8Array): Buffer {
+    if (typeof chunk === 'string') {
+      return Buffer.from(new TextEncoder().encode(chunk));
+    } else if (chunk instanceof Buffer) {
+      return chunk;
+    } else {
+      return Buffer.from(chunk);
+    }
+  }
+
   return {
     async writeToStream(
       name: string,
@@ -105,14 +116,7 @@ export function createStreamer(basedir: string): Streamer {
       await registerStreamForRun(runId, name);
 
       // Convert chunk to buffer for serialization
-      let chunkBuffer: Buffer;
-      if (typeof chunk === 'string') {
-        chunkBuffer = Buffer.from(new TextEncoder().encode(chunk));
-      } else if (chunk instanceof Buffer) {
-        chunkBuffer = chunk;
-      } else {
-        chunkBuffer = Buffer.from(chunk);
-      }
+      const chunkBuffer = toBuffer(chunk);
 
       const serialized = serializeChunk({
         chunk: chunkBuffer,
@@ -136,6 +140,55 @@ export function createStreamer(basedir: string): Streamer {
         chunkData,
         chunkId,
       });
+    },
+
+    async writeToStreamMulti(
+      name: string,
+      _runId: string | Promise<string>,
+      chunks: (string | Uint8Array)[]
+    ) {
+      if (chunks.length === 0) return;
+
+      // Generate all ULIDs synchronously BEFORE any await to preserve call order.
+      // This ensures that chunks maintain their order even when runId is a promise.
+      const chunkIds = chunks.map(() => `chnk_${monotonicUlid()}`);
+
+      // Await runId if it's a promise
+      const runId = await _runId;
+
+      // Register this stream for the run
+      await registerStreamForRun(runId, name);
+
+      // Write all chunks in parallel for efficiency
+      await Promise.all(
+        chunks.map(async (chunk, i) => {
+          const chunkId = chunkIds[i];
+          const chunkBuffer = toBuffer(chunk);
+
+          const serialized = serializeChunk({
+            chunk: chunkBuffer,
+            eof: false,
+          });
+
+          const chunkPath = path.join(
+            basedir,
+            'streams',
+            'chunks',
+            `${name}-${chunkId}.json`
+          );
+
+          await write(chunkPath, serialized);
+
+          // Emit real-time event with Uint8Array (create copy to prevent ArrayBuffer detachment)
+          const chunkData = Uint8Array.from(chunkBuffer);
+
+          streamEmitter.emit(`chunk:${name}` as const, {
+            streamName: name,
+            chunkData,
+            chunkId,
+          });
+        })
+      );
     },
 
     async closeStream(name: string, _runId: string | Promise<string>) {

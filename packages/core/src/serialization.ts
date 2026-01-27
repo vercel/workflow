@@ -272,6 +272,12 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   }
 }
 
+/**
+ * Default flush interval in milliseconds for buffered stream writes.
+ * Chunks are accumulated and flushed together to reduce network overhead.
+ */
+const STREAM_FLUSH_INTERVAL_MS = 10;
+
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   constructor(name: string, runId: string | Promise<string>) {
     // runId can be a promise, because we need a runID to write to a stream,
@@ -287,12 +293,67 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       throw new Error(`"name" is required, got "${name}"`);
     }
     const world = getWorld();
+
+    // Buffering state for batched writes
+    let buffer: Uint8Array[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    let flushPromise: Promise<void> | null = null;
+
+    const flush = async (): Promise<void> => {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+
+      if (buffer.length === 0) return;
+
+      const chunksToFlush = buffer;
+      buffer = [];
+
+      const _runId = await runId;
+
+      // Use writeToStreamMulti if available for batch writes
+      const writeMulti = (world as any).writeToStreamMulti;
+      if (typeof writeMulti === 'function' && chunksToFlush.length > 1) {
+        await writeMulti.call(world, name, _runId, chunksToFlush);
+      } else {
+        // Fall back to sequential writes
+        for (const chunk of chunksToFlush) {
+          await world.writeToStream(name, _runId, chunk);
+        }
+      }
+    };
+
+    const scheduleFlush = (): void => {
+      if (flushTimer) return; // Already scheduled
+
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flushPromise = flush();
+      }, STREAM_FLUSH_INTERVAL_MS);
+    };
+
     super({
       async write(chunk) {
-        const _runId = await runId;
-        await world.writeToStream(name, _runId, chunk);
+        // Wait for any in-progress flush to complete before adding to buffer
+        if (flushPromise) {
+          await flushPromise;
+          flushPromise = null;
+        }
+
+        buffer.push(chunk);
+        scheduleFlush();
       },
       async close() {
+        // Wait for any in-progress flush to complete
+        if (flushPromise) {
+          await flushPromise;
+          flushPromise = null;
+        }
+
+        // Flush any remaining buffered chunks
+        await flush();
+
         const _runId = await runId;
         await world.closeStream(name, _runId);
       },

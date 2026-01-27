@@ -14,6 +14,41 @@ function getStreamUrl(
   return new URL(`${httpConfig.baseUrl}/v2/stream/${encodeURIComponent(name)}`);
 }
 
+/**
+ * Encode multiple chunks into a length-prefixed binary format.
+ * Format: [4 bytes big-endian length][chunk bytes][4 bytes length][chunk bytes]...
+ *
+ * This preserves chunk boundaries so the server can store them as separate
+ * chunks, maintaining correct startIndex semantics for readers.
+ */
+function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
+  const encoder = new TextEncoder();
+
+  // Convert all chunks to Uint8Array and calculate total size
+  const binaryChunks: Uint8Array[] = [];
+  let totalSize = 0;
+
+  for (const chunk of chunks) {
+    const binary = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
+    binaryChunks.push(binary);
+    totalSize += 4 + binary.length; // 4 bytes for length prefix
+  }
+
+  // Allocate buffer and write length-prefixed chunks
+  const result = new Uint8Array(totalSize);
+  const view = new DataView(result.buffer);
+  let offset = 0;
+
+  for (const binary of binaryChunks) {
+    view.setUint32(offset, binary.length, false); // big-endian
+    offset += 4;
+    result.set(binary, offset);
+    offset += binary.length;
+  }
+
+  return result;
+}
+
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     async writeToStream(
@@ -28,6 +63,30 @@ export function createStreamer(config?: APIConfig): Streamer {
       await fetch(getStreamUrl(name, resolvedRunId, httpConfig), {
         method: 'PUT',
         body: chunk,
+        headers: httpConfig.headers,
+        duplex: 'half',
+      });
+    },
+
+    async writeToStreamMulti(
+      name: string,
+      runId: string | Promise<string>,
+      chunks: (string | Uint8Array)[]
+    ) {
+      if (chunks.length === 0) return;
+
+      // Await runId if it's a promise to ensure proper flushing
+      const resolvedRunId = await runId;
+
+      const httpConfig = await getHttpConfig(config);
+
+      // Signal to server that this is a multi-chunk batch
+      httpConfig.headers.set('X-Stream-Multi', 'true');
+
+      const body = encodeMultiChunks(chunks);
+      await fetch(getStreamUrl(name, resolvedRunId, httpConfig), {
+        method: 'PUT',
+        body,
         headers: httpConfig.headers,
         duplex: 'half',
       });
