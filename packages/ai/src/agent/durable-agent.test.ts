@@ -339,7 +339,8 @@ describe('DurableAgent', () => {
         toolName: 'WebSearch',
         output: {
           type: 'text',
-          value: 'Search results for: test query',
+          // Result is always JSON stringified for consistency with client-executed tools
+          value: JSON.stringify('Search results for: test query'),
         },
       });
     });
@@ -517,7 +518,8 @@ describe('DurableAgent', () => {
         toolName: 'WebSearch',
         output: {
           type: 'error-text',
-          value: 'Search failed: Rate limit exceeded',
+          // Result is always JSON stringified for consistency with client-executed tools
+          value: JSON.stringify('Search failed: Rate limit exceeded'),
         },
       });
     });

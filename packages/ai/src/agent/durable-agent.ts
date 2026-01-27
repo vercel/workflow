@@ -834,10 +834,9 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
                     type: streamResult.isError
                       ? ('error-text' as const)
                       : ('text' as const),
-                    value:
-                      typeof streamResult.result === 'string'
-                        ? streamResult.result
-                        : JSON.stringify(streamResult.result),
+                    // Always stringify to match client-executed tool behavior
+                    // This ensures consistency with writeToolOutputToUI which expects JSON
+                    value: JSON.stringify(streamResult.result) ?? '',
                   },
                 };
               }
