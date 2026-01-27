@@ -481,6 +481,53 @@ export class Vector {
 }
 ```
 
+### Class Expressions with Binding Names
+
+When a class expression is assigned to a variable, the plugin uses the variable name (binding name) for registration, not the internal class name. This is important because the internal class name is only accessible inside the class body.
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+var Bash = class _Bash {
+  constructor(command) {
+    this.command = command;
+  }
+
+  static [WORKFLOW_SERIALIZE](instance) {
+    return { command: instance.command };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data) {
+    return new Bash(data.command);
+  }
+};
+```
+
+Output:
+```javascript
+import { registerSerializationClass } from "workflow/internal/class-serialization";
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+/**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//input.js//Bash"}}}}*/;
+var Bash = class _Bash {
+    constructor(command) {
+        this.command = command;
+    }
+    static [WORKFLOW_SERIALIZE](instance) {
+        return { command: instance.command };
+    }
+    static [WORKFLOW_DESERIALIZE](data) {
+        return new Bash(data.command);
+    }
+};
+registerSerializationClass("class//input.js//Bash", Bash);
+```
+
+Note that:
+- The registration uses `Bash` (the variable name), not `_Bash` (the internal class name)
+- The `classId` in the manifest also uses `Bash`
+- This ensures the registration call references a symbol that's actually in scope at module level
+
 ### File Discovery for Custom Serialization
 
 Files containing classes with custom serialization are automatically discovered for transformation, even if they don't contain `"use step"` or `"use workflow"` directives. The discovery mechanism looks for:
