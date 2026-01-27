@@ -1,4 +1,5 @@
 import { registerSerializationClass } from "workflow/internal/class-serialization";
+/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//input.js//Point"}}}}*/;
 // Class with custom serialization methods using symbols
 export class Point {
     constructor(x, y){

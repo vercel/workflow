@@ -1,6 +1,6 @@
 import { registerStepFunction } from "workflow/internal/private";
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"TestClass.staticMethod":{"stepId":"step//input.js//TestClass.staticMethod"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"TestClass.staticMethod":{"stepId":"step//input.js//TestClass.staticMethod"}}},"classes":{"input.js":{"TestClass":{"classId":"class//input.js//TestClass"}}}}*/;
 export class TestClass {
     // Error: instance methods can't have directives
     async instanceMethod() {

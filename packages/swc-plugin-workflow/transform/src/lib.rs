@@ -230,6 +230,8 @@ pub struct StepTransform {
     // Track identifiers that are known to be WORKFLOW_SERIALIZE symbols
     // (local name -> "workflow-serialize" or "workflow-deserialize")
     serialization_symbol_identifiers: HashMap<String, String>,
+    // Track class names for the manifest (preserved copy before drain)
+    classes_for_manifest: HashSet<String>,
 }
 
 // Structure to track variable names and their access patterns
@@ -1094,6 +1096,7 @@ impl StepTransform {
             static_step_methods_to_strip: Vec::new(),
             classes_needing_serialization: HashSet::new(),
             serialization_symbol_identifiers: HashMap::new(),
+            classes_for_manifest: HashSet::new(),
         }
     }
 
@@ -3006,6 +3009,22 @@ impl StepTransform {
             metadata.insert("workflows", format!("{{{}}}", workflow_entries.join(",")));
         }
 
+        // Build classes metadata
+        if !self.classes_for_manifest.is_empty() {
+            let mut sorted_classes: Vec<_> = self.classes_for_manifest.iter().collect();
+            sorted_classes.sort();
+
+            let class_entries: Vec<String> = sorted_classes
+                .into_iter()
+                .map(|class_name| {
+                    let class_id = naming::format_name("class", &self.filename, class_name);
+                    format!("\"{}\":{{\"classId\":\"{}\"}}", class_name, class_id)
+                })
+                .collect();
+
+            metadata.insert("classes", format!("{{{}}}", class_entries.join(",")));
+        }
+
         // Build the final comment structure
         let relative_filename = self.filename.replace('\\', "/"); // Normalize path separators
         let mut parts = Vec::new();
@@ -3020,6 +3039,12 @@ impl StepTransform {
             parts.push(format!(
                 "\"steps\":{{\"{}\":{}}}",
                 relative_filename, metadata["steps"]
+            ));
+        }
+        if metadata.contains_key("classes") {
+            parts.push(format!(
+                "\"classes\":{{\"{}\":{}}}",
+                relative_filename, metadata["classes"]
             ));
         }
 
@@ -3233,6 +3258,9 @@ impl VisitMut for StepTransform {
     fn visit_mut_program(&mut self, program: &mut Program) {
         // First pass: collect step functions
         program.visit_mut_children_with(self);
+
+        // Preserve class names for manifest before they get drained during registration
+        self.classes_for_manifest = self.classes_needing_serialization.clone();
 
         // Add necessary imports and registrations
         match program {

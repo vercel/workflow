@@ -17,13 +17,18 @@ Directives must:
 
 ## JSON Manifest
 
-All modes emit a JSON manifest comment at the top of the file containing metadata about discovered workflows and steps:
+All modes emit a JSON manifest comment at the top of the file containing metadata about discovered workflows, steps, and classes with custom serialization:
 
 ```javascript
-/**__internal_workflows{"workflows":{"path/file.ts":{"myWorkflow":{"workflowId":"workflow//path/file.ts//myWorkflow"}}},"steps":{"path/file.ts":{"myStep":{"stepId":"step//path/file.ts//myStep"}}}}*/
+/**__internal_workflows{"workflows":{"path/file.ts":{"myWorkflow":{"workflowId":"workflow//path/file.ts//myWorkflow"}}},"steps":{"path/file.ts":{"myStep":{"stepId":"step//path/file.ts//myStep"}}},"classes":{"path/file.ts":{"Point":{"classId":"class//path/file.ts//Point"}}}}*/
 ```
 
-This manifest is used by bundlers and the runtime to discover and register workflows and steps.
+The manifest includes:
+- **`workflows`**: Map of workflow function names to their `workflowId`
+- **`steps`**: Map of step function names to their `stepId`
+- **`classes`**: Map of class names with custom serialization to their `classId`
+
+This manifest is used by bundlers and the runtime to discover and register workflows, steps, and serializable classes.
 
 ## ID Generation
 
@@ -340,6 +345,7 @@ export class Point {
 Output (Client Mode):
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
+/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//input.js//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
         this.x = x;
@@ -377,7 +383,7 @@ Output (Step Mode):
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//input.js//MyService"}}}}*/;
 export class MyService {
     static async process(data) {
         return data.value * 2;
@@ -390,7 +396,7 @@ registerSerializationClass("class//input.js//MyService", MyService);
 Output (Workflow Mode):
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//input.js//MyService"}}}}*/;
 export class MyService {
 }
 MyService.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//MyService.process");
@@ -448,6 +454,7 @@ export class Point {
 Output:
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
+/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//input.js//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
         this.x = x;

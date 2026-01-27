@@ -1,4 +1,5 @@
 import { registerSerializationClass } from "workflow/internal/class-serialization";
+/**__internal_workflows{"classes":{"input.js":{"Circle":{"classId":"class//input.js//Circle"},"Rectangle":{"classId":"class//input.js//Rectangle"},"Triangle":{"classId":"class//input.js//Triangle"}}}}*/;
 // Test custom serialization with locally defined symbols using Symbol.for()
 const WORKFLOW_SERIALIZE = Symbol.for('workflow-serialize');
 const WORKFLOW_DESERIALIZE = Symbol.for('workflow-deserialize');
