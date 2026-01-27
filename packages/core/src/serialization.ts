@@ -317,10 +317,6 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         typeof world.writeToStreamMulti === 'function' &&
         chunksToFlush.length > 1
       ) {
-        const totalBytes = chunksToFlush.reduce((sum, c) => sum + c.length, 0);
-        console.log(
-          `[streams] Flushing ${chunksToFlush.length} chunks (${totalBytes} bytes) to stream "${name}"`
-        );
         await world.writeToStreamMulti(name, _runId, chunksToFlush);
       } else {
         // Fall back to sequential writes
