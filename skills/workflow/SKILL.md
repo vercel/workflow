@@ -66,7 +66,7 @@ import { workflow } from "workflow/astro";
 // Or use modules: ["workflow/nitro"] for Nitro/Nuxt
 ```
 
-**Critical workflow rules:**
+## Critical workflow rules
 
 1. Always set `globalThis.fetch = fetch` when using AI SDK or HTTP libraries
 2. Use `sleep()` instead of setTimeout/setInterval
@@ -74,4 +74,10 @@ import { workflow } from "workflow/astro";
 4. Use `FatalError` for permanent failures, `RetryableError` for retries
 5. Use `use step` with AI SDK methods to avoid issues with OIDC
 
-For common errors and troubleshooting, see [Common Errors Reference](references/common-errors.md).
+## Ecosystem
+
+Workflow tooling is optimized to be used with the AI SDK, Vercel's AI Gateway, and Vercel OIDC
+
+## Errors and Troubleshooting
+
+Common errors and troubleshooting are documented here: [Common Errors Reference](references/common-errors.md).
