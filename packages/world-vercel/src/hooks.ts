@@ -8,11 +8,7 @@ import type {
 import { HookSchema, PaginatedResponseSchema } from '@workflow/world';
 import z from 'zod';
 import type { APIConfig } from './utils.js';
-import {
-  DEFAULT_RESOLVE_DATA_OPTION,
-  dateToStringReplacer,
-  makeRequest,
-} from './utils.js';
+import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
 
 // Helper to filter hook data based on resolveData setting
 function filterHookData(hook: any, resolveData: 'none' | 'all'): Hook {
@@ -94,16 +90,8 @@ export async function createHook(
 ): Promise<Hook> {
   return makeRequest({
     endpoint: `/v2/hooks/create`,
-    options: {
-      method: 'POST',
-      body: JSON.stringify(
-        {
-          runId,
-          ...data,
-        },
-        dateToStringReplacer
-      ),
-    },
+    options: { method: 'POST' },
+    data: { runId, ...data },
     config,
     schema: HookSchema,
   });
