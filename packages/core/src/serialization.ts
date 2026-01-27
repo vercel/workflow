@@ -779,7 +779,9 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     RegExp: (value) => new global.RegExp(value.source, value.flags),
     Class: (value) => {
       const classId = value.classId;
-      const cls = getSerializationClass(classId);
+      // Pass the global object to support VM contexts where classes are registered
+      // on the VM's global rather than the host's globalThis
+      const cls = getSerializationClass(classId, global);
       if (!cls) {
         throw new Error(
           `Class "${classId}" not found. Make sure the class is registered with registerSerializationClass.`

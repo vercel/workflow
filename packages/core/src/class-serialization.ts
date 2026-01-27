@@ -51,25 +51,15 @@ export function registerSerializationClass(classId: string, cls: Function) {
  * Find a registered class constructor by ID (used during deserialization)
  *
  * @param classId - The class ID to look up
- * @param global - The global object to check first. Defaults to globalThis.
- *                 If the class is not found and `global` differs from `globalThis`,
- *                 it will also check `globalThis` as a fallback.
+ * @param global - The global object to check. This ensures workflow code running
+ *                 in a VM only accesses classes registered on the VM's global,
+ *                 matching production serverless behavior where workflow code
+ *                 runs in isolation.
  */
 export function getSerializationClass(
   classId: string,
-  global: Record<string, any> = globalThis
+  global: Record<string, any>
   // biome-ignore lint/complexity/noBannedTypes: We need to use Function to represent class constructors
 ): Function | undefined {
-  // Check the provided global first
-  const cls = getRegistry(global).get(classId);
-  if (cls) return cls;
-
-  // Fallback: check globalThis if it differs from the provided global
-  // This handles the case where classes are registered in the host context
-  // but deserialization happens in a VM context
-  if (global !== globalThis) {
-    return getRegistry(globalThis).get(classId);
-  }
-
-  return undefined;
+  return getRegistry(global).get(classId);
 }
