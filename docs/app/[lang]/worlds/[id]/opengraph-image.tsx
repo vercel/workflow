@@ -1,7 +1,7 @@
 import { createOgImage } from '@/lib/og';
 import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
-export const size = { width: 1200, height: 630 };
+export const size = { width: 1200, height: 628 };
 export const contentType = 'image/png';
 
 export function generateStaticParams() {
