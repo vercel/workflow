@@ -523,6 +523,20 @@ const sortByAttributeOrder = (a: string, b: string): number => {
   return aIndex - bIndex;
 };
 
+/**
+ * Display names for attributes that should render differently from their key.
+ */
+const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
+  workflowCoreVersion: '@workflow/core version',
+};
+
+/**
+ * Get the display name for an attribute key.
+ */
+const getAttributeDisplayName = (attribute: string): string => {
+  return attributeDisplayNames[attribute as AttributeKey] ?? attribute;
+};
+
 export const localMillisecondTime = (value: unknown): string => {
   let date: Date;
   if (value instanceof Date) {
@@ -885,7 +899,7 @@ export const AttributePanel = ({
                   className="text-[11px] font-medium"
                   style={{ color: 'var(--ds-gray-700)' }}
                 >
-                  {attribute}
+                  {getAttributeDisplayName(attribute)}
                 </span>
                 <span
                   className="text-[11px] font-mono"
