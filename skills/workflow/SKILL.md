@@ -101,7 +101,7 @@ export async function dataProcessingWorkflow(userId: string) {
 
 ## Workflow Sandbox Limitations
 
-When you logic directly in a workflow function (not in a step), these restrictions apply:
+When you need logic directly in a workflow function (not in a step), these restrictions apply:
 
 | Limitation | Workaround |
 |------------|------------|
@@ -138,6 +138,44 @@ if (res.status === 429) {
 }
 ```
 
-## Errors and Troubleshooting
+## Serialization
 
-Common errors and troubleshooting are documented here: [Common Errors Reference](references/common-errors.md).
+All data passed to/from workflows and steps must be serializable.
+
+**Supported types:** string, number, boolean, null, undefined, bigint, plain objects, arrays, Date, RegExp, URL, URLSearchParams, Map, Set, Headers, ArrayBuffer, typed arrays, Request, Response, ReadableStream, WritableStream.
+
+**Not supported:** Functions, class instances, Symbols, WeakMap/WeakSet. Pass data, not callbacks.
+
+## Streaming
+
+Use `getWritable()` in step functions to stream data:
+
+```typescript
+async function streamData() {
+  "use step";  // Required - streaming only works in steps
+  const writer = getWritable();
+  await writer.write(data);
+  writer.releaseLock();  // Always release the lock
+}
+
+// Close when done
+await getWritable().close();
+```
+
+## Debugging
+
+```bash
+# Check workflow endpoints are reachable
+npx workflow health
+npx workflow health --port 3001  # Non-default port
+
+# Visual dashboard for runs
+npx workflow web
+npx workflow web --app-url http://localhost:3001
+
+# CLI inspection (for agents)
+npx workflow inspect runs
+npx workflow inspect run <run_id>
+```
+
+**Tip:** Only import workflow APIs you actually use. Unused imports can cause 500 errors.
