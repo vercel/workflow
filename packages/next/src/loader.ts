@@ -2,9 +2,27 @@ import { relative } from 'node:path';
 import { transform } from '@swc/core';
 
 type DecoratorOptions = import('@workflow/builders').DecoratorOptions;
+type WorkflowPatternMatch = import('@workflow/builders').WorkflowPatternMatch;
 
 // Cache decorator options per working directory to avoid reading tsconfig for every file
 const decoratorOptionsCache = new Map<string, Promise<DecoratorOptions>>();
+
+// Cache for shared utilities from @workflow/builders (ESM module loaded dynamically in CommonJS context)
+let cachedBuildersModule: typeof import('@workflow/builders') | null = null;
+
+async function getBuildersModule(): Promise<
+  typeof import('@workflow/builders')
+> {
+  if (cachedBuildersModule) {
+    return cachedBuildersModule;
+  }
+  // Dynamic import to handle ESM module from CommonJS context
+  // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
+  cachedBuildersModule = (await eval(
+    'import("@workflow/builders")'
+  )) as typeof import('@workflow/builders');
+  return cachedBuildersModule;
+}
 
 async function getDecoratorOptions(
   workingDir: string
@@ -15,12 +33,7 @@ async function getDecoratorOptions(
   }
 
   const promise = (async (): Promise<DecoratorOptions> => {
-    // Dynamic import to handle ESM module from CommonJS context
-    // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
-    const { getDecoratorOptionsForDirectory } = (await eval(
-      'import("@workflow/builders")'
-    )) as typeof import('@workflow/builders');
-
+    const { getDecoratorOptionsForDirectory } = await getBuildersModule();
     return getDecoratorOptionsForDirectory(workingDir);
   })();
 
@@ -28,21 +41,28 @@ async function getDecoratorOptions(
   return promise;
 }
 
-// Pattern to detect generated workflow route files that should be excluded from transformation
-const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
+async function detectPatterns(source: string): Promise<WorkflowPatternMatch> {
+  const { detectWorkflowPatterns } = await getBuildersModule();
+  return detectWorkflowPatterns(source);
+}
 
-// Pattern to detect @workflow SDK packages that should be excluded from transformation
-// These packages are already built and don't need client-side transformation
-// Matches both: node_modules/@workflow/* and monorepo packages/*/dist paths
-const workflowSdkPathPattern =
-  /[/\\](?:@workflow[/\\]|packages[/\\](?:builders|core|rollup|vite|next|nitro|serde|workflow|swc-plugin-workflow)[/\\])/;
+async function checkGeneratedFile(filePath: string): Promise<boolean> {
+  const { isGeneratedWorkflowFile } = await getBuildersModule();
+  return isGeneratedWorkflowFile(filePath);
+}
 
-// Patterns for detecting custom class serialization:
-// - Import from '@workflow/serde'
-// - Direct usage of Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
-const workflowSerdeSymbolPattern =
-  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
+async function checkSdkFile(filePath: string): Promise<boolean> {
+  const { isWorkflowSdkFile } = await getBuildersModule();
+  return isWorkflowSdkFile(filePath);
+}
+
+async function checkShouldTransform(
+  filePath: string,
+  patterns: WorkflowPatternMatch
+): Promise<boolean> {
+  const { shouldTransformFile } = await getBuildersModule();
+  return shouldTransformFile(filePath, patterns);
+}
 
 // This loader applies the "use workflow"/"use step"
 // client transformation
@@ -57,26 +77,22 @@ export default async function workflowLoader(
   const normalizedSource = source.toString();
 
   // Skip generated workflow route files to avoid re-processing them
-  if (generatedWorkflowPathPattern.test(filename)) {
+  if (await checkGeneratedFile(filename)) {
     return normalizedSource;
   }
 
-  // Check if file needs transformation:
-  // - Contains 'use step' or 'use workflow' directives
-  // - Contains custom serialization patterns (@workflow/serde import or Symbol.for usage)
-  const hasDirective = /(use step|use workflow)/.test(normalizedSource);
-  const hasSerde =
-    workflowSerdeImportPattern.test(normalizedSource) ||
-    workflowSerdeSymbolPattern.test(normalizedSource);
+  // Detect workflow patterns in the source code
+  const patterns = await detectPatterns(normalizedSource);
 
   // For @workflow SDK packages, only transform files with actual directives,
   // not files that just match serde patterns (which are internal SDK implementation files)
-  const isWorkflowSdkFile = workflowSdkPathPattern.test(filename);
-  if (isWorkflowSdkFile && !hasDirective) {
+  const isSdkFile = await checkSdkFile(filename);
+  if (isSdkFile && !patterns.hasDirective) {
     return normalizedSource;
   }
 
-  if (!hasDirective && !hasSerde) {
+  // Check if file needs transformation based on patterns and path
+  if (!(await checkShouldTransform(filename, patterns))) {
     return normalizedSource;
   }
 

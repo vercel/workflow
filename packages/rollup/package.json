@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@swc/core": "catalog:",
+    "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "exsolve": "1.0.7"
   },

@@ -1,4 +1,8 @@
-import type { BaseBuilder } from '@workflow/builders';
+import {
+  type BaseBuilder,
+  detectWorkflowPatterns,
+  isGeneratedWorkflowFile,
+} from '@workflow/builders';
 import type { HotUpdateOptions, Plugin } from 'vite';
 
 interface WorkflowHotUpdatePluginOptions {
@@ -50,9 +54,7 @@ export function workflowHotUpdatePlugin(
       }
 
       // Skip generated workflow route files to avoid infinite rebuild loops
-      const generatedWorkflowPathPattern =
-        /[/\\]\.well-known[/\\]workflow[/\\]/;
-      if (generatedWorkflowPathPattern.test(file)) {
+      if (isGeneratedWorkflowFile(file)) {
         return;
       }
 
@@ -67,20 +69,10 @@ export function workflowHotUpdatePlugin(
         return;
       }
 
-      const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
-      const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
-      // Patterns for custom class serialization
-      const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
-      const workflowSerdeSymbolPattern =
-        /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
+      // Detect workflow patterns using shared utilities
+      const patterns = detectWorkflowPatterns(content);
 
-      const hasDirective =
-        useWorkflowPattern.test(content) || useStepPattern.test(content);
-      const hasSerde =
-        workflowSerdeImportPattern.test(content) ||
-        workflowSerdeSymbolPattern.test(content);
-
-      if (!hasDirective && !hasSerde) {
+      if (!patterns.hasDirective && !patterns.hasSerde) {
         return;
       }
 

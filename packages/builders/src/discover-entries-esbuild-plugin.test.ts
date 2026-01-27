@@ -4,7 +4,7 @@ import {
   useWorkflowPattern,
   workflowSerdeImportPattern,
   workflowSerdeSymbolPattern,
-} from './discover-entries-esbuild-plugin.js';
+} from './transform-utils.js';
 
 describe('discover-entries-esbuild-plugin patterns', () => {
   describe('useWorkflowPattern', () => {
