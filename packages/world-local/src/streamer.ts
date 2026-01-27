@@ -159,36 +159,45 @@ export function createStreamer(basedir: string): Streamer {
       // Register this stream for the run
       await registerStreamForRun(runId, name);
 
-      // Write all chunks in parallel for efficiency
-      await Promise.all(
-        chunks.map(async (chunk, i) => {
-          const chunkId = chunkIds[i];
-          const chunkBuffer = toBuffer(chunk);
+      // Prepare chunk data for parallel writes
+      const chunkBuffers = chunks.map((chunk) => toBuffer(chunk));
 
-          const serialized = serializeChunk({
-            chunk: chunkBuffer,
-            eof: false,
-          });
+      // Write all chunks in parallel for efficiency, but track individual completion
+      const writePromises = chunkBuffers.map(async (chunkBuffer, i) => {
+        const chunkId = chunkIds[i];
 
-          const chunkPath = path.join(
-            basedir,
-            'streams',
-            'chunks',
-            `${name}-${chunkId}.json`
-          );
+        const serialized = serializeChunk({
+          chunk: chunkBuffer,
+          eof: false,
+        });
 
-          await write(chunkPath, serialized);
+        const chunkPath = path.join(
+          basedir,
+          'streams',
+          'chunks',
+          `${name}-${chunkId}.json`
+        );
 
-          // Emit real-time event with Uint8Array (create copy to prevent ArrayBuffer detachment)
-          const chunkData = Uint8Array.from(chunkBuffer);
+        await write(chunkPath, serialized);
 
-          streamEmitter.emit(`chunk:${name}` as const, {
-            streamName: name,
-            chunkData,
-            chunkId,
-          });
-        })
-      );
+        // Return data needed for event emission
+        return {
+          chunkId,
+          chunkData: Uint8Array.from(chunkBuffer),
+        };
+      });
+
+      // Emit events in order, waiting for each chunk's write to complete
+      // This ensures events are emitted in order while writes happen in parallel
+      for (const writePromise of writePromises) {
+        const { chunkId, chunkData } = await writePromise;
+
+        streamEmitter.emit(`chunk:${name}` as const, {
+          streamName: name,
+          chunkData,
+          chunkId,
+        });
+      }
     },
 
     async closeStream(name: string, _runId: string | Promise<string>) {
