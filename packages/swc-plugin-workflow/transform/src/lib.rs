@@ -355,6 +355,10 @@ pub struct StepTransform {
     module_imports: HashSet<String>,
     // Track the current class name for static method transformations
     current_class_name: Option<String>,
+    // Track the binding name when a class expression is assigned to a variable
+    // e.g., for `var Bash = class _Bash {}`, this would be "Bash"
+    // This is needed because the internal class name (_Bash) is not in scope at module level
+    current_class_binding_name: Option<String>,
     // Track static method steps that need registration after the class declaration
     // (class_name, method_name, step_id, span)
     static_method_step_registrations: Vec<(String, String, String, swc_core::common::Span)>,
@@ -1231,6 +1235,7 @@ impl StepTransform {
             current_var_context: None,
             module_imports: HashSet::new(),
             current_class_name: None,
+            current_class_binding_name: None,
             static_method_step_registrations: Vec::new(),
             static_method_workflow_registrations: Vec::new(),
             static_step_methods_to_strip: Vec::new(),
@@ -6266,6 +6271,15 @@ impl VisitMut for StepTransform {
                                 }
                             }
                         }
+                        Expr::Class(_) => {
+                            // Track the binding name for class expressions like:
+                            // var Bash = class _Bash {}
+                            // The binding name (Bash) is what's accessible at module scope,
+                            // not the internal class name (_Bash)
+                            // We set the binding name here; it will be used when visit_mut_class_expr
+                            // is called during visit_mut_children_with below
+                            self.current_class_binding_name = Some(name.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -6365,18 +6379,27 @@ impl VisitMut for StepTransform {
 
     // Handle class expressions to track class name for static methods
     fn visit_mut_class_expr(&mut self, class_expr: &mut ClassExpr) {
-        let class_name = class_expr
+        // Get the internal class name (used for current_class_name tracking)
+        let internal_class_name = class_expr
             .ident
             .as_ref()
             .map(|i| i.sym.to_string())
             .unwrap_or_else(|| "AnonymousClass".to_string());
+
+        // For serialization registration, use the binding name if available
+        // e.g., for `var Bash = class _Bash {}`, use "Bash" not "_Bash"
+        // because "_Bash" is not accessible at module scope
+        let registration_name = self
+            .current_class_binding_name
+            .take()
+            .unwrap_or_else(|| internal_class_name.clone());
+
         let old_class_name = self.current_class_name.take();
-        self.current_class_name = Some(class_name.clone());
+        self.current_class_name = Some(internal_class_name.clone());
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
         if self.has_custom_serialization_methods(&class_expr.class) {
-            self.classes_needing_serialization
-                .insert(class_name.clone());
+            self.classes_needing_serialization.insert(registration_name);
         }
 
         // Visit the class body (this populates static_step_methods_to_strip)
@@ -6387,7 +6410,7 @@ impl VisitMut for StepTransform {
             let methods_to_strip: Vec<_> = self
                 .static_step_methods_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &class_name)
+                .filter(|(cn, _, _)| cn == &internal_class_name)
                 .map(|(_, mn, _)| mn.clone())
                 .collect();
 
