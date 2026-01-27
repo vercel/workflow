@@ -138,6 +138,36 @@ fn detect_similar_strings(a: &str, b: &str) -> bool {
     differences + (a_chars.len() - i) + (b_chars.len() - j) == 1
 }
 
+/// Check if an object literal has the expected keys for the `using` transformation env object.
+/// The env object should have: { stack: [], error: void 0, hasError: false }
+fn is_using_env_object(obj: &ObjectLit) -> bool {
+    // We expect exactly 3 properties: stack, error, hasError
+    if obj.props.len() != 3 {
+        return false;
+    }
+
+    let mut has_stack = false;
+    let mut has_error = false;
+    let mut has_has_error = false;
+
+    for prop in &obj.props {
+        if let PropOrSpread::Prop(prop) = prop {
+            if let Prop::KeyValue(kv) = &**prop {
+                if let PropName::Ident(ident) = &kv.key {
+                    match ident.sym.as_ref() {
+                        "stack" => has_stack = true,
+                        "error" => has_error = true,
+                        "hasError" => has_has_error = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    has_stack && has_error && has_has_error
+}
+
 /// Check if a list of statements represents the TypeScript `using` transformation pattern.
 /// When TypeScript transforms `using` declarations, it creates:
 /// ```js
@@ -145,19 +175,27 @@ fn detect_similar_strings(a: &str, b: &str) -> bool {
 /// try { ... } catch (e) { ... } finally { ... }
 /// ```
 /// This function returns the try block's body if the pattern matches.
+///
+/// The pattern matching is strict to avoid false positives:
+/// - First statement must be a const declaration with an object containing stack/error/hasError keys
+/// - Second statement must be a try-catch-finally (all three parts required)
 fn get_try_block_from_using_pattern(stmts: &[Stmt]) -> Option<&BlockStmt> {
     // Need at least 2 statements: env declaration and try statement
     if stmts.len() < 2 {
         return None;
     }
 
-    // First statement should be a variable declaration (const env = ...)
+    // First statement should be a variable declaration (const env = { stack, error, hasError })
     let first_is_env_decl = match &stmts[0] {
         Stmt::Decl(Decl::Var(var_decl)) => {
-            // Check if it's a single declarator with an object initializer
+            // Check if it's a single declarator with the expected env object
             var_decl.decls.len() == 1 && {
                 if let Some(init) = &var_decl.decls[0].init {
-                    matches!(&**init, Expr::Object(_))
+                    if let Expr::Object(obj) = &**init {
+                        is_using_env_object(obj)
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
@@ -170,11 +208,11 @@ fn get_try_block_from_using_pattern(stmts: &[Stmt]) -> Option<&BlockStmt> {
         return None;
     }
 
-    // Second statement should be a try statement with a finally clause
+    // Second statement should be a try statement with BOTH catch and finally clauses
     match &stmts[1] {
         Stmt::Try(try_stmt) => {
-            // Must have a finally block (characteristic of `using` pattern)
-            if try_stmt.finalizer.is_some() {
+            // Must have both catch and finally blocks (characteristic of `using` pattern)
+            if try_stmt.handler.is_some() && try_stmt.finalizer.is_some() {
                 Some(&try_stmt.block)
             } else {
                 None
@@ -182,6 +220,12 @@ fn get_try_block_from_using_pattern(stmts: &[Stmt]) -> Option<&BlockStmt> {
         }
         _ => None,
     }
+}
+
+/// Check if statements match the `using` pattern (for use in mutable contexts).
+/// This is the same logic as get_try_block_from_using_pattern but returns a bool.
+fn is_using_pattern(stmts: &[Stmt]) -> bool {
+    get_try_block_from_using_pattern(stmts).is_some()
 }
 
 /// Helper to get a directive from the first statement of a block.
@@ -196,8 +240,28 @@ fn get_directive_from_block(block: &BlockStmt, directive: &str) -> bool {
     false
 }
 
+/// Helper to get the first string literal from a block (for misspelling detection).
+fn get_first_string_literal_from_block(
+    block: &BlockStmt,
+) -> Option<(&Str, swc_core::common::Span)> {
+    if let Some(first_stmt) = block.stmts.first() {
+        if let Stmt::Expr(ExprStmt { expr, span, .. }) = first_stmt {
+            if let Expr::Lit(Lit::Str(s)) = &**expr {
+                return Some((s, *span));
+            }
+        }
+    }
+    None
+}
+
 /// Helper to remove a directive from the first statement of a try block in a `using` pattern.
+/// Only removes if the pattern is verified first.
 fn remove_directive_from_using_pattern(stmts: &mut [Stmt], directive: &str) {
+    // First verify this is actually the using pattern
+    if !is_using_pattern(stmts) {
+        return;
+    }
+
     if stmts.len() >= 2 {
         if let Stmt::Try(try_stmt) = &mut stmts[1] {
             let block = &mut try_stmt.block;
@@ -1846,6 +1910,17 @@ impl StepTransform {
                 if get_directive_from_block(try_block, "use step") {
                     return true;
                 }
+                // Also check for misspellings inside the using pattern's try block
+                if let Some((str_lit, span)) = get_first_string_literal_from_block(try_block) {
+                    let value = str_lit.value.to_string_lossy().to_string();
+                    if detect_similar_strings(&value, "use step") {
+                        emit_error(WorkflowErrorKind::MisspelledDirective {
+                            span,
+                            directive: value,
+                            expected: "use step",
+                        });
+                    }
+                }
             }
 
             false
@@ -1898,6 +1973,17 @@ impl StepTransform {
             if let Some(try_block) = get_try_block_from_using_pattern(&body.stmts) {
                 if get_directive_from_block(try_block, "use workflow") {
                     return true;
+                }
+                // Also check for misspellings inside the using pattern's try block
+                if let Some((str_lit, span)) = get_first_string_literal_from_block(try_block) {
+                    let value = str_lit.value.to_string_lossy().to_string();
+                    if detect_similar_strings(&value, "use workflow") {
+                        emit_error(WorkflowErrorKind::MisspelledDirective {
+                            span,
+                            directive: value,
+                            expected: "use workflow",
+                        });
+                    }
                 }
             }
 
@@ -2089,6 +2175,17 @@ impl StepTransform {
                 if get_directive_from_block(try_block, "use step") {
                     return true;
                 }
+                // Also check for misspellings inside the using pattern's try block
+                if let Some((str_lit, span)) = get_first_string_literal_from_block(try_block) {
+                    let value = str_lit.value.to_string_lossy().to_string();
+                    if detect_similar_strings(&value, "use step") {
+                        emit_error(WorkflowErrorKind::MisspelledDirective {
+                            span,
+                            directive: value,
+                            expected: "use step",
+                        });
+                    }
+                }
             }
         }
         false
@@ -2109,6 +2206,17 @@ impl StepTransform {
             if let Some(try_block) = get_try_block_from_using_pattern(&body.stmts) {
                 if get_directive_from_block(try_block, "use workflow") {
                     return true;
+                }
+                // Also check for misspellings inside the using pattern's try block
+                if let Some((str_lit, span)) = get_first_string_literal_from_block(try_block) {
+                    let value = str_lit.value.to_string_lossy().to_string();
+                    if detect_similar_strings(&value, "use workflow") {
+                        emit_error(WorkflowErrorKind::MisspelledDirective {
+                            span,
+                            directive: value,
+                            expected: "use workflow",
+                        });
+                    }
                 }
             }
         }
