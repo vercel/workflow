@@ -20,8 +20,10 @@ function getStreamUrl(
  *
  * This preserves chunk boundaries so the server can store them as separate
  * chunks, maintaining correct startIndex semantics for readers.
+ *
+ * @internal Exported for testing purposes
  */
-function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
+export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
   const encoder = new TextEncoder();
 
   // Convert all chunks to Uint8Array and calculate total size

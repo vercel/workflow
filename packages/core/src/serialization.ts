@@ -359,6 +359,15 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         const _runId = await runId;
         await world.closeStream(name, _runId);
       },
+      abort() {
+        // Clean up timer to prevent leaks
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        // Discard buffered chunks - they won't be written
+        buffer = [];
+      },
     });
   }
 }
