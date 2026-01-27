@@ -3,21 +3,39 @@ import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
 import type {} from 'nitro/vite';
-import type { Plugin, Plugin as VitePlugin } from 'vite';
+import { join } from 'pathe';
+import type { Plugin } from 'vite';
 import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
+  let workflowBuildDir: string;
   const enqueue = createBuildQueue();
 
+  // Create a lazy transform plugin that excludes the workflow build directory
+  // The exclusion path is set during nitro setup, so we need to defer plugin creation
+  const lazyTransformPlugin: Plugin = {
+    name: 'workflow:transform',
+    transform(code, id) {
+      // Delegate to the actual transform plugin with exclusion
+      // workflowBuildDir is set during nitro setup before transforms run
+      const plugin = workflowTransformPlugin({
+        exclude: workflowBuildDir ? [workflowBuildDir] : [],
+      });
+      return (plugin.transform as Function)?.call(this, code, id);
+    },
+  };
+
   return [
-    workflowTransformPlugin() as VitePlugin,
+    lazyTransformPlugin,
     {
       name: 'workflow:nitro',
       nitro: {
         setup: (nitro: Nitro) => {
+          // Capture the workflow build directory for exclusion
+          workflowBuildDir = join(nitro.options.buildDir, 'workflow');
           nitro.options.workflow = {
             ...nitro.options.workflow,
             ...options,
