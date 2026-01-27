@@ -6,7 +6,7 @@ import {
   workflowSerdeSymbolPattern,
 } from './transform-utils.js';
 
-describe('discover-entries-esbuild-plugin patterns', () => {
+describe('transform-utils patterns', () => {
   describe('useWorkflowPattern', () => {
     it('should match "use workflow" with single quotes', () => {
       expect(useWorkflowPattern.test(`'use workflow';`)).toBe(true);
