@@ -30,11 +30,6 @@ export function workflowTransformPlugin(): Plugin {
         return null;
       }
 
-      // Skip @workflow SDK packages - they're already built and don't need transformation
-      if (workflowSdkPathPattern.test(id)) {
-        return null;
-      }
-
       // Check if file needs transformation:
       // - Contains 'use step' or 'use workflow' directives
       // - Contains custom serialization patterns (@workflow/serde import or Symbol.for usage)
@@ -42,6 +37,13 @@ export function workflowTransformPlugin(): Plugin {
       const hasSerde =
         workflowSerdeImportPattern.test(code) ||
         workflowSerdeSymbolPattern.test(code);
+
+      // For @workflow SDK packages, only transform files with actual directives,
+      // not files that just match serde patterns (which are internal SDK implementation files)
+      const isWorkflowSdkFile = workflowSdkPathPattern.test(id);
+      if (isWorkflowSdkFile && !hasDirective) {
+        return null;
+      }
 
       if (!hasDirective && !hasSerde) {
         return null;
