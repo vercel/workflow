@@ -138,6 +138,82 @@ fn detect_similar_strings(a: &str, b: &str) -> bool {
     differences + (a_chars.len() - i) + (b_chars.len() - j) == 1
 }
 
+/// Check if a list of statements represents the TypeScript `using` transformation pattern.
+/// When TypeScript transforms `using` declarations, it creates:
+/// ```js
+/// const env = { stack: [], error: void 0, hasError: false };
+/// try { ... } catch (e) { ... } finally { ... }
+/// ```
+/// This function returns the try block's body if the pattern matches.
+fn get_try_block_from_using_pattern(stmts: &[Stmt]) -> Option<&BlockStmt> {
+    // Need at least 2 statements: env declaration and try statement
+    if stmts.len() < 2 {
+        return None;
+    }
+
+    // First statement should be a variable declaration (const env = ...)
+    let first_is_env_decl = match &stmts[0] {
+        Stmt::Decl(Decl::Var(var_decl)) => {
+            // Check if it's a single declarator with an object initializer
+            var_decl.decls.len() == 1 && {
+                if let Some(init) = &var_decl.decls[0].init {
+                    matches!(&**init, Expr::Object(_))
+                } else {
+                    false
+                }
+            }
+        }
+        _ => false,
+    };
+
+    if !first_is_env_decl {
+        return None;
+    }
+
+    // Second statement should be a try statement with a finally clause
+    match &stmts[1] {
+        Stmt::Try(try_stmt) => {
+            // Must have a finally block (characteristic of `using` pattern)
+            if try_stmt.finalizer.is_some() {
+                Some(&try_stmt.block)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Helper to get a directive from the first statement of a block.
+fn get_directive_from_block(block: &BlockStmt, directive: &str) -> bool {
+    if let Some(first_stmt) = block.stmts.first() {
+        if let Stmt::Expr(ExprStmt { expr, .. }) = first_stmt {
+            if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
+                return value == directive;
+            }
+        }
+    }
+    false
+}
+
+/// Helper to remove a directive from the first statement of a try block in a `using` pattern.
+fn remove_directive_from_using_pattern(stmts: &mut [Stmt], directive: &str) {
+    if stmts.len() >= 2 {
+        if let Stmt::Try(try_stmt) = &mut stmts[1] {
+            let block = &mut try_stmt.block;
+            if !block.stmts.is_empty() {
+                if let Stmt::Expr(ExprStmt { expr, .. }) = &block.stmts[0] {
+                    if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
+                        if value == directive {
+                            block.stmts.remove(0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum TransformMode {
@@ -1765,6 +1841,13 @@ impl StepTransform {
                 is_first_meaningful = false;
             }
 
+            // Check for directive inside TypeScript `using` transformation pattern
+            if let Some(try_block) = get_try_block_from_using_pattern(&body.stmts) {
+                if get_directive_from_block(try_block, "use step") {
+                    return true;
+                }
+            }
+
             false
         } else {
             false
@@ -1809,6 +1892,13 @@ impl StepTransform {
                 }
                 // Any non-directive statement means directives can't come after
                 is_first_meaningful = false;
+            }
+
+            // Check for directive inside TypeScript `using` transformation pattern
+            if let Some(try_block) = get_try_block_from_using_pattern(&body.stmts) {
+                if get_directive_from_block(try_block, "use workflow") {
+                    return true;
+                }
             }
 
             false
@@ -1949,13 +2039,17 @@ impl StepTransform {
     fn remove_use_step_directive(&self, body: &mut Option<BlockStmt>) {
         if let Some(body) = body {
             if !body.stmts.is_empty() {
+                // First try to remove from the top level
                 if let Stmt::Expr(ExprStmt { expr, .. }) = &body.stmts[0] {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         if value == "use step" {
                             body.stmts.remove(0);
+                            return;
                         }
                     }
                 }
+                // Also try to remove from inside the `using` pattern's try block
+                remove_directive_from_using_pattern(&mut body.stmts, "use step");
             }
         }
     }
@@ -1964,13 +2058,17 @@ impl StepTransform {
     fn remove_use_workflow_directive(&self, body: &mut Option<BlockStmt>) {
         if let Some(body) = body {
             if !body.stmts.is_empty() {
+                // First try to remove from the top level
                 if let Stmt::Expr(ExprStmt { expr, .. }) = &body.stmts[0] {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         if value == "use workflow" {
                             body.stmts.remove(0);
+                            return;
                         }
                     }
                 }
+                // Also try to remove from inside the `using` pattern's try block
+                remove_directive_from_using_pattern(&mut body.stmts, "use workflow");
             }
         }
     }
@@ -1978,11 +2076,18 @@ impl StepTransform {
     // Check if an arrow function has the "use step" directive
     fn has_use_step_directive_arrow(&self, body: &BlockStmtOrExpr) -> bool {
         if let BlockStmtOrExpr::BlockStmt(body) = body {
+            // Check for direct directive
             if let Some(first_stmt) = body.stmts.first() {
                 if let Stmt::Expr(ExprStmt { expr, .. }) = first_stmt {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         return value == "use step";
                     }
+                }
+            }
+            // Check for directive inside TypeScript `using` transformation pattern
+            if let Some(try_block) = get_try_block_from_using_pattern(&body.stmts) {
+                if get_directive_from_block(try_block, "use step") {
+                    return true;
                 }
             }
         }
@@ -1992,11 +2097,18 @@ impl StepTransform {
     // Check if an arrow function has the "use workflow" directive
     fn has_use_workflow_directive_arrow(&self, body: &BlockStmtOrExpr) -> bool {
         if let BlockStmtOrExpr::BlockStmt(body) = body {
+            // Check for direct directive
             if let Some(first_stmt) = body.stmts.first() {
                 if let Stmt::Expr(ExprStmt { expr, .. }) = first_stmt {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         return value == "use workflow";
                     }
+                }
+            }
+            // Check for directive inside TypeScript `using` transformation pattern
+            if let Some(try_block) = get_try_block_from_using_pattern(&body.stmts) {
+                if get_directive_from_block(try_block, "use workflow") {
+                    return true;
                 }
             }
         }
@@ -2088,13 +2200,17 @@ impl StepTransform {
     fn remove_use_step_directive_arrow(&self, body: &mut BlockStmtOrExpr) {
         if let BlockStmtOrExpr::BlockStmt(body) = body {
             if !body.stmts.is_empty() {
+                // First try to remove from the top level
                 if let Stmt::Expr(ExprStmt { expr, .. }) = &body.stmts[0] {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         if value == "use step" {
                             body.stmts.remove(0);
+                            return;
                         }
                     }
                 }
+                // Also try to remove from inside the `using` pattern's try block
+                remove_directive_from_using_pattern(&mut body.stmts, "use step");
             }
         }
     }
@@ -2103,13 +2219,17 @@ impl StepTransform {
     fn remove_use_workflow_directive_arrow(&self, body: &mut BlockStmtOrExpr) {
         if let BlockStmtOrExpr::BlockStmt(body) = body {
             if !body.stmts.is_empty() {
+                // First try to remove from the top level
                 if let Stmt::Expr(ExprStmt { expr, .. }) = &body.stmts[0] {
                     if let Expr::Lit(Lit::Str(Str { value, .. })) = &**expr {
                         if value == "use workflow" {
                             body.stmts.remove(0);
+                            return;
                         }
                     }
                 }
+                // Also try to remove from inside the `using` pattern's try block
+                remove_directive_from_using_pattern(&mut body.stmts, "use workflow");
             }
         }
     }

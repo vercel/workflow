@@ -549,6 +549,44 @@ The plugin supports complex parameter patterns including:
 
 ---
 
+## Disposable Resources (`using` declarations)
+
+The plugin supports directives inside functions that use TypeScript's `using` declarations (disposable resources). When TypeScript transforms `using` declarations, it wraps the function body in a try-catch-finally block:
+
+Original TypeScript:
+```typescript
+async function testStep() {
+  'use step';
+  using writer = getWriter(getWritable());
+  await writer.write('Hello, world!');
+}
+```
+
+After TypeScript transformation:
+```javascript
+async function testStep() {
+  const env = {
+    stack: [],
+    error: void 0,
+    hasError: false
+  };
+  try {
+    "use step";  // Directive is now inside try block
+    const writer = _ts_add_disposable_resource(env, getWriter(getWritable()), false);
+    await writer.write("Hello, world!");
+  } catch (e) {
+    env.error = e;
+    env.hasError = true;
+  } finally {
+    _ts_dispose_resources(env);
+  }
+}
+```
+
+The plugin detects this pattern and correctly identifies the directive inside the try block, removing it during transformation while preserving the disposable resource handling.
+
+---
+
 ## Notes
 
 - Arguments and return values must be serializable (JSON-compatible or using custom serialization)
