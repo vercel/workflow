@@ -281,7 +281,20 @@ npx workflow web --app-url http://localhost:3001
 
 **Verify connection:**
 ```bash
-# Check your app responds to workflow endpoints
+# Check Local World backend health (workflow and step endpoints)
+npx workflow health
+
+# Check specific endpoint
+npx workflow health --endpoint workflow
+npx workflow health --endpoint step
+
+# Specify port if not using default 3000
+npx workflow health --port 3001
+
+# Check Vercel backend health
+npx workflow health --backend vercel --project my-project --team my-team
+
+# Or manually check your app responds to workflow endpoints
 curl -s http://localhost:3000/.well-known/workflow/v1/flow \
   -X POST -H "Content-Type: application/json"
 # Should return: {"error": "Missing required headers"} (not 404)
@@ -293,9 +306,10 @@ curl -s http://localhost:3000/.well-known/workflow/v1/flow \
 
 ## Debugging Tips
 
-1. **Use npx workflow web** - Visual dashboard for runs (ensure correct port)
-2. **Check run status** - `getRun(runId).status`
-3. **Review event log** - Shows step executions, hooks, sleeps
-4. **Test locally first** - Local World for development
-5. **Add logging in steps** - Steps have full console access
-6. **Verify port** - Ensure dashboard connects to correct app port
+1. **Run `npx workflow health`** - Verifies workflow/step endpoints are reachable (use `--port` for non-default ports, `--backend vercel` for production)
+2. **Use `npx workflow web`** - Visual dashboard for runs (ensure correct port)
+3. **Check run status** - `getRun(runId).status`
+4. **Review event log** - Shows step executions, hooks, sleeps
+5. **Test locally first** - Local World for development
+6. **Add logging in steps** - Steps have full console access
+7. **Verify port** - Ensure dashboard connects to correct app port
