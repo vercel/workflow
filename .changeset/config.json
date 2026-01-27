@@ -5,7 +5,7 @@
     { "repo": "vercel/workflow" }
   ],
   "commit": false,
-  "fixed": [],
+  "fixed": [["workflow", "@workflow/core"]],
   "linked": [],
   "access": "public",
   "baseBranch": "main",
