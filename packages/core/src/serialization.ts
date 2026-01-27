@@ -313,9 +313,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       const _runId = await runId;
 
       // Use writeToStreamMulti if available for batch writes
-      const writeMulti = (world as any).writeToStreamMulti;
-      if (typeof writeMulti === 'function' && chunksToFlush.length > 1) {
-        await writeMulti.call(world, name, _runId, chunksToFlush);
+      if (
+        typeof world.writeToStreamMulti === 'function' &&
+        chunksToFlush.length > 1
+      ) {
+        await world.writeToStreamMulti(name, _runId, chunksToFlush);
       } else {
         // Fall back to sequential writes
         for (const chunk of chunksToFlush) {
