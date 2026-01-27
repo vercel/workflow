@@ -252,8 +252,9 @@ describe('DurableAgent', () => {
         toolCallId: 'test-call-id',
         toolName: 'testTool',
         output: {
-          type: 'text',
-          value: JSON.stringify(toolResult),
+          // Object results use 'json' type with raw value (not stringified)
+          type: 'json',
+          value: toolResult,
         },
       });
     });
@@ -338,9 +339,9 @@ describe('DurableAgent', () => {
         toolCallId: 'provider-call-id',
         toolName: 'WebSearch',
         output: {
+          // String results use 'text' type with raw value
           type: 'text',
-          // Result is always JSON stringified for consistency with client-executed tools
-          value: JSON.stringify('Search results for: test query'),
+          value: 'Search results for: test query',
         },
       });
     });
@@ -428,25 +429,25 @@ describe('DurableAgent', () => {
       expect(toolResultsCall).toBeDefined();
       expect(toolResultsCall).toHaveLength(2);
 
-      // First result should be from local tool
+      // First result should be from local tool (object result uses 'json' type)
       expect(toolResultsCall[0]).toMatchObject({
         type: 'tool-result',
         toolCallId: 'local-call-id',
         toolName: 'localTool',
         output: {
-          type: 'text',
-          value: JSON.stringify(localToolResult),
+          type: 'json',
+          value: localToolResult,
         },
       });
 
-      // Second result should be from provider-executed tool
+      // Second result should be from provider-executed tool (object result uses 'json' type)
       expect(toolResultsCall[1]).toMatchObject({
         type: 'tool-result',
         toolCallId: 'provider-call-id',
         toolName: 'WebSearch',
         output: {
-          type: 'text',
-          value: JSON.stringify({ searchResults: ['result1', 'result2'] }),
+          type: 'json',
+          value: { searchResults: ['result1', 'result2'] },
         },
       });
     });
@@ -517,9 +518,9 @@ describe('DurableAgent', () => {
         toolCallId: 'provider-call-id',
         toolName: 'WebSearch',
         output: {
+          // String error results use 'error-text' type with raw value
           type: 'error-text',
-          // Result is always JSON stringified for consistency with client-executed tools
-          value: JSON.stringify('Search failed: Rate limit exceeded'),
+          value: 'Search failed: Rate limit exceeded',
         },
       });
     });

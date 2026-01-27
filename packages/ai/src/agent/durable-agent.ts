@@ -826,18 +826,40 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
                 toolCall.toolCallId
               );
               if (streamResult) {
+                // Use the appropriate output type based on the result and error status
+                // AI SDK supports 'text'/'error-text' for strings and 'json'/'error-json' for objects
+                const result = streamResult.result;
+                const isString = typeof result === 'string';
+
                 return {
                   type: 'tool-result' as const,
                   toolCallId: toolCall.toolCallId,
                   toolName: toolCall.toolName,
-                  output: {
-                    type: streamResult.isError
-                      ? ('error-text' as const)
-                      : ('text' as const),
-                    // Always stringify to match client-executed tool behavior
-                    // This ensures consistency with writeToolOutputToUI which expects JSON
-                    value: JSON.stringify(streamResult.result) ?? '',
-                  },
+                  output: isString
+                    ? streamResult.isError
+                      ? { type: 'error-text' as const, value: result }
+                      : { type: 'text' as const, value: result }
+                    : streamResult.isError
+                      ? {
+                          type: 'error-json' as const,
+                          value:
+                            result as LanguageModelV2ToolResultPart['output'] extends {
+                              type: 'json';
+                              value: infer V;
+                            }
+                              ? V
+                              : never,
+                        }
+                      : {
+                          type: 'json' as const,
+                          value:
+                            result as LanguageModelV2ToolResultPart['output'] extends {
+                              type: 'json';
+                              value: infer V;
+                            }
+                              ? V
+                              : never,
+                        },
                 };
               }
               // If no result from stream, return an empty result
@@ -1148,14 +1170,18 @@ async function executeTool(
       experimental_context: experimentalContext,
     });
 
+    // Use the appropriate output type based on the result
+    // AI SDK supports 'text' for strings and 'json' for objects
+    const output =
+      typeof toolResult === 'string'
+        ? { type: 'text' as const, value: toolResult }
+        : { type: 'json' as const, value: toolResult };
+
     return {
       type: 'tool-result' as const,
       toolCallId: toolCall.toolCallId,
       toolName: toolCall.toolName,
-      output: {
-        type: 'text' as const,
-        value: JSON.stringify(toolResult) ?? '',
-      },
+      output,
     };
   } catch (error) {
     // If it's a FatalError, convert it to a tool error result that gets sent back to the LLM
