@@ -449,6 +449,157 @@ describe('DurableAgent', () => {
         },
       });
     });
+
+    it('should handle provider-executed tool errors with isError flag', async () => {
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      // Create a provider-executed tool result with isError: true
+      const providerExecutedToolResults = new Map();
+      providerExecutedToolResults.set('provider-call-id', {
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        result: 'Search failed: Rate limit exceeded',
+        isError: true,
+      });
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'provider-call-id',
+                  toolName: 'WebSearch',
+                  input: '{"query":"test query"}',
+                  providerExecuted: true,
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+              providerExecutedToolResults,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Verify that the iterator was called with error-text output type
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        output: {
+          type: 'error-text',
+          value: 'Search failed: Rate limit exceeded',
+        },
+      });
+    });
+
+    it('should warn and return empty result when provider-executed tool result is missing', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      // Empty map - no provider results available
+      const providerExecutedToolResults = new Map();
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'missing-result-id',
+                  toolName: 'WebSearch',
+                  input: '{"query":"test query"}',
+                  providerExecuted: true,
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+              providerExecutedToolResults,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Verify warning was logged
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Provider-executed tool "WebSearch"')
+      );
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('missing-result-id')
+      );
+
+      // Verify empty result was returned
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'missing-result-id',
+        toolName: 'WebSearch',
+        output: {
+          type: 'text',
+          value: '',
+        },
+      });
+
+      consoleWarnSpy.mockRestore();
+    });
   });
 
   describe('prepareStep callback', () => {

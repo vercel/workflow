@@ -843,6 +843,10 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               }
               // If no result from stream, return an empty result
               // This can happen if the provider didn't send a tool-result stream part
+              console.warn(
+                `[DurableAgent] Provider-executed tool "${toolCall.toolName}" (${toolCall.toolCallId}) ` +
+                  `did not receive a result from the stream. This may indicate a provider issue.`
+              );
               return {
                 type: 'tool-result' as const,
                 toolCallId: toolCall.toolCallId,

@@ -28,6 +28,16 @@ export type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 export type ModelStopCondition = StopCondition<NoInfer<ToolSet>>;
 
 /**
+ * Provider-executed tool result captured from the stream.
+ */
+export interface ProviderExecutedToolResult {
+  toolCallId: string;
+  toolName: string;
+  result: unknown;
+  isError?: boolean;
+}
+
+/**
  * Convert a Uint8Array to a base64 string safely.
  * Uses a loop instead of spread operator to avoid stack overflow on large arrays.
  */
@@ -164,7 +174,7 @@ export async function doStreamStep(
   // Map of tool call ID to provider-executed tool result
   const providerExecutedToolResults = new Map<
     string,
-    { toolCallId: string; toolName: string; result: unknown; isError?: boolean }
+    ProviderExecutedToolResult
   >();
   const chunks: LanguageModelV2StreamPart[] = [];
   const includeRawChunks = options?.includeRawChunks ?? false;

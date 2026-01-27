@@ -12,7 +12,11 @@ import type {
   ToolSet,
   UIMessageChunk,
 } from 'ai';
-import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
+import {
+  doStreamStep,
+  type ModelStopCondition,
+  type ProviderExecutedToolResult,
+} from './do-stream-step.js';
 import type {
   GenerationSettings,
   PrepareStepCallback,
@@ -23,15 +27,8 @@ import type {
 import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
 
-/**
- * Provider-executed tool result captured from the stream.
- */
-export interface ProviderExecutedToolResult {
-  toolCallId: string;
-  toolName: string;
-  result: unknown;
-  isError?: boolean;
-}
+// Re-export for consumers
+export type { ProviderExecutedToolResult } from './do-stream-step.js';
 
 /**
  * The value yielded by the stream text iterator when tool calls are requested.
