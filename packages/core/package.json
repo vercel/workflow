@@ -46,7 +46,7 @@
     "test:e2e": "vitest run e2e",
     "typecheck": "tsc --noEmit",
     "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/foundations ./docs/ && cp -r ../../docs/content/docs/how-it-works ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow ./docs/api-reference",
-    "postpack": "rm -rf docs"
+    "postpack": "del-cli docs"
   },
   "dependencies": {
     "@aws-sdk/credential-provider-web-identity": "3.609.0",

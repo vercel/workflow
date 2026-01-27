@@ -60,7 +60,7 @@
     "clean": "tsc --build --clean && rm -rf docs ||:",
     "test": "vitest run",
     "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/ai ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow-ai ./docs/",
-    "postpack": "rm -rf docs"
+    "postpack": "del-cli docs"
   },
   "devDependencies": {
     "@workflow/tsconfig": "workspace:*",
