@@ -89,23 +89,15 @@ export function createDiscoverEntriesPlugin(state: {
             state.discoveredSteps.push(normalizedPath);
           }
 
-          // Only apply SWC transform to files with workflow/step directives
-          if (hasUseWorkflow || hasUseStep) {
-            const { code: transformedCode } = await applySwcTransform(
-              args.path,
-              source,
-              false
-            );
-
-            return {
-              contents: transformedCode,
-              loader,
-            };
-          }
+          const { code: transformedCode } = await applySwcTransform(
+            args.path,
+            source,
+            false
+          );
 
           return {
-            contents: source,
-            loader: isTypeScript ? 'ts' : loader,
+            contents: transformedCode,
+            loader,
           };
         } catch (_) {
           // ignore trace errors during discover phase

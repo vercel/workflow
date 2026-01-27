@@ -261,7 +261,7 @@ Check the [Deploying](/docs/deploying) section to learn how your workflows can b
 
 When using `withWorkflow()` in a large Next.js application, the "Discovering workflow directives" phase may consume excessive memory, causing builds to fail with OOM errors on standard build machines (e.g., 16 GB RAM).
 
-**Solution:** Use the `dirs` option to limit the directories scanned for workflow directives. By default, `withWorkflow` scans `['pages', 'app', 'src/pages', 'src/app']`, which in large applications can include thousands of files.
+**Solution:** Use the `workflows.dirs` option to limit the directories scanned for workflow directives. By default, `withWorkflow` scans `['pages', 'app', 'src/pages', 'src/app']`, which in large applications can include thousands of files.
 
 If your workflows are located in a specific directory, configure `dirs` to only scan that directory:
 
@@ -272,8 +272,10 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {};
 
 export default withWorkflow(nextConfig, {
-  // Only scan the workflows directory instead of the entire app
-  dirs: ['workflows'], // [!code highlight]
+  workflows: {
+    // Only scan the workflows directory instead of the entire app
+    dirs: ['workflows'], // [!code highlight]
+  },
 });
 ```
 
@@ -286,7 +288,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {};
 
 export default withWorkflow(nextConfig, {
-  dirs: ['app/api', 'workflows'], // [!code highlight]
+  workflows: {
+    dirs: ['app/api', 'workflows'], // [!code highlight]
+  },
 });
 ```
 

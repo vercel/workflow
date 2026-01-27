@@ -17,21 +17,20 @@ export function withWorkflow(
       ) => Promise<NextConfig>),
   {
     workflows,
-    dirs,
   }: {
     workflows?: {
       local?: {
         port?: number;
         dataDir?: string;
       };
+      /**
+       * Directories to scan for workflows and steps.
+       * If provided, this completely overrides the defaults.
+       *
+       * @default ['pages', 'app', 'src/pages', 'src/app']
+       */
+      dirs?: string[];
     };
-    /**
-     * Directories to scan for workflows and steps.
-     * If provided, this completely overrides the defaults.
-     *
-     * @default ['pages', 'app', 'src/pages', 'src/app']
-     */
-    dirs?: string[];
   } = {}
 ) {
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
@@ -135,7 +134,7 @@ export function withWorkflow(
       const NextBuilder = await getNextBuilder();
       const workflowBuilder = new NextBuilder({
         watch: shouldWatch,
-        dirs: dirs ?? DEFAULT_WORKFLOW_DIRS,
+        dirs: workflows?.dirs ?? DEFAULT_WORKFLOW_DIRS,
         workingDir: process.cwd(),
         buildTarget: 'next',
         workflowsBundlePath: '', // not used in base
