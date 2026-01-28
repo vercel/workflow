@@ -1,5 +1,6 @@
+import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
-/**__internal_workflows{"steps":{"input.js":{"Service#process":{"stepId":"step//input.js//Service#process"},"helper":{"stepId":"step//input.js//helper"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"Service#process":{"stepId":"step//input.js//Service#process"},"helper":{"stepId":"step//input.js//helper"}}},"classes":{"input.js":{"Service":{"classId":"class//input.js//Service"}}}}*/;
 export class Service {
     static [WORKFLOW_SERIALIZE](instance) {
         return {
@@ -22,3 +23,4 @@ export class Service {
         return doubled + this.value;
     }
 }
+registerSerializationClass("class//input.js//Service", Service);
