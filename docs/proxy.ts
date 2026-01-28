@@ -8,13 +8,30 @@ import {
 import { i18n } from '@/lib/geistdocs/i18n';
 
 const { rewrite: rewriteLLM } = rewritePath('/docs/*path', '/llms.mdx/*path');
+const { rewrite: rewriteMdx } = rewritePath(
+  '/docs/*path.mdx',
+  '/llms.mdx/*path'
+);
+const { rewrite: rewriteMd } = rewritePath('/docs/*path.md', '/llms.mdx/*path');
 
 const internationalizer = createI18nMiddleware(i18n);
 
 const proxy = (request: NextRequest, context: NextFetchEvent) => {
-  // First, handle Markdown preference rewrites
+  const { pathname } = request.nextUrl;
+
+  // Handle explicit .md/.mdx extension requests before i18n
+  const mdxResult = rewriteMdx(pathname);
+  if (mdxResult) {
+    return NextResponse.rewrite(new URL(mdxResult, request.nextUrl));
+  }
+  const mdResult = rewriteMd(pathname);
+  if (mdResult) {
+    return NextResponse.rewrite(new URL(mdResult, request.nextUrl));
+  }
+
+  // Handle Accept header preference for markdown
   if (isMarkdownPreferred(request)) {
-    const result = rewriteLLM(request.nextUrl.pathname);
+    const result = rewriteLLM(pathname);
     if (result) {
       return NextResponse.rewrite(new URL(result, request.nextUrl));
     }
