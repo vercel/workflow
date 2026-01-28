@@ -25,6 +25,10 @@ import { Badge } from '@/components/ui/badge';
 import { getLLMText, source } from '@/lib/geistdocs/source';
 import { TSDoc } from '@/lib/tsdoc';
 
+// No-op component for world MDX files rendered outside /worlds/ context
+// These pages redirect to /worlds/[id] but still get statically generated
+const WorldTestingPerformanceNoop = () => null;
+
 const Page = async (props: PageProps<'/docs/[[...slug]]'>) => {
   const params = await props.params;
 
@@ -70,6 +74,8 @@ const Page = async (props: PageProps<'/docs/[[...slug]]'>) => {
             ...AccordionComponents,
             Tabs,
             Tab,
+            // No-op for world MDX files (they redirect to /worlds/[id])
+            WorldTestingPerformance: WorldTestingPerformanceNoop,
           })}
         />
       </DocsBody>

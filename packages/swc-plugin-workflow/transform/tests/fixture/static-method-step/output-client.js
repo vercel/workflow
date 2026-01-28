@@ -1,4 +1,5 @@
-/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"},"MyService.transform":{"stepId":"step//input.js//MyService.transform"}}}}*/;
+import { registerSerializationClass } from "workflow/internal/class-serialization";
+/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"},"MyService.transform":{"stepId":"step//input.js//MyService.transform"}}},"classes":{"input.js":{"MyService":{"classId":"class//input.js//MyService"}}}}*/;
 export class MyService {
     static async process(data) {
         return data.value * 2;
@@ -11,3 +12,4 @@ export class MyService {
         return 'regular';
     }
 }
+registerSerializationClass("class//input.js//MyService", MyService);

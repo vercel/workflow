@@ -50,6 +50,33 @@ const config: NextConfig = {
         destination: '/docs/errors/:slug',
         permanent: true,
       },
+      // Redirect old world docs to new /worlds routes
+      {
+        source: '/docs/deploying/world/local-world',
+        destination: '/worlds/local',
+        permanent: true,
+      },
+      {
+        source: '/docs/deploying/world/postgres-world',
+        destination: '/worlds/postgres',
+        permanent: true,
+      },
+      {
+        source: '/docs/deploying/world/vercel-world',
+        destination: '/worlds/vercel',
+        permanent: true,
+      },
+      {
+        source: '/docs/worlds',
+        destination: '/worlds',
+        permanent: true,
+      },
+      // Redirect old control-flow-patterns to common-patterns
+      {
+        source: '/docs/foundations/control-flow-patterns',
+        destination: '/docs/foundations/common-patterns',
+        permanent: true,
+      },
     ];
   },
 };

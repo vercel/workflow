@@ -414,6 +414,12 @@ export abstract class BaseBuilder {
               fileManifest.workflows
             );
           }
+          if (fileManifest.classes) {
+            workflowManifest.classes = Object.assign(
+              workflowManifest.classes || {},
+              fileManifest.classes
+            );
+          }
         } catch (error) {
           // Log warning but continue - don't fail build for workflow-only file issues
           console.log(
@@ -904,7 +910,7 @@ export const OPTIONS = handler;`;
   }
 
   /**
-   * Creates a manifest JSON file containing step/workflow metadata
+   * Creates a manifest JSON file containing step/workflow/class metadata
    * and graph data for visualization.
    */
   protected async createManifest({
@@ -927,8 +933,9 @@ export const OPTIONS = handler;`;
         manifest.workflows,
         workflowGraphs
       );
+      const classes = this.convertClassesManifest(manifest.classes);
 
-      const output = { version: '1.0.0', steps, workflows };
+      const output = { version: '1.0.0', steps, workflows, classes };
 
       await mkdir(manifestDir, { recursive: true });
       await writeFile(
@@ -944,9 +951,13 @@ export const OPTIONS = handler;`;
         (acc, w) => acc + Object.keys(w).length,
         0
       );
+      const classCount = Object.values(classes).reduce(
+        (acc, c) => acc + Object.keys(c).length,
+        0
+      );
 
       console.log(
-        `Created manifest with ${stepCount} step(s) and ${workflowCount} workflow(s)`,
+        `Created manifest with ${stepCount} step(s), ${workflowCount} workflow(s), and ${classCount} class(es)`,
         `${Date.now() - buildStart}ms`
       );
     } catch (error) {
@@ -1001,6 +1012,21 @@ export const OPTIONS = handler;`;
           workflowId: data.workflowId,
           graph: graphs[filePath]?.[name]?.graph || { nodes: [], edges: [] },
         };
+      }
+    }
+    return result;
+  }
+
+  private convertClassesManifest(
+    classes: WorkflowManifest['classes']
+  ): Record<string, Record<string, { classId: string }>> {
+    const result: Record<string, Record<string, { classId: string }>> = {};
+    if (!classes) return result;
+
+    for (const [filePath, entries] of Object.entries(classes)) {
+      result[filePath] = {};
+      for (const [name, data] of Object.entries(entries)) {
+        result[filePath][name] = { classId: data.classId };
       }
     }
     return result;

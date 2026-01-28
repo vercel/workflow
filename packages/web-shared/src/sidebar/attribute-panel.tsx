@@ -481,7 +481,8 @@ type AttributeKey =
   | keyof Event
   | 'eventData'
   | 'resumeAt'
-  | 'expiredAt';
+  | 'expiredAt'
+  | 'workflowCoreVersion';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -497,6 +498,7 @@ const attributeOrder: AttributeKey[] = [
   'eventType',
   'deploymentId',
   'specVersion',
+  'workflowCoreVersion',
   'ownerId',
   'projectId',
   'environment',
@@ -519,6 +521,20 @@ const sortByAttributeOrder = (a: string, b: string): number => {
   const aIndex = attributeOrder.indexOf(a as AttributeKey) || 0;
   const bIndex = attributeOrder.indexOf(b as AttributeKey) || 0;
   return aIndex - bIndex;
+};
+
+/**
+ * Display names for attributes that should render differently from their key.
+ */
+const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
+  workflowCoreVersion: '@workflow/core version',
+};
+
+/**
+ * Get the display name for an attribute key.
+ */
+const getAttributeDisplayName = (attribute: string): string => {
+  return attributeDisplayNames[attribute as AttributeKey] ?? attribute;
 };
 
 export const localMillisecondTime = (value: unknown): string => {
@@ -573,6 +589,7 @@ const attributeToDisplayFn: Record<
   // Project details
   deploymentId: (value: unknown) => String(value),
   specVersion: (value: unknown) => String(value),
+  workflowCoreVersion: (value: unknown) => String(value),
   // Tenancy (we don't show these)
   ownerId: (_value: unknown) => null,
   projectId: (_value: unknown) => null,
@@ -820,7 +837,17 @@ export const AttributePanel = ({
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
 }) => {
-  const displayData = data;
+  // Extract workflowCoreVersion from executionContext for display
+  const displayData = useMemo(() => {
+    const result = { ...data };
+    const execCtx = data.executionContext as
+      | Record<string, unknown>
+      | undefined;
+    if (execCtx?.workflowCoreVersion) {
+      result.workflowCoreVersion = execCtx.workflowCoreVersion;
+    }
+    return result;
+  }, [data]);
   const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))
@@ -872,7 +899,7 @@ export const AttributePanel = ({
                   className="text-[11px] font-medium"
                   style={{ color: 'var(--ds-gray-700)' }}
                 >
-                  {attribute}
+                  {getAttributeDisplayName(attribute)}
                 </span>
                 <span
                   className="text-[11px] font-mono"

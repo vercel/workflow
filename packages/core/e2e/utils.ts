@@ -48,6 +48,11 @@ export function hasStepSourceMaps(): boolean {
     return false;
   }
 
+  // NestJS preserves source maps in all builds including prod
+  if (appName === 'nest') {
+    return true;
+  }
+
   // Prod buils for frameworks typically don't consume source maps. So let's disable testing
   // in local prod and local postgres tests
   if (!process.env.DEV_TEST_CONFIG) {
@@ -73,7 +78,10 @@ export function hasWorkflowSourceMaps(): boolean {
 
   // These frameworks currently don't handle sourcemaps correctly in local dev
   // TODO: figure out how to get sourcemaps working in these frameworks too
-  if (process.env.DEV_TEST_CONFIG && ['vite', 'astro'].includes(appName)) {
+  if (
+    process.env.DEV_TEST_CONFIG &&
+    ['vite', 'astro', 'sveltekit'].includes(appName)
+  ) {
     return false;
   }
 

@@ -12,8 +12,8 @@ import { z } from 'zod';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
-  dateToStringReplacer,
   makeRequest,
+  serializeError,
 } from './utils.js';
 
 /**
@@ -161,10 +161,8 @@ export async function createStep(
 ): Promise<Step> {
   const step = await makeRequest({
     endpoint: `/v2/runs/${runId}/steps`,
-    options: {
-      method: 'POST',
-      body: JSON.stringify(data, dateToStringReplacer),
-    },
+    options: { method: 'POST' },
+    data,
     config,
     schema: StepWireSchema,
   });
@@ -177,18 +175,11 @@ export async function updateStep(
   data: UpdateStepRequest,
   config?: APIConfig
 ): Promise<Step> {
-  // Map interface field names to wire format field names
-  const { error: stepError, ...rest } = data;
-  const wireData: any = { ...rest };
-  if (stepError) {
-    wireData.error = JSON.stringify(stepError);
-  }
+  const serialized = serializeError(data);
   const step = await makeRequest({
     endpoint: `/v2/runs/${runId}/steps/${stepId}`,
-    options: {
-      method: 'PUT',
-      body: JSON.stringify(wireData, dateToStringReplacer),
-    },
+    options: { method: 'PUT' },
+    data: serialized,
     config,
     schema: StepWireSchema,
   });

@@ -54,7 +54,7 @@ const statusConfig = {
 
 const typeEmoji = {
   official: '',
-  community: '🌐 ',
+  community: '',
 };
 
 export function WorldCard({ id, world }: WorldCardProps) {
@@ -64,14 +64,13 @@ export function WorldCard({ id, world }: WorldCardProps) {
 
   const isExternal = world.docs.startsWith('http');
 
-  // Calculate average benchmark time
-  const metricsValues = world.benchmark?.metrics
-    ? Object.values(world.benchmark.metrics)
-    : [];
-  const avgBenchmark =
-    metricsValues.length > 0
-      ? metricsValues.reduce((sum, m) => sum + m.mean, 0) / metricsValues.length
-      : null;
+  // Calculate E2E progress excluding skipped tests from denominator
+  // so pass rate reflects actual test results (not artificially lowered by skips)
+  const effectiveTotal = world.e2e ? world.e2e.total - world.e2e.skipped : 0;
+  const displayProgress =
+    effectiveTotal > 0 && world.e2e
+      ? Math.round((world.e2e.passed / effectiveTotal) * 100)
+      : 0;
 
   return (
     <Card className="relative overflow-hidden">
@@ -110,16 +109,16 @@ export function WorldCard({ id, world }: WorldCardProps) {
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">E2E Tests</span>
               <span className="font-medium">
-                {world.e2e.passed}/{world.e2e.total} ({world.e2e.progress}%)
+                {world.e2e.passed}/{effectiveTotal} ({displayProgress}%)
               </span>
             </div>
             <Progress
-              value={world.e2e.progress}
+              value={displayProgress}
               className={cn(
                 'h-2',
-                world.e2e.progress === 100
+                displayProgress === 100
                   ? '[&>div]:bg-green-500'
-                  : world.e2e.progress >= 75
+                  : displayProgress >= 75
                     ? '[&>div]:bg-yellow-500'
                     : '[&>div]:bg-red-500'
               )}
@@ -129,16 +128,6 @@ export function WorldCard({ id, world }: WorldCardProps) {
                 {world.e2e.failed} failing, {world.e2e.skipped} skipped
               </p>
             )}
-          </div>
-        )}
-
-        {/* Benchmark Summary */}
-        {avgBenchmark !== null && (
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Avg. Workflow Time</span>
-            <span className="font-mono font-medium">
-              {avgBenchmark.toFixed(0)}ms
-            </span>
           </div>
         )}
 

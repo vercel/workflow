@@ -26,6 +26,16 @@ export const Folder = ({ item, level, children }: FolderProps) => {
   const pathname = usePathname();
   const isActive = pathname === item.index?.url;
 
+  // Check if any child is active (current path starts with folder's index URL)
+  // Use trailing slash to avoid false positives (e.g., /docs-other matching /docs)
+  const folderUrl = item.index?.url;
+  const hasActiveChild =
+    folderUrl && folderUrl.length > 0
+      ? pathname.startsWith(
+          folderUrl.endsWith('/') ? folderUrl : folderUrl + '/'
+        )
+      : false;
+
   const linkInner = item.index ? (
     <Link
       href={item.index.url}
@@ -52,7 +62,7 @@ export const Folder = ({ item, level, children }: FolderProps) => {
   }
 
   return (
-    <Collapsible defaultOpen={item.defaultOpen}>
+    <Collapsible defaultOpen={item.defaultOpen || hasActiveChild}>
       <CollapsibleTrigger
         className="group mt-4 mb-2 flex w-full items-center justify-between gap-4 first-child:mt-0"
         data-level={level}

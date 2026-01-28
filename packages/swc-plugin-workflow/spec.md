@@ -17,13 +17,18 @@ Directives must:
 
 ## JSON Manifest
 
-All modes emit a JSON manifest comment at the top of the file containing metadata about discovered workflows and steps:
+All modes emit a JSON manifest comment at the top of the file containing metadata about discovered workflows, steps, and classes with custom serialization:
 
 ```javascript
-/**__internal_workflows{"workflows":{"path/file.ts":{"myWorkflow":{"workflowId":"workflow//path/file.ts//myWorkflow"}}},"steps":{"path/file.ts":{"myStep":{"stepId":"step//path/file.ts//myStep"}}}}*/
+/**__internal_workflows{"workflows":{"path/file.ts":{"myWorkflow":{"workflowId":"workflow//path/file.ts//myWorkflow"}}},"steps":{"path/file.ts":{"myStep":{"stepId":"step//path/file.ts//myStep"}}},"classes":{"path/file.ts":{"Point":{"classId":"class//path/file.ts//Point"}}}}*/
 ```
 
-This manifest is used by bundlers and the runtime to discover and register workflows and steps.
+The manifest includes:
+- **`workflows`**: Map of workflow function names to their `workflowId`
+- **`steps`**: Map of step function names to their `stepId`
+- **`classes`**: Map of class names with custom serialization to their `classId`
+
+This manifest is used by bundlers and the runtime to discover and register workflows, steps, and serializable classes.
 
 ## ID Generation
 
@@ -315,6 +320,47 @@ export async function myWorkflow(data) {
 myWorkflow.workflowId = "workflow//input.js//myWorkflow";
 ```
 
+### Custom Serialization in Client Mode
+
+Classes with custom serialization methods are also registered in client mode so that they can be properly serialized when passed to `start(workflow)`:
+
+Input:
+```javascript
+export class Point {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  static [Symbol.for("workflow-serialize")](instance) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  static [Symbol.for("workflow-deserialize")](data) {
+    return new Point(data.x, data.y);
+  }
+}
+```
+
+Output (Client Mode):
+```javascript
+import { registerSerializationClass } from "workflow/internal/class-serialization";
+/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//input.js//Point"}}}}*/;
+export class Point {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+    }
+    static [Symbol.for("workflow-serialize")](instance) {
+        return { x: instance.x, y: instance.y };
+    }
+    static [Symbol.for("workflow-deserialize")](data) {
+        return new Point(data.x, data.y);
+    }
+}
+registerSerializationClass("class//input.js//Point", Point);
+```
+
 ---
 
 ## Static Methods
@@ -337,7 +383,7 @@ Output (Step Mode):
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//input.js//MyService"}}}}*/;
 export class MyService {
     static async process(data) {
         return data.value * 2;
@@ -350,7 +396,7 @@ registerSerializationClass("class//input.js//MyService", MyService);
 Output (Workflow Mode):
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//input.js//MyService"}}}}*/;
 export class MyService {
 }
 MyService.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//MyService.process");
@@ -408,6 +454,7 @@ export class Point {
 Output:
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
+/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//input.js//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
         this.x = x;
@@ -499,6 +546,44 @@ The plugin supports complex parameter patterns including:
 - Default values: `async function({ x = 10 }) { "use step"; }`
 - Rest parameters: `async function(a, ...rest) { "use step"; }`
 - Nested destructuring: `async function({ user: { name } }) { "use step"; }`
+
+---
+
+## Disposable Resources (`using` declarations)
+
+The plugin supports directives inside functions that use TypeScript's `using` declarations (disposable resources). When TypeScript transforms `using` declarations, it wraps the function body in a try-catch-finally block:
+
+Original TypeScript:
+```typescript
+async function testStep() {
+  'use step';
+  using writer = getWriter(getWritable());
+  await writer.write('Hello, world!');
+}
+```
+
+After TypeScript transformation:
+```javascript
+async function testStep() {
+  const env = {
+    stack: [],
+    error: void 0,
+    hasError: false
+  };
+  try {
+    "use step";  // Directive is now inside try block
+    const writer = _ts_add_disposable_resource(env, getWriter(getWritable()), false);
+    await writer.write("Hello, world!");
+  } catch (e) {
+    env.error = e;
+    env.hasError = true;
+  } finally {
+    _ts_dispose_resources(env);
+  }
+}
+```
+
+The plugin detects this pattern and correctly identifies the directive inside the try block, removing it during transformation while preserving the disposable resource handling.
 
 ---
 

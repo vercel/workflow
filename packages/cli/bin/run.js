@@ -10,7 +10,9 @@ const envPath = resolve(process.cwd(), '.env');
 if (existsSync(envPath)) {
   const envResult = config({ path: envPath });
   if (envResult.error && envResult.error.code !== 'ENOENT') {
-    console.warn(`Warning: Failed to load .env file: ${envResult.error.message}`);
+    console.warn(
+      `Warning: Failed to load .env file: ${envResult.error.message}`
+    );
   }
 }
 
@@ -19,7 +21,9 @@ const envLocalPath = resolve(process.cwd(), '.env.local');
 if (existsSync(envLocalPath)) {
   const envLocalResult = config({ path: envLocalPath, override: true });
   if (envLocalResult.error && envLocalResult.error.code !== 'ENOENT') {
-    console.warn(`Warning: Failed to load .env.local file: ${envLocalResult.error.message}`);
+    console.warn(
+      `Warning: Failed to load .env.local file: ${envLocalResult.error.message}`
+    );
   }
 }
 

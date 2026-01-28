@@ -32,43 +32,61 @@ fi
 echo "Resolving symlinks in $TARGET_DIR..."
 cd "$TARGET_DIR"
 
+# Function to resolve a workflows directory symlink
+resolve_workflows_symlink() {
+  local workflows_path="$1"
+
+  if [ -L "$workflows_path" ]; then
+    workflows_target=$(readlink "$workflows_path")
+    # Resolve relative path
+    if [[ "$workflows_target" != /* ]]; then
+      workflows_target="$(dirname "$workflows_path")/$workflows_target"
+    fi
+    # Normalize the path
+    workflows_target=$(cd "$(dirname "$workflows_target")" && pwd)/$(basename "$workflows_target")
+
+    echo "Workflows directory '$workflows_path' is a symlink to: $workflows_target"
+
+    # Remove the workflows symlink
+    rm "$workflows_path"
+
+    # Create workflows as a real directory
+    mkdir -p "$workflows_path"
+
+    # Copy all files from the target, resolving any symlinks in the process
+    if [ -d "$workflows_target" ]; then
+      for file in "$workflows_target"/*; do
+        filename=$(basename "$file")
+        if [ -L "$file" ]; then
+          # If it's a symlink, resolve it
+          file_target=$(readlink "$file")
+          if [[ "$file_target" != /* ]]; then
+            file_target="$(dirname "$file")/$file_target"
+          fi
+          echo "  Copying and resolving: $filename -> $file_target"
+          cp "$file_target" "$workflows_path/$filename"
+        else
+          # If it's a regular file, just copy it
+          echo "  Copying: $filename"
+          cp "$file" "$workflows_path/$filename"
+        fi
+      done
+    fi
+    return 0
+  fi
+  return 1
+}
+
 echo "Resolving symlinked files in workflows directory..."
 
-# Special handling for workflows directory if it's a symlink
-if [ -L "workflows" ]; then
-  workflows_target=$(readlink "workflows")
-  # Resolve relative path
-  if [[ "$workflows_target" != /* ]]; then
-    workflows_target="$PWD/$workflows_target"
-  fi
+# Check for workflows symlink at root level (e.g., express, nitro workbenches)
+if resolve_workflows_symlink "workflows"; then
+  echo "Resolved root-level workflows symlink"
+fi
 
-  echo "Workflows directory is a symlink to: $workflows_target"
-
-  # Remove the workflows symlink
-  rm "workflows"
-
-  # Create workflows as a real directory
-  mkdir -p "workflows"
-
-  # Copy all files from the target, resolving any symlinks in the process
-  if [ -d "$workflows_target" ]; then
-    for file in "$workflows_target"/*; do
-      filename=$(basename "$file")
-      if [ -L "$file" ]; then
-        # If it's a symlink, resolve it
-        file_target=$(readlink "$file")
-        if [[ "$file_target" != /* ]]; then
-          file_target="$(dirname "$file")/$file_target"
-        fi
-        echo "  Copying and resolving: $filename -> $file_target"
-        cp "$file_target" "workflows/$filename"
-      else
-        # If it's a regular file, just copy it
-        echo "  Copying: $filename"
-        cp "$file" "workflows/$filename"
-      fi
-    done
-  fi
+# Check for workflows symlink in src/ directory (e.g., NestJS workbench)
+if resolve_workflows_symlink "src/workflows"; then
+  echo "Resolved src/workflows symlink"
 fi
 
 echo "Resolving other symlinks..."
