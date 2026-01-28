@@ -9,4 +9,6 @@
 "@workflow/cli": patch
 ---
 
-Change user input/output to be binary data at the World interface
+**BREAKING CHANGE**: Change user input/output to be binary data (Uint8Array) at the World interface
+
+This is part of specVersion 2 changes where serialization of workflow and step data uses binary format instead of JSON arrays. This allows the workflow client to be fully responsible for the data serialization format and enables future enhancements such as encryption and compression without the World implementation needing to care about the underlying data representation.

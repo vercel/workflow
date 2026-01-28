@@ -5,7 +5,9 @@
 
 import { inspect } from 'node:util';
 import { parseClassName } from '@workflow/utils/parse-name';
+import { unflatten } from 'devalue';
 import {
+  getCommonRevivers,
   hydrateStepArguments,
   hydrateStepReturnValue,
   hydrateWorkflowArguments,
@@ -219,27 +221,74 @@ const streamPrintRevivers: Record<string, (value: any) => any> = {
   Class: serializedClassToString,
 };
 
+/**
+ * Combined revivers for observability hydration.
+ * Merges common revivers with stream print revivers.
+ */
+const getObservabilityRevivers = () => ({
+  ...getCommonRevivers(globalThis),
+  ...streamPrintRevivers,
+});
+
+/**
+ * Check if data is in legacy format (devalue parsed array).
+ * Legacy specVersion 1 runs stored data as JSON arrays from devalue.
+ */
+const isLegacyFormat = (data: unknown): data is any[] => {
+  return Array.isArray(data);
+};
+
+/**
+ * Check if data is in new binary format (Uint8Array).
+ * New specVersion 2 runs store data as binary Uint8Array.
+ */
+const isBinaryFormat = (data: unknown): data is Uint8Array => {
+  return data instanceof Uint8Array;
+};
+
+/**
+ * Hydrate legacy format data (array) using unflatten.
+ */
+const hydrateLegacyData = (data: any[]): unknown => {
+  return unflatten(data, getObservabilityRevivers());
+};
+
 const hydrateStepIO = <
   T extends { stepId?: string; input?: any; output?: any; runId?: string },
 >(
   step: T
 ): T => {
+  let hydratedInput = step.input;
+  let hydratedOutput = step.output;
+
+  // Hydrate input - handle both binary (specVersion 2) and legacy (specVersion 1) formats
+  if (isBinaryFormat(step.input) && step.input.byteLength > 0) {
+    hydratedInput = hydrateStepArguments(
+      step.input,
+      [],
+      step.runId as string,
+      globalThis,
+      streamPrintRevivers
+    );
+  } else if (isLegacyFormat(step.input) && step.input.length > 0) {
+    hydratedInput = hydrateLegacyData(step.input);
+  }
+
+  // Hydrate output - handle both binary (specVersion 2) and legacy (specVersion 1) formats
+  if (isBinaryFormat(step.output)) {
+    hydratedOutput = hydrateStepReturnValue(
+      step.output,
+      globalThis,
+      streamPrintRevivers
+    );
+  } else if (isLegacyFormat(step.output) && step.output.length > 0) {
+    hydratedOutput = hydrateLegacyData(step.output);
+  }
+
   return {
     ...step,
-    input:
-      step.input instanceof Uint8Array && step.input.byteLength > 0
-        ? hydrateStepArguments(
-            step.input,
-            [],
-            step.runId as string,
-            globalThis,
-            streamPrintRevivers
-          )
-        : step.input,
-    output:
-      step.output instanceof Uint8Array
-        ? hydrateStepReturnValue(step.output, globalThis, streamPrintRevivers)
-        : step.output,
+    input: hydratedInput,
+    output: hydratedOutput,
   };
 };
 
@@ -248,26 +297,37 @@ const hydrateWorkflowIO = <
 >(
   workflow: T
 ): T => {
+  let hydratedInput = workflow.input;
+  let hydratedOutput = workflow.output;
+
+  // Hydrate input - handle both binary (specVersion 2) and legacy (specVersion 1) formats
+  if (isBinaryFormat(workflow.input) && workflow.input.byteLength > 0) {
+    hydratedInput = hydrateWorkflowArguments(
+      workflow.input,
+      globalThis,
+      streamPrintRevivers
+    );
+  } else if (isLegacyFormat(workflow.input) && workflow.input.length > 0) {
+    hydratedInput = hydrateLegacyData(workflow.input);
+  }
+
+  // Hydrate output - handle both binary (specVersion 2) and legacy (specVersion 1) formats
+  if (isBinaryFormat(workflow.output)) {
+    hydratedOutput = hydrateWorkflowReturnValue(
+      workflow.output,
+      [],
+      workflow.runId as string,
+      globalThis,
+      streamPrintRevivers
+    );
+  } else if (isLegacyFormat(workflow.output) && workflow.output.length > 0) {
+    hydratedOutput = hydrateLegacyData(workflow.output);
+  }
+
   return {
     ...workflow,
-    input:
-      workflow.input instanceof Uint8Array && workflow.input.byteLength > 0
-        ? hydrateWorkflowArguments(
-            workflow.input,
-            globalThis,
-            streamPrintRevivers
-          )
-        : workflow.input,
-    output:
-      workflow.output instanceof Uint8Array
-        ? hydrateWorkflowReturnValue(
-            workflow.output,
-            [],
-            workflow.runId as string,
-            globalThis,
-            streamPrintRevivers
-          )
-        : workflow.output,
+    input: hydratedInput,
+    output: hydratedOutput,
   };
 };
 
@@ -285,11 +345,19 @@ const hydrateEventData = <
   // so we need to hydrate it specifically.
   try {
     if ('result' in eventData && typeof eventData.result === 'object') {
-      eventData.result = hydrateStepReturnValue(
-        eventData.result,
-        globalThis,
-        streamPrintRevivers
-      );
+      // Handle both binary (specVersion 2) and legacy (specVersion 1) formats
+      if (isBinaryFormat(eventData.result)) {
+        eventData.result = hydrateStepReturnValue(
+          eventData.result,
+          globalThis,
+          streamPrintRevivers
+        );
+      } else if (
+        isLegacyFormat(eventData.result) &&
+        eventData.result.length > 0
+      ) {
+        eventData.result = hydrateLegacyData(eventData.result);
+      }
     }
   } catch (error) {
     console.error('Error hydrating event data', error);
@@ -303,18 +371,26 @@ const hydrateEventData = <
 const hydrateHookMetadata = <T extends { hookId?: string; metadata?: any }>(
   hook: T
 ): T => {
+  let hydratedMetadata = hook.metadata;
+
+  if (hook.metadata && 'runId' in hook) {
+    // Handle both binary (specVersion 2) and legacy (specVersion 1) formats
+    if (isBinaryFormat(hook.metadata)) {
+      hydratedMetadata = hydrateStepArguments(
+        hook.metadata,
+        [],
+        hook.runId as string,
+        globalThis,
+        streamPrintRevivers
+      );
+    } else if (isLegacyFormat(hook.metadata) && hook.metadata.length > 0) {
+      hydratedMetadata = hydrateLegacyData(hook.metadata);
+    }
+  }
+
   return {
     ...hook,
-    metadata:
-      hook.metadata && 'runId' in hook
-        ? hydrateStepArguments(
-            hook.metadata,
-            [],
-            hook.runId as string,
-            globalThis,
-            streamPrintRevivers
-          )
-        : hook.metadata,
+    metadata: hydratedMetadata,
   };
 };
 

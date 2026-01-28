@@ -6,6 +6,7 @@ import {
   PaginatedResponseSchema,
   type Step,
   StepSchema,
+  type StepWithoutData,
   type UpdateStepRequest,
 } from '@workflow/world';
 import { z } from 'zod';
@@ -100,25 +101,49 @@ export function deserializeStep(wireStep: any): Step {
   return result as Step;
 }
 
-// Helper to filter step data based on resolveData setting
-function filterStepData(step: any, resolveData: 'none' | 'all'): Step {
+// Overloaded function signatures for filterStepData
+function filterStepData(step: any, resolveData: 'none'): StepWithoutData;
+function filterStepData(step: any, resolveData: 'all'): Step;
+function filterStepData(
+  step: any,
+  resolveData: 'none' | 'all'
+): Step | StepWithoutData;
+
+// Implementation - when resolveData='none', returns Step with input/output set to undefined
+// to match other World implementations (world-local, world-postgres)
+function filterStepData(
+  step: any,
+  resolveData: 'none' | 'all'
+): Step | StepWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = step;
     const deserialized = deserializeStep(rest);
     return {
       ...deserialized,
-      input: new Uint8Array(),
+      input: undefined,
       output: undefined,
-    };
+    } as StepWithoutData;
   }
   return deserializeStep(step);
 }
 
 // Functions
 export async function listWorkflowRunSteps(
+  params: ListWorkflowRunStepsParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<PaginatedResponse<StepWithoutData>>;
+export async function listWorkflowRunSteps(
+  params: ListWorkflowRunStepsParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<PaginatedResponse<Step>>;
+export async function listWorkflowRunSteps(
   params: ListWorkflowRunStepsParams,
   config?: APIConfig
-): Promise<PaginatedResponse<Step>> {
+): Promise<PaginatedResponse<Step | StepWithoutData>>;
+export async function listWorkflowRunSteps(
+  params: ListWorkflowRunStepsParams,
+  config?: APIConfig
+): Promise<PaginatedResponse<Step | StepWithoutData>> {
   const {
     runId,
     pagination,
@@ -189,9 +214,27 @@ export async function updateStep(
 export async function getStep(
   runId: string | undefined,
   stepId: string,
+  params: GetStepParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<StepWithoutData>;
+export async function getStep(
+  runId: string | undefined,
+  stepId: string,
+  params?: GetStepParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<Step>;
+export async function getStep(
+  runId: string | undefined,
+  stepId: string,
   params?: GetStepParams,
   config?: APIConfig
-): Promise<Step> {
+): Promise<Step | StepWithoutData>;
+export async function getStep(
+  runId: string | undefined,
+  stepId: string,
+  params?: GetStepParams,
+  config?: APIConfig
+): Promise<Step | StepWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
 
