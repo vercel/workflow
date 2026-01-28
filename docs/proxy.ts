@@ -25,7 +25,7 @@ const internationalizer = createI18nMiddleware(i18n);
 const proxy = (request: NextRequest, context: NextFetchEvent) => {
   const { pathname } = request.nextUrl;
 
-  // Handle explicit .md/.mdx extension OR Accept header preference
+  // First, handle Markdown preference rewrites
   const rewrittenMd = rewriteMd(pathname);
   const rewrittenMdx = rewriteMdx(pathname);
   const rewrittenForLLM = isMarkdownPreferred(request) && rewriteLLM(pathname);
@@ -35,6 +35,7 @@ const proxy = (request: NextRequest, context: NextFetchEvent) => {
     return NextResponse.rewrite(new URL(resultToRewrite, request.nextUrl));
   }
 
+  // Fallback to i18n middleware
   return internationalizer(request, context);
 };
 
