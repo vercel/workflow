@@ -6,7 +6,7 @@ export const CTA = () => (
     <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
       Create your first workflow today.
     </h2>
-    <Button asChild className="w-fit" size="lg" className="text-base h-12">
+    <Button asChild size="lg" className="w-fit text-base h-12">
       <Link href="/docs/getting-started">Get started</Link>
     </Button>
   </section>

@@ -1,11 +1,18 @@
+import { createI18nMiddleware } from 'fumadocs-core/i18n/middleware';
 import { isMarkdownPreferred, rewritePath } from 'fumadocs-core/negotiation';
-import { type NextRequest, NextResponse } from 'next/server';
+import {
+  type NextFetchEvent,
+  type NextRequest,
+  NextResponse,
+} from 'next/server';
+import { i18n } from '@/lib/geistdocs/i18n';
 
 const { rewrite: rewriteLLM } = rewritePath('/docs/*path', '/llms.mdx/*path');
 
-export async function proxy(request: NextRequest) {
-  const response = NextResponse.next();
+const internationalizer = createI18nMiddleware(i18n);
 
+const proxy = (request: NextRequest, context: NextFetchEvent) => {
+  // First, handle Markdown preference rewrites
   if (isMarkdownPreferred(request)) {
     const result = rewriteLLM(request.nextUrl.pathname);
     if (result) {
@@ -13,21 +20,13 @@ export async function proxy(request: NextRequest) {
     }
   }
 
-  return response;
-}
+  // Fallback to i18n middleware
+  return internationalizer(request, context);
+};
 
 export const config = {
-  matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - api (API routes)
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - robots.txt (robots file)
-     * - *.svg$ (svg files)
-     * - *.zip (zip files)
-     */
-    '/((?!api|_next/static|_next/image|favicon.ico|robots.txt|.*\\.svg$|.*\\.zip).*)',
-  ],
+  // Matcher ignoring `/_next/`, `/api/`, static assets, favicon, etc.
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
 };
+
+export default proxy;

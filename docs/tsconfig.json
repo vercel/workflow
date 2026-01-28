@@ -16,21 +16,21 @@
     "jsx": "react-jsx",
     "incremental": true,
     "paths": {
-      "@/.source": ["./.source/index.ts"],
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "@/.source": [".source"]
     },
     "plugins": [
       {
         "name": "next"
       }
-    ]
+    ],
+    "strictNullChecks": true
   },
   "include": [
+    "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    "next-env.d.ts",
-    "**/*.mts",
     ".next/dev/types/**/*.ts"
   ],
   "exclude": ["node_modules"]

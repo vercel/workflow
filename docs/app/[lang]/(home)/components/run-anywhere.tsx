@@ -1,5 +1,5 @@
 import type { ComponentProps } from 'react';
-import { CodeBlock } from '@/app/(home)/components/code-block';
+import { CodeBlock } from '@/app/[lang]/(home)/components/code-block';
 import { cn } from '@/lib/utils';
 
 const DigitalOcean = (props: ComponentProps<'svg'>) => (

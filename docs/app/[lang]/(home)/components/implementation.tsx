@@ -1,4 +1,4 @@
-import { CodeBlock } from '@/app/(home)/components/code-block';
+import { CodeBlock } from '@/app/[lang]/(home)/components/code-block';
 
 const data = [
   {
