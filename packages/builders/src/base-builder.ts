@@ -579,17 +579,15 @@ export abstract class BaseBuilder {
         createSwcPlugin({
           mode: 'workflow',
           workflowManifest,
-          // Include serde files so node_modules serde classes are bundled instead of externalized
-          entriesToBundle:
-            serdeOnlyFiles.length > 0 ? serdeOnlyFiles : undefined,
-          outdir: outfile ? dirname(outfile) : undefined,
+          // Do NOT set entriesToBundle - the workflow VM has no require() function,
+          // so all dependencies must be inlined into the bundle.
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
         createNodeModuleErrorPlugin(),
       ],
-      // External packages that should not be bundled (e.g., server-only, client-only for Next.js)
-      external: this.config.externalPackages || [],
+      // Do NOT externalize anything in the workflow bundle - the workflow VM
+      // has no require() function, so all dependencies must be inlined.
     });
     const interimBundle = await interimBundleCtx.rebuild();
 
@@ -799,10 +797,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
       plugins: [
         createSwcPlugin({
           mode: 'client',
-          // Include serde files so node_modules serde classes are bundled instead of externalized
-          entriesToBundle:
-            serdeOnlyFiles.length > 0 ? serdeOnlyFiles : undefined,
-          outdir: outputDir,
+          // Do NOT set entriesToBundle - the client bundle should inline all dependencies
         }),
       ],
     });
