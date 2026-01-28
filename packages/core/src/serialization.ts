@@ -20,6 +20,126 @@ import {
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
 
+// ============================================================================
+// Serialization Format Prefix System
+// ============================================================================
+//
+// All serialized payloads are prefixed with a 4-byte format identifier that
+// allows the client to determine how to decode the payload. This enables:
+//
+// 1. Self-describing payloads - The World layer is agnostic to serialization format
+// 2. Gradual migration - Old runs keep working, new runs can use new formats
+// 3. Composability - Encryption can wrap any format (e.g., "encr" wrapping "devl")
+// 4. Debugging - Raw data inspection immediately reveals the format
+//
+// Format: [4 bytes: format identifier][payload]
+//
+// The 4-character prefix convention matches other workflow IDs (wrun, step, wait, etc.)
+//
+// Current formats:
+// - "devl" - devalue stringify/parse with TextEncoder/TextDecoder (current default)
+//
+// Future formats (reserved):
+// - "cbor" - CBOR binary serialization
+// - "encr" - Encrypted payload (inner payload has its own format prefix)
+
+/**
+ * Known serialization format identifiers.
+ * Each format ID is exactly 4 ASCII characters, matching the convention
+ * used for other workflow IDs (wrun, step, wait, etc.)
+ */
+export const SerializationFormat = {
+  /** devalue stringify/parse with TextEncoder/TextDecoder */
+  DEVALUE_V1: 'devl',
+} as const;
+
+export type SerializationFormatType =
+  (typeof SerializationFormat)[keyof typeof SerializationFormat];
+
+/** Length of the format prefix in bytes */
+const FORMAT_PREFIX_LENGTH = 4;
+
+/** TextEncoder instance for format prefix encoding */
+const formatEncoder = new TextEncoder();
+
+/** TextDecoder instance for format prefix decoding */
+const formatDecoder = new TextDecoder();
+
+/**
+ * Encode a payload with a format prefix.
+ *
+ * @param format - The format identifier (must be exactly 8 ASCII characters)
+ * @param payload - The serialized payload bytes
+ * @returns A new Uint8Array with format prefix prepended
+ */
+export function encodeWithFormatPrefix(
+  format: SerializationFormatType,
+  payload: Uint8Array
+): Uint8Array {
+  const prefixBytes = formatEncoder.encode(format);
+  if (prefixBytes.length !== FORMAT_PREFIX_LENGTH) {
+    throw new Error(
+      `Format identifier must be exactly ${FORMAT_PREFIX_LENGTH} ASCII characters, got "${format}" (${prefixBytes.length} bytes)`
+    );
+  }
+
+  const result = new Uint8Array(FORMAT_PREFIX_LENGTH + payload.length);
+  result.set(prefixBytes, 0);
+  result.set(payload, FORMAT_PREFIX_LENGTH);
+  return result;
+}
+
+/**
+ * Decode a format-prefixed payload.
+ *
+ * @param data - The format-prefixed data
+ * @returns An object with the format identifier and payload
+ * @throws Error if the data is too short or has an unknown format
+ */
+export function decodeFormatPrefix(data: Uint8Array): {
+  format: SerializationFormatType;
+  payload: Uint8Array;
+} {
+  if (data.length < FORMAT_PREFIX_LENGTH) {
+    throw new Error(
+      `Data too short to contain format prefix: expected at least ${FORMAT_PREFIX_LENGTH} bytes, got ${data.length}`
+    );
+  }
+
+  const prefixBytes = data.subarray(0, FORMAT_PREFIX_LENGTH);
+  const format = formatDecoder.decode(prefixBytes);
+
+  // Validate the format is known
+  const knownFormats = Object.values(SerializationFormat) as string[];
+  if (!knownFormats.includes(format)) {
+    throw new Error(
+      `Unknown serialization format: "${format}". Known formats: ${knownFormats.join(', ')}`
+    );
+  }
+
+  const payload = data.subarray(FORMAT_PREFIX_LENGTH);
+  return { format: format as SerializationFormatType, payload };
+}
+
+/**
+ * Check if a Uint8Array has a valid format prefix.
+ * This is useful for detecting whether data uses the new format system
+ * or is legacy unversioned data.
+ *
+ * @param data - The data to check
+ * @returns true if the data starts with a known format prefix
+ */
+export function hasFormatPrefix(data: Uint8Array): boolean {
+  if (data.length < FORMAT_PREFIX_LENGTH) {
+    return false;
+  }
+
+  const prefixBytes = data.subarray(0, FORMAT_PREFIX_LENGTH);
+  const format = formatDecoder.decode(prefixBytes);
+  const knownFormats = Object.values(SerializationFormat) as string[];
+  return knownFormats.includes(format);
+}
+
 /**
  * Default ULID generator for contexts where VM's seeded `stableUlid` isn't available.
  * Used as a fallback when serializing streams outside the workflow VM context
@@ -1072,7 +1192,7 @@ function getStepRevivers(
  * @param value
  * @param global
  * @param runId
- * @returns The dehydrated value as binary data (Uint8Array)
+ * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export function dehydrateWorkflowArguments(
   value: unknown,
@@ -1082,7 +1202,8 @@ export function dehydrateWorkflowArguments(
 ): Uint8Array {
   try {
     const str = stringify(value, getExternalReducers(global, ops, runId));
-    return new TextEncoder().encode(str);
+    const payload = new TextEncoder().encode(str);
+    return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('workflow arguments', error),
@@ -1095,7 +1216,7 @@ export function dehydrateWorkflowArguments(
  * Called from workflow execution environment to hydrate the workflow
  * arguments from the database at the start of workflow execution.
  *
- * @param value - Binary serialized data (Uint8Array)
+ * @param value - Binary serialized data (Uint8Array) with format prefix
  * @param global
  * @param extraRevivers
  * @returns The hydrated value
@@ -1105,12 +1226,18 @@ export function hydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const str = new TextDecoder().decode(value);
-  const obj = parse(str, {
-    ...getWorkflowRevivers(global),
-    ...extraRevivers,
-  });
-  return obj;
+  const { format, payload } = decodeFormatPrefix(value);
+
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    const obj = parse(str, {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+    return obj;
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
 }
 
 /**
@@ -1119,7 +1246,7 @@ export function hydrateWorkflowArguments(
  *
  * @param value
  * @param global
- * @returns The dehydrated value as binary data (Uint8Array)
+ * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export function dehydrateWorkflowReturnValue(
   value: unknown,
@@ -1127,7 +1254,8 @@ export function dehydrateWorkflowReturnValue(
 ): Uint8Array {
   try {
     const str = stringify(value, getWorkflowReducers(global));
-    return new TextEncoder().encode(str);
+    const payload = new TextEncoder().encode(str);
+    return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('workflow return value', error),
@@ -1141,7 +1269,7 @@ export function dehydrateWorkflowReturnValue(
  * the workflow run was initiated from) to hydrate the workflow
  * return value of a completed workflow run.
  *
- * @param value - Binary serialized data (Uint8Array)
+ * @param value - Binary serialized data (Uint8Array) with format prefix
  * @param ops
  * @param global
  * @param extraRevivers
@@ -1155,12 +1283,18 @@ export function hydrateWorkflowReturnValue(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const str = new TextDecoder().decode(value);
-  const obj = parse(str, {
-    ...getExternalRevivers(global, ops, runId),
-    ...extraRevivers,
-  });
-  return obj;
+  const { format, payload } = decodeFormatPrefix(value);
+
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    const obj = parse(str, {
+      ...getExternalRevivers(global, ops, runId),
+      ...extraRevivers,
+    });
+    return obj;
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
 }
 
 /**
@@ -1170,7 +1304,7 @@ export function hydrateWorkflowReturnValue(
  *
  * @param value
  * @param global
- * @returns The dehydrated value as binary data (Uint8Array)
+ * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export function dehydrateStepArguments(
   value: unknown,
@@ -1178,7 +1312,8 @@ export function dehydrateStepArguments(
 ): Uint8Array {
   try {
     const str = stringify(value, getWorkflowReducers(global));
-    return new TextEncoder().encode(str);
+    const payload = new TextEncoder().encode(str);
+    return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('step arguments', error),
@@ -1191,7 +1326,7 @@ export function dehydrateStepArguments(
  * Called from the step handler to hydrate the arguments of a step
  * from the database at the start of the step execution.
  *
- * @param value - Binary serialized data (Uint8Array)
+ * @param value - Binary serialized data (Uint8Array) with format prefix
  * @param ops
  * @param global
  * @param extraRevivers
@@ -1205,12 +1340,18 @@ export function hydrateStepArguments(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const str = new TextDecoder().decode(value);
-  const obj = parse(str, {
-    ...getStepRevivers(global, ops, runId),
-    ...extraRevivers,
-  });
-  return obj;
+  const { format, payload } = decodeFormatPrefix(value);
+
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    const obj = parse(str, {
+      ...getStepRevivers(global, ops, runId),
+      ...extraRevivers,
+    });
+    return obj;
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
 }
 
 /**
@@ -1222,7 +1363,7 @@ export function hydrateStepArguments(
  * @param ops
  * @param global
  * @param runId
- * @returns The dehydrated value as binary data (Uint8Array)
+ * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export function dehydrateStepReturnValue(
   value: unknown,
@@ -1232,7 +1373,8 @@ export function dehydrateStepReturnValue(
 ): Uint8Array {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId));
-    return new TextEncoder().encode(str);
+    const payload = new TextEncoder().encode(str);
+    return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('step return value', error),
@@ -1245,7 +1387,7 @@ export function dehydrateStepReturnValue(
  * Called from the workflow handler when replaying the event log of a `step_completed` event.
  * Hydrates the return value of a step from the database.
  *
- * @param value - Binary serialized data (Uint8Array)
+ * @param value - Binary serialized data (Uint8Array) with format prefix
  * @param global
  * @param extraRevivers
  * @returns The hydrated return value of a step, ready to be consumed by the workflow handler
@@ -1255,10 +1397,16 @@ export function hydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
-  const str = new TextDecoder().decode(value);
-  const obj = parse(str, {
-    ...getWorkflowRevivers(global),
-    ...extraRevivers,
-  });
-  return obj;
+  const { format, payload } = decodeFormatPrefix(value);
+
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    const obj = parse(str, {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+    return obj;
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
 }

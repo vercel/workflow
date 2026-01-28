@@ -13,7 +13,9 @@ import {
   getStreamType,
   getWorkflowReducers,
   hydrateStepArguments,
+  hydrateStepReturnValue,
   hydrateWorkflowArguments,
+  hydrateWorkflowReturnValue,
 } from './serialization.js';
 import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
@@ -49,6 +51,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(date, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -103,6 +109,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(date, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -134,6 +144,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(bigInt, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -180,6 +194,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(bigInt, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -234,6 +252,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(map, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -293,6 +315,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(set, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -374,6 +400,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(headers, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -503,6 +533,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(params, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -562,6 +596,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(params, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -605,6 +643,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(buffer, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -643,6 +685,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(array, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -681,6 +727,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(array, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -719,6 +769,10 @@ describe('workflow arguments', () => {
     const serialized = dehydrateWorkflowArguments(array, [], mockRunId);
     expect(serialized).toMatchInlineSnapshot(`
       Uint8Array [
+        100,
+        101,
+        118,
+        108,
         91,
         91,
         34,
@@ -772,6 +826,10 @@ describe('workflow arguments', () => {
       const serialized = dehydrateWorkflowArguments(request, [], mockRunId);
       expect(serialized).toMatchInlineSnapshot(`
         Uint8Array [
+          100,
+          101,
+          118,
+          108,
           91,
           91,
           34,
@@ -1117,6 +1175,10 @@ describe('workflow arguments', () => {
       const serialized = dehydrateWorkflowArguments(request, [], mockRunId);
       expect(serialized).toMatchInlineSnapshot(`
         Uint8Array [
+          100,
+          101,
+          118,
+          108,
           91,
           91,
           34,
@@ -2055,5 +2117,78 @@ describe('custom class serialization', () => {
     expect(hydrated.items.get('b')).toBe(2);
     expect(hydrated.created).toBeInstanceOf(Date);
     expect(hydrated.created.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+  });
+});
+
+describe('format prefix system', () => {
+  const { globalThis: vmGlobalThis } = createContext({
+    seed: 'test',
+    fixedTimestamp: 1714857600000,
+  });
+
+  it('should encode data with format prefix', () => {
+    const data = { message: 'hello' };
+    const serialized = dehydrateWorkflowArguments(data, [], mockRunId);
+
+    // Check that the first 4 bytes are the format prefix "devl"
+    const prefix = new TextDecoder().decode(serialized.subarray(0, 4));
+    expect(prefix).toBe('devl');
+  });
+
+  it('should decode prefixed data correctly', () => {
+    const data = { message: 'hello', count: 42 };
+    const serialized = dehydrateWorkflowArguments(data, [], mockRunId);
+    const hydrated = hydrateWorkflowArguments(serialized, vmGlobalThis);
+
+    expect(hydrated).toEqual({ message: 'hello', count: 42 });
+  });
+
+  it('should handle all dehydrate/hydrate function pairs with format prefix', () => {
+    const testData = { test: 'data', nested: { value: 123 } };
+
+    // Workflow arguments
+    const workflowArgs = dehydrateWorkflowArguments(testData, [], mockRunId);
+    expect(new TextDecoder().decode(workflowArgs.subarray(0, 4))).toBe('devl');
+    expect(hydrateWorkflowArguments(workflowArgs, vmGlobalThis)).toEqual(
+      testData
+    );
+
+    // Workflow return value
+    const workflowReturn = dehydrateWorkflowReturnValue(testData, globalThis);
+    expect(new TextDecoder().decode(workflowReturn.subarray(0, 4))).toBe(
+      'devl'
+    );
+    expect(
+      hydrateWorkflowReturnValue(workflowReturn, [], mockRunId, vmGlobalThis)
+    ).toEqual(testData);
+
+    // Step arguments
+    const stepArgs = dehydrateStepArguments(testData, globalThis);
+    expect(new TextDecoder().decode(stepArgs.subarray(0, 4))).toBe('devl');
+    expect(hydrateStepArguments(stepArgs, [], mockRunId, vmGlobalThis)).toEqual(
+      testData
+    );
+
+    // Step return value
+    const stepReturn = dehydrateStepReturnValue(testData, [], mockRunId);
+    expect(new TextDecoder().decode(stepReturn.subarray(0, 4))).toBe('devl');
+    expect(hydrateStepReturnValue(stepReturn, vmGlobalThis)).toEqual(testData);
+  });
+
+  it('should throw error for unknown format prefix', () => {
+    // Create data with an unknown 4-character format prefix
+    const unknownFormat = new TextEncoder().encode('unkn{"test":true}');
+
+    expect(() => hydrateWorkflowArguments(unknownFormat, vmGlobalThis)).toThrow(
+      /Unknown serialization format/
+    );
+  });
+
+  it('should throw error for data too short to contain format prefix', () => {
+    const tooShort = new TextEncoder().encode('dev');
+
+    expect(() => hydrateWorkflowArguments(tooShort, vmGlobalThis)).toThrow(
+      /Data too short to contain format prefix/
+    );
   });
 });

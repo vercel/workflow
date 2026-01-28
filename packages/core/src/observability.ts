@@ -239,8 +239,8 @@ const isLegacyFormat = (data: unknown): data is any[] => {
 };
 
 /**
- * Check if data is in new binary format (Uint8Array).
- * New specVersion 2 runs store data as binary Uint8Array.
+ * Check if data is in binary format (Uint8Array).
+ * specVersion 2+ runs store data as binary Uint8Array with a format prefix.
  */
 const isBinaryFormat = (data: unknown): data is Uint8Array => {
   return data instanceof Uint8Array;
