@@ -51,7 +51,11 @@ export function createDiscoverEntriesPlugin(state: {
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
-      build.onResolve({ filter: jsTsRegex }, async (args) => {
+      // Track ALL imports (not just file paths with extensions) to build
+      // the parent-child relationship map. This is critical for detecting
+      // when a package like "just-bash/workflow" re-exports code containing
+      // 'use step', 'use workflow', or serde patterns from internal files.
+      build.onResolve({ filter: /.*/ }, async (args) => {
         try {
           const resolved = await enhancedResolve(args.resolveDir, args.path);
 
