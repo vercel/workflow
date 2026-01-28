@@ -1,5 +1,6 @@
 packages:
   - workbench/*
+  - workbench/just-bash/examples/workflow-vite
   - packages/*
   - docs
 

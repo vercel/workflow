@@ -1,0 +1,24 @@
+# Test files
+**/*.test.js
+**/*.test.d.ts
+
+# Source files
+src/
+
+# Development files
+*.config.ts
+*.config.js
+tsconfig.json
+biome.json
+knip.json
+
+# CI/CD
+.github/
+
+# Editor
+.vscode/
+
+# Other
+.gitignore
+AGENTS.md
+fix-spec-tests.md

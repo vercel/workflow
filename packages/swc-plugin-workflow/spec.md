@@ -557,6 +557,31 @@ For example, if a class `Point` is defined in `models/point.ts` and only used in
 
 This cross-registration happens automatically during the build process - no manual configuration is required.
 
+### Package-Based Class IDs
+
+When a class is defined in a package (inside `node_modules`), the classId uses the **package name** instead of the file path. This ensures that classes exported under different export conditions (e.g., `"workflow"` vs `"import"`) get the same classId.
+
+For example, a package `just-bash` might have:
+- Main export: `node_modules/just-bash/dist/Bash.js` (full implementation)
+- Workflow export: `node_modules/just-bash/dist/workflow.js` (lightweight implementation)
+
+Both files export a class named `Bash`. Without package-based classIds, they would get different IDs:
+- `class//node_modules/just-bash/dist/Bash.js//Bash`
+- `class//node_modules/just-bash/dist/workflow.js//Bash`
+
+With package-based classIds, both get the same ID:
+- `class//just-bash//Bash`
+
+This allows packages to provide workflow-optimized versions of their classes that are serialization-compatible with the full implementation.
+
+**ClassId format:**
+| Context | Format | Example |
+|---------|--------|---------|
+| Local file | `class//{filepath}//{className}` | `class//src/models/Point.ts//Point` |
+| Package | `class//{packageName}//{className}` | `class//just-bash//Bash` |
+
+The package name is automatically detected by the build system when processing files from `node_modules`.
+
 ---
 
 ## Default Exports

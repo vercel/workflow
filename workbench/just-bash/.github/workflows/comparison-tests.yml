@@ -1,0 +1,37 @@
+name: Comparison Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  comparison-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run comparison tests
+        run: pnpm test:comparison
+
+      - name: Run comparison tests in record mode
+        run: pnpm test:comparison:record
+
+      - name: diff
+        run: git diff
+
+      # Fail if there are any diffs
+      - name: Fail if there are any diffs
+        run: if [ -n "$(git diff --name-only)" ]; then exit 1; fi

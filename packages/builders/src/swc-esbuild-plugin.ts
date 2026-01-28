@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { relative } from 'node:path';
 import { promisify } from 'node:util';
 import enhancedResolveOrig from 'enhanced-resolve';
@@ -10,7 +10,51 @@ import {
 import {
   jsTsRegex,
   parentHasChild,
+  resolvedPathToPackageName,
 } from './discover-entries-esbuild-plugin.js';
+
+/**
+ * Extract the package path for use in workflow/step/class IDs.
+ *
+ * For files inside node_modules, returns "node_modules/{package-name}" which provides
+ * a stable identifier that works across different export conditions. Different export
+ * conditions (e.g., "workflow" vs "import") resolve to different files within a package,
+ * but should produce the same IDs for serialization compatibility.
+ *
+ * Returns null if the path is not in node_modules (i.e., it's a local project file).
+ *
+ * Examples:
+ * - /project/node_modules/just-bash/dist/Bash.js → "node_modules/just-bash"
+ * - /project/node_modules/@scope/pkg/index.js → "node_modules/@scope/pkg"
+ * - /project/node_modules/.pnpm/just-bash@1.0.0/node_modules/just-bash/dist/Bash.js → "node_modules/just-bash"
+ */
+function extractPackagePathForIds(filePath: string): string | null {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+
+  // Find the last occurrence of node_modules in the path
+  // This handles pnpm's nested node_modules structure
+  const nodeModulesIndex = normalizedPath.lastIndexOf('/node_modules/');
+  if (nodeModulesIndex === -1) {
+    return null;
+  }
+
+  // Get the part after node_modules/
+  const afterNodeModules = normalizedPath.substring(
+    nodeModulesIndex + '/node_modules/'.length
+  );
+  const parts = afterNodeModules.split('/');
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  // Check if it's a scoped package (@scope/name)
+  if (parts[0].startsWith('@') && parts.length >= 2) {
+    return `node_modules/${parts[0]}/${parts[1]}`;
+  }
+
+  return `node_modules/${parts[0]}`;
+}
 
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow' | 'client';
@@ -55,10 +99,47 @@ const NODE_ESM_RESOLVE_OPTIONS = {
   conditionNames: ['node', 'import'],
 };
 
+/**
+ * Extract the package name from a bare specifier import.
+ * Returns null if it's not a package import (e.g., relative path).
+ *
+ * Examples:
+ * - "just-bash" → "just-bash"
+ * - "just-bash/workflow" → "just-bash"
+ * - "@scope/pkg" → "@scope/pkg"
+ * - "@scope/pkg/subpath" → "@scope/pkg"
+ * - "./foo" → null
+ * - "/abs/path" → null
+ */
+function extractPackageNameFromSpecifier(specifier: string): string | null {
+  // Not a bare specifier
+  if (specifier.startsWith('.') || specifier.startsWith('/')) {
+    return null;
+  }
+
+  const parts = specifier.split('/');
+
+  // Scoped package: @scope/name or @scope/name/subpath
+  if (parts[0].startsWith('@')) {
+    if (parts.length >= 2) {
+      return `${parts[0]}/${parts[1]}`;
+    }
+    return null;
+  }
+
+  // Regular package: name or name/subpath
+  return parts[0];
+}
+
 export function createSwcPlugin(options: SwcPluginOptions): Plugin {
   return {
     name: 'swc-workflow-plugin',
     setup(build) {
+      // Track resolved paths to their package names
+      // This allows us to determine which package a file comes from
+      // even when it's symlinked (e.g., in a monorepo)
+      const resolvedPathToPackage = new Map<string, string>();
+
       // everything is external unless explicitly configured
       // to be bundled
       const cjsResolver = promisify(
@@ -75,6 +156,38 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           return cjsResolver(context, path);
         }
       };
+
+      // Capture package imports and track the mapping from resolved path to package name.
+      // This runs before esbuild's default resolution for bare specifier imports.
+      const TRACKING_RESOLVE = Symbol('tracking-resolve');
+      build.onResolve({ filter: /^[^./]/ }, async (args) => {
+        // Avoid infinite recursion - if we're already tracking, let it through
+        if (args.pluginData === TRACKING_RESOLVE) {
+          return null;
+        }
+
+        const packageName = extractPackageNameFromSpecifier(args.path);
+        if (!packageName) {
+          return null; // Let esbuild handle it
+        }
+
+        // Let esbuild resolve the path (with our marker to prevent recursion)
+        const result = await build.resolve(args.path, {
+          kind: args.kind,
+          resolveDir: args.resolveDir,
+          importer: args.importer,
+          namespace: args.namespace,
+          pluginData: TRACKING_RESOLVE,
+        });
+
+        if (result.path) {
+          // Store the mapping from resolved path to package name
+          const normalizedResult = result.path.replace(/\\/g, '/');
+          resolvedPathToPackage.set(normalizedResult, packageName);
+        }
+
+        return result;
+      });
 
       // Handle workflow/internal/* imports that may come from transformed files
       // inside node_modules. The SWC transform adds these imports, but the
@@ -221,8 +334,59 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             relativeFilepath = normalizedPath.split('/').pop() || 'unknown.ts';
           }
 
+          // Get the import specifier for files from packages.
+          // This allows IDs to match what developers write in their imports:
+          // - import { Bash } from "just-bash" → class//just-bash//Bash
+          // - import { foo } from "./workflows/foo" → class//workflows/foo.ts//MyClass
+          //
+          // We try multiple approaches to find the package name:
+          // 1. Check local tracking from onResolve (same build)
+          // 2. Check shared tracking from discover phase
+          // 3. Extract from path if it contains /node_modules/
+          // 4. Resolve symlinks and check if real path is in node_modules
+          let packagePath: string | undefined;
+
+          // Approach 1: Check local tracking (from onResolve in this build)
+          // This gives us the original import specifier (e.g., "just-bash")
+          let packageName = resolvedPathToPackage.get(normalizedPath);
+          if (packageName) {
+            packagePath = packageName;
+          }
+
+          // Approach 2: Check shared tracking from discover phase
+          if (!packagePath) {
+            packageName = resolvedPathToPackageName.get(normalizedPath);
+            if (packageName) {
+              packagePath = packageName;
+            }
+          }
+
+          // Approach 3: Extract from path if it contains /node_modules/
+          if (!packagePath) {
+            const extracted = extractPackagePathForIds(args.path);
+            if (extracted) {
+              // extracted is "node_modules/pkg-name", we just want "pkg-name"
+              packagePath = extracted.replace(/^node_modules\//, '');
+            }
+          }
+
+          // Approach 4: Resolve symlinks and check if real path is in node_modules
+          if (!packagePath) {
+            try {
+              const realPath = await realpath(args.path);
+              const extracted = extractPackagePathForIds(realPath);
+              if (extracted) {
+                packagePath = extracted.replace(/^node_modules\//, '');
+              }
+            } catch {
+              // Ignore errors (file might not exist during virtual builds)
+            }
+          }
+
           const { code: transformedCode, workflowManifest } =
-            await applySwcTransform(relativeFilepath, source, options.mode);
+            await applySwcTransform(relativeFilepath, source, options.mode, {
+              packagePath,
+            });
 
           if (!options.workflowManifest) {
             options.workflowManifest = {};

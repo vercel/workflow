@@ -46,10 +46,23 @@ export type WorkflowManifest = {
   };
 };
 
+export interface SwcTransformOptions {
+  /**
+   * When the file comes from a package in node_modules, this is the package path
+   * relative to the project root (e.g., "node_modules/just-bash").
+   *
+   * Used to generate stable IDs (workflow, step, class) that work across different
+   * export conditions. Different export conditions resolve to different files, but
+   * should produce the same IDs for serialization compatibility.
+   */
+  packagePath?: string;
+}
+
 export async function applySwcTransform(
   filename: string,
   source: string,
-  mode: 'workflow' | 'step' | 'client' | false
+  mode: 'workflow' | 'step' | 'client' | false,
+  options?: SwcTransformOptions
 ): Promise<{
   code: string;
   workflowManifest: WorkflowManifest;
@@ -66,6 +79,15 @@ export async function applySwcTransform(
     filename.endsWith('.tsx') ||
     filename.endsWith('.mts') ||
     filename.endsWith('.cts');
+
+  // Build plugin config - include packagePath if provided
+  // Note: pluginConfig is only used when mode is truthy (string), so the cast is safe
+  const pluginConfig: { mode: string; packagePath?: string } = {
+    mode: mode as string,
+  };
+  if (options?.packagePath) {
+    pluginConfig.packagePath = options.packagePath;
+  }
 
   // Transform with SWC to support syntax esbuild doesn't
   const result = await transform(source, {
@@ -88,7 +110,7 @@ export async function applySwcTransform(
       target: 'es2022',
       experimental: mode
         ? {
-            plugins: [[swcPluginPath, { mode }]],
+            plugins: [[swcPluginPath, pluginConfig]],
           }
         : undefined,
       transform: {

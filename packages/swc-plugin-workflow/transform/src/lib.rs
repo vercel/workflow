@@ -290,6 +290,10 @@ pub enum TransformMode {
 pub struct StepTransform {
     mode: TransformMode,
     filename: String,
+    /// When the file comes from a package, this is the package specifier
+    /// (e.g., "just-bash" or "@scope/pkg"). This matches the import specifier.
+    /// Used to generate stable IDs that work across different export conditions.
+    package_path: Option<String>,
     // Track if the file has a top-level "use step" directive
     has_file_step_directive: bool,
     // Track if the file has a top-level "use workflow" directive
@@ -1209,10 +1213,11 @@ impl StepTransform {
             }
         }
     }
-    pub fn new(mode: TransformMode, filename: String) -> Self {
+    pub fn new(mode: TransformMode, filename: String, package_path: Option<String>) -> Self {
         Self {
             mode,
             filename,
+            package_path,
             has_file_step_directive: false,
             has_file_workflow_directive: false,
             step_function_names: HashSet::new(),
@@ -1268,13 +1273,33 @@ impl StepTransform {
             }
             Some(name) => {
                 let prefix = if is_workflow { "workflow" } else { "step" };
-                naming::format_name(prefix, &self.filename, name)
+                // Use package_path for stable IDs across export conditions
+                let path = self.package_path.as_ref().unwrap_or(&self.filename);
+                naming::format_name(prefix, path, name)
             }
             None => {
                 let prefix = if is_workflow { "workflow" } else { "step" };
-                naming::format_name(prefix, &self.filename, span.lo.0)
+                // Use package_path for stable IDs across export conditions
+                let path = self.package_path.as_ref().unwrap_or(&self.filename);
+                naming::format_name(prefix, path, span.lo.0)
             }
         }
+    }
+
+    /// Create a class ID for serialization registration.
+    ///
+    /// When the file comes from a package (package_path is Some), the ID uses
+    /// the package specifier instead of the file path. This matches the import
+    /// specifier developers use in their code, and ensures that classes exported
+    /// under different export conditions (e.g., "workflow" vs "import") get the same
+    /// ID, allowing serialization to work across different bundle contexts.
+    ///
+    /// Examples:
+    /// - With package_path "just-bash", class "Bash" → "class//just-bash//Bash"
+    /// - Without package_path, file "src/Bash.ts", class "Bash" → "class//src/Bash.ts//Bash"
+    fn create_class_id(&self, class_name: &str) -> String {
+        let path = self.package_path.as_ref().unwrap_or(&self.filename);
+        naming::format_name("class", path, class_name)
     }
 
     // Generate a unique identifier that doesn't conflict with existing declarations
@@ -2477,7 +2502,7 @@ impl StepTransform {
     // Create a registration call statement: registerSerializationClass("class//...", ClassName)
     // Used in workflow mode and client mode to register classes for serialization
     fn create_class_serialization_registration(&self, class_name: &str) -> Stmt {
-        let class_id = naming::format_name("class", &self.filename, class_name);
+        let class_id = self.create_class_id(class_name);
         Stmt::Expr(ExprStmt {
             span: DUMMY_SP,
             expr: Box::new(Expr::Call(CallExpr {
@@ -3255,10 +3280,13 @@ impl StepTransform {
             let mut sorted_classes: Vec<_> = self.classes_for_manifest.iter().collect();
             sorted_classes.sort();
 
+            // Use package_path if available for stable IDs across export conditions
+            let id_base = self.package_path.as_ref().unwrap_or(&self.filename).clone();
+
             let class_entries: Vec<String> = sorted_classes
                 .into_iter()
                 .map(|class_name| {
-                    let class_id = naming::format_name("class", &self.filename, class_name);
+                    let class_id = naming::format_name("class", &id_base, class_name);
                     format!("\"{}\":{{\"classId\":\"{}\"}}", class_name, class_id)
                 })
                 .collect();
@@ -3267,25 +3295,30 @@ impl StepTransform {
         }
 
         // Build the final comment structure
-        let relative_filename = self.filename.replace('\\', "/"); // Normalize path separators
+        // Use package_path for manifest key when available (for stable grouping across export conditions)
+        let manifest_key = self
+            .package_path
+            .as_ref()
+            .map(|p| p.replace('\\', "/"))
+            .unwrap_or_else(|| self.filename.replace('\\', "/")); // Normalize path separators
         let mut parts = Vec::new();
 
         if metadata.contains_key("workflows") {
             parts.push(format!(
                 "\"workflows\":{{\"{}\":{}}}",
-                relative_filename, metadata["workflows"]
+                manifest_key, metadata["workflows"]
             ));
         }
         if metadata.contains_key("steps") {
             parts.push(format!(
                 "\"steps\":{{\"{}\":{}}}",
-                relative_filename, metadata["steps"]
+                manifest_key, metadata["steps"]
             ));
         }
         if metadata.contains_key("classes") {
             parts.push(format!(
                 "\"classes\":{{\"{}\":{}}}",
-                relative_filename, metadata["classes"]
+                manifest_key, metadata["classes"]
             ));
         }
 
@@ -3949,8 +3982,8 @@ impl VisitMut for StepTransform {
                         self.classes_needing_serialization.drain().collect();
                     sorted_classes.sort();
                     for class_name in sorted_classes {
-                        // Generate class ID: class//filename//ClassName
-                        let class_id = naming::format_name("class", &self.filename, &class_name);
+                        // Generate class ID using package_name if available for stable IDs
+                        let class_id = self.create_class_id(&class_name);
 
                         // Create: registerSerializationClass("class//...", ClassName)
                         let registration_call = Stmt::Expr(ExprStmt {

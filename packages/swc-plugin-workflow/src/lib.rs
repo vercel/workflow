@@ -12,6 +12,11 @@ use swc_workflow::{StepTransform, TransformMode};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WasmConfig {
     mode: TransformMode,
+    /// When the file comes from a package in node_modules, this is the package path
+    /// relative to the project root (e.g., "node_modules/just-bash").
+    /// Used to generate stable IDs that work across different export conditions.
+    #[serde(default)]
+    package_path: Option<String>,
 }
 
 #[plugin_transform]
@@ -69,7 +74,11 @@ pub fn process_transform(
     // Normalize path separators to forward slashes for consistent workflow IDs across platforms
     let normalized_filename = relative_filename.replace('\\', "/");
 
-    let mut visitor = StepTransform::new(plugin_config.mode, normalized_filename);
+    let mut visitor = StepTransform::new(
+        plugin_config.mode,
+        normalized_filename,
+        plugin_config.package_path,
+    );
     program.visit_mut_with(&mut visitor);
     program
 }

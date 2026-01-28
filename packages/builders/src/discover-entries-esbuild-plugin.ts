@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import enhancedResolveOriginal from 'enhanced-resolve';
+import enhancedResolveOrig from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
 import { applySwcTransform } from './apply-swc-transform.js';
 import {
@@ -9,12 +9,59 @@ import {
   isWorkflowSdkFile,
 } from './transform-utils.js';
 
-const enhancedResolve = promisify(enhancedResolveOriginal);
+// Create resolver with ESM conditions to properly resolve package exports.
+// The 'workflow' condition is first to prefer workflow-optimized entry points
+// (e.g., packages that export a lightweight version for workflow VMs).
+const enhancedResolve = promisify(
+  enhancedResolveOrig.create({
+    conditionNames: ['workflow', 'node', 'import', 'default'],
+    exportsFields: ['exports'],
+    extensions: ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'],
+  })
+);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
 // parent -> child relationship
 export const importParents = new Map<string, string>();
+
+/**
+ * Maps resolved file paths to their package names.
+ * When a file is resolved via a bare specifier import (e.g., "just-bash/workflow"),
+ * we track the package name so it can be used for generating stable IDs.
+ */
+export const resolvedPathToPackageName = new Map<string, string>();
+
+/**
+ * Extract the package name from a bare specifier import.
+ * Returns null if it's not a package import (e.g., relative path).
+ *
+ * Examples:
+ * - "just-bash" → "just-bash"
+ * - "just-bash/workflow" → "just-bash"
+ * - "@scope/pkg" → "@scope/pkg"
+ * - "@scope/pkg/subpath" → "@scope/pkg"
+ * - "./foo" → null
+ */
+function extractPackageNameFromSpecifier(specifier: string): string | null {
+  // Not a bare specifier
+  if (specifier.startsWith('.') || specifier.startsWith('/')) {
+    return null;
+  }
+
+  const parts = specifier.split('/');
+
+  // Scoped package: @scope/name or @scope/name/subpath
+  if (parts[0].startsWith('@')) {
+    if (parts.length >= 2) {
+      return `${parts[0]}/${parts[1]}`;
+    }
+    return null;
+  }
+
+  // Regular package: name or name/subpath
+  return parts[0];
+}
 
 // check if a parent has a child in it's import chain
 // e.g. if a dependency needs to be bundled because it has
@@ -53,7 +100,7 @@ export function createDiscoverEntriesPlugin(state: {
     setup(build) {
       // Track ALL imports (not just file paths with extensions) to build
       // the parent-child relationship map. This is critical for detecting
-      // when a package like "just-bash/workflow" re-exports code containing
+      // when a package like "just-bash" re-exports code containing
       // 'use step', 'use workflow', or serde patterns from internal files.
       build.onResolve({ filter: /.*/ }, async (args) => {
         try {
@@ -61,8 +108,18 @@ export function createDiscoverEntriesPlugin(state: {
 
           if (resolved) {
             importParents.set(args.importer, resolved);
+
+            // Track package name for bare specifier imports
+            // This allows us to generate stable IDs for files from packages
+            const packageName = extractPackageNameFromSpecifier(args.path);
+            if (packageName) {
+              const normalizedResolved = resolved.replace(/\\/g, '/');
+              resolvedPathToPackageName.set(normalizedResolved, packageName);
+            }
           }
-        } catch (_) {}
+        } catch {
+          // Ignore resolution errors
+        }
         return null;
       });
 

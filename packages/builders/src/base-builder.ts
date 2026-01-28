@@ -130,6 +130,9 @@ export abstract class BaseBuilder {
         sourcemap: false,
         absWorkingDir: this.config.workingDir,
         logLevel: 'silent',
+        // Use 'workflow' condition to prefer workflow-optimized entry points
+        // (e.g., packages that export a lightweight version for workflow VMs).
+        conditions: ['workflow'],
         // External packages that should not be bundled during discovery
         external: this.config.externalPackages || [],
       });

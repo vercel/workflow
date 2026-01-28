@@ -32,8 +32,16 @@ export function workflowTransformPlugin(
         return null;
       }
 
-      // Skip files in excluded directories (e.g., pre-built workflow bundles)
+      // Normalize paths for consistent comparison
       const normalizedId = id.replace(/\\/g, '/');
+      const workingDir = process.cwd();
+      const normalizedWorkingDir = workingDir
+        .replace(/\\/g, '/')
+        .replace(/\/$/, '');
+      const lowerWd = normalizedWorkingDir.toLowerCase();
+      const lowerPath = normalizedId.toLowerCase();
+
+      // Skip files in excluded directories (e.g., pre-built workflow bundles)
       for (const excludePath of exclude) {
         const normalizedExclude = excludePath.replace(/\\/g, '/');
         if (normalizedId.startsWith(normalizedExclude)) {
@@ -46,6 +54,17 @@ export function workflowTransformPlugin(
       // For @workflow SDK packages, only transform files with actual directives,
       // not files that just match serde patterns (which are internal SDK implementation files)
       if (isWorkflowSdkFile(id) && !patterns.hasDirective) {
+        return null;
+      }
+
+      // Skip external packages (files outside the working directory) that only have
+      // serde patterns (no directives). These packages have their class registration
+      // handled by the step bundle, and transforming them would add imports that can't
+      // be resolved from the package's location (e.g., 'workflow/internal/class-serialization').
+      // This also handles symlinked packages in monorepos where the path doesn't contain
+      // '/node_modules/' but the file is still external to the user's project.
+      const isExternalFile = !lowerPath.startsWith(lowerWd + '/');
+      if (isExternalFile && !patterns.hasDirective) {
         return null;
       }
 
@@ -65,20 +84,12 @@ export function workflowTransformPlugin(
 
       // Calculate relative filename for SWC plugin
       // The SWC plugin uses filename to generate workflowId, so it must be relative
-      const workingDir = process.cwd();
-      const normalizedWorkingDir = workingDir
-        .replace(/\\/g, '/')
-        .replace(/\/$/, '');
-      const normalizedFilepath = id.replace(/\\/g, '/');
-
-      // Windows fix: Use case-insensitive comparison to work around drive letter casing issues
-      const lowerWd = normalizedWorkingDir.toLowerCase();
-      const lowerPath = normalizedFilepath.toLowerCase();
+      // (reusing normalizedId and lowerPath/lowerWd from above)
 
       let relativeFilename: string;
       if (lowerPath.startsWith(`${lowerWd}/`)) {
         // File is under working directory - manually calculate relative path
-        relativeFilename = normalizedFilepath.substring(
+        relativeFilename = normalizedId.substring(
           normalizedWorkingDir.length + 1
         );
       } else if (lowerPath === lowerWd) {
@@ -99,7 +110,7 @@ export function workflowTransformPlugin(
       // Final safety check - ensure we never pass an absolute path to SWC
       if (relativeFilename.includes(':') || relativeFilename.startsWith('/')) {
         // This should rarely happen, but use filename split as last resort
-        relativeFilename = normalizedFilepath.split('/').pop() || 'unknown.ts';
+        relativeFilename = normalizedId.split('/').pop() || 'unknown.ts';
       }
 
       // Transform with SWC

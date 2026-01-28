@@ -1,0 +1,207 @@
+{
+  "108dcbed2cd5782d": {
+    "command": "sort -t: -k2 -rn test.txt",
+    "files": {
+      "test.txt": "a:1\nb:3\nc:2\n"
+    },
+    "stdout": "b:3\nc:2\na:1\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "144a0a82fb4ffd95": {
+    "command": "sort test.txt",
+    "files": {
+      "test.txt": "banana\napple\ncherry\n"
+    },
+    "stdout": "apple\nbanana\ncherry\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "22ec96c433c79739": {
+    "command": "sort -h test.txt",
+    "files": {
+      "test.txt": "1K\n2M\n500\n1G\n100K\n"
+    },
+    "stdout": "500\n1K\n100K\n2M\n1G\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "335547cbd220ee19": {
+    "command": "sort -ru test.txt",
+    "files": {
+      "test.txt": "apple\nbanana\napple\ncherry\n"
+    },
+    "stdout": "cherry\nbanana\napple\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "4a3da2790df3b3e2": {
+    "command": "echo -e \"c\\na\\nb\" | sort",
+    "files": {},
+    "stdout": "a\nb\nc\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "6f4906186ee7277d": {
+    "command": "sort -c test.txt; echo $?",
+    "files": {
+      "test.txt": "a\nb\nc\n"
+    },
+    "stdout": "0\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "79606ee16219d028": {
+    "command": "sort -t: -k2 test.txt",
+    "files": {
+      "test.txt": "a:3\nb:1\nc:2\n"
+    },
+    "stdout": "b:1\nc:2\na:3\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "8a1b9d02adf9b973": {
+    "command": "sort -hr test.txt",
+    "files": {
+      "test.txt": "1K\n1M\n1G\n"
+    },
+    "stdout": "1G\n1M\n1K\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "972a3cbce4c80459": {
+    "command": "sort -nr test.txt",
+    "files": {
+      "test.txt": "10\n2\n1\n20\n"
+    },
+    "stdout": "20\n10\n2\n1\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "9bb5cb8b05a35603": {
+    "command": "sort -t: -k2 -n test.txt",
+    "files": {
+      "test.txt": "a:10\nb:2\nc:5\n"
+    },
+    "stdout": "b:2\nc:5\na:10\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "9bc249b4bd9769ca": {
+    "command": "sort -V test.txt",
+    "files": {
+      "test.txt": "file1.10\nfile1.2\nfile1.1\n"
+    },
+    "stdout": "file1.1\nfile1.2\nfile1.10\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "9bd8d04e1fe4c298": {
+    "command": "sort -k 2 test.txt",
+    "files": {
+      "test.txt": "x 3\ny 1\nz 2\n"
+    },
+    "stdout": "y 1\nz 2\nx 3\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "9ec9ea2eb1234028": {
+    "command": "sort -V test.txt",
+    "files": {
+      "test.txt": "1.0.10\n1.0.2\n1.0.0\n"
+    },
+    "stdout": "1.0.0\n1.0.2\n1.0.10\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "abe97e27f804e3e7": {
+    "command": "sort -r test.txt",
+    "files": {
+      "test.txt": "banana\napple\ncherry\n"
+    },
+    "stdout": "cherry\nbanana\napple\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "c090a6aa528f173d": {
+    "command": "sort -c test.txt 2>&1; echo $?",
+    "files": {
+      "test.txt": "b\na\nc\n"
+    },
+    "stdout": "sort: test.txt:2: disorder: a\n1\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "c2a6b324d07381e6": {
+    "command": "sort -n test.txt",
+    "files": {
+      "test.txt": "10 apples\n2 oranges\n5 bananas\n"
+    },
+    "stdout": "2 oranges\n5 bananas\n10 apples\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "c3274d7afbc806fc": {
+    "command": "sort -b test.txt",
+    "files": {
+      "test.txt": "  b\na\n   c\n"
+    },
+    "stdout": "a\n  b\n   c\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "cad2b2e2302002a5": {
+    "command": "sort -nu test.txt",
+    "files": {
+      "test.txt": "5\n3\n5\n1\n3\n"
+    },
+    "stdout": "1\n3\n5\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "ce27a7876e30e3c6": {
+    "command": "sort -u test.txt",
+    "files": {
+      "test.txt": "apple\nbanana\napple\ncherry\nbanana\n"
+    },
+    "stdout": "apple\nbanana\ncherry\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "d5a4c74bbc48b229": {
+    "command": "sort -n test.txt",
+    "files": {
+      "test.txt": "10\n-5\n0\n-10\n5\n"
+    },
+    "stdout": "-10\n-5\n0\n5\n10\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "e90055ad73f7de6e": {
+    "command": "sort -n test.txt",
+    "files": {
+      "test.txt": "10\n2\n1\n20\n5\n"
+    },
+    "stdout": "1\n2\n5\n10\n20\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "e9fe665b16497404": {
+    "command": "sort -k 2 -n test.txt",
+    "files": {
+      "test.txt": "x 10\ny 2\nz 5\n"
+    },
+    "stdout": "y 2\nz 5\nx 10\n",
+    "stderr": "",
+    "exitCode": 0
+  },
+  "f9a02dc02cc47cde": {
+    "command": "sort test.txt",
+    "files": {
+      "test.txt": "b\n\na\n\nc\n"
+    },
+    "stdout": "\n\na\nb\nc\n",
+    "stderr": "",
+    "exitCode": 0
+  }
+}
