@@ -16,3 +16,10 @@ export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
  * This allows the deserializer to find classes by classId in the VM context.
  */
 export const WORKFLOW_CLASS_REGISTRY = Symbol.for('workflow-class-registry');
+
+/**
+ * Symbol used to store the step function registry on globalThis.
+ * This ensures that steps registered in bundled code are accessible to
+ * stepEntrypoint even when it's imported from an external module.
+ */
+export const WORKFLOW_STEP_REGISTRY = Symbol.for('workflow-step-registry');

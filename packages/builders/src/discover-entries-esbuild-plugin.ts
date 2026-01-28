@@ -33,6 +33,13 @@ export const importParents = new Map<string, string>();
 export const resolvedPathToPackageName = new Map<string, string>();
 
 /**
+ * Set of package names that have serde patterns (custom serialization).
+ * These packages should be bundled (not externalized) to ensure the class
+ * instances used in user code are the same as the ones registered for serialization.
+ */
+export const packagesWithSerde = new Set<string>();
+
+/**
  * Extract the package name from a bare specifier import.
  * Returns null if it's not a package import (e.g., relative path).
  *
@@ -171,6 +178,13 @@ export function createDiscoverEntriesPlugin(state: {
           if (patterns.hasSerde && !isSdkFile) {
             if (!state.discoveredSerdeFiles.includes(normalizedPath)) {
               state.discoveredSerdeFiles.push(normalizedPath);
+            }
+            // Track which packages have serde patterns so we can bundle them
+            // instead of externalizing. This ensures the class instances used in
+            // user code are the same as the ones registered for serialization.
+            const packageName = resolvedPathToPackageName.get(normalizedPath);
+            if (packageName) {
+              packagesWithSerde.add(packageName);
             }
           }
 

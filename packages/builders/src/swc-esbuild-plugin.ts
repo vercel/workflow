@@ -9,6 +9,7 @@ import {
 } from './apply-swc-transform.js';
 import {
   jsTsRegex,
+  packagesWithSerde,
   parentHasChild,
   resolvedPathToPackageName,
 } from './discover-entries-esbuild-plugin.js';
@@ -219,6 +220,16 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           if (args.path.startsWith('.')) {
             resolvedPath = await enhancedResolve(args.resolveDir, args.path);
           } else {
+            // Check if this is a package with serde patterns.
+            // These packages must be bundled (not externalized) to ensure the class
+            // instances used in user code are the same as the ones registered for
+            // serialization. Otherwise, we'd have two different class instances:
+            // one from the external import and one from the bundled serde file.
+            const packageName = extractPackageNameFromSpecifier(args.path);
+            if (packageName && packagesWithSerde.has(packageName)) {
+              return null; // Bundle this package, don't externalize
+            }
+
             resolvedPath = await enhancedResolve(
               // `args.resolveDir` is not used here to ensure we only
               // externalize packages that can be resolved in the
