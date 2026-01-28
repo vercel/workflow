@@ -26,11 +26,11 @@ const proxy = (request: NextRequest, context: NextFetchEvent) => {
   const { pathname } = request.nextUrl;
 
   // Handle explicit .md/.mdx extension OR Accept header preference
-  const rewrittenMdx = rewriteMdx(pathname);
   const rewrittenMd = rewriteMd(pathname);
+  const rewrittenMdx = rewriteMdx(pathname);
   const rewrittenForLLM = isMarkdownPreferred(request) && rewriteLLM(pathname);
 
-  const resultToRewrite = rewrittenMdx || rewrittenMd || rewrittenForLLM;
+  const resultToRewrite = rewrittenMd || rewrittenMdx || rewrittenForLLM;
   if (resultToRewrite) {
     return NextResponse.rewrite(new URL(resultToRewrite, request.nextUrl));
   }
