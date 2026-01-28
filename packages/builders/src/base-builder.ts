@@ -398,6 +398,7 @@ export abstract class BaseBuilder {
           entriesToBundle: externalizeNonSteps
             ? [
                 ...stepFiles,
+                ...serdeOnlyFiles, // Include serde files so node_modules serde classes are bundled
                 ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
               ]
             : undefined,
@@ -578,6 +579,10 @@ export abstract class BaseBuilder {
         createSwcPlugin({
           mode: 'workflow',
           workflowManifest,
+          // Include serde files so node_modules serde classes are bundled instead of externalized
+          entriesToBundle:
+            serdeOnlyFiles.length > 0 ? serdeOnlyFiles : undefined,
+          outdir: outfile ? dirname(outfile) : undefined,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
@@ -791,7 +796,15 @@ export const POST = workflowEntrypoint(workflowCode);`;
         '.mjs',
         '.cjs',
       ],
-      plugins: [createSwcPlugin({ mode: 'client' })],
+      plugins: [
+        createSwcPlugin({
+          mode: 'client',
+          // Include serde files so node_modules serde classes are bundled instead of externalized
+          entriesToBundle:
+            serdeOnlyFiles.length > 0 ? serdeOnlyFiles : undefined,
+          outdir: outputDir,
+        }),
+      ],
     });
 
     this.logEsbuildMessages(clientResult, 'client library bundle');
