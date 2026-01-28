@@ -37,6 +37,13 @@ export type WorkflowManifest = {
       };
     };
   };
+  classes?: {
+    [relativeFileName: string]: {
+      [className: string]: {
+        classId: string;
+      };
+    };
+  };
 };
 
 export async function applySwcTransform(

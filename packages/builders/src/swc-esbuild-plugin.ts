@@ -218,6 +218,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             options.workflowManifest.steps || {},
             workflowManifest.steps
           );
+          options.workflowManifest.classes = Object.assign(
+            options.workflowManifest.classes || {},
+            workflowManifest.classes
+          );
 
           return {
             contents: transformedCode,

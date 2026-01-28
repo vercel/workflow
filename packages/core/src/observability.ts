@@ -344,7 +344,17 @@ export const hydrateResourceIO = <
     hydrated = hydrateWorkflowIO(resource);
   }
   if ('executionContext' in hydrated) {
-    const { executionContext: _, ...rest } = hydrated;
+    const { executionContext, ...rest } = hydrated;
+    // Preserve workflowCoreVersion from executionContext for observability
+    const workflowCoreVersion =
+      executionContext &&
+      typeof executionContext === 'object' &&
+      'workflowCoreVersion' in executionContext
+        ? executionContext.workflowCoreVersion
+        : undefined;
+    if (workflowCoreVersion) {
+      return { ...rest, workflowCoreVersion } as unknown as T;
+    }
     return rest as T;
   }
   return hydrated;

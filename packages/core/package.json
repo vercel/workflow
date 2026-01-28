@@ -5,8 +5,12 @@
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "docs/**/*"
   ],
+  "directories": {
+    "doc": "./docs"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -35,12 +39,14 @@
     "./_workflow": "./dist/workflow/index.js"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -r dist ||:",
+    "build": "genversion --es6 src/version.ts && tsc",
+    "dev": "genversion --es6 src/version.ts && tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist src/version.ts docs ||:",
     "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run src",
     "test:e2e": "vitest run e2e",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "genversion --es6 src/version.ts && tsc --noEmit",
+    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/foundations ./docs/ && cp -r ../../docs/content/docs/how-it-works ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow ./docs/api-reference",
+    "postpack": "rm -rf docs"
   },
   "dependencies": {
     "@aws-sdk/credential-provider-web-identity": "3.609.0",
@@ -68,7 +74,8 @@
     "@types/node": "catalog:",
     "@types/seedrandom": "3.0.8",
     "@workflow/tsconfig": "workspace:*",
-    "cross-env": "10.1.0"
+    "cross-env": "10.1.0",
+    "genversion": "3.2.0"
   },
   "peerDependencies": {
     "@opentelemetry/api": "1"

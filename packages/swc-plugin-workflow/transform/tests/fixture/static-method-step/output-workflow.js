@@ -1,5 +1,5 @@
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"},"MyService.transform":{"stepId":"step//input.js//MyService.transform"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"},"MyService.transform":{"stepId":"step//input.js//MyService.transform"}}},"classes":{"input.js":{"MyService":{"classId":"class//input.js//MyService"}}}}*/;
 export class MyService {
     // Regular static method (no directive)
     static regularMethod() {

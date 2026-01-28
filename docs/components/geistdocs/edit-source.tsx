@@ -8,7 +8,10 @@ type EditSourceProps = {
 export const EditSource = ({ path }: EditSourceProps) => {
   let url: string | undefined;
 
-  if (github.owner && github.repo && path) {
+  const owner = process.env.NEXT_PUBLIC_GEISTDOCS_OWNER;
+  const repo = process.env.NEXT_PUBLIC_GEISTDOCS_REPO;
+
+  if (owner && repo && path) {
     url = `https://github.com/${github.owner}/${github.repo}/edit/main/content/docs/${path}`;
   }
 

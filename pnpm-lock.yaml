@@ -592,6 +592,9 @@ importers:
       cross-env:
         specifier: 10.1.0
         version: 10.1.0
+      genversion:
+        specifier: 3.2.0
+        version: 3.2.0
 
   packages/docs-typecheck:
     dependencies:
