@@ -7,17 +7,17 @@ import {
 } from 'next/server';
 import { i18n } from '@/lib/geistdocs/i18n';
 
-const { rewrite: rewriteLLM } = rewritePath(
-  '/docs{/*path}',
-  '/en/llms.mdx{/*path}'
-);
 const { rewrite: rewriteMdx } = rewritePath(
-  '/docs{/*path}.mdx',
-  '/en/llms.mdx{/*path}'
+  '/docs/*path.mdx',
+  '/en/llms.mdx/*path'
 );
 const { rewrite: rewriteMd } = rewritePath(
-  '/docs{/*path}.md',
-  '/en/llms.mdx{/*path}'
+  '/docs/*path.md',
+  '/en/llms.mdx/*path'
+);
+const { rewrite: rewriteLLM } = rewritePath(
+  '/docs/*path',
+  '/en/llms.mdx/*path'
 );
 
 const internationalizer = createI18nMiddleware(i18n);
@@ -25,25 +25,16 @@ const internationalizer = createI18nMiddleware(i18n);
 const proxy = (request: NextRequest, context: NextFetchEvent) => {
   const { pathname } = request.nextUrl;
 
-  // Handle explicit .md/.mdx extension requests before i18n
-  const mdxResult = rewriteMdx(pathname);
-  if (mdxResult) {
-    return NextResponse.rewrite(new URL(mdxResult, request.nextUrl));
-  }
-  const mdResult = rewriteMd(pathname);
-  if (mdResult) {
-    return NextResponse.rewrite(new URL(mdResult, request.nextUrl));
+  // Handle explicit .md/.mdx extension OR Accept header preference
+  const rewrittenMdx = rewriteMdx(pathname);
+  const rewrittenMd = rewriteMd(pathname);
+  const rewrittenForLLM = isMarkdownPreferred(request) && rewriteLLM(pathname);
+
+  const resultToRewrite = rewrittenMdx || rewrittenMd || rewrittenForLLM;
+  if (resultToRewrite) {
+    return NextResponse.rewrite(new URL(resultToRewrite, request.nextUrl));
   }
 
-  // Handle Accept header preference for markdown
-  if (isMarkdownPreferred(request)) {
-    const result = rewriteLLM(pathname);
-    if (result) {
-      return NextResponse.rewrite(new URL(result, request.nextUrl));
-    }
-  }
-
-  // Fallback to i18n middleware
   return internationalizer(request, context);
 };
 
