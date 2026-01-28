@@ -13,6 +13,10 @@ const config: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  outputFileTracingIncludes: {
+    '/og/\\[\\.\\.\\.slug\\]': ['./lib/og/assets/**/*'],
+    '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
+  },
 
   async rewrites() {
     return {

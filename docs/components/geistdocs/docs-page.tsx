@@ -39,7 +39,7 @@ export const DocsBody = ({
 
 export const generateStaticPageParams = () => source.generateParams();
 
-export const generatePageMetadata = (slug: PageProps['slug']) => {
+export const generatePageMetadata = (slug: string[]) => {
   const page = source.getPage(slug);
 
   if (!page) {
