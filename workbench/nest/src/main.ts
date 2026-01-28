@@ -20,6 +20,7 @@ async function bootstrap() {
   const { default: expressModule } = await import('express');
   app.use(expressModule.json());
   app.use(expressModule.text({ type: 'text/*' }));
+  app.use(expressModule.raw({ type: 'application/octet-stream' }));
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);

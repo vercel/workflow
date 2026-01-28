@@ -103,18 +103,9 @@ export class AppController {
         const num = parseFloat(arg);
         return Number.isNaN(num) ? arg.trim() : num;
       });
-    } else if (bodyData && typeof bodyData === 'string') {
-      // Body came as string (e.g., no Content-Type header)
-      args = hydrateWorkflowArguments(JSON.parse(bodyData), globalThis);
-    } else if (bodyData && typeof bodyData === 'object') {
-      // Body was parsed as JSON
-      if (Array.isArray(bodyData) && bodyData.length > 0) {
-        args = hydrateWorkflowArguments(bodyData, globalThis);
-      } else if (Object.keys(bodyData).length > 0) {
-        args = hydrateWorkflowArguments(bodyData, globalThis);
-      } else {
-        args = [42];
-      }
+    } else if (Buffer.isBuffer(bodyData) && bodyData.byteLength > 0) {
+      // Body is binary serialized data (application/octet-stream)
+      args = hydrateWorkflowArguments(new Uint8Array(bodyData), globalThis);
     } else {
       args = [42];
     }
