@@ -27,8 +27,24 @@ cd my-workflow-app
 ### Install `workflow`
 
 ```package-install
-npm i workflow
+npm i workflow @workflow/nest
 ```
+
+### Configure NestJS for ESM
+
+NestJS with SWC uses ES modules. Add `"type": "module"` to your `package.json`:
+
+```json title="package.json" lineNumbers
+{
+  "name": "my-workflow-app",
+  "type": "module",
+  // ... rest of your config
+}
+```
+
+<Callout>
+When using ESM with NestJS, local imports must include the `.js` extension (e.g., `import { AppModule } from './app.module.js'`). This applies even though your source files are `.ts`.
+</Callout>
 
 ### Configure NestJS to use SWC
 
@@ -118,9 +134,9 @@ In your `app.module.ts`, import the `WorkflowModule`:
 
 ```typescript title="src/app.module.ts" lineNumbers
 import { Module } from '@nestjs/common';
-import { WorkflowModule } from 'workflow/nest';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { WorkflowModule } from '@workflow/nest';
+import { AppController } from './app.controller.js';
+import { AppService } from './app.service.js';
 
 @Module({
   imports: [WorkflowModule.forRoot()], // [!code highlight]
