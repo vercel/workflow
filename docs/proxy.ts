@@ -7,12 +7,12 @@ import {
 } from 'next/server';
 import { i18n } from '@/lib/geistdocs/i18n';
 
-const { rewrite: rewriteMdx } = rewritePath(
-  '/docs/*path.mdx',
-  '/en/llms.mdx/*path'
-);
 const { rewrite: rewriteMd } = rewritePath(
   '/docs/*path.md',
+  '/en/llms.mdx/*path'
+);
+const { rewrite: rewriteMdx } = rewritePath(
+  '/docs/*path.mdx',
   '/en/llms.mdx/*path'
 );
 const { rewrite: rewriteLLM } = rewritePath(
