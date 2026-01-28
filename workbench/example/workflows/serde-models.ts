@@ -23,11 +23,15 @@
  * serializable/deserializable in all contexts.
  */
 export class Vector {
-  constructor(
-    public x: number,
-    public y: number,
-    public z: number
-  ) {}
+  x: number;
+  y: number;
+  z: number;
+
+  constructor(x: number, y: number, z: number) {
+    this.x = x;
+    this.y = y;
+    this.z = z;
+  }
 
   /** Custom serialization - converts instance to plain object */
   static [Symbol.for('workflow-serialize')](instance: Vector) {
