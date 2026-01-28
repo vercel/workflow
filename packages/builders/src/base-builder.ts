@@ -279,11 +279,24 @@ export abstract class BaseBuilder {
   }> {
     // These need to handle watching for dev to scan for
     // new entries and changes to existing ones
-    const { discoveredSteps: stepFiles, discoveredWorkflows: workflowFiles } =
-      await this.discoverEntries(inputFiles, dirname(outfile));
+    const {
+      discoveredSteps: stepFiles,
+      discoveredWorkflows: workflowFiles,
+      discoveredSerdeFiles: serdeFiles,
+    } = await this.discoverEntries(inputFiles, dirname(outfile));
+
+    // Include serde files that aren't already step files for cross-context class registration.
+    // Classes need to be registered in the step bundle so they can be deserialized
+    // when receiving data from workflows and serialized when returning data to workflows.
+    const stepFilesSet = new Set(stepFiles);
+    const serdeOnlyFiles = serdeFiles.filter((f) => !stepFilesSet.has(f));
 
     // log the step files for debugging
-    await this.writeDebugFile(outfile, { stepFiles, workflowFiles });
+    await this.writeDebugFile(outfile, {
+      stepFiles,
+      workflowFiles,
+      serdeOnlyFiles,
+    });
 
     const stepsBundleStart = Date.now();
     const workflowManifest: WorkflowManifest = {};
@@ -303,32 +316,38 @@ export abstract class BaseBuilder {
       );
     });
 
+    // Helper to create import statement from file path
+    const createImport = (file: string) => {
+      // Normalize both paths to forward slashes before calling relative()
+      // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+      const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+      const normalizedFile = file.replace(/\\/g, '/');
+      // Calculate relative path from working directory to the file
+      let relativePath = relative(normalizedWorkingDir, normalizedFile).replace(
+        /\\/g,
+        '/'
+      );
+      // Ensure relative paths start with ./ so esbuild resolves them correctly
+      if (!relativePath.startsWith('.')) {
+        relativePath = `./${relativePath}`;
+      }
+      return `import '${relativePath}';`;
+    };
+
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
-    const imports = stepFiles
-      .map((file) => {
-        // Normalize both paths to forward slashes before calling relative()
-        // This is critical on Windows where relative() can produce unexpected results with mixed path formats
-        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
-        const normalizedFile = file.replace(/\\/g, '/');
-        // Calculate relative path from working directory to the file
-        let relativePath = relative(
-          normalizedWorkingDir,
-          normalizedFile
-        ).replace(/\\/g, '/');
-        // Ensure relative paths start with ./ so esbuild resolves them correctly
-        if (!relativePath.startsWith('.')) {
-          relativePath = `./${relativePath}`;
-        }
-        return `import '${relativePath}';`;
-      })
-      .join('\n');
+    const stepImports = stepFiles.map(createImport).join('\n');
+
+    // Include serde-only files for class registration side effects
+    const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
 
     const entryContent = `
     // Built in steps
     import '${builtInSteps}';
     // User steps
-    ${imports}
+    ${stepImports}
+    // Serde files for cross-context class registration
+    ${serdeImports}
     // API entrypoint
     export { stepEntrypoint as POST } from 'workflow/runtime';`;
 
