@@ -1,4 +1,0 @@
-/**
- * AWK Interpreter Types
- */
-export {};

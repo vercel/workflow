@@ -1,7 +1,0 @@
-#!/usr/bin/env node
-import{a as r,b as d}from"./chunk-GTNBSMZR.js";import"./chunk-KGOUQS5A.js";var u={name:"alias",summary:"define or display aliases",usage:"alias [name[=value] ...]",options:["    --help display this help and exit"]},o="BASH_ALIAS_",m={name:"alias",async execute(e,a){if(d(e))return r(u);if(e.length===0){let t="";for(let[i,s]of Object.entries(a.env))if(i.startsWith(o)){let n=i.slice(o.length);t+=`alias ${n}='${s}'
-`}return{stdout:t,stderr:"",exitCode:0}}let l=e[0]==="--"?e.slice(1):e;for(let t of l){let i=t.indexOf("=");if(i===-1){let s=o+t;return a.env[s]?{stdout:`alias ${t}='${a.env[s]}'
-`,stderr:"",exitCode:0}:{stdout:"",stderr:`alias: ${t}: not found
-`,exitCode:1}}else{let s=t.slice(0,i),n=t.slice(i+1);(n.startsWith("'")&&n.endsWith("'")||n.startsWith('"')&&n.endsWith('"'))&&(n=n.slice(1,-1)),a.env[o+s]=n}}return{stdout:"",stderr:"",exitCode:0}}},c={name:"unalias",async execute(e,a){if(d(e))return r({name:"unalias",summary:"remove alias definitions",usage:"unalias name [name ...]",options:["-a      remove all aliases","    --help display this help and exit"]});if(e.length===0)return{stdout:"",stderr:`unalias: usage: unalias [-a] name [name ...]
-`,exitCode:1};if(e[0]==="-a"){for(let s of Object.keys(a.env))s.startsWith(o)&&delete a.env[s];return{stdout:"",stderr:"",exitCode:0}}let l=e[0]==="--"?e.slice(1):e,t=!1,i="";for(let s of l){let n=o+s;a.env[n]?delete a.env[n]:(i+=`unalias: ${s}: not found
-`,t=!0)}return{stdout:"",stderr:i,exitCode:t?1:0}}};export{m as aliasCommand,c as unaliasCommand};

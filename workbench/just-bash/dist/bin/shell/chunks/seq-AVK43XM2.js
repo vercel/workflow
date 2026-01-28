@@ -1,7 +1,0 @@
-#!/usr/bin/env node
-import"./chunk-KGOUQS5A.js";var F={name:"seq",async execute(r){let d=`
-`,h=!1,i=[],e=0;for(;e<r.length;){let t=r[e];if(t==="-s"&&e+1<r.length){d=r[e+1],e+=2;continue}if(t==="-w"){h=!0,e++;continue}if(t==="--"){e++;break}if(t.startsWith("-")&&t!=="-"){if(t.startsWith("-s")&&t.length>2){d=t.slice(2),e++;continue}if((t==="-ws"||t==="-sw")&&(h=!0,e+1<r.length)){d=r[e+1],e+=2;continue}}i.push(t),e++}for(;e<r.length;)i.push(r[e]),e++;if(i.length===0)return{stdout:"",stderr:`seq: missing operand
-`,exitCode:1};let l=1,o=1,a;if(i.length===1?a=parseFloat(i[0]):i.length===2?(l=parseFloat(i[0]),a=parseFloat(i[1])):(l=parseFloat(i[0]),o=parseFloat(i[1]),a=parseFloat(i[2])),Number.isNaN(l)||Number.isNaN(o)||Number.isNaN(a))return{stdout:"",stderr:`seq: invalid floating point argument: '${i.find(n=>Number.isNaN(parseFloat(n)))}'
-`,exitCode:1};if(o===0)return{stdout:"",stderr:`seq: invalid Zero increment value: '0'
-`,exitCode:1};let s=[],f=t=>{let n=String(t),u=n.indexOf(".");return u===-1?0:n.length-u-1},c=Math.max(f(l),f(o),f(a)),p=1e5,m=0;if(o>0)for(let t=l;t<=a+1e-10&&!(m++>p);t+=o)s.push(c>0?t.toFixed(c):String(Math.round(t)));else for(let t=l;t>=a-1e-10&&!(m++>p);t+=o)s.push(c>0?t.toFixed(c):String(Math.round(t)));if(h&&s.length>0){let t=Math.max(...s.map(n=>n.replace("-","").length));for(let n=0;n<s.length;n++){let u=s[n].startsWith("-"),x=(u?s[n].slice(1):s[n]).padStart(t,"0");s[n]=u?`-${x}`:x}}let g=s.join(d);return{stdout:g?`${g}
-`:"",stderr:"",exitCode:0}}};export{F as seqCommand};

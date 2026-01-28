@@ -1,4 +1,0 @@
-/**
- * Interpreter Types
- */
-export {};
