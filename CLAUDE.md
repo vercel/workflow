@@ -154,6 +154,7 @@ This project uses pnpm with workspace configuration. The required version is spe
 
 ## Changesets
 
+- `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy - they always have the same version number
 - Every PR requires a changeset to be included before it will be merged
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
 - Create a changeset using `pnpm changeset add`
@@ -162,6 +163,25 @@ This project uses pnpm with workspace configuration. The required version is spe
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
 - When writing changesets, use the `pnpm changeset` command from the root of the repo. Keep the changesets terse (see existing changesets for examples). Try to make changesets that are specific to each modified package so they are targeted. Ensure that any breaking changes are marked as "**BREAKING CHANGE**"
+
+## Common Patterns
+
+### Build-time Version Injection
+Use `genversion` to access package version at runtime. See `@workflow/core` and `@workflow/world-vercel` for examples:
+- Add `genversion` as devDependency
+- Update build script: `genversion --es6 src/version.ts && tsc`
+- Add `src/version.ts` to `.gitignore` and `turbo.json` outputs
+
+### Turbo Caching for Generated Files
+When a build step generates files, add them to the package's `turbo.json` outputs array to ensure proper caching.
+
+## Architecture Notes
+
+### executionContext Field
+The `executionContext` field on workflow runs is a flexible JSONB/CBOR object that can store arbitrary data without schema changes. It flows through all worlds (local, postgres, vercel).
+
+### Observability Data Hydration
+`packages/core/src/observability.ts` contains `hydrateResourceIO` which strips certain fields (like `executionContext`) before UI display. If you need to display data from stripped fields, extract it before the stripping occurs.
 
 # AGENTS.md
 
