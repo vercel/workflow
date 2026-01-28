@@ -831,18 +831,18 @@ export async function cancelRun(
  */
 export async function recreateRun(
   worldEnv: EnvMap,
-  runId: string
+  runId: string,
+  deploymentId?: string
 ): Promise<ServerActionResult<string>> {
   try {
     const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const hydratedRun = hydrate(run as WorkflowRun);
-    const deploymentId = run.deploymentId;
     const newRun = await start(
       { workflowId: run.workflowName },
       hydratedRun.input,
       {
-        deploymentId,
+        deploymentId: deploymentId ?? run.deploymentId,
         world,
       }
     );

@@ -78,7 +78,10 @@ export function hasWorkflowSourceMaps(): boolean {
 
   // These frameworks currently don't handle sourcemaps correctly in local dev
   // TODO: figure out how to get sourcemaps working in these frameworks too
-  if (process.env.DEV_TEST_CONFIG && ['vite', 'astro'].includes(appName)) {
+  if (
+    process.env.DEV_TEST_CONFIG &&
+    ['vite', 'astro', 'sveltekit'].includes(appName)
+  ) {
     return false;
   }
 

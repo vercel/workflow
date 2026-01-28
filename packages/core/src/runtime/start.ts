@@ -9,6 +9,7 @@ import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { getWorld } from './world.js';
 
 export interface StartOptions {
@@ -117,7 +118,7 @@ export async function start<TArgs extends unknown[], TResult>(
           deploymentId: deploymentId,
           workflowName: workflowName,
           input: workflowArguments,
-          executionContext: { traceCarrier },
+          executionContext: { traceCarrier, workflowCoreVersion },
         },
       });
 

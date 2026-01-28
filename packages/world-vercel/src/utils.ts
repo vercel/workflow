@@ -3,7 +3,7 @@ import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
-import { decode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { version } from './version.js';
 
@@ -27,13 +27,6 @@ export interface APIConfig {
 }
 
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
-
-export function dateToStringReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  return value;
-}
 
 /**
  * Helper to serialize error into a JSON string in the error field.
@@ -196,22 +189,32 @@ export async function makeRequest<T>({
   options = {},
   config = {},
   schema,
+  data,
 }: {
   endpoint: string;
-  options?: RequestInit;
+  options?: Omit<RequestInit, 'body'>;
   config?: APIConfig;
   schema: z.ZodSchema<T>;
+  /** Request body data - will be CBOR encoded */
+  data?: unknown;
 }): Promise<T> {
   const { baseUrl, headers } = await getHttpConfig(config);
-  headers.set('Content-Type', 'application/json');
   headers.set('Accept', 'application/cbor');
   // NOTE: Add a unique header to bypass RSC request memoization.
   // See: https://github.com/vercel/workflow/issues/618
   headers.set('X-Request-Time', Date.now().toString());
 
+  // Encode body as CBOR if data is provided
+  let body: Buffer | undefined;
+  if (data !== undefined) {
+    headers.set('Content-Type', 'application/cbor');
+    body = encode(data);
+  }
+
   const url = `${baseUrl}${endpoint}`;
   const request = new Request(url, {
     ...options,
+    body,
     headers,
   });
   const response = await fetch(request);
