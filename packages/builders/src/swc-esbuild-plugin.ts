@@ -76,6 +76,24 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
         }
       };
 
+      // Handle workflow/internal/* imports that may come from transformed files
+      // inside node_modules. The SWC transform adds these imports, but the
+      // package being transformed may not have 'workflow' as a dependency.
+      // Resolve these from the project's working directory instead.
+      build.onResolve({ filter: /^workflow\/internal\// }, async (args) => {
+        try {
+          const workingDir =
+            build.initialOptions.absWorkingDir || process.cwd();
+          const resolved = await enhancedResolve(workingDir, args.path);
+          if (resolved) {
+            return { path: resolved };
+          }
+        } catch (_) {
+          // Fall through to default resolution
+        }
+        return null;
+      });
+
       build.onResolve({ filter: /.*/ }, async (args) => {
         if (!options.entriesToBundle) {
           return null;
