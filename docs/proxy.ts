@@ -7,12 +7,18 @@ import {
 } from 'next/server';
 import { i18n } from '@/lib/geistdocs/i18n';
 
-const { rewrite: rewriteLLM } = rewritePath('/docs/*path', '/llms.mdx/*path');
-const { rewrite: rewriteMdx } = rewritePath(
-  '/docs/*path.mdx',
-  '/llms.mdx/*path'
+const { rewrite: rewriteLLM } = rewritePath(
+  '/docs{/*path}',
+  '/en/llms.mdx{/*path}'
 );
-const { rewrite: rewriteMd } = rewritePath('/docs/*path.md', '/llms.mdx/*path');
+const { rewrite: rewriteMdx } = rewritePath(
+  '/docs{/*path}.mdx',
+  '/en/llms.mdx{/*path}'
+);
+const { rewrite: rewriteMd } = rewritePath(
+  '/docs{/*path}.md',
+  '/en/llms.mdx{/*path}'
+);
 
 const internationalizer = createI18nMiddleware(i18n);
 

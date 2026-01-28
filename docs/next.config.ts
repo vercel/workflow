@@ -36,16 +36,6 @@ const config: NextConfig = {
           ],
         },
       ],
-      afterFiles: [
-        {
-          source: '/docs/:path*.mdx',
-          destination: '/llms.mdx/:path*',
-        },
-        {
-          source: '/docs/:path*.md',
-          destination: '/llms.mdx/:path*',
-        },
-      ],
     };
   },
 
