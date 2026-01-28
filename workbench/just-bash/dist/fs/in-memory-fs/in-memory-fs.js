@@ -1,0 +1,539 @@
+import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from "@workflow/serde";
+import { fromBuffer, getEncoding, toBuffer } from "../encoding.js";
+// Text encoder for legacy string content conversion
+const textEncoder = new TextEncoder();
+/**
+ * Type guard to check if a value is a FileInit object
+ */
+function isFileInit(value) {
+    return (typeof value === "object" &&
+        value !== null &&
+        !(value instanceof Uint8Array) &&
+        "content" in value);
+}
+export class InMemoryFs {
+    data = new Map();
+    constructor(initialFiles) {
+        // Create root directory
+        this.data.set("/", { type: "directory", mode: 0o755, mtime: new Date() });
+        if (initialFiles) {
+            for (const [path, value] of Object.entries(initialFiles)) {
+                if (isFileInit(value)) {
+                    // Extended init with metadata
+                    this.writeFileSync(path, value.content, undefined, {
+                        mode: value.mode,
+                        mtime: value.mtime,
+                    });
+                }
+                else {
+                    // Simple content
+                    this.writeFileSync(path, value);
+                }
+            }
+        }
+    }
+    normalizePath(path) {
+        // Handle empty or just slash
+        if (!path || path === "/")
+            return "/";
+        // Remove trailing slash
+        let normalized = path.endsWith("/") && path !== "/" ? path.slice(0, -1) : path;
+        // Ensure starts with /
+        if (!normalized.startsWith("/")) {
+            normalized = `/${normalized}`;
+        }
+        // Resolve . and ..
+        const parts = normalized.split("/").filter((p) => p && p !== ".");
+        const resolved = [];
+        for (const part of parts) {
+            if (part === "..") {
+                resolved.pop();
+            }
+            else {
+                resolved.push(part);
+            }
+        }
+        return `/${resolved.join("/")}` || "/";
+    }
+    dirname(path) {
+        const normalized = this.normalizePath(path);
+        if (normalized === "/")
+            return "/";
+        const lastSlash = normalized.lastIndexOf("/");
+        return lastSlash === 0 ? "/" : normalized.slice(0, lastSlash);
+    }
+    ensureParentDirs(path) {
+        const dir = this.dirname(path);
+        if (dir === "/")
+            return;
+        if (!this.data.has(dir)) {
+            this.ensureParentDirs(dir);
+            this.data.set(dir, { type: "directory", mode: 0o755, mtime: new Date() });
+        }
+    }
+    // Sync method for writing files
+    writeFileSync(path, content, options, metadata) {
+        const normalized = this.normalizePath(path);
+        this.ensureParentDirs(normalized);
+        // Store content - convert to Uint8Array for internal storage
+        const encoding = getEncoding(options);
+        const buffer = toBuffer(content, encoding);
+        this.data.set(normalized, {
+            type: "file",
+            content: buffer,
+            mode: metadata?.mode ?? 0o644,
+            mtime: metadata?.mtime ?? new Date(),
+        });
+    }
+    // Async public API
+    async readFile(path, options) {
+        const buffer = await this.readFileBuffer(path);
+        const encoding = getEncoding(options);
+        return fromBuffer(buffer, encoding);
+    }
+    async readFileBuffer(path) {
+        // Resolve all symlinks in the path (including intermediate components)
+        const resolvedPath = this.resolvePathWithSymlinks(path);
+        const entry = this.data.get(resolvedPath);
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, open '${path}'`);
+        }
+        if (entry.type !== "file") {
+            throw new Error(`EISDIR: illegal operation on a directory, read '${path}'`);
+        }
+        // Return content as Uint8Array
+        if (entry.content instanceof Uint8Array) {
+            return entry.content;
+        }
+        // Legacy string content - convert to Uint8Array
+        return textEncoder.encode(entry.content);
+    }
+    async writeFile(path, content, options) {
+        this.writeFileSync(path, content, options);
+    }
+    async appendFile(path, content, options) {
+        const normalized = this.normalizePath(path);
+        const existing = this.data.get(normalized);
+        if (existing && existing.type === "directory") {
+            throw new Error(`EISDIR: illegal operation on a directory, write '${path}'`);
+        }
+        const encoding = getEncoding(options);
+        const newBuffer = toBuffer(content, encoding);
+        if (existing?.type === "file") {
+            // Get existing content as buffer
+            const existingBuffer = existing.content instanceof Uint8Array
+                ? existing.content
+                : textEncoder.encode(existing.content);
+            // Concatenate buffers
+            const combined = new Uint8Array(existingBuffer.length + newBuffer.length);
+            combined.set(existingBuffer);
+            combined.set(newBuffer, existingBuffer.length);
+            this.data.set(normalized, {
+                type: "file",
+                content: combined,
+                mode: existing.mode,
+                mtime: new Date(),
+            });
+        }
+        else {
+            this.writeFileSync(path, content, options);
+        }
+    }
+    async exists(path) {
+        try {
+            const resolvedPath = this.resolvePathWithSymlinks(path);
+            return this.data.has(resolvedPath);
+        }
+        catch {
+            // Path resolution failed (e.g., broken symlink in path)
+            return false;
+        }
+    }
+    async stat(path) {
+        // Resolve all symlinks in the path (including intermediate components)
+        const resolvedPath = this.resolvePathWithSymlinks(path);
+        const entry = this.data.get(resolvedPath);
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, stat '${path}'`);
+        }
+        // Calculate size: for files, it's the byte length; for directories, it's 0
+        let size = 0;
+        if (entry.type === "file" && entry.content) {
+            if (entry.content instanceof Uint8Array) {
+                size = entry.content.length;
+            }
+            else {
+                // Legacy string content - calculate byte length
+                size = textEncoder.encode(entry.content).length;
+            }
+        }
+        return {
+            isFile: entry.type === "file",
+            isDirectory: entry.type === "directory",
+            isSymbolicLink: false, // stat follows symlinks, so this is always false
+            mode: entry.mode,
+            size,
+            mtime: entry.mtime || new Date(),
+        };
+    }
+    async lstat(path) {
+        // Resolve intermediate symlinks but NOT the final component
+        const resolvedPath = this.resolveIntermediateSymlinks(path);
+        const entry = this.data.get(resolvedPath);
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, lstat '${path}'`);
+        }
+        // For symlinks, return symlink info (don't follow)
+        if (entry.type === "symlink") {
+            return {
+                isFile: false,
+                isDirectory: false,
+                isSymbolicLink: true,
+                mode: entry.mode,
+                size: entry.target.length,
+                mtime: entry.mtime || new Date(),
+            };
+        }
+        // Calculate size: for files, it's the byte length; for directories, it's 0
+        let size = 0;
+        if (entry.type === "file" && entry.content) {
+            if (entry.content instanceof Uint8Array) {
+                size = entry.content.length;
+            }
+            else {
+                // Legacy string content - calculate byte length
+                size = textEncoder.encode(entry.content).length;
+            }
+        }
+        return {
+            isFile: entry.type === "file",
+            isDirectory: entry.type === "directory",
+            isSymbolicLink: false,
+            mode: entry.mode,
+            size,
+            mtime: entry.mtime || new Date(),
+        };
+    }
+    // Helper to resolve symlink target paths
+    resolveSymlink(symlinkPath, target) {
+        if (target.startsWith("/")) {
+            return this.normalizePath(target);
+        }
+        // Relative target: resolve from symlink's directory
+        const dir = this.dirname(symlinkPath);
+        return this.normalizePath(dir === "/" ? `/${target}` : `${dir}/${target}`);
+    }
+    /**
+     * Resolve symlinks in intermediate path components only (not the final component).
+     * Used by lstat which should not follow the final symlink.
+     */
+    resolveIntermediateSymlinks(path) {
+        const normalized = this.normalizePath(path);
+        if (normalized === "/")
+            return "/";
+        const parts = normalized.slice(1).split("/");
+        if (parts.length <= 1)
+            return normalized; // No intermediate components
+        let resolvedPath = "";
+        const seen = new Set();
+        // Process all but the last component
+        for (let i = 0; i < parts.length - 1; i++) {
+            const part = parts[i];
+            resolvedPath = `${resolvedPath}/${part}`;
+            let entry = this.data.get(resolvedPath);
+            let loopCount = 0;
+            const maxLoops = 40;
+            while (entry && entry.type === "symlink" && loopCount < maxLoops) {
+                if (seen.has(resolvedPath)) {
+                    throw new Error(`ELOOP: too many levels of symbolic links, lstat '${path}'`);
+                }
+                seen.add(resolvedPath);
+                resolvedPath = this.resolveSymlink(resolvedPath, entry.target);
+                entry = this.data.get(resolvedPath);
+                loopCount++;
+            }
+            if (loopCount >= maxLoops) {
+                throw new Error(`ELOOP: too many levels of symbolic links, lstat '${path}'`);
+            }
+        }
+        // Append the final component without resolving
+        return `${resolvedPath}/${parts[parts.length - 1]}`;
+    }
+    /**
+     * Resolve all symlinks in a path, including intermediate components.
+     * For example: /home/user/linkdir/file.txt where linkdir is a symlink to "subdir"
+     * would resolve to /home/user/subdir/file.txt
+     */
+    resolvePathWithSymlinks(path) {
+        const normalized = this.normalizePath(path);
+        if (normalized === "/")
+            return "/";
+        const parts = normalized.slice(1).split("/");
+        let resolvedPath = "";
+        const seen = new Set();
+        for (const part of parts) {
+            resolvedPath = `${resolvedPath}/${part}`;
+            // Check if this path component is a symlink
+            let entry = this.data.get(resolvedPath);
+            let loopCount = 0;
+            const maxLoops = 40; // Prevent infinite loops
+            while (entry && entry.type === "symlink" && loopCount < maxLoops) {
+                if (seen.has(resolvedPath)) {
+                    throw new Error(`ELOOP: too many levels of symbolic links, open '${path}'`);
+                }
+                seen.add(resolvedPath);
+                // Resolve the symlink
+                resolvedPath = this.resolveSymlink(resolvedPath, entry.target);
+                entry = this.data.get(resolvedPath);
+                loopCount++;
+            }
+            if (loopCount >= maxLoops) {
+                throw new Error(`ELOOP: too many levels of symbolic links, open '${path}'`);
+            }
+        }
+        return resolvedPath;
+    }
+    async mkdir(path, options) {
+        this.mkdirSync(path, options);
+    }
+    /**
+     * Synchronous version of mkdir
+     */
+    mkdirSync(path, options) {
+        const normalized = this.normalizePath(path);
+        if (this.data.has(normalized)) {
+            const entry = this.data.get(normalized);
+            if (entry?.type === "file") {
+                throw new Error(`EEXIST: file already exists, mkdir '${path}'`);
+            }
+            // Directory already exists
+            if (!options?.recursive) {
+                throw new Error(`EEXIST: directory already exists, mkdir '${path}'`);
+            }
+            return; // With -p, silently succeed if directory exists
+        }
+        const parent = this.dirname(normalized);
+        if (parent !== "/" && !this.data.has(parent)) {
+            if (options?.recursive) {
+                this.mkdirSync(parent, { recursive: true });
+            }
+            else {
+                throw new Error(`ENOENT: no such file or directory, mkdir '${path}'`);
+            }
+        }
+        this.data.set(normalized, {
+            type: "directory",
+            mode: 0o755,
+            mtime: new Date(),
+        });
+    }
+    async readdir(path) {
+        const entries = await this.readdirWithFileTypes(path);
+        return entries.map((e) => e.name);
+    }
+    async readdirWithFileTypes(path) {
+        let normalized = this.normalizePath(path);
+        let entry = this.data.get(normalized);
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, scandir '${path}'`);
+        }
+        // Follow symlinks to get to the actual directory
+        const seen = new Set();
+        while (entry && entry.type === "symlink") {
+            if (seen.has(normalized)) {
+                throw new Error(`ELOOP: too many levels of symbolic links, scandir '${path}'`);
+            }
+            seen.add(normalized);
+            normalized = this.resolveSymlink(normalized, entry.target);
+            entry = this.data.get(normalized);
+        }
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, scandir '${path}'`);
+        }
+        if (entry.type !== "directory") {
+            throw new Error(`ENOTDIR: not a directory, scandir '${path}'`);
+        }
+        const prefix = normalized === "/" ? "/" : `${normalized}/`;
+        const entriesMap = new Map();
+        for (const [p, fsEntry] of this.data.entries()) {
+            if (p === normalized)
+                continue;
+            if (p.startsWith(prefix)) {
+                const rest = p.slice(prefix.length);
+                const name = rest.split("/")[0];
+                // Only add direct children (no nested paths)
+                if (name && !rest.includes("/", name.length) && !entriesMap.has(name)) {
+                    entriesMap.set(name, {
+                        name,
+                        isFile: fsEntry.type === "file",
+                        isDirectory: fsEntry.type === "directory",
+                        isSymbolicLink: fsEntry.type === "symlink",
+                    });
+                }
+            }
+        }
+        // Sort using default string comparison (case-sensitive) to match readdir behavior
+        return Array.from(entriesMap.values()).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    }
+    async rm(path, options) {
+        const normalized = this.normalizePath(path);
+        const entry = this.data.get(normalized);
+        if (!entry) {
+            if (options?.force)
+                return;
+            throw new Error(`ENOENT: no such file or directory, rm '${path}'`);
+        }
+        if (entry.type === "directory") {
+            const children = await this.readdir(normalized);
+            if (children.length > 0) {
+                if (!options?.recursive) {
+                    throw new Error(`ENOTEMPTY: directory not empty, rm '${path}'`);
+                }
+                for (const child of children) {
+                    const childPath = normalized === "/" ? `/${child}` : `${normalized}/${child}`;
+                    await this.rm(childPath, options);
+                }
+            }
+        }
+        this.data.delete(normalized);
+    }
+    async cp(src, dest, options) {
+        const srcNorm = this.normalizePath(src);
+        const destNorm = this.normalizePath(dest);
+        const srcEntry = this.data.get(srcNorm);
+        if (!srcEntry) {
+            throw new Error(`ENOENT: no such file or directory, cp '${src}'`);
+        }
+        if (srcEntry.type === "file") {
+            this.ensureParentDirs(destNorm);
+            this.data.set(destNorm, { ...srcEntry });
+        }
+        else if (srcEntry.type === "directory") {
+            if (!options?.recursive) {
+                throw new Error(`EISDIR: is a directory, cp '${src}'`);
+            }
+            await this.mkdir(destNorm, { recursive: true });
+            const children = await this.readdir(srcNorm);
+            for (const child of children) {
+                const srcChild = srcNorm === "/" ? `/${child}` : `${srcNorm}/${child}`;
+                const destChild = destNorm === "/" ? `/${child}` : `${destNorm}/${child}`;
+                await this.cp(srcChild, destChild, options);
+            }
+        }
+    }
+    async mv(src, dest) {
+        await this.cp(src, dest, { recursive: true });
+        await this.rm(src, { recursive: true });
+    }
+    // Get all paths (useful for debugging/glob)
+    getAllPaths() {
+        return Array.from(this.data.keys());
+    }
+    // Resolve a path relative to a base
+    resolvePath(base, path) {
+        if (path.startsWith("/")) {
+            return this.normalizePath(path);
+        }
+        const combined = base === "/" ? `/${path}` : `${base}/${path}`;
+        return this.normalizePath(combined);
+    }
+    // Change file/directory permissions
+    async chmod(path, mode) {
+        const normalized = this.normalizePath(path);
+        const entry = this.data.get(normalized);
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, chmod '${path}'`);
+        }
+        entry.mode = mode;
+    }
+    // Create a symbolic link
+    async symlink(target, linkPath) {
+        const normalized = this.normalizePath(linkPath);
+        if (this.data.has(normalized)) {
+            throw new Error(`EEXIST: file already exists, symlink '${linkPath}'`);
+        }
+        this.ensureParentDirs(normalized);
+        this.data.set(normalized, {
+            type: "symlink",
+            target,
+            mode: 0o777,
+            mtime: new Date(),
+        });
+    }
+    // Create a hard link
+    async link(existingPath, newPath) {
+        const existingNorm = this.normalizePath(existingPath);
+        const newNorm = this.normalizePath(newPath);
+        const entry = this.data.get(existingNorm);
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, link '${existingPath}'`);
+        }
+        if (entry.type !== "file") {
+            throw new Error(`EPERM: operation not permitted, link '${existingPath}'`);
+        }
+        if (this.data.has(newNorm)) {
+            throw new Error(`EEXIST: file already exists, link '${newPath}'`);
+        }
+        this.ensureParentDirs(newNorm);
+        // For hard links, we create a copy (simulating inode sharing)
+        // In a real fs, they'd share the same inode
+        this.data.set(newNorm, {
+            type: "file",
+            content: entry.content,
+            mode: entry.mode,
+            mtime: entry.mtime,
+        });
+    }
+    // Read the target of a symbolic link
+    async readlink(path) {
+        const normalized = this.normalizePath(path);
+        const entry = this.data.get(normalized);
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, readlink '${path}'`);
+        }
+        if (entry.type !== "symlink") {
+            throw new Error(`EINVAL: invalid argument, readlink '${path}'`);
+        }
+        return entry.target;
+    }
+    /**
+     * Resolve all symlinks in a path to get the canonical physical path.
+     * This is equivalent to POSIX realpath().
+     */
+    async realpath(path) {
+        // resolvePathWithSymlinks already resolves all symlinks
+        const resolved = this.resolvePathWithSymlinks(path);
+        // Verify the path exists
+        if (!this.data.has(resolved)) {
+            throw new Error(`ENOENT: no such file or directory, realpath '${path}'`);
+        }
+        return resolved;
+    }
+    // ===========================================================================
+    // Workflow Serde Support
+    // ===========================================================================
+    static [WORKFLOW_SERIALIZE](instance) {
+        return { data: instance.data };
+    }
+    static [WORKFLOW_DESERIALIZE](serialized) {
+        const fs = new InMemoryFs();
+        fs.data = serialized.data;
+        return fs;
+    }
+    /**
+     * Set access and modification times of a file
+     * @param path - The file path
+     * @param _atime - Access time (ignored, kept for API compatibility)
+     * @param mtime - Modification time
+     */
+    async utimes(path, _atime, mtime) {
+        const normalized = this.normalizePath(path);
+        const resolved = this.resolvePathWithSymlinks(normalized);
+        const entry = this.data.get(resolved);
+        if (!entry) {
+            throw new Error(`ENOENT: no such file or directory, utimes '${path}'`);
+        }
+        // Update mtime on the entry
+        entry.mtime = mtime;
+    }
+}

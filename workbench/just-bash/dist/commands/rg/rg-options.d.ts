@@ -1,0 +1,61 @@
+/**
+ * RgOptions interface and default values
+ */
+export interface RgOptions {
+    ignoreCase: boolean;
+    caseSensitive: boolean;
+    smartCase: boolean;
+    fixedStrings: boolean;
+    wordRegexp: boolean;
+    lineRegexp: boolean;
+    invertMatch: boolean;
+    multiline: boolean;
+    multilineDotall: boolean;
+    patterns: string[];
+    patternFiles: string[];
+    count: boolean;
+    countMatches: boolean;
+    files: boolean;
+    filesWithMatches: boolean;
+    filesWithoutMatch: boolean;
+    stats: boolean;
+    onlyMatching: boolean;
+    maxCount: number;
+    lineNumber: boolean;
+    noFilename: boolean;
+    withFilename: boolean;
+    nullSeparator: boolean;
+    byteOffset: boolean;
+    column: boolean;
+    vimgrep: boolean;
+    replace: string | null;
+    afterContext: number;
+    beforeContext: number;
+    contextSeparator: string;
+    quiet: boolean;
+    heading: boolean;
+    passthru: boolean;
+    includeZero: boolean;
+    sort: "path" | "none";
+    json: boolean;
+    globs: string[];
+    iglobs: string[];
+    globCaseInsensitive: boolean;
+    types: string[];
+    typesNot: string[];
+    typeAdd: string[];
+    typeClear: string[];
+    hidden: boolean;
+    noIgnore: boolean;
+    noIgnoreDot: boolean;
+    noIgnoreVcs: boolean;
+    ignoreFiles: string[];
+    maxDepth: number;
+    maxFilesize: number;
+    followSymlinks: boolean;
+    searchZip: boolean;
+    searchBinary: boolean;
+    preprocessor: string | null;
+    preprocessorGlobs: string[];
+}
+export declare function createDefaultOptions(): RgOptions;

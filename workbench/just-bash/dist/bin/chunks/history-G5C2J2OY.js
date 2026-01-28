@@ -1,0 +1,3 @@
+#!/usr/bin/env node
+import{a as i,b as h}from"./chunk-GTNBSMZR.js";import"./chunk-KGOUQS5A.js";var d={name:"history",summary:"display command history",usage:"history [n]",options:["-c      clear the history list","    --help display this help and exit"]},l="BASH_HISTORY",m={name:"history",async execute(e,n){if(h(e))return i(d);let a=n.env[l]||"[]",t;try{t=JSON.parse(a)}catch{t=[]}if(e[0]==="-c")return n.env[l]="[]",{stdout:"",stderr:"",exitCode:0};let s=t.length;e[0]&&/^\d+$/.test(e[0])&&(s=Math.min(parseInt(e[0],10),t.length));let c=t.length-s,r="";for(let o=c;o<t.length;o++){let y=(o+1).toString().padStart(5," ");r+=`${y}  ${t[o]}
+`}return{stdout:r,stderr:"",exitCode:0}}};export{m as historyCommand};
