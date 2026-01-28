@@ -1416,6 +1416,59 @@ describe('e2e', () => {
     }
   );
 
+  test(
+    'crossContextSerdeWorkflow - classes defined in step code are deserializable in workflow context',
+    { timeout: 60_000 },
+    async () => {
+      // This is a critical test for the cross-context class registration feature.
+      //
+      // The Vector class is defined in serde-models.ts and ONLY imported by step code
+      // (serde-steps.ts). The workflow code (99_e2e.ts) does NOT import Vector directly.
+      //
+      // Without cross-context class registration, this test would fail because:
+      // - The workflow bundle wouldn't have Vector registered (never imported it)
+      // - The workflow couldn't deserialize Vector instances returned from steps
+      //
+      // With cross-context class registration:
+      // - The build system discovers serde-models.ts has serialization patterns
+      // - It includes serde-models.ts in ALL bundle contexts (step, workflow, client)
+      // - Vector is registered everywhere, enabling full round-trip serialization
+      //
+      // Test flow:
+      // 1. Step creates Vector(1, 2, 3) and returns it (step serializes)
+      // 2. Workflow receives Vector (workflow MUST deserialize - key test!)
+      // 3. Workflow passes Vector to another step (workflow serializes)
+      // 4. Step receives Vector and operates on it (step deserializes)
+      // 5. Workflow returns plain objects to client (no client deserialization needed)
+      //
+      // The critical part is step 2: the workflow code never imports Vector,
+      // so without cross-context registration it wouldn't know how to deserialize it.
+
+      const run = await triggerWorkflow('crossContextSerdeWorkflow', []);
+      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      // Verify all the vector operations worked correctly
+      expect(returnValue).toEqual({
+        // v1 created in step: (1, 2, 3)
+        v1: { x: 1, y: 2, z: 3 },
+        // v2 created in step: (10, 20, 30)
+        v2: { x: 10, y: 20, z: 30 },
+        // sum of v1 + v2: (11, 22, 33)
+        sum: { x: 11, y: 22, z: 33 },
+        // v1 scaled by 5: (5, 10, 15)
+        scaled: { x: 5, y: 10, z: 15 },
+        // Array sum of v1 + v2 + scaled: (16, 32, 48)
+        arraySum: { x: 16, y: 32, z: 48 },
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+    }
+  );
+
   // ==================== PAGES ROUTER TESTS ====================
   // Tests for Next.js Pages Router API endpoint (only runs for nextjs-turbopack and nextjs-webpack)
   const isNextJsApp =

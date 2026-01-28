@@ -103,18 +103,10 @@ export function createDiscoverEntriesPlugin(state: {
             state.discoveredSteps.push(normalizedPath);
           }
 
-          // Files with serde patterns are treated like step files so they get
-          // bundled and transformed, which registers serialization classes.
-          // However, skip @workflow SDK packages for serde-only detection since those
-          // are internal implementation files (like serialization.js) that shouldn't
-          // be treated as user entry points.
-          if (patterns.hasSerde && !patterns.hasUseStep && !isSdkFile) {
-            state.discoveredSteps.push(normalizedPath);
-          }
-
           // Track all serde files separately for cross-context class registration.
           // Classes need to be registered in all bundle contexts (step, workflow, client)
           // to support serialization across execution boundaries.
+          // Skip @workflow SDK packages since those are internal implementation files.
           if (patterns.hasSerde && !isSdkFile) {
             if (!state.discoveredSerdeFiles.includes(normalizedPath)) {
               state.discoveredSerdeFiles.push(normalizedPath);
