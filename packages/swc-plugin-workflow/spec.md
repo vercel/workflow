@@ -557,30 +557,43 @@ For example, if a class `Point` is defined in `models/point.ts` and only used in
 
 This cross-registration happens automatically during the build process - no manual configuration is required.
 
-### Package-Based Class IDs
+### Package-Based IDs
 
-When a class is defined in a package (inside `node_modules`), the classId uses the **package name** instead of the file path. This ensures that classes exported under different export conditions (e.g., `"workflow"` vs `"import"`) get the same classId.
+When workflows, steps, or classes are defined in a package (inside `node_modules`), all IDs use the **package name** instead of the file path. This ensures that entities exported under different export conditions (e.g., `"workflow"` vs `"import"`) get the same IDs.
 
 For example, a package `just-bash` might have:
 - Main export: `node_modules/just-bash/dist/Bash.js` (full implementation)
 - Workflow export: `node_modules/just-bash/dist/workflow.js` (lightweight implementation)
 
-Both files export a class named `Bash`. Without package-based classIds, they would get different IDs:
-- `class//node_modules/just-bash/dist/Bash.js//Bash`
-- `class//node_modules/just-bash/dist/workflow.js//Bash`
+Both files may export a class `Bash`, a workflow `processCommand`, and a step `executeCommand`. Without package-based IDs, they would get different IDs based on file paths.
 
-With package-based classIds, both get the same ID:
+With package-based IDs, all get IDs based on the package name:
+- `workflow//just-bash//processCommand`
+- `step//just-bash//executeCommand`
 - `class//just-bash//Bash`
 
-This allows packages to provide workflow-optimized versions of their classes that are serialization-compatible with the full implementation.
+This allows packages to provide workflow-optimized versions that are serialization-compatible with the full implementation.
 
-**ClassId format:**
+**ID format:**
 | Context | Format | Example |
 |---------|--------|---------|
-| Local file | `class//{filepath}//{className}` | `class//src/models/Point.ts//Point` |
-| Package | `class//{packageName}//{className}` | `class//just-bash//Bash` |
+| Local workflow | `workflow//{filepath}//{name}` | `workflow//src/jobs/order.ts//processOrder` |
+| Package workflow | `workflow//{packageName}//{name}` | `workflow//just-bash//processCommand` |
+| Local step | `step//{filepath}//{name}` | `step//src/jobs/order.ts//fetchData` |
+| Package step | `step//{packageName}//{name}` | `step//just-bash//executeCommand` |
+| Local class | `class//{filepath}//{className}` | `class//src/models/Point.ts//Point` |
+| Package class | `class//{packageName}//{className}` | `class//just-bash//Bash` |
 
 The package name is automatically detected by the build system when processing files from `node_modules`.
+
+**Example manifest for package-based code:**
+```javascript
+/**__internal_workflows{
+  "workflows":{"my-package":{"myWorkflow":{"workflowId":"workflow//my-package//myWorkflow"}}},
+  "steps":{"my-package":{"myStep":{"stepId":"step//my-package//myStep"}}},
+  "classes":{"my-package":{"MyClass":{"classId":"class//my-package//MyClass"}}}
+}*/
+```
 
 ---
 
