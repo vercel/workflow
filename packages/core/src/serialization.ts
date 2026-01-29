@@ -112,7 +112,7 @@ export function decodeFormatPrefix(data: Uint8Array | unknown): {
   if (!(data instanceof Uint8Array)) {
     return {
       format: SerializationFormat.DEVALUE_V1,
-      payload: data as Uint8Array,
+      payload: new TextEncoder().encode(JSON.stringify(data)),
     };
   }
 
