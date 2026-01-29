@@ -76,6 +76,13 @@ export function encodeWithFormatPrefix(
   format: SerializationFormatType,
   payload: Uint8Array
 ): Uint8Array {
+  if (!(payload instanceof Uint8Array)) {
+    throw new WorkflowRuntimeError(
+      `"payload" must be a Uint8Array, got "${typeof payload}"`,
+      { slug: 'serialization-failed', cause: payload }
+    );
+  }
+
   const prefixBytes = formatEncoder.encode(format);
   if (prefixBytes.length !== FORMAT_PREFIX_LENGTH) {
     throw new Error(
@@ -96,10 +103,19 @@ export function encodeWithFormatPrefix(
  * @returns An object with the format identifier and payload
  * @throws Error if the data is too short or has an unknown format
  */
-export function decodeFormatPrefix(data: Uint8Array): {
+export function decodeFormatPrefix(data: Uint8Array | unknown): {
   format: SerializationFormatType;
   payload: Uint8Array;
 } {
+  // Compat for legacy specVersion 1 runs that don't have a format prefix,
+  // and don't have a binary payload
+  if (!(data instanceof Uint8Array)) {
+    return {
+      format: SerializationFormat.DEVALUE_V1,
+      payload: data as Uint8Array,
+    };
+  }
+
   if (data.length < FORMAT_PREFIX_LENGTH) {
     throw new Error(
       `Data too short to contain format prefix: expected at least ${FORMAT_PREFIX_LENGTH} bytes, got ${data.length}`
@@ -1203,7 +1219,7 @@ export function dehydrateWorkflowArguments(
  * @returns The hydrated value
  */
 export function hydrateWorkflowArguments(
-  value: Uint8Array,
+  value: Uint8Array | unknown,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1258,7 +1274,7 @@ export function dehydrateWorkflowReturnValue(
  * @returns The hydrated return value, ready to be consumed by the client
  */
 export function hydrateWorkflowReturnValue(
-  value: Uint8Array,
+  value: Uint8Array | unknown,
   ops: Promise<void>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis,
@@ -1315,7 +1331,7 @@ export function dehydrateStepArguments(
  * @returns The hydrated value, ready to be consumed by the step user-code function
  */
 export function hydrateStepArguments(
-  value: Uint8Array,
+  value: Uint8Array | unknown,
   ops: Promise<any>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis,
@@ -1374,7 +1390,7 @@ export function dehydrateStepReturnValue(
  * @returns The hydrated return value of a step, ready to be consumed by the workflow handler
  */
 export function hydrateStepReturnValue(
-  value: Uint8Array,
+  value: Uint8Array | unknown,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
