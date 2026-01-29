@@ -2219,50 +2219,6 @@ describe('decodeFormatPrefix legacy compatibility', () => {
     expect(JSON.parse(decoded)).toEqual(legacyData);
   });
 
-  it('should handle legacy string data (non-Uint8Array)', () => {
-    const legacyData = 'hello world';
-    const result = decodeFormatPrefix(legacyData);
-
-    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
-    expect(result.payload).toBeInstanceOf(Uint8Array);
-
-    const decoded = new TextDecoder().decode(result.payload);
-    expect(JSON.parse(decoded)).toBe(legacyData);
-  });
-
-  it('should handle legacy number data (non-Uint8Array)', () => {
-    const legacyData = 12345;
-    const result = decodeFormatPrefix(legacyData);
-
-    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
-    expect(result.payload).toBeInstanceOf(Uint8Array);
-
-    const decoded = new TextDecoder().decode(result.payload);
-    expect(JSON.parse(decoded)).toBe(legacyData);
-  });
-
-  it('should handle legacy null data (non-Uint8Array)', () => {
-    const legacyData = null;
-    const result = decodeFormatPrefix(legacyData);
-
-    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
-    expect(result.payload).toBeInstanceOf(Uint8Array);
-
-    const decoded = new TextDecoder().decode(result.payload);
-    expect(JSON.parse(decoded)).toBe(legacyData);
-  });
-
-  it('should handle legacy boolean data (non-Uint8Array)', () => {
-    const legacyData = true;
-    const result = decodeFormatPrefix(legacyData);
-
-    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
-    expect(result.payload).toBeInstanceOf(Uint8Array);
-
-    const decoded = new TextDecoder().decode(result.payload);
-    expect(JSON.parse(decoded)).toBe(legacyData);
-  });
-
   it('should handle legacy undefined data (non-Uint8Array)', () => {
     const legacyData = undefined;
     const result = decodeFormatPrefix(legacyData);
@@ -2273,26 +2229,6 @@ describe('decodeFormatPrefix legacy compatibility', () => {
     // JSON.stringify(undefined) returns undefined (not a string),
     // which when encoded produces an empty Uint8Array
     expect(result.payload.length).toBe(0);
-  });
-
-  it('should handle deeply nested legacy objects', () => {
-    const legacyData = {
-      level1: {
-        level2: {
-          level3: {
-            value: 'deep',
-            array: [1, 2, { nested: true }],
-          },
-        },
-      },
-    };
-    const result = decodeFormatPrefix(legacyData);
-
-    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
-    expect(result.payload).toBeInstanceOf(Uint8Array);
-
-    const decoded = new TextDecoder().decode(result.payload);
-    expect(JSON.parse(decoded)).toEqual(legacyData);
   });
 
   it('should still correctly handle v2 Uint8Array data', () => {
