@@ -26,9 +26,7 @@ export {
 } from './runs.js';
 export type { AnySerializedData, SerializedData } from './serialization.js';
 export {
-  isSerializedData,
   LegacySerializedDataSchemaV1,
-  SerializedDataSchema,
   SerializedDataSchema,
 } from './serialization.js';
 export type * from './shared.js';
