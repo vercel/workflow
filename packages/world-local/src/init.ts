@@ -199,6 +199,8 @@ export function upgradeVersion(
     `[world-local] Upgrading from version ${formatVersion(oldVersion)} to ${formatVersion(newVersion)}`
   );
   // Future: Add migration logic here when needed
+
+  // TODO:
 }
 
 /**

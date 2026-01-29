@@ -122,6 +122,10 @@ export function deserializeError<T extends Record<string, any>>(obj: any): T {
 }
 
 const getUserAgent = () => {
+  const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+  if (deploymentId) {
+    return `@workflow/world-vercel/${version} node-${process.version} ${os.platform()} (${os.arch()}) ${deploymentId}`;
+  }
   return `@workflow/world-vercel/${version} node-${process.version} ${os.platform()} (${os.arch()})`;
 };
 
