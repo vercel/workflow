@@ -68,7 +68,7 @@ const formatDecoder = new TextDecoder();
 /**
  * Encode a payload with a format prefix.
  *
- * @param format - The format identifier (must be exactly 8 ASCII characters)
+ * @param format - The format identifier (must be exactly 4 ASCII characters)
  * @param payload - The serialized payload bytes
  * @returns A new Uint8Array with format prefix prepended
  */
