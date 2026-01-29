@@ -1,3 +1,5 @@
+'use client';
+
 import { type ReactNode, useEffect, useState } from 'react';
 import { useTraceViewer } from '../context';
 import styles from '../trace-viewer.module.css';

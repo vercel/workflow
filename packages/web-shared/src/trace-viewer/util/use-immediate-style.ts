@@ -1,3 +1,5 @@
+'use client';
+
 import type { CSSProperties, MutableRefObject } from 'react';
 import { useCallback, useRef } from 'react';
 

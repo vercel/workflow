@@ -1,3 +1,5 @@
+'use client';
+
 import { clsx } from 'clsx';
 import type { CSSProperties, MutableRefObject, ReactNode } from 'react';
 import { memo, useRef } from 'react';
