@@ -122,25 +122,6 @@ export function decodeFormatPrefix(data: Uint8Array): {
 }
 
 /**
- * Check if a Uint8Array has a valid format prefix.
- * This is useful for detecting whether data uses the new format system
- * or is legacy unversioned data.
- *
- * @param data - The data to check
- * @returns true if the data starts with a known format prefix
- */
-export function hasFormatPrefix(data: Uint8Array): boolean {
-  if (data.length < FORMAT_PREFIX_LENGTH) {
-    return false;
-  }
-
-  const prefixBytes = data.subarray(0, FORMAT_PREFIX_LENGTH);
-  const format = formatDecoder.decode(prefixBytes);
-  const knownFormats = Object.values(SerializationFormat) as string[];
-  return knownFormats.includes(format);
-}
-
-/**
  * Default ULID generator for contexts where VM's seeded `stableUlid` isn't available.
  * Used as a fallback when serializing streams outside the workflow VM context
  * (e.g., when starting a workflow or handling step return values).
