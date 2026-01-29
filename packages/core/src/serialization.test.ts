@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import {
+  decodeFormatPrefix,
   dehydrateStepArguments,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
@@ -16,6 +17,7 @@ import {
   hydrateStepReturnValue,
   hydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
+  SerializationFormat,
 } from './serialization.js';
 import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
 import { createContext } from './vm/index.js';
@@ -2190,5 +2192,122 @@ describe('format prefix system', () => {
     expect(() => hydrateWorkflowArguments(tooShort, vmGlobalThis)).toThrow(
       /Data too short to contain format prefix/
     );
+  });
+});
+
+describe('decodeFormatPrefix legacy compatibility', () => {
+  it('should handle legacy object data (non-Uint8Array)', () => {
+    const legacyData = { message: 'hello', count: 42 };
+    const result = decodeFormatPrefix(legacyData);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    // The payload should be JSON-encoded
+    const decoded = new TextDecoder().decode(result.payload);
+    expect(JSON.parse(decoded)).toEqual(legacyData);
+  });
+
+  it('should handle legacy array data (non-Uint8Array)', () => {
+    const legacyData = [1, 2, 'three', { nested: true }];
+    const result = decodeFormatPrefix(legacyData);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    const decoded = new TextDecoder().decode(result.payload);
+    expect(JSON.parse(decoded)).toEqual(legacyData);
+  });
+
+  it('should handle legacy string data (non-Uint8Array)', () => {
+    const legacyData = 'hello world';
+    const result = decodeFormatPrefix(legacyData);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    const decoded = new TextDecoder().decode(result.payload);
+    expect(JSON.parse(decoded)).toBe(legacyData);
+  });
+
+  it('should handle legacy number data (non-Uint8Array)', () => {
+    const legacyData = 12345;
+    const result = decodeFormatPrefix(legacyData);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    const decoded = new TextDecoder().decode(result.payload);
+    expect(JSON.parse(decoded)).toBe(legacyData);
+  });
+
+  it('should handle legacy null data (non-Uint8Array)', () => {
+    const legacyData = null;
+    const result = decodeFormatPrefix(legacyData);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    const decoded = new TextDecoder().decode(result.payload);
+    expect(JSON.parse(decoded)).toBe(legacyData);
+  });
+
+  it('should handle legacy boolean data (non-Uint8Array)', () => {
+    const legacyData = true;
+    const result = decodeFormatPrefix(legacyData);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    const decoded = new TextDecoder().decode(result.payload);
+    expect(JSON.parse(decoded)).toBe(legacyData);
+  });
+
+  it('should handle legacy undefined data (non-Uint8Array)', () => {
+    const legacyData = undefined;
+    const result = decodeFormatPrefix(legacyData);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    // JSON.stringify(undefined) returns undefined (not a string),
+    // which when encoded produces an empty Uint8Array
+    expect(result.payload.length).toBe(0);
+  });
+
+  it('should handle deeply nested legacy objects', () => {
+    const legacyData = {
+      level1: {
+        level2: {
+          level3: {
+            value: 'deep',
+            array: [1, 2, { nested: true }],
+          },
+        },
+      },
+    };
+    const result = decodeFormatPrefix(legacyData);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    const decoded = new TextDecoder().decode(result.payload);
+    expect(JSON.parse(decoded)).toEqual(legacyData);
+  });
+
+  it('should still correctly handle v2 Uint8Array data', () => {
+    // Create valid v2 data with 'devl' prefix
+    const payload = new TextEncoder().encode('["test"]');
+    const v2Data = new Uint8Array(4 + payload.length);
+    v2Data.set(new TextEncoder().encode('devl'), 0);
+    v2Data.set(payload, 4);
+
+    const result = decodeFormatPrefix(v2Data);
+
+    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(result.payload).toBeInstanceOf(Uint8Array);
+
+    const decoded = new TextDecoder().decode(result.payload);
+    expect(decoded).toBe('["test"]');
   });
 });
