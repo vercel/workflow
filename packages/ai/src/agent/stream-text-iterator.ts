@@ -102,6 +102,7 @@ export async function* streamTextIterator({
   let currentToolChoice = toolChoice;
   let currentContext = experimental_context;
   let currentActiveTools: string[] | undefined;
+  let previousResponseId: string | undefined; // Track OpenAI response ID (for openai responses api)
 
   const steps: StepResult<any>[] = [];
   let done = false;
@@ -255,6 +256,15 @@ export async function* streamTextIterator({
           ? filterToolSet(tools, currentActiveTools)
           : tools;
 
+      // Set previousResponseId in providerOptions for OpenAI conversation continuity
+      if (
+        previousResponseId &&
+        currentGenerationSettings?.providerOptions?.openai
+      ) {
+        currentGenerationSettings.providerOptions.openai.previousResponseId =
+          previousResponseId;
+      }
+
       const {
         toolCalls,
         finish,
@@ -277,6 +287,15 @@ export async function* streamTextIterator({
           collectUIChunks,
         }
       );
+
+      // Extract response ID from finish chunk for next iteration
+      // OpenAI provides this in providerMetadata.openai.responseId
+      const openaiResponseId = (finish as any)?.providerMetadata?.openai
+        ?.responseId;
+      if (openaiResponseId && typeof openaiResponseId === 'string') {
+        previousResponseId = openaiResponseId;
+      }
+
       isFirstIteration = false;
       stepNumber++;
       steps.push(step);
@@ -309,7 +328,26 @@ export async function* streamTextIterator({
             toolName: toolCall.toolName,
             input: JSON.parse(toolCall.input),
             ...(toolCall.providerMetadata != null
-              ? { providerOptions: toolCall.providerMetadata }
+              ? {
+                  providerOptions: (() => {
+                    if (
+                      toolCall.providerMetadata.openai &&
+                      typeof toolCall.providerMetadata.openai === 'object'
+                    ) {
+                      const { itemId: _itemId, ...rest } =
+                        toolCall.providerMetadata.openai;
+                      // Remove itemId here — it requires a paired reasoningId.
+                      // Passing previousResponseId is sufficient. (we already pass this above)
+                      // Passing previousResponseId + itemId throws a duplicate item error
+
+                      return {
+                        ...toolCall.providerMetadata,
+                        openai: rest,
+                      };
+                    }
+                    return toolCall.providerMetadata;
+                  })(),
+                }
               : {}),
           })),
         });
