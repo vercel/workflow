@@ -39,6 +39,9 @@ export const BaseEventSchema = z.object({
 });
 
 // Event schemas (shared between creation requests and server responses)
+// Note: Serialized data fields use SerializedDataSchema to support both:
+// - specVersion >= 2: Uint8Array (binary devalue format)
+// - specVersion 1: any (legacy JSON format)
 const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),

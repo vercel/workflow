@@ -5,8 +5,6 @@ export {
   EventSchema,
   EventTypeSchema,
 } from './events.js';
-export type { SerializedData } from './serialization.js';
-export { SerializedDataSchema } from './serialization.js';
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
@@ -26,17 +24,24 @@ export {
   WorkflowRunSchema,
   WorkflowRunStatusSchema,
 } from './runs.js';
+export type { AnySerializedData, SerializedData } from './serialization.js';
+export {
+  isSerializedData,
+  LegacySerializedDataSchemaV1,
+  SerializedDataSchema,
+  SerializedDataSchema,
+} from './serialization.js';
 export type * from './shared.js';
 export {
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
-export type * from './steps.js';
-export { StepSchema, StepStatusSchema } from './steps.js';
 export type { SpecVersion } from './spec-version.js';
 export {
-  SPEC_VERSION_LEGACY,
-  SPEC_VERSION_CURRENT,
   isLegacySpecVersion,
   requiresNewerWorld,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
 } from './spec-version.js';
+export type * from './steps.js';
+export { StepSchema, StepStatusSchema } from './steps.js';

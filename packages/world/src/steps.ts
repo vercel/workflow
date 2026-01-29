@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SerializedDataSchema, type SerializedData } from './serialization.js';
+import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import {
   type PaginationOptions,
   type ResolveData,
@@ -16,6 +16,13 @@ export const StepStatusSchema = z.enum([
   'cancelled',
 ]);
 
+/**
+ * Schema for workflow steps.
+ *
+ * Note: input/output use SerializedDataSchema to support both:
+ * - specVersion >= 2: Uint8Array (binary devalue format)
+ * - specVersion 1: any (legacy JSON format)
+ */
 // TODO: implement a discriminated union here just like the run schema
 export const StepSchema = z.object({
   runId: z.string(),

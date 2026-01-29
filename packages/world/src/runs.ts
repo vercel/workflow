@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SerializedDataSchema, type SerializedData } from './serialization.js';
+import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import {
   type PaginationOptions,
   type ResolveData,
@@ -18,7 +18,11 @@ export const WorkflowRunStatusSchema = z.enum([
 
 /**
  * Base schema for the Workflow runs. Prefer using WorkflowRunSchema
- * which implements a discriminatedUnion for various states
+ * which implements a discriminatedUnion for various states.
+ *
+ * Note: input/output use SerializedDataSchema to support both:
+ * - specVersion >= 2: Uint8Array (binary devalue format)
+ * - specVersion 1: any (legacy JSON format)
  */
 export const WorkflowRunBaseSchema = z.object({
   runId: z.string(),
@@ -54,7 +58,7 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
     error: z.undefined(),
     completedAt: z.coerce.date(),
   }),
-  // Completed state
+  // Completed state - output can be v1 or v2 format
   WorkflowRunBaseSchema.extend({
     status: z.literal('completed'),
     output: SerializedDataSchema,
