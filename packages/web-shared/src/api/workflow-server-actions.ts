@@ -21,6 +21,7 @@ import {
   type Event,
   type Hook,
   isLegacySpecVersion,
+  SPEC_VERSION_LEGACY,
   type Step,
   type WorkflowRun,
   type WorkflowRunStatus,
@@ -847,13 +848,14 @@ export async function recreateRun(
     // Get original input/output
     const hydratedRun = hydrate(run as WorkflowRun);
 
+    // Preserve original specVersion - if undefined (legacy v1), use SPEC_VERSION_LEGACY
     const newRun = await start(
       { workflowId: run.workflowName },
       hydratedRun.input as unknown as unknown[],
       {
         deploymentId: deploymentId ?? run.deploymentId,
         world,
-        specVersion: run.specVersion,
+        specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
       }
     );
     return createResponse(newRun.runId);

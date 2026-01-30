@@ -39,6 +39,7 @@ const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
 const WorkflowRunWireSchema = WorkflowRunWireBaseSchema;
 
 // Wire schema for lazy mode with refs instead of data
+// input/output can be Uint8Array (v2) or any JSON (legacy v1)
 const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   input: true,
   output: true,
@@ -46,8 +47,9 @@ const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   // We discard the results of the refs, so we don't care about the type here
   inputRef: z.any().optional(),
   outputRef: z.any().optional(),
-  input: z.instanceof(Uint8Array).optional(),
-  output: z.instanceof(Uint8Array).optional(),
+  // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
+  input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+  output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
   blobStorageBytes: z.number().optional(),
   streamStorageBytes: z.number().optional(),
 });
