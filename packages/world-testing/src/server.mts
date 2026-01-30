@@ -17,28 +17,21 @@ if (!process.env.WORKFLOW_TARGET_WORLD) {
   process.exit(1);
 }
 
-type Files = keyof typeof manifest.workflows;
-type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
+type WorkflowIds = keyof typeof manifest.workflows;
 type NonEmptyArray<T> = [T, ...T[]];
 
 const Invoke = z
   .object({
-    file: z.enum(Object.keys(manifest.workflows) as NonEmptyArray<Files>),
-    workflow: z.string(),
+    workflowId: z.enum(
+      Object.keys(manifest.workflows) as NonEmptyArray<WorkflowIds>
+    ),
     args: z.unknown().array().default([]),
   })
   .transform((obj) => {
-    const file = obj.file as keyof typeof manifest.workflows;
-    const workflow = z
-      .enum(
-        Object.keys(manifest.workflows[file]) as NonEmptyArray<
-          Workflows<typeof file>
-        >
-      )
-      .parse(obj.workflow);
+    const workflowId = obj.workflowId as WorkflowIds;
     return {
       args: obj.args,
-      workflow: manifest.workflows[file][workflow],
+      workflow: manifest.workflows[workflowId],
     };
   });
 

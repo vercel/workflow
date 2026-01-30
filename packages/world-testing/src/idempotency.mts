@@ -5,7 +5,10 @@ import { createFetcher, startServer } from './util.mjs';
 export function idempotency(world: string) {
   test('idempotency', { timeout: 60_000 }, async () => {
     const server = await startServer({ world }).then(createFetcher);
-    const result = await server.invoke('workflows/noop.ts', 'brokenWf', [1, 2]);
+    const result = await server.invoke(
+      'workflow//./workflows/noop//brokenWf',
+      [1, 2]
+    );
     expect(result.runId).toMatch(/^wrun_.+/);
     const run = await vi.waitFor(
       async () => {

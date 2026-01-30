@@ -17,8 +17,7 @@ export const Control = z.object({
 });
 type Control = z.infer<typeof Control>;
 
-type Files = keyof typeof manifest.workflows;
-type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
+type WorkflowIds = keyof typeof manifest.workflows;
 
 export async function startServer(opts: { world: string }) {
   let serverPath = new URL('./server.mts', import.meta.url);
@@ -70,17 +69,13 @@ const Invoke = z.object({ runId: z.coerce.string() });
 
 export function createFetcher(control: Control) {
   return {
-    async invoke<F extends Files, W extends Workflows<F>>(
-      file: F,
-      workflow: W,
-      args: unknown[]
-    ) {
+    async invoke(workflowId: WorkflowIds, args: unknown[]) {
       const x = await fetch(`http://localhost:${control.info.port}/invoke`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ file, workflow, args }),
+        body: JSON.stringify({ workflowId, args }),
       });
       const data = await x.json().then(Invoke.parse);
       onTestFailed(() => {

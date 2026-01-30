@@ -6,8 +6,7 @@ export function nullByte(world: string) {
   test('supports null bytes in step results', { timeout: 12_000 }, async () => {
     const server = await startServer({ world }).then(createFetcher);
     const result = await server.invoke(
-      'workflows/null-byte.ts',
-      'nullByteWorkflow',
+      'workflow//./workflows/null-byte//nullByteWorkflow',
       []
     );
     expect(result.runId).toMatch(/^wrun_.+/);
