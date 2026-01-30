@@ -164,11 +164,14 @@ describe('e2e', () => {
       output: 133,
     });
     // Workflow ID format: workflow//./{path-without-extension}//{functionName}
-    // Different workbenches have different directory structures (workflows/ vs src/workflows/)
+    // Different workbenches have different directory structures:
+    // - workflows/ (standard)
+    // - src/workflows/ (some frameworks)
+    // - example/workflows/ (example app)
     const fileWithoutExt = workflow.workflowFile.replace(/\.tsx?$/, '');
     expect(json.workflowName).toMatch(
       new RegExp(
-        `^workflow//\\./(?:src/)?${fileWithoutExt}//${workflow.workflowFn}$`
+        `^workflow//\\./(?:src/|example/)?${fileWithoutExt}//${workflow.workflowFn}$`
       )
     );
   });
