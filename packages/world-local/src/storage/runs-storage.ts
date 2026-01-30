@@ -61,5 +61,11 @@ export function createRunsStorage(basedir: string): Storage['runs'] {
 
       return result;
     }) as Storage['runs']['list'],
+
+    cancel: async (): Promise<never> => {
+      throw new Error(
+        'Use events.create(eventType="run_cancelled") to cancel a run'
+      );
+    },
   };
 }

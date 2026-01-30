@@ -17,13 +17,14 @@ import {
 } from '@workflow/core/serialization';
 import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
-import type {
-  Event,
-  Hook,
-  Step,
-  WorkflowRun,
-  WorkflowRunStatus,
-  World,
+import {
+  type Event,
+  type Hook,
+  isLegacySpecVersion,
+  type Step,
+  type WorkflowRun,
+  type WorkflowRunStatus,
+  type World,
 } from '@workflow/world';
 import { createVercelWorld } from '@workflow/world-vercel';
 
@@ -815,7 +816,12 @@ export async function cancelRun(
 ): Promise<ServerActionResult<void>> {
   try {
     const world = await getWorldFromEnv(worldEnv);
-    await world.events.create(runId, { eventType: 'run_cancelled' });
+    const run = await world.runs.get(runId);
+    if (isLegacySpecVersion(run.specVersion)) {
+      await world.runs.cancel(runId, { resolveData: 'none' });
+    } else {
+      await world.events.create(runId, { eventType: 'run_cancelled' });
+    }
     return createResponse(undefined);
   } catch (error) {
     return createServerActionError<void>(error, 'world.events.create', {

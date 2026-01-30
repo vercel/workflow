@@ -10,6 +10,7 @@ import type {
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
+  CancelWorkflowRunParams,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WorkflowRun,
@@ -76,6 +77,15 @@ export interface Storage {
     list(
       params?: ListWorkflowRunsParams
     ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
+
+    /**
+     * @deprecated Use events.create() instead. This call will fail
+     * for runs using specVersion >= 2.
+     */
+    cancel(
+      id: string,
+      params: CancelWorkflowRunParams & { resolveData: 'none' }
+    ): Promise<WorkflowRunWithoutData>;
   };
 
   steps: {

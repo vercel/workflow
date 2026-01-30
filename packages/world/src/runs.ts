@@ -3,7 +3,6 @@ import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import {
   type PaginationOptions,
   type ResolveData,
-  type StructuredError,
   StructuredErrorSchema,
 } from './shared.js';
 
@@ -93,13 +92,6 @@ export interface CreateWorkflowRunRequest {
   workflowName: string;
   input: SerializedData;
   executionContext?: SerializedData;
-}
-
-export interface UpdateWorkflowRunRequest {
-  status?: WorkflowRunStatus;
-  output?: SerializedData;
-  error?: StructuredError;
-  executionContext?: Record<string, any>;
 }
 
 export interface GetWorkflowRunParams {

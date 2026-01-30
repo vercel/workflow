@@ -110,8 +110,9 @@ export async function createWorkflowRunEvent(
   // For run_created events, runId is null - use "null" string in the URL path
   const runIdPath = id === null ? 'null' : id;
 
+  const apiVersion = params?.v1Compat ? 'v1' : 'v2';
   const wireResult = await makeRequest({
-    endpoint: `/v2/runs/${runIdPath}/events`,
+    endpoint: `${apiVersion}/runs/${runIdPath}/events`,
     options: { method: 'POST' },
     data,
     config,

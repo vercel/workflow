@@ -148,6 +148,11 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
         cursor: values.at(-1)?.runId ?? null,
       };
     }) as Storage['runs']['list'],
+    cancel: async (): Promise<never> => {
+      throw new Error(
+        'Use events.create(eventType="run_cancelled") to cancel a run'
+      );
+    },
   };
 }
 

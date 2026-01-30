@@ -38,6 +38,11 @@ export default class Cancel extends BaseCommand {
       );
     }
 
-    await cancelRun(world, args.runId);
+    const run = await world.runs.get(args.runId);
+    if (run.specVersion === 1) {
+      await world.runs.cancel(args.runId, { resolveData: 'none' });
+    } else {
+      await world.events.create(args.runId, { eventType: 'run_cancelled' });
+    }
   }
 }

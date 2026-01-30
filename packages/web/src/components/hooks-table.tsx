@@ -1,12 +1,10 @@
 'use client';
 
 import {
-  cancelRun,
   type EnvMap,
   getErrorMessage,
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
-  recreateRun,
   useHookActions,
   useWorkflowHooks,
 } from '@workflow/web-shared';
@@ -18,11 +16,8 @@ import {
   ChevronRight,
   MoreHorizontal,
   RefreshCw,
-  RotateCw,
-  XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -88,7 +83,6 @@ export function HooksTable({
     previousPage,
     hasNextPage,
     hasPreviousPage,
-    reload,
     refresh,
     pageInfo,
   } = useWorkflowHooks(env, {
@@ -365,51 +359,6 @@ export function HooksTable({
                               onResolveClick={hookActions.openResolveModal}
                               DropdownMenuItem={DropdownMenuItem}
                             />
-                            <DropdownMenuItem
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                try {
-                                  const newRunId = await recreateRun(
-                                    env,
-                                    hook.runId
-                                  );
-                                  toast.success('New run started', {
-                                    description: `Run ID: ${newRunId}`,
-                                  });
-                                  refresh();
-                                } catch (err) {
-                                  toast.error('Failed to re-run', {
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : 'Unknown error',
-                                  });
-                                }
-                              }}
-                            >
-                              <RotateCw className="h-4 w-4 mr-2" />
-                              Replay Run
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                try {
-                                  await cancelRun(env, hook.runId);
-                                  toast.success('Run cancelled');
-                                  refresh();
-                                } catch (err) {
-                                  toast.error('Failed to cancel', {
-                                    description:
-                                      err instanceof Error
-                                        ? err.message
-                                        : 'Unknown error',
-                                  });
-                                }
-                              }}
-                            >
-                              <XCircle className="h-4 w-4 mr-2" />
-                              Cancel
-                            </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </TableCell>

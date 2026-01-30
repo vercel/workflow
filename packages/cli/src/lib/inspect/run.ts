@@ -68,6 +68,11 @@ export const startRun = async (
 };
 
 export const cancelRun = async (world: World, runId: string) => {
-  await world.events.create(runId, { eventType: 'run_cancelled' });
-  logger.log(chalk.green(`Cancel signal sent to run ${runId}`));
+  const run = await world.runs.get(runId);
+  if (run.specVersion === 1) {
+    await world.runs.cancel(runId, { resolveData: 'none' });
+  } else {
+    await world.events.create(runId, { eventType: 'run_cancelled' });
+    logger.log(chalk.green(`Cancel signal sent to run ${runId}`));
+  }
 };

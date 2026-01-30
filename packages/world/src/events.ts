@@ -296,6 +296,7 @@ export type CreateEventRequest = Exclude<
 >;
 
 export interface CreateEventParams {
+  v1Compat?: boolean;
   resolveData?: ResolveData;
 }
 
