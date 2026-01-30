@@ -417,6 +417,7 @@ export abstract class BaseBuilder {
           entriesToBundle: externalizeNonSteps
             ? [
                 ...stepFiles,
+                ...serdeFiles,
                 ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
               ]
             : undefined,
@@ -520,8 +521,8 @@ export abstract class BaseBuilder {
     await this.writeDebugFile(outfile, { workflowFiles, serdeOnlyFiles });
 
     // Helper to create import statement from file path
-    // For workspace/node_modules packages, uses the package name so esbuild
-    // will resolve through package.json exports with conditions: ['workflow']
+    // For packages, uses the package name so esbuild will resolve through
+    // package.json exports with conditions: ['workflow']
     const createImport = (file: string) => {
       const { importPath, isPackage } = getImportPath(
         file,
@@ -556,7 +557,11 @@ export abstract class BaseBuilder {
     // calls directly, so we just need to import the files (Map is initialized via banner)
     const workflowImports = workflowFiles.map(createImport).join('\n');
 
-    // Include serde-only files for class registration side effects
+    // Include serde-only files for class registration side effects.
+    // Note: If a package has serde classes that aren't exported via the 'workflow'
+    // condition, those classes won't be available in the workflow bundle. Packages
+    // should export all serializable classes (including internal ones used during
+    // serialization) via their 'workflow' export condition.
     const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
 
     const imports = serdeImports
