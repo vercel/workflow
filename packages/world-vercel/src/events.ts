@@ -119,7 +119,7 @@ export async function createWorkflowRunEvent(
       return { run };
     }
     const wireResult = await makeRequest({
-      endpoint: '/v1/runs/create',
+      endpoint: `/v1/runs/${id}/events`,
       options: { method: 'POST' },
       data,
       config,
