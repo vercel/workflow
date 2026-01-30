@@ -50,10 +50,10 @@ app.post('/api/trigger', async (req, res) => {
   }
 
   const workflowFnParam = req.query.workflowFn;
-  if (typeof workflowFnParam !== 'string') {
-    return res.status(400).send('Invalid or missing workflowFn query parameter');
+  if (workflowFnParam !== undefined && typeof workflowFnParam !== 'string') {
+    return res.status(400).send('Invalid workflowFn query parameter');
   }
-  const workflowFn = workflowFnParam || 'simple';
+  const workflowFn = (workflowFnParam as string | undefined) || 'simple';
 
   // Handle static method lookups (e.g., "Calculator.calculate")
   let workflow: unknown;
