@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"validStep":{"stepId":"step//input.js//validStep"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"validStep":{"stepId":"step//./input//validStep"}}}}*/;
 // These should all error - only async functions allowed
 export const value = 42;
 export function syncFunc() {

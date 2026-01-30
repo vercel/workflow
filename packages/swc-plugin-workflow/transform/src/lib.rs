@@ -290,6 +290,9 @@ pub enum TransformMode {
 pub struct StepTransform {
     mode: TransformMode,
     filename: String,
+    // The module specifier used for ID generation (e.g., "point@0.0.1" or "./src/models/Point")
+    // If None, falls back to using "./{filename}" format
+    module_specifier: Option<String>,
     // Track if the file has a top-level "use step" directive
     has_file_step_directive: bool,
     // Track if the file has a top-level "use workflow" directive
@@ -1209,10 +1212,11 @@ impl StepTransform {
             }
         }
     }
-    pub fn new(mode: TransformMode, filename: String) -> Self {
+    pub fn new(mode: TransformMode, filename: String, module_specifier: Option<String>) -> Self {
         Self {
             mode,
             filename,
+            module_specifier,
             has_file_step_directive: false,
             has_file_workflow_directive: false,
             step_function_names: HashSet::new(),
@@ -1253,7 +1257,13 @@ impl StepTransform {
         }
     }
 
-    // Create an identifier by combining filename and function name or line number
+    // Get the module path to use for ID generation.
+    // Uses the module_specifier if provided, otherwise falls back to "./{filename}" format.
+    fn get_module_path(&self) -> String {
+        naming::get_module_path(self.module_specifier.as_deref(), &self.filename)
+    }
+
+    // Create an identifier by combining module path and function name or line number
     // with appropriate prefix based on function type
     fn create_id(
         &self,
@@ -1268,11 +1278,11 @@ impl StepTransform {
             }
             Some(name) => {
                 let prefix = if is_workflow { "workflow" } else { "step" };
-                naming::format_name(prefix, &self.filename, name)
+                naming::format_name(prefix, &self.get_module_path(), name)
             }
             None => {
                 let prefix = if is_workflow { "workflow" } else { "step" };
-                naming::format_name(prefix, &self.filename, span.lo.0)
+                naming::format_name(prefix, &self.get_module_path(), span.lo.0)
             }
         }
     }
@@ -1467,7 +1477,7 @@ impl StepTransform {
             format!("{}/{}", parent_var_name, prop_name)
         };
         let prefix = if is_workflow { "workflow" } else { "step" };
-        naming::format_name(prefix, &self.filename, &fn_name)
+        naming::format_name(prefix, &self.get_module_path(), &fn_name)
     }
 
     // Process object properties for step functions
@@ -2477,7 +2487,7 @@ impl StepTransform {
     // Create a registration call statement: registerSerializationClass("class//...", ClassName)
     // Used in workflow mode and client mode to register classes for serialization
     fn create_class_serialization_registration(&self, class_name: &str) -> Stmt {
-        let class_id = naming::format_name("class", &self.filename, class_name);
+        let class_id = naming::format_name("class", &self.get_module_path(), class_name);
         Stmt::Expr(ExprStmt {
             span: DUMMY_SP,
             expr: Box::new(Expr::Call(CallExpr {
@@ -3255,10 +3265,11 @@ impl StepTransform {
             let mut sorted_classes: Vec<_> = self.classes_for_manifest.iter().collect();
             sorted_classes.sort();
 
+            let module_path = self.get_module_path();
             let class_entries: Vec<String> = sorted_classes
                 .into_iter()
                 .map(|class_name| {
-                    let class_id = naming::format_name("class", &self.filename, class_name);
+                    let class_id = naming::format_name("class", &module_path, class_name);
                     format!("\"{}\":{{\"classId\":\"{}\"}}", class_name, class_id)
                 })
                 .collect();
@@ -3952,9 +3963,10 @@ impl VisitMut for StepTransform {
                     let mut sorted_classes: Vec<_> =
                         self.classes_needing_serialization.drain().collect();
                     sorted_classes.sort();
+                    let module_path = self.get_module_path();
                     for class_name in sorted_classes {
-                        // Generate class ID: class//filename//ClassName
-                        let class_id = naming::format_name("class", &self.filename, &class_name);
+                        // Generate class ID: class//module_path//ClassName
+                        let class_id = naming::format_name("class", &module_path, &class_name);
 
                         // Create: registerSerializationClass("class//...", ClassName)
                         let registration_call = Stmt::Expr(ExprStmt {

@@ -64,6 +64,14 @@ async function checkShouldTransform(
   return shouldTransformFile(filePath, patterns);
 }
 
+async function getModuleSpecifier(
+  filePath: string,
+  projectRoot: string
+): Promise<string | undefined> {
+  const { resolveModuleSpecifier } = await getBuildersModule();
+  return resolveModuleSpecifier(filePath, projectRoot).moduleSpecifier;
+}
+
 // This loader applies the "use workflow"/"use step"
 // client transformation
 export default async function workflowLoader(
@@ -144,6 +152,9 @@ export default async function workflowLoader(
   // Get decorator options from tsconfig (cached per working directory)
   const decoratorOptions = await getDecoratorOptions(workingDir);
 
+  // Resolve module specifier for packages (node_modules or workspace packages)
+  const moduleSpecifier = await getModuleSpecifier(filename, workingDir);
+
   // Transform with SWC
   const result = await transform(normalizedSource, {
     filename: relativeFilename,
@@ -164,7 +175,10 @@ export default async function workflowLoader(
       target: 'es2022',
       experimental: {
         plugins: [
-          [require.resolve('@workflow/swc-plugin'), { mode: 'client' }],
+          [
+            require.resolve('@workflow/swc-plugin'),
+            { mode: 'client', moduleSpecifier },
+          ],
         ],
       },
       transform: {

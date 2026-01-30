@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use swc_core::ecma::{
-    transforms::testing::{FixtureTestConfig, test_fixture},
+    transforms::testing::{test_fixture, FixtureTestConfig},
     visit::visit_mut_pass,
 };
 use swc_workflow::{StepTransform, TransformMode};
@@ -18,6 +18,7 @@ fn step_mode(input: PathBuf) {
             visit_mut_pass(StepTransform::new(
                 TransformMode::Step,
                 input.file_name().unwrap().to_string_lossy().to_string(),
+                None,
             ))
         },
         &input,
@@ -43,6 +44,7 @@ fn workflow_mode(input: PathBuf) {
             visit_mut_pass(StepTransform::new(
                 TransformMode::Workflow,
                 input.file_name().unwrap().to_string_lossy().to_string(),
+                None,
             ))
         },
         &input,
@@ -68,6 +70,7 @@ fn client_mode(input: PathBuf) {
             visit_mut_pass(StepTransform::new(
                 TransformMode::Client,
                 input.file_name().unwrap().to_string_lossy().to_string(),
+                None,
             ))
         },
         &input,

@@ -1,7 +1,7 @@
 import { registerStepFunction } from "workflow/internal/private";
 import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
-/**__internal_workflows{"steps":{"input.js":{"Service#process":{"stepId":"step//input.js//Service#process"},"helper":{"stepId":"step//input.js//helper"}}},"classes":{"input.js":{"Service":{"classId":"class//input.js//Service"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"Service#process":{"stepId":"step//./input//Service#process"},"helper":{"stepId":"step//./input//helper"}}},"classes":{"input.js":{"Service":{"classId":"class//./input//Service"}}}}*/;
 var Service$process$helper = async (x)=>x * 2;
 export class Service {
     static [WORKFLOW_SERIALIZE](instance) {
@@ -23,6 +23,6 @@ export class Service {
         return doubled + this.value;
     }
 }
-registerStepFunction("step//input.js//Service$process/helper", Service$process$helper);
-registerStepFunction("step//input.js//Service#process", Service.prototype["process"]);
-registerSerializationClass("class//input.js//Service", Service);
+registerStepFunction("step//./input//Service$process/helper", Service$process$helper);
+registerStepFunction("step//./input//Service#process", Service.prototype["process"]);
+registerSerializationClass("class//./input//Service", Service);

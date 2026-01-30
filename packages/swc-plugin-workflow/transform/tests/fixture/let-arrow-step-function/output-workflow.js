@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"exportedStepArrow":{"stepId":"step//input.js//exportedStepArrow"},"normalStep":{"stepId":"step//input.js//normalStep"},"stepArrow":{"stepId":"step//input.js//stepArrow"}}}}*/;
-let stepArrow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//stepArrow");
-export let exportedStepArrow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//exportedStepArrow");
-export var normalStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//normalStep");
+/**__internal_workflows{"steps":{"input.js":{"exportedStepArrow":{"stepId":"step//./input//exportedStepArrow"},"normalStep":{"stepId":"step//./input//normalStep"},"stepArrow":{"stepId":"step//./input//stepArrow"}}}}*/;
+let stepArrow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//stepArrow");
+export let exportedStepArrow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//exportedStepArrow");
+export var normalStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//normalStep");

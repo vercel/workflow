@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"sendRecipientEmail":{"stepId":"step//input.js//sendRecipientEmail"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"sendRecipientEmail":{"stepId":"step//./input//sendRecipientEmail"}}}}*/;
 export const sendRecipientEmail = async ({ recipientEmail, cardImage, cardText, rsvpReplies })=>{
     const html = generatePostcardEmailTemplate({
         cardImage,

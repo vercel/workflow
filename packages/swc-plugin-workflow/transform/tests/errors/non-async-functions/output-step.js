@@ -1,5 +1,5 @@
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"workflows":{"input.js":{"validWorkflow":{"workflowId":"workflow//input.js//validWorkflow"}}},"steps":{"input.js":{"validStep":{"stepId":"step//input.js//validStep"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"validWorkflow":{"workflowId":"workflow//./input//validWorkflow"}}},"steps":{"input.js":{"validStep":{"stepId":"step//./input//validStep"}}}}*/;
 // Error: sync function with use step
 export function syncStep() {
     'use step';
@@ -24,5 +24,5 @@ export async function validStep() {
 export const validWorkflow = async ()=>{
     throw new Error("You attempted to execute workflow validWorkflow function directly. To start a workflow, use start(validWorkflow) from workflow/api");
 };
-validWorkflow.workflowId = "workflow//input.js//validWorkflow";
-registerStepFunction("step//input.js//validStep", validStep);
+validWorkflow.workflowId = "workflow//./input//validWorkflow";
+registerStepFunction("step//./input//validStep", validStep);

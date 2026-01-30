@@ -2,7 +2,7 @@ import { registerSerializationClass } from "workflow/internal/class-serializatio
 // Test class expression where binding name differs from internal class name
 // e.g., `var Bash = class _Bash {}` - the registration should use "Bash", not "_Bash"
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
-/**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//input.js//Bash"},"Shell":{"classId":"class//input.js//Shell"}}}}*/;
+/**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//./input//Bash"},"Shell":{"classId":"class//./input//Shell"}}}}*/;
 // Class expression with different binding name
 var Bash = class _Bash {
     constructor(command){
@@ -32,5 +32,5 @@ var Shell = class {
     }
 };
 export { Bash, Shell };
-registerSerializationClass("class//input.js//Bash", Bash);
-registerSerializationClass("class//input.js//Shell", Shell);
+registerSerializationClass("class//./input//Bash", Bash);
+registerSerializationClass("class//./input//Shell", Shell);

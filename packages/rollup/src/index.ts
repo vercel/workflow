@@ -4,6 +4,7 @@ import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
   isWorkflowSdkFile,
+  resolveModuleSpecifier,
   shouldTransformFile,
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
@@ -102,6 +103,9 @@ export function workflowTransformPlugin(
         relativeFilename = normalizedFilepath.split('/').pop() || 'unknown.ts';
       }
 
+      // Resolve module specifier for packages (node_modules or workspace packages)
+      const { moduleSpecifier } = resolveModuleSpecifier(id, workingDir);
+
       // Transform with SWC
       const result = await transform(code, {
         filename: relativeFilename,
@@ -119,7 +123,7 @@ export function workflowTransformPlugin(
           },
           target: 'es2022',
           experimental: {
-            plugins: [[swcPlugin, { mode: 'client' }]],
+            plugins: [[swcPlugin, { mode: 'client', moduleSpecifier }]],
           },
           transform: {
             react: {

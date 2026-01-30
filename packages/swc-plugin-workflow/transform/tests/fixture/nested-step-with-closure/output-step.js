@@ -1,7 +1,7 @@
 import { __private_getClosureVars, registerStepFunction } from "workflow/internal/private";
 import { DurableAgent } from '@workflow/ai/agent';
 import { gateway } from 'ai';
-/**__internal_workflows{"workflows":{"input.js":{"wflow":{"workflowId":"workflow//input.js//wflow"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//input.js//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//input.js//_anonymousStep1"},"_anonymousStep2":{"stepId":"step//input.js//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//input.js//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//input.js//_anonymousStep4"},"f":{"stepId":"step//input.js//f"},"fn":{"stepId":"step//input.js//fn"},"namedStepWithClosureVars":{"stepId":"step//input.js//namedStepWithClosureVars"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"wflow":{"workflowId":"workflow//./input//wflow"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"f":{"stepId":"step//./input//f"},"fn":{"stepId":"step//./input//fn"},"namedStepWithClosureVars":{"stepId":"step//./input//namedStepWithClosureVars"}}}}*/;
 var stepWrapperReturnArrowFunctionVar$fn = async ()=>{
     const { a, b, c } = __private_getClosureVars();
     return a + b + c;
@@ -82,16 +82,16 @@ const arrowWrapperReturnNamedFunctionVar = (a, b, c)=>{
 export async function wflow() {
     throw new Error("You attempted to execute workflow wflow function directly. To start a workflow, use start(wflow) from workflow/api");
 }
-wflow.workflowId = "workflow//input.js//wflow";
-registerStepFunction("step//input.js//stepWrapperReturnArrowFunctionVar/fn", stepWrapperReturnArrowFunctionVar$fn);
-registerStepFunction("step//input.js//stepWrapperReturnNamedFunction/f", stepWrapperReturnNamedFunction$f);
-registerStepFunction("step//input.js//stepWrapperReturnArrowFunction/_anonymousStep0", stepWrapperReturnArrowFunction$_anonymousStep0);
-registerStepFunction("step//input.js//stepWrapperReturnNamedFunctionVar/fn", stepWrapperReturnNamedFunctionVar$fn);
-registerStepFunction("step//input.js//arrowWrapperReturnArrowFunctionVar/fn", arrowWrapperReturnArrowFunctionVar$fn);
-registerStepFunction("step//input.js//arrowWrapperReturnNamedFunction/f", arrowWrapperReturnNamedFunction$f);
-registerStepFunction("step//input.js//arrowWrapperReturnArrowFunction/_anonymousStep1", arrowWrapperReturnArrowFunction$_anonymousStep1);
-registerStepFunction("step//input.js//arrowWrapperReturnNamedFunctionVar/fn", arrowWrapperReturnNamedFunctionVar$fn);
-registerStepFunction("step//input.js//wflow/namedStepWithClosureVars", wflow$namedStepWithClosureVars);
-registerStepFunction("step//input.js//wflow/_anonymousStep2", wflow$_anonymousStep2);
-registerStepFunction("step//input.js//wflow/_anonymousStep3", wflow$_anonymousStep3);
-registerStepFunction("step//input.js//wflow/_anonymousStep4", wflow$_anonymousStep4);
+wflow.workflowId = "workflow//./input//wflow";
+registerStepFunction("step//./input//stepWrapperReturnArrowFunctionVar/fn", stepWrapperReturnArrowFunctionVar$fn);
+registerStepFunction("step//./input//stepWrapperReturnNamedFunction/f", stepWrapperReturnNamedFunction$f);
+registerStepFunction("step//./input//stepWrapperReturnArrowFunction/_anonymousStep0", stepWrapperReturnArrowFunction$_anonymousStep0);
+registerStepFunction("step//./input//stepWrapperReturnNamedFunctionVar/fn", stepWrapperReturnNamedFunctionVar$fn);
+registerStepFunction("step//./input//arrowWrapperReturnArrowFunctionVar/fn", arrowWrapperReturnArrowFunctionVar$fn);
+registerStepFunction("step//./input//arrowWrapperReturnNamedFunction/f", arrowWrapperReturnNamedFunction$f);
+registerStepFunction("step//./input//arrowWrapperReturnArrowFunction/_anonymousStep1", arrowWrapperReturnArrowFunction$_anonymousStep1);
+registerStepFunction("step//./input//arrowWrapperReturnNamedFunctionVar/fn", arrowWrapperReturnNamedFunctionVar$fn);
+registerStepFunction("step//./input//wflow/namedStepWithClosureVars", wflow$namedStepWithClosureVars);
+registerStepFunction("step//./input//wflow/_anonymousStep2", wflow$_anonymousStep2);
+registerStepFunction("step//./input//wflow/_anonymousStep3", wflow$_anonymousStep3);
+registerStepFunction("step//./input//wflow/_anonymousStep4", wflow$_anonymousStep4);

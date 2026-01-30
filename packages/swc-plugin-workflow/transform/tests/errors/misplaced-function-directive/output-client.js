@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"badStep":{"stepId":"step//input.js//badStep"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"badStep":{"stepId":"step//./input//badStep"}}}}*/;
 export async function badStep() {
     const x = 42;
     // Error: directive must be at the top of function

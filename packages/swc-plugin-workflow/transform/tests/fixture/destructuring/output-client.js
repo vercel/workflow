@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"destructure":{"stepId":"step//input.js//destructure"},"multiple":{"stepId":"step//input.js//multiple"},"nested_destructure":{"stepId":"step//input.js//nested_destructure"},"process_array":{"stepId":"step//input.js//process_array"},"rest_top_level":{"stepId":"step//input.js//rest_top_level"},"with_defaults":{"stepId":"step//input.js//with_defaults"},"with_rest":{"stepId":"step//input.js//with_rest"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"destructure":{"stepId":"step//./input//destructure"},"multiple":{"stepId":"step//./input//multiple"},"nested_destructure":{"stepId":"step//./input//nested_destructure"},"process_array":{"stepId":"step//./input//process_array"},"rest_top_level":{"stepId":"step//./input//rest_top_level"},"with_defaults":{"stepId":"step//./input//with_defaults"},"with_rest":{"stepId":"step//./input//with_rest"}}}}*/;
 export async function destructure({ a, b }) {
     return a + b;
 }

@@ -1,5 +1,5 @@
 import { unusedHelper } from './unused-helper';
-/**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//input.js//processData"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//./input//processData"}}}}*/;
 // This variable is exported but not used anywhere in this file
 export const CONFIG = {
     apiKey: 'test-key',
@@ -10,7 +10,7 @@ export function formatData(data) {
     return unusedHelper(data);
 }
 // This step function uses the helper
-export var processData = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//processData");
+export var processData = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//processData");
 // This is used internally
 function internalHelper(value) {
     return value * 2;

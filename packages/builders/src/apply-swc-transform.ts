@@ -1,8 +1,9 @@
 import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transform } from '@swc/core';
 import { getDecoratorOptionsForDirectory } from './config-helpers.js';
+import { resolveModuleSpecifier } from './module-specifier.js';
 
 const require = createRequire(import.meta.url);
 
@@ -67,6 +68,16 @@ export async function applySwcTransform(
     filename.endsWith('.mts') ||
     filename.endsWith('.cts');
 
+  // Resolve module specifier for packages (node_modules or workspace packages)
+  const projectRoot = process.cwd();
+  const absoluteFilename = isAbsolute(filename)
+    ? filename
+    : join(projectRoot, filename);
+  const { moduleSpecifier } = resolveModuleSpecifier(
+    absoluteFilename,
+    projectRoot
+  );
+
   // Transform with SWC to support syntax esbuild doesn't
   const result = await transform(source, {
     filename,
@@ -88,7 +99,7 @@ export async function applySwcTransform(
       target: 'es2022',
       experimental: mode
         ? {
-            plugins: [[swcPluginPath, { mode }]],
+            plugins: [[swcPluginPath, { mode, moduleSpecifier }]],
           }
         : undefined,
       transform: {

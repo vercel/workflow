@@ -1,5 +1,5 @@
 import { unusedHelper } from './unused-helper';
-/**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//input.js//processData"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//./input//processData"}}}}*/;
 // This variable is exported but not used anywhere in this file
 export const CONFIG = {
     apiKey: 'test-key',

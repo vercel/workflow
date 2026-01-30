@@ -9,6 +9,13 @@ export {
 } from './config-helpers.js';
 export { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
+export {
+  clearModuleSpecifierCache,
+  getImportPath,
+  type ImportPathResult,
+  type ModuleSpecifierResult,
+  resolveModuleSpecifier,
+} from './module-specifier.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 export {
   createPseudoPackagePlugin,

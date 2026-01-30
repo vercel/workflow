@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"exportedNamedStep":{"stepId":"step//input.js//exportedNamedStep"},"namedStep":{"stepId":"step//input.js//namedStep"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"exportedNamedStep":{"stepId":"step//./input//exportedNamedStep"},"namedStep":{"stepId":"step//./input//namedStep"}}}}*/;
 async function namedStep() {
     return 1;
 }

@@ -13,6 +13,7 @@ import {
   type WorkflowManifest,
 } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
+import { getImportPath } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
@@ -319,7 +320,20 @@ export abstract class BaseBuilder {
     });
 
     // Helper to create import statement from file path
+    // For workspace/node_modules packages, uses the package name so esbuild
+    // will resolve through package.json exports with the appropriate conditions
     const createImport = (file: string) => {
+      const { importPath, isPackage } = getImportPath(
+        file,
+        this.config.workingDir
+      );
+
+      if (isPackage) {
+        // Use package name - esbuild will resolve via package.json exports
+        return `import '${importPath}';`;
+      }
+
+      // Local app file - use relative path
       // Normalize both paths to forward slashes before calling relative()
       // This is critical on Windows where relative() can produce unexpected results with mixed path formats
       const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
@@ -505,7 +519,21 @@ export abstract class BaseBuilder {
     await this.writeDebugFile(outfile, { workflowFiles, serdeOnlyFiles });
 
     // Helper to create import statement from file path
+    // For workspace/node_modules packages, uses the package name so esbuild
+    // will resolve through package.json exports with conditions: ['workflow']
     const createImport = (file: string) => {
+      const { importPath, isPackage } = getImportPath(
+        file,
+        this.config.workingDir
+      );
+
+      if (isPackage) {
+        // Use package name - esbuild will resolve via package.json exports
+        // and apply the 'workflow' condition
+        return `import '${importPath}';`;
+      }
+
+      // Local app file - use relative path
       // Normalize both paths to forward slashes before calling relative()
       // This is critical on Windows where relative() can produce unexpected results with mixed path formats
       const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');

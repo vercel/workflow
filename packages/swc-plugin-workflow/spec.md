@@ -20,7 +20,7 @@ Directives must:
 All modes emit a JSON manifest comment at the top of the file containing metadata about discovered workflows, steps, and classes with custom serialization:
 
 ```javascript
-/**__internal_workflows{"workflows":{"path/file.ts":{"myWorkflow":{"workflowId":"workflow//path/file.ts//myWorkflow"}}},"steps":{"path/file.ts":{"myStep":{"stepId":"step//path/file.ts//myStep"}}},"classes":{"path/file.ts":{"Point":{"classId":"class//path/file.ts//Point"}}}}*/
+/**__internal_workflows{"workflows":{"path/file.ts":{"myWorkflow":{"workflowId":"workflow//./path/file//myWorkflow"}}},"steps":{"path/file.ts":{"myStep":{"stepId":"step//./path/file//myStep"}}},"classes":{"path/file.ts":{"Point":{"classId":"class//./path/file//Point"}}}}*/
 ```
 
 The manifest includes:
@@ -32,18 +32,50 @@ This manifest is used by bundlers and the runtime to discover and register workf
 
 ## ID Generation
 
-IDs use the format `{type}//{filepath}//{identifier}` where:
+IDs use the format `{type}//{modulePath}//{identifier}` where:
 - `type` is `workflow`, `step`, or `class`
-- `filepath` is the relative path from project root (normalized to forward slashes)
-- `identifier` is the function name, with nested functions using `/` separators
+- `modulePath` is either:
+  - A **module specifier** (e.g., `point@0.0.1`, `@myorg/shared@1.2.3`) when provided via plugin config
+  - A **relative path** prefixed with `./` (e.g., `./src/jobs/order`) when no specifier is provided
+- `identifier` is the function/class name, with nested functions using `/` separators
 
-Examples:
-- `workflow//src/jobs/order.ts//processOrder`
-- `step//src/jobs/order.ts//fetchData`
-- `step//src/jobs/order.ts//processOrder/innerStep` (nested step)
-- `step//src/jobs/order.ts//MyClass.staticMethod` (static method)
-- `step//src/jobs/order.ts//MyClass#instanceMethod` (instance method)
-- `class//src/models/Point.ts//Point` (serialization class)
+### Module Specifier Support
+
+The plugin accepts an optional `moduleSpecifier` config option that allows IDs to be based on the 
+import specifier rather than the file path. This is useful for:
+
+1. **Package exports conditions**: When a package has different entrypoints for different conditions 
+   (e.g., `"workflow"` vs `"default"` in `package.json` exports), the same import specifier 
+   can map to different files. Using the specifier ensures consistent IDs across conditions.
+
+2. **Versioned IDs**: Package specifiers can include versions (e.g., `point@0.0.1`) for cache invalidation.
+
+3. **Stable cross-bundle references**: Classes serialized in one bundle can be deserialized in another 
+   bundle as long as both use the same module specifier.
+
+**Plugin Config:**
+```json
+{
+  "mode": "step",
+  "moduleSpecifier": "point@0.0.1"
+}
+```
+
+### Examples
+
+**With module specifier (npm package):**
+- `class//point@0.0.1//Point`
+- `step//@myorg/tasks@2.0.0//processOrder`
+
+**Without module specifier (local files):**
+- `workflow//./src/jobs/order//processOrder`
+- `step//./src/jobs/order//fetchData`
+- `step//./src/jobs/order//processOrder/innerStep` (nested step)
+- `step//./src/jobs/order//MyClass.staticMethod` (static method)
+- `step//./src/jobs/order//MyClass#instanceMethod` (instance method)
+- `class//./src/models/Point//Point` (serialization class)
+
+Note: File extensions are stripped from local paths for cleaner IDs.
 
 ---
 
@@ -64,11 +96,11 @@ export async function add(a, b) {
 Output:
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//input.js//add"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"}}}}*/;
 export async function add(a, b) {
     return a + b;
 }
-registerStepFunction("step//input.js//add", add);
+registerStepFunction("step//./input//add", add);
 ```
 
 ### Arrow Function Step
@@ -84,11 +116,11 @@ export const multiply = async (a, b) => {
 Output:
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"multiply":{"stepId":"step//input.js//multiply"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"multiply":{"stepId":"step//./input//multiply"}}}}*/;
 export const multiply = async (a, b) => {
     return a * b;
 };
-registerStepFunction("step//input.js//multiply", multiply);
+registerStepFunction("step//./input//multiply", multiply);
 ```
 
 ### Workflow Functions in Step Mode
@@ -105,11 +137,11 @@ export async function myWorkflow(data) {
 
 Output:
 ```javascript
-/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//input.js//myWorkflow"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//./input//myWorkflow"}}}}*/;
 export async function myWorkflow(data) {
     throw new Error("You attempted to execute workflow myWorkflow function directly. To start a workflow, use start(myWorkflow) from workflow/api");
 }
-myWorkflow.workflowId = "workflow//input.js//myWorkflow";
+myWorkflow.workflowId = "workflow//./input//myWorkflow";
 ```
 
 ### Nested Steps in Workflows
@@ -133,15 +165,15 @@ export async function example(a, b) {
 Output:
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//input.js//example"}}},"steps":{"input.js":{"innerStep":{"stepId":"step//input.js//innerStep"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//./input//example"}}},"steps":{"input.js":{"innerStep":{"stepId":"step//./input//innerStep"}}}}*/;
 async function example$innerStep(x, y) {
     return x + y;
 }
 export async function example(a, b) {
     throw new Error("You attempted to execute workflow example function directly. To start a workflow, use start(example) from workflow/api");
 }
-example.workflowId = "workflow//input.js//example";
-registerStepFunction("step//input.js//example/innerStep", example$innerStep);
+example.workflowId = "workflow//./input//example";
+registerStepFunction("step//./input//example/innerStep", example$innerStep);
 ```
 
 ### Closure Variables
@@ -161,7 +193,7 @@ function wrapper(multiplier) {
 Output:
 ```javascript
 import { __private_getClosureVars, registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//input.js//_anonymousStep0"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"}}}}*/;
 var wrapper$_anonymousStep0 = async () => {
     const { multiplier } = __private_getClosureVars();
     return 10 * multiplier;
@@ -169,7 +201,7 @@ var wrapper$_anonymousStep0 = async () => {
 function wrapper(multiplier) {
     return wrapper$_anonymousStep0;
 }
-registerStepFunction("step//input.js//wrapper/_anonymousStep0", wrapper$_anonymousStep0);
+registerStepFunction("step//./input//wrapper/_anonymousStep0", wrapper$_anonymousStep0);
 ```
 
 ### Instance Method Step
@@ -202,7 +234,7 @@ Output:
 import { registerStepFunction } from "workflow/internal/private";
 import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
-/**__internal_workflows{"steps":{"input.js":{"Counter#add":{"stepId":"step//input.js//Counter#add"}}},"classes":{"input.js":{"Counter":{"classId":"class//input.js//Counter"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"Counter#add":{"stepId":"step//./input//Counter#add"}}},"classes":{"input.js":{"Counter":{"classId":"class//./input//Counter"}}}}*/;
 export class Counter {
     static [WORKFLOW_SERIALIZE](instance) {
         return { value: instance.value };
@@ -217,8 +249,8 @@ export class Counter {
         return this.value + amount;
     }
 }
-registerStepFunction("step//input.js//Counter#add", Counter.prototype["add"]);
-registerSerializationClass("class//input.js//Counter", Counter);
+registerStepFunction("step//./input//Counter#add", Counter.prototype["add"]);
+registerSerializationClass("class//./input//Counter", Counter);
 ```
 
 Note: Instance methods use `#` in the step ID (e.g., `Counter#add`) and are registered via `ClassName.prototype["methodName"]`.
@@ -241,15 +273,15 @@ export async function subtract(a, b) {
 Output:
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//input.js//add"},"subtract":{"stepId":"step//input.js//subtract"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"},"subtract":{"stepId":"step//./input//subtract"}}}}*/;
 export async function add(a, b) {
     return a + b;
 }
 export async function subtract(a, b) {
     return a - b;
 }
-registerStepFunction("step//input.js//add", add);
-registerStepFunction("step//input.js//subtract", subtract);
+registerStepFunction("step//./input//add", add);
+registerStepFunction("step//./input//subtract", subtract);
 ```
 
 ---
@@ -270,8 +302,8 @@ export async function add(a, b) {
 
 Output:
 ```javascript
-/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//input.js//add"}}}}*/;
-export var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//add");
+/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"}}}}*/;
+export var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//add");
 ```
 
 ### Workflow Functions
@@ -287,13 +319,13 @@ export async function myWorkflow(data) {
 
 Output:
 ```javascript
-/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//input.js//myWorkflow"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//./input//myWorkflow"}}}}*/;
 export async function myWorkflow(data) {
     const result = await fetchData(data);
     return result;
 }
-myWorkflow.workflowId = "workflow//input.js//myWorkflow";
-globalThis.__private_workflows.set("workflow//input.js//myWorkflow", myWorkflow);
+myWorkflow.workflowId = "workflow//./input//myWorkflow";
+globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 ```
 
 ### Nested Steps with Closures
@@ -317,16 +349,16 @@ export async function myWorkflow(config) {
 
 Output:
 ```javascript
-/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//input.js//myWorkflow"}}},"steps":{"input.js":{"increment":{"stepId":"step//input.js//increment"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//./input//myWorkflow"}}},"steps":{"input.js":{"increment":{"stepId":"step//./input//increment"}}}}*/;
 export async function myWorkflow(config) {
     let count = 0;
-    var increment = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//myWorkflow/increment", () => ({
+    var increment = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//myWorkflow/increment", () => ({
         count
     }));
     return await increment();
 }
-myWorkflow.workflowId = "workflow//input.js//myWorkflow";
-globalThis.__private_workflows.set("workflow//input.js//myWorkflow", myWorkflow);
+myWorkflow.workflowId = "workflow//./input//myWorkflow";
+globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 ```
 
 ---
@@ -347,7 +379,7 @@ export async function add(a, b) {
 
 Output:
 ```javascript
-/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//input.js//add"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"}}}}*/;
 export async function add(a, b) {
     return a + b;
 }
@@ -365,11 +397,11 @@ export async function myWorkflow(data) {
 
 Output:
 ```javascript
-/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//input.js//myWorkflow"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//./input//myWorkflow"}}}}*/;
 export async function myWorkflow(data) {
     throw new Error("You attempted to execute workflow myWorkflow function directly. To start a workflow, use start(myWorkflow) from workflow/api");
 }
-myWorkflow.workflowId = "workflow//input.js//myWorkflow";
+myWorkflow.workflowId = "workflow//./input//myWorkflow";
 ```
 
 ### Custom Serialization in Client Mode
@@ -397,7 +429,7 @@ export class Point {
 Output (Client Mode):
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//input.js//Point"}}}}*/;
+/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//./input//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
         this.x = x;
@@ -410,7 +442,7 @@ export class Point {
         return new Point(data.x, data.y);
     }
 }
-registerSerializationClass("class//input.js//Point", Point);
+registerSerializationClass("class//./input//Point", Point);
 ```
 
 ---
@@ -435,24 +467,24 @@ Output (Step Mode):
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//input.js//MyService"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//./input//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//./input//MyService"}}}}*/;
 export class MyService {
     static async process(data) {
         return data.value * 2;
     }
 }
-registerStepFunction("step//input.js//MyService.process", MyService.process);
-registerSerializationClass("class//input.js//MyService", MyService);
+registerStepFunction("step//./input//MyService.process", MyService.process);
+registerSerializationClass("class//./input//MyService", MyService);
 ```
 
 Output (Workflow Mode):
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//input.js//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//input.js//MyService"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//./input//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//./input//MyService"}}}}*/;
 export class MyService {
 }
-MyService.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//MyService.process");
-registerSerializationClass("class//input.js//MyService", MyService);
+MyService.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//MyService.process");
+registerSerializationClass("class//./input//MyService", MyService);
 ```
 
 ### Static Workflow Method
@@ -469,14 +501,14 @@ export class JobRunner {
 
 Output (Workflow Mode):
 ```javascript
-/**__internal_workflows{"workflows":{"input.js":{"JobRunner.runJob":{"workflowId":"workflow//input.js//JobRunner.runJob"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"JobRunner.runJob":{"workflowId":"workflow//./input//JobRunner.runJob"}}}}*/;
 export class JobRunner {
     static async runJob(jobId) {
         return await processJob(jobId);
     }
 }
-JobRunner.runJob.workflowId = "workflow//input.js//JobRunner.runJob";
-globalThis.__private_workflows.set("workflow//input.js//JobRunner.runJob", JobRunner.runJob);
+JobRunner.runJob.workflowId = "workflow//./input//JobRunner.runJob";
+globalThis.__private_workflows.set("workflow//./input//JobRunner.runJob", JobRunner.runJob);
 ```
 
 ---
@@ -506,7 +538,7 @@ export class Point {
 Output:
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//input.js//Point"}}}}*/;
+/**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//./input//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
         this.x = x;
@@ -519,7 +551,7 @@ export class Point {
         return new Point(data.x, data.y);
     }
 }
-registerSerializationClass("class//input.js//Point", Point);
+registerSerializationClass("class//./input//Point", Point);
 ```
 
 You can also use imported symbols from `@workflow/serde`:
@@ -560,7 +592,7 @@ Output:
 ```javascript
 import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
-/**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//input.js//Bash"}}}}*/;
+/**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//./input//Bash"}}}}*/;
 var Bash = class _Bash {
     constructor(command) {
         this.command = command;
@@ -572,7 +604,7 @@ var Bash = class _Bash {
         return new Bash(data.command);
     }
 };
-registerSerializationClass("class//input.js//Bash", Bash);
+registerSerializationClass("class//./input//Bash", Bash);
 ```
 
 Note that:
@@ -625,12 +657,12 @@ export default async (data) => {
 
 Output (Workflow Mode):
 ```javascript
-/**__internal_workflows{"workflows":{"input.js":{"default":{"workflowId":"workflow//input.js//default"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"default":{"workflowId":"workflow//./input//default"}}}}*/;
 const __default = async (data) => {
     return await process(data);
 };
-__default.workflowId = "workflow//input.js//default";
-globalThis.__private_workflows.set("workflow//input.js//default", __default);
+__default.workflowId = "workflow//./input//default";
+globalThis.__private_workflows.set("workflow//./input//default", __default);
 export default __default;
 ```
 
