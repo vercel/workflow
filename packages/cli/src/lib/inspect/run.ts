@@ -3,7 +3,6 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import chalk from 'chalk';
 import { logger } from '../config/log.js';
 import { start } from '../runtime.js';
 

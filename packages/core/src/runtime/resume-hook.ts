@@ -83,10 +83,13 @@ export async function resumeHook<T = any>(
 
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
+        const v1Compat = isLegacySpecVersion(hook.specVersion);
         const dehydratedPayload = dehydrateStepReturnValue(
           payload,
           ops,
-          hook.runId
+          hook.runId,
+          globalThis,
+          v1Compat
         );
         // NOTE: Workaround instead of injecting catching undefined unhandled rejections in webhook bundle
         waitUntil(
@@ -106,7 +109,7 @@ export async function resumeHook<T = any>(
               payload: dehydratedPayload,
             },
           },
-          { v1Compat: isLegacySpecVersion(hook.specVersion) }
+          { v1Compat }
         );
 
         const workflowRun = await world.runs.get(hook.runId);

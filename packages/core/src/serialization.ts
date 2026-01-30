@@ -1198,11 +1198,12 @@ export function dehydrateWorkflowArguments(
   value: unknown,
   ops: Promise<void>[],
   runId: string | Promise<string>,
-  global: Record<string, any> = globalThis
+  global: Record<string, any> = globalThis,
+  v1Compat = false
 ): Uint8Array | unknown {
   try {
     const str = stringify(value, getExternalReducers(global, ops, runId));
-    if (!(value instanceof Uint8Array)) {
+    if (v1Compat) {
       return revive(str);
     }
     const payload = new TextEncoder().encode(str);
@@ -1260,11 +1261,12 @@ export function hydrateWorkflowArguments(
  */
 export function dehydrateWorkflowReturnValue(
   value: unknown,
-  global: Record<string, any> = globalThis
+  global: Record<string, any> = globalThis,
+  v1Compat = false
 ): Uint8Array | unknown {
   try {
     const str = stringify(value, getWorkflowReducers(global));
-    if (!(value instanceof Uint8Array)) {
+    if (v1Compat) {
       return revive(str);
     }
     const payload = new TextEncoder().encode(str);
@@ -1328,11 +1330,12 @@ export function hydrateWorkflowReturnValue(
  */
 export function dehydrateStepArguments(
   value: unknown,
-  global: Record<string, any>
+  global: Record<string, any>,
+  v1Compat = false
 ): Uint8Array | unknown {
   try {
     const str = stringify(value, getWorkflowReducers(global));
-    if (!(value instanceof Uint8Array)) {
+    if (v1Compat) {
       return revive(str);
     }
     const payload = new TextEncoder().encode(str);
@@ -1399,11 +1402,12 @@ export function dehydrateStepReturnValue(
   value: unknown,
   ops: Promise<any>[],
   runId: string | Promise<string>,
-  global: Record<string, any> = globalThis
+  global: Record<string, any> = globalThis,
+  v1Compat = false
 ): Uint8Array | unknown {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId));
-    if (!(value instanceof Uint8Array)) {
+    if (v1Compat) {
       return revive(str);
     }
     const payload = new TextEncoder().encode(str);

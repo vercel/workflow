@@ -108,20 +108,23 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
+      const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
+      const v1Compat = isLegacySpecVersion(specVersion);
+
       // Create run via run_created event (event-sourced architecture)
       // Pass null for runId - the server generates it and returns it in the response
       const workflowArguments = dehydrateWorkflowArguments(
         args,
         ops,
         runIdPromise,
-        globalThis
+        globalThis,
+        v1Compat
       );
-
       const result = await world.events.create(
         null,
         {
           eventType: 'run_created',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion,
           eventData: {
             deploymentId: deploymentId,
             workflowName: workflowName,
@@ -129,7 +132,7 @@ export async function start<TArgs extends unknown[], TResult>(
             executionContext: { traceCarrier, workflowCoreVersion },
           },
         },
-        { v1Compat: isLegacySpecVersion(opts.specVersion) }
+        { v1Compat }
       );
 
       // Assert that the run was created

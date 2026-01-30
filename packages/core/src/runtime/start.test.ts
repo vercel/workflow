@@ -1,6 +1,8 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
-import { describe, expect, it, vi } from 'vitest';
+import { SPEC_VERSION_CURRENT, SPEC_VERSION_LEGACY } from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { start } from './start.js';
+import { getWorld } from './world.js';
 
 // Mock @vercel/functions
 vi.mock('@vercel/functions', () => ({
@@ -13,6 +15,12 @@ vi.mock('./world.js', () => ({
   getWorldHandlers: vi.fn(() => ({
     createQueueHandler: vi.fn(() => vi.fn()),
   })),
+}));
+
+// Mock telemetry
+vi.mock('../telemetry.js', () => ({
+  serializeTraceCarrier: vi.fn().mockResolvedValue({}),
+  trace: vi.fn((_name, fn) => fn(undefined)),
 }));
 
 describe('start', () => {
@@ -64,6 +72,85 @@ describe('start', () => {
 
       await expect(start(invalidWorkflow, [])).rejects.toThrow(
         WorkflowRuntimeError
+      );
+    });
+  });
+
+  describe('specVersion', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockResolvedValue({
+        run: { runId: 'wrun_test123', status: 'pending' },
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+    });
+
+    afterEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should use SPEC_VERSION_CURRENT when specVersion is not provided', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      await start(validWorkflow, []);
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+        }),
+        expect.objectContaining({
+          v1Compat: false,
+        })
+      );
+    });
+
+    it('should use provided specVersion when passed in options', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      await start(validWorkflow, [], { specVersion: SPEC_VERSION_LEGACY });
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_LEGACY,
+        }),
+        expect.objectContaining({
+          v1Compat: true,
+        })
+      );
+    });
+
+    it('should use provided specVersion with v1Compat true for legacy versions', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      await start(validWorkflow, [], { specVersion: 1 });
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({
+          eventType: 'run_created',
+          specVersion: 1,
+        }),
+        expect.objectContaining({
+          v1Compat: true,
+        })
       );
     });
   });
