@@ -1,4 +1,8 @@
-import type { WorkflowRun, World } from '@workflow/world';
+import {
+  isLegacySpecVersion,
+  type WorkflowRun,
+  type World,
+} from '@workflow/world';
 import chalk from 'chalk';
 import { logger } from '../config/log.js';
 import { start } from '../runtime.js';
@@ -69,7 +73,7 @@ export const startRun = async (
 
 export const cancelRun = async (world: World, runId: string) => {
   const run = await world.runs.get(runId);
-  if (run.specVersion === 1) {
+  if (isLegacySpecVersion(run.specVersion)) {
     await world.runs.cancel(runId, { resolveData: 'none' });
   } else {
     await world.events.create(runId, { eventType: 'run_cancelled' });
