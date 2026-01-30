@@ -49,10 +49,11 @@ app.post('/api/trigger', async (req, res) => {
     return res.status(400).send(`Workflow file "${workflowFile}" not found`);
   }
 
-  const workflowFn = (req.query.workflowFn as string) || 'simple';
-  if (!workflowFn) {
-    return res.status(400).send('No workflow query parameter provided');
+  const workflowFnParam = req.query.workflowFn;
+  if (typeof workflowFnParam !== 'string') {
+    return res.status(400).send('Invalid or missing workflowFn query parameter');
   }
+  const workflowFn = workflowFnParam || 'simple';
 
   // Handle static method lookups (e.g., "Calculator.calculate")
   let workflow: unknown;

@@ -70,7 +70,12 @@ export class AppController {
       );
     }
 
-    if (!workflowFn) {
+    const workflowFnStr =
+      typeof workflowFn === 'string' && workflowFn.length > 0
+        ? workflowFn
+        : undefined;
+
+    if (!workflowFnStr) {
       throw new HttpException(
         'No workflow query parameter provided',
         HttpStatus.BAD_REQUEST
@@ -79,18 +84,18 @@ export class AppController {
 
     // Handle static method lookups (e.g., "Calculator.calculate")
     let workflow: unknown;
-    if (workflowFn.includes('.')) {
-      const [className, methodName] = workflowFn.split('.');
+    if (workflowFnStr.includes('.')) {
+      const [className, methodName] = workflowFnStr.split('.');
       const cls = workflows[className as keyof typeof workflows];
       if (cls && typeof cls === 'function') {
         workflow = (cls as Record<string, unknown>)[methodName];
       }
     } else {
-      workflow = workflows[workflowFn as keyof typeof workflows];
+      workflow = workflows[workflowFnStr as keyof typeof workflows];
     }
     if (!workflow) {
       throw new HttpException(
-        `Workflow "${workflowFn}" not found`,
+        `Workflow "${workflowFnStr}" not found`,
         HttpStatus.BAD_REQUEST
       );
     }
