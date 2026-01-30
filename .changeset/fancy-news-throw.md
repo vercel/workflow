@@ -2,4 +2,4 @@
 "@workflow/builders": patch
 ---
 
-Use proper pluarlization in the builder log line
+Use proper pluralization in the builder log line
