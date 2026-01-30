@@ -533,7 +533,6 @@ const toJSONCompatible = <T>(data: T): T => {
 };
 
 const hydrate = <T>(data: T): T => {
-  data = toJSONCompatible(data);
   try {
     return hydrateResourceIO(data as any) as T;
   } catch (error) {
