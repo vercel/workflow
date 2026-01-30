@@ -42,10 +42,23 @@ export async function getNextBuilder() {
         tsconfigPath,
       };
 
-      const { manifest, context: stepsBuildContext } =
+      const { manifest: stepsManifest, context: stepsBuildContext } =
         await this.buildStepsFunction(options);
       const workflowsBundle = await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
+
+      // Merge manifests from both bundles
+      const manifest = {
+        steps: { ...stepsManifest.steps, ...workflowsBundle?.manifest?.steps },
+        workflows: {
+          ...stepsManifest.workflows,
+          ...workflowsBundle?.manifest?.workflows,
+        },
+        classes: {
+          ...stepsManifest.classes,
+          ...workflowsBundle?.manifest?.classes,
+        },
+      };
 
       // Write unified manifest to workflow generated directory
       const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
@@ -63,12 +76,19 @@ export async function getNextBuilder() {
             'Invariant: expected steps build context in watch mode'
           );
         }
-        if (!workflowsBundle) {
+        if (
+          !workflowsBundle?.interimBundleCtx ||
+          !workflowsBundle?.bundleFinal
+        ) {
           throw new Error('Invariant: expected workflows bundle in watch mode');
         }
 
         let stepsCtx = stepsBuildContext;
-        let workflowsCtx = workflowsBundle;
+        // These are safe to assert as non-null because we checked above
+        let workflowsCtx = {
+          interimBundleCtx: workflowsBundle.interimBundleCtx!,
+          bundleFinal: workflowsBundle.bundleFinal!,
+        };
 
         const normalizePath = (pathname: string) =>
           pathname.replace(/\\/g, '/');
@@ -171,12 +191,18 @@ export async function getNextBuilder() {
 
           await workflowsCtx.interimBundleCtx.dispose();
           const newWorkflowsCtx = await this.buildWorkflowsFunction(options);
-          if (!newWorkflowsCtx) {
+          if (
+            !newWorkflowsCtx?.interimBundleCtx ||
+            !newWorkflowsCtx?.bundleFinal
+          ) {
             throw new Error(
               'Invariant: expected workflows bundle context after rebuild'
             );
           }
-          workflowsCtx = newWorkflowsCtx;
+          workflowsCtx = {
+            interimBundleCtx: newWorkflowsCtx.interimBundleCtx,
+            bundleFinal: newWorkflowsCtx.bundleFinal,
+          };
         };
 
         const logBuildMessages = (
@@ -425,10 +451,7 @@ export async function getNextBuilder() {
       inputFiles: string[];
       workflowGeneratedDir: string;
       tsconfigPath?: string;
-    }): Promise<void | {
-      interimBundleCtx: import('esbuild').BuildContext;
-      bundleFinal: (interimBundleResult: string) => Promise<void>;
-    }> {
+    }) {
       const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
       await mkdir(workflowsRouteDir, { recursive: true });
       return await this.createWorkflowsBundle({

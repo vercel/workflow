@@ -1272,10 +1272,6 @@ impl StepTransform {
         is_workflow: bool,
     ) -> String {
         match fn_name {
-            Some(name) if name.starts_with("__builtin") => {
-                // Special case for __builtin functions: use only the function name
-                name.to_string()
-            }
             Some(name) => {
                 let prefix = if is_workflow { "workflow" } else { "step" };
                 naming::format_name(prefix, &self.get_module_path(), name)
