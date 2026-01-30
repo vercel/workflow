@@ -42,6 +42,7 @@
     "@swc/core": "catalog:",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "builtin-modules": "5.0.0",
     "chalk": "5.6.2",
