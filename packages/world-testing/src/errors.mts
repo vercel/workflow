@@ -6,7 +6,8 @@ export function errors(world: string) {
   test('retriable and fatal errors', { timeout: 59_000 }, async () => {
     const server = await startServer({ world }).then(createFetcher);
     const result = await server.invoke(
-      'workflow//./workflows/retriable-and-fatal//retryableAndFatalErrorWorkflow',
+      'workflows/retriable-and-fatal.ts',
+      'retryableAndFatalErrorWorkflow',
       []
     );
     expect(result.runId).toMatch(/^wrun_.+/);
