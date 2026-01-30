@@ -391,6 +391,9 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       builtin-modules:
         specifier: 5.0.0
         version: 5.0.0
