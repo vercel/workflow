@@ -1,6 +1,7 @@
 'use client';
 
 import type { Node } from 'fumadocs-core/page-tree';
+import DynamicLink from 'fumadocs-core/dynamic-link';
 import {
   SidebarFolder,
   SidebarFolderContent,
@@ -11,6 +12,7 @@ import {
 } from 'fumadocs-ui/components/sidebar/base';
 import type { SidebarPageTreeComponents } from 'fumadocs-ui/components/sidebar/page-tree';
 import { useTreeContext, useTreePath } from 'fumadocs-ui/contexts/tree';
+import { ExternalLinkIcon } from 'lucide-react';
 import { Fragment } from 'react';
 import {
   Sheet,
@@ -19,6 +21,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import { nav } from '@/geistdocs';
 import { useSidebarContext } from '@/hooks/geistdocs/use-sidebar';
 import { SearchButton } from './search';
 
@@ -61,6 +64,32 @@ export const Sidebar = () => {
             </SheetDescription>
             <SearchButton onClick={() => setIsOpen(false)} />
           </SheetHeader>
+          <nav className="flex flex-col gap-1 px-4 pt-4 pb-2 border-b mb-4">
+            {nav.map((item) =>
+              item.href.startsWith('http') ? (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  rel="noopener"
+                  target="_blank"
+                  onClick={() => setIsOpen(false)}
+                  className="flex items-center gap-2 py-2 text-foreground font-medium text-sm transition-colors hover:text-muted-foreground"
+                >
+                  {item.label}
+                  <ExternalLinkIcon className="size-3.5" />
+                </a>
+              ) : (
+                <DynamicLink
+                  key={item.href}
+                  href={`/[lang]${item.href}`}
+                  onClick={() => setIsOpen(false)}
+                  className="py-2 text-foreground font-medium text-sm transition-colors hover:text-muted-foreground"
+                >
+                  {item.label}
+                </DynamicLink>
+              )
+            )}
+          </nav>
           <div className="px-4">{renderSidebarList(root.children)}</div>
         </SheetContent>
       </Sheet>
