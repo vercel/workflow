@@ -816,12 +816,13 @@ export async function cancelRun(
 ): Promise<ServerActionResult<void>> {
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const run = await world.runs.get(runId);
-    if (isLegacySpecVersion(run.specVersion)) {
-      await world.runs.cancel(runId, { resolveData: 'none' });
-    } else {
-      await world.events.create(runId, { eventType: 'run_cancelled' });
-    }
+    const run = await world.runs.get(runId, { resolveData: 'none' });
+    const compatMode = isLegacySpecVersion(run.specVersion);
+    await world.events.create(
+      runId,
+      { eventType: 'run_cancelled' },
+      { v1Compat: compatMode }
+    );
     return createResponse(undefined);
   } catch (error) {
     return createServerActionError<void>(error, 'world.events.create', {

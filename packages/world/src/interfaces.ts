@@ -10,8 +10,6 @@ import type {
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
-  CancelWorkflowRunParams,
-  CreateWorkflowRunRequest,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WorkflowRun,
@@ -78,24 +76,6 @@ export interface Storage {
     list(
       params?: ListWorkflowRunsParams
     ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
-
-    /**
-     * @deprecated Use events.create() with eventType="run_created" instead.
-     * This call will fail for runs using specVersion >= 2.
-     */
-    create(
-      data: CreateWorkflowRunRequest,
-      params?: CreateEventParams
-    ): Promise<EventResult>;
-
-    /**
-     * @deprecated Use events.create() with eventType="run_cancelled" instead.
-     * This call will fail for runs using specVersion >= 2.
-     */
-    cancel(
-      id: string,
-      params: CancelWorkflowRunParams & { resolveData: 'none' }
-    ): Promise<WorkflowRunWithoutData>;
   };
 
   steps: {

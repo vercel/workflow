@@ -1,6 +1,6 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { DevalueError, parse, stringify } from 'devalue';
+import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { getSerializationClass } from './class-serialization.js';
 import {
@@ -373,6 +373,12 @@ type Reducers = {
 type Revivers = {
   [K in keyof SerializableSpecial]: (value: SerializableSpecial[K]) => any;
 };
+
+function revive(str: string) {
+  // biome-ignore lint/security/noGlobalEval: Eval is safe here - we are only passing value from `devalue.stringify()`
+  // biome-ignore lint/complexity/noCommaOperator: This is how you do global scope eval
+  return (0, eval)(`(${str})`);
+}
 
 function getCommonReducers(global: Record<string, any> = globalThis) {
   const abToBase64 = (
@@ -1196,6 +1202,9 @@ export function dehydrateWorkflowArguments(
 ): Uint8Array | unknown {
   try {
     const str = stringify(value, getExternalReducers(global, ops, runId));
+    if (!(value instanceof Uint8Array)) {
+      return revive(str);
+    }
     const payload = new TextEncoder().encode(str);
     return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
@@ -1220,6 +1229,13 @@ export function hydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
+  if (!(value instanceof Uint8Array)) {
+    return unflatten(value as any[], {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
   const { format, payload } = decodeFormatPrefix(value);
 
   if (format === SerializationFormat.DEVALUE_V1) {
@@ -1248,6 +1264,9 @@ export function dehydrateWorkflowReturnValue(
 ): Uint8Array | unknown {
   try {
     const str = stringify(value, getWorkflowReducers(global));
+    if (!(value instanceof Uint8Array)) {
+      return revive(str);
+    }
     const payload = new TextEncoder().encode(str);
     return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
@@ -1277,6 +1296,13 @@ export function hydrateWorkflowReturnValue(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
+  if (!(value instanceof Uint8Array)) {
+    return unflatten(value as any[], {
+      ...getExternalRevivers(global, ops, runId),
+      ...extraRevivers,
+    });
+  }
+
   const { format, payload } = decodeFormatPrefix(value);
 
   if (format === SerializationFormat.DEVALUE_V1) {
@@ -1306,6 +1332,9 @@ export function dehydrateStepArguments(
 ): Uint8Array | unknown {
   try {
     const str = stringify(value, getWorkflowReducers(global));
+    if (!(value instanceof Uint8Array)) {
+      return revive(str);
+    }
     const payload = new TextEncoder().encode(str);
     return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
@@ -1334,6 +1363,13 @@ export function hydrateStepArguments(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
+  if (!(value instanceof Uint8Array)) {
+    return unflatten(value as any[], {
+      ...getStepRevivers(global, ops, runId),
+      ...extraRevivers,
+    });
+  }
+
   const { format, payload } = decodeFormatPrefix(value);
 
   if (format === SerializationFormat.DEVALUE_V1) {
@@ -1367,6 +1403,9 @@ export function dehydrateStepReturnValue(
 ): Uint8Array | unknown {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId));
+    if (!(value instanceof Uint8Array)) {
+      return revive(str);
+    }
     const payload = new TextEncoder().encode(str);
     return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
@@ -1391,6 +1430,13 @@ export function hydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
+  if (!(value instanceof Uint8Array)) {
+    return unflatten(value as any[], {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
   const { format, payload } = decodeFormatPrefix(value);
 
   if (format === SerializationFormat.DEVALUE_V1) {

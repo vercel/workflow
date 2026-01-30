@@ -10,9 +10,11 @@ import {
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  type WorkflowRun,
   WorkflowRunSchema,
 } from '@workflow/world';
 import z from 'zod';
+import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import type { APIConfig } from './utils.js';
 import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
@@ -107,10 +109,30 @@ export async function createWorkflowRunEvent(
 ): Promise<EventResult> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
 
+  const v1Compat = params?.v1Compat ?? false;
+  if (v1Compat) {
+    if (data.eventType === 'run_cancelled' && id) {
+      const run = await cancelWorkflowRunV1(id, params, config);
+      return { run: run as WorkflowRun };
+    } else if (data.eventType === 'run_created') {
+      const run = await createWorkflowRunV1(data.eventData, config);
+      return { run };
+    }
+    const wireResult = await makeRequest({
+      endpoint: '/v1/runs/create',
+      options: { method: 'POST' },
+      data,
+      config,
+      schema: EventSchema,
+    });
+
+    return { event: wireResult };
+  }
+
   // For run_created events, runId is null - use "null" string in the URL path
   const runIdPath = id === null ? 'null' : id;
 
-  const apiVersion = params?.v1Compat ? 'v1' : 'v2';
+  const apiVersion = v1Compat ? 'v1' : 'v2';
   const wireResult = await makeRequest({
     endpoint: `${apiVersion}/runs/${runIdPath}/events`,
     options: { method: 'POST' },
