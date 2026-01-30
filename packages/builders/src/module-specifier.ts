@@ -176,9 +176,56 @@ function isInNodeModules(filePath: string): boolean {
 }
 
 /**
- * Check if a file path is inside a workspace package.
+ * Cache for project dependencies to avoid repeated filesystem reads.
+ * Maps project root to set of dependency package names.
+ */
+const projectDepsCache = new Map<string, Set<string>>();
+
+/**
+ * Get all dependencies (including devDependencies) for a project.
+ */
+function getProjectDependencies(projectRoot: string): Set<string> {
+  const cached = projectDepsCache.get(projectRoot);
+  if (cached) {
+    return cached;
+  }
+
+  const deps = new Set<string>();
+  const pkgPath = join(projectRoot, 'package.json');
+
+  if (existsSync(pkgPath)) {
+    try {
+      const content = readFileSync(pkgPath, 'utf-8');
+      const parsed = JSON.parse(content);
+
+      // Collect all dependency types
+      for (const depType of [
+        'dependencies',
+        'devDependencies',
+        'peerDependencies',
+        'optionalDependencies',
+      ]) {
+        const depObj = parsed[depType];
+        if (depObj && typeof depObj === 'object') {
+          for (const name of Object.keys(depObj)) {
+            deps.add(name);
+          }
+        }
+      }
+    } catch {
+      // Invalid JSON or file not readable
+    }
+  }
+
+  projectDepsCache.set(projectRoot, deps);
+  return deps;
+}
+
+/**
+ * Check if a file path is inside a workspace package that is a dependency of the project.
  * This is a heuristic - we check if the file is in a directory with a package.json
- * that has a "name" field, but is NOT in node_modules.
+ * that has a "name" field, is NOT in node_modules, and is listed as a dependency
+ * of the project.
  */
 function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
   if (isInNodeModules(filePath)) {
@@ -204,8 +251,13 @@ function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
       if (resolve(pkgPath) === rootPkgPath) {
         return false;
       }
-      // Found a package.json that's not the root - it's a workspace package
-      return true;
+
+      // Found a package.json that's not the root.
+      // Only treat it as a workspace package if it's actually a dependency
+      // of the current project. This prevents sibling apps in a monorepo
+      // from being incorrectly treated as importable packages.
+      const projectDeps = getProjectDependencies(projectRoot);
+      return projectDeps.has(pkg.name);
     }
     dir = dirname(dir);
   }
@@ -279,6 +331,7 @@ export function resolveModuleSpecifier(
  */
 export function clearModuleSpecifierCache(): void {
   packageJsonCache.clear();
+  projectDepsCache.clear();
 }
 
 /**
