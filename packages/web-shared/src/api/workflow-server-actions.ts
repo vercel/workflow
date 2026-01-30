@@ -843,14 +843,16 @@ export async function recreateRun(
   try {
     const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
+    // Get original input/output
     const hydratedRun = hydrate(run as WorkflowRun);
-    // hydrateResourceIO deserializes the binary input back to the original array
+
     const newRun = await start(
       { workflowId: run.workflowName },
       hydratedRun.input as unknown as unknown[],
       {
         deploymentId: deploymentId ?? run.deploymentId,
         world,
+        specVersion: run.specVersion,
       }
     );
     return createResponse(newRun.runId);

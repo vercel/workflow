@@ -1,8 +1,12 @@
 import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import type { WorkflowInvokePayload, World } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import type {
+  WorkflowInvokePayload,
+  WorkflowRun,
+  World,
+} from '@workflow/world';
+import { isLegacySpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { Run } from '../runtime.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
@@ -27,6 +31,11 @@ export interface StartOptions {
    * by default the world is inferred from the environment variables.
    */
   world?: World;
+
+  /**
+   * The spec version to use for the workflow run. Defaults to the latest version.
+   */
+  specVersion?: number;
 }
 
 /**
@@ -103,6 +112,8 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
+      // TODO!
+
       // Create run via run_created event (event-sourced architecture)
       // Pass null for runId - the server generates it and returns it in the response
       const workflowArguments = dehydrateWorkflowArguments(
@@ -111,25 +122,47 @@ export async function start<TArgs extends unknown[], TResult>(
         runIdPromise
       );
 
-      const result = await world.events.create(null, {
-        eventType: 'run_created',
-        specVersion: SPEC_VERSION_CURRENT,
-        eventData: {
-          deploymentId: deploymentId,
+      let run: WorkflowRun;
+      if (isLegacySpecVersion(opts.specVersion)) {
+        // TODO: Does this need different encoding?
+        const result = await world.runs.create({
           workflowName: workflowName,
           input: workflowArguments,
-          executionContext: { traceCarrier, workflowCoreVersion },
-        },
-      });
+          deploymentId: deploymentId,
+          specVersion: 1,
+        });
 
-      // Assert that the run was created
-      if (!result.run) {
-        throw new WorkflowRuntimeError(
-          "Missing 'run' in server response for 'run_created' event"
-        );
+        // Assert that the run was created
+        if (!result.run) {
+          throw new WorkflowRuntimeError(
+            "Missing 'run' in server response for create run request"
+          );
+        }
+
+        run = result.run;
+      } else {
+        const result = await world.events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: deploymentId,
+            workflowName: workflowName,
+            input: workflowArguments,
+            executionContext: { traceCarrier, workflowCoreVersion },
+          },
+        });
+
+        // Assert that the run was created
+        if (!result.run) {
+          throw new WorkflowRuntimeError(
+            "Missing 'run' in server response for 'run_created' event"
+          );
+        }
+
+        run = result.run;
       }
 
-      const runId = result.run.runId;
+      const runId = run.runId;
       resolveRunId(runId);
 
       waitUntil(
@@ -143,7 +176,7 @@ export async function start<TArgs extends unknown[], TResult>(
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
-        ...Attribute.WorkflowRunStatus(result.run.status),
+        ...Attribute.WorkflowRunStatus(run.status),
         ...Attribute.DeploymentId(deploymentId),
       });
 

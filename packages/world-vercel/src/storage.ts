@@ -1,8 +1,9 @@
-import type { Storage } from '@workflow/world';
+import type { CreateWorkflowRunRequest, Storage } from '@workflow/world';
 import { createWorkflowRunEvent, getWorkflowRunEvents } from './events.js';
 import { getHook, getHookByToken, listHooks } from './hooks.js';
 import {
   cancelWorkflowRunV1,
+  createWorkflowRunV1,
   getWorkflowRun,
   listWorkflowRuns,
 } from './runs.js';
@@ -19,6 +20,8 @@ export function createStorage(config?: APIConfig): Storage {
         listWorkflowRuns(params, config)) as Storage['runs']['list'],
       cancel: ((id: string, params?: any) =>
         cancelWorkflowRunV1(id, params, config)) as Storage['runs']['cancel'],
+      create: ((data: CreateWorkflowRunRequest) =>
+        createWorkflowRunV1(data, config)) as Storage['runs']['create'],
     },
     steps: {
       get: ((runId: string | undefined, stepId: string, params?: any) =>

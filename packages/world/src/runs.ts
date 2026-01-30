@@ -92,6 +92,7 @@ export interface CreateWorkflowRunRequest {
   workflowName: string;
   input: SerializedData;
   executionContext?: SerializedData;
+  specVersion?: number;
 }
 
 export interface GetWorkflowRunParams {
