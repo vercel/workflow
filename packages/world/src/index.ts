@@ -24,7 +24,7 @@ export {
   WorkflowRunSchema,
   WorkflowRunStatusSchema,
 } from './runs.js';
-export type { AnySerializedData, SerializedData } from './serialization.js';
+export type { SerializedData } from './serialization.js';
 export {
   LegacySerializedDataSchemaV1,
   SerializedDataSchema,

@@ -74,13 +74,10 @@ const formatDecoder = new TextDecoder();
  */
 export function encodeWithFormatPrefix(
   format: SerializationFormatType,
-  payload: Uint8Array
-): Uint8Array {
+  payload: Uint8Array | unknown
+): Uint8Array | unknown {
   if (!(payload instanceof Uint8Array)) {
-    throw new WorkflowRuntimeError(
-      `"payload" must be a Uint8Array, got "${typeof payload}"`,
-      { slug: 'serialization-failed', cause: payload }
-    );
+    return payload;
   }
 
   const prefixBytes = formatEncoder.encode(format);
@@ -1196,7 +1193,7 @@ export function dehydrateWorkflowArguments(
   ops: Promise<void>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis
-): Uint8Array {
+): Uint8Array | unknown {
   try {
     const str = stringify(value, getExternalReducers(global, ops, runId));
     const payload = new TextEncoder().encode(str);
@@ -1248,7 +1245,7 @@ export function hydrateWorkflowArguments(
 export function dehydrateWorkflowReturnValue(
   value: unknown,
   global: Record<string, any> = globalThis
-): Uint8Array {
+): Uint8Array | unknown {
   try {
     const str = stringify(value, getWorkflowReducers(global));
     const payload = new TextEncoder().encode(str);
@@ -1306,7 +1303,7 @@ export function hydrateWorkflowReturnValue(
 export function dehydrateStepArguments(
   value: unknown,
   global: Record<string, any>
-): Uint8Array {
+): Uint8Array | unknown {
   try {
     const str = stringify(value, getWorkflowReducers(global));
     const payload = new TextEncoder().encode(str);
@@ -1367,7 +1364,7 @@ export function dehydrateStepReturnValue(
   ops: Promise<any>[],
   runId: string | Promise<string>,
   global: Record<string, any> = globalThis
-): Uint8Array {
+): Uint8Array | unknown {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId));
     const payload = new TextEncoder().encode(str);

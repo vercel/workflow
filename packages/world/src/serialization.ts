@@ -7,7 +7,7 @@ import { z } from 'zod';
  * The workflow core runtime handles serialization/deserialization,
  * and World implementations store and transport this opaque binary payload.
  */
-export type SerializedData = Uint8Array;
+export type SerializedData = Uint8Array | unknown;
 
 /**
  * Zod schema for validating SerializedData (Uint8Array).
@@ -30,10 +30,3 @@ export const SerializedDataSchema = z.union([
   BinarySerializedDataSchema,
   LegacySerializedDataSchemaV1,
 ]);
-
-/**
- * Type representing serialized data that may be from any spec version.
- * - specVersion >= 2: Uint8Array (binary devalue format)
- * - specVersion 1: unknown (legacy JSON format)
- */
-export type AnySerializedData = SerializedData | unknown;
