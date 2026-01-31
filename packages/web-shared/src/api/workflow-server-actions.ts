@@ -819,11 +819,11 @@ export async function cancelRun(
     const world = await getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData: 'none' });
     const compatMode = isLegacySpecVersion(run.specVersion);
-    await world.events.create(
-      runId,
-      { eventType: 'run_cancelled' },
-      { v1Compat: compatMode }
-    );
+    // For v2, include specVersion in event data; for v1Compat, it's not needed
+    const eventData = compatMode
+      ? { eventType: 'run_cancelled' as const }
+      : { eventType: 'run_cancelled' as const, specVersion: run.specVersion };
+    await world.events.create(runId, eventData, { v1Compat: compatMode });
     return createResponse(undefined);
   } catch (error) {
     return createServerActionError<void>(error, 'world.events.create', {
@@ -928,6 +928,7 @@ export async function wakeUpRun(
     const world = await getWorldFromEnv({ ...worldEnv });
     const run = await world.runs.get(runId);
     const deploymentId = run.deploymentId;
+    const compatMode = isLegacySpecVersion(run.specVersion);
 
     // Fetch all events for the run
     const eventsResult = await world.events.list({
@@ -961,10 +962,18 @@ export async function wakeUpRun(
     // Create wait_completed events for each pending wait
     for (const waitEvent of pendingWaits) {
       if (waitEvent.correlationId) {
-        await world.events.create(runId, {
-          eventType: 'wait_completed',
-          correlationId: waitEvent.correlationId,
-        });
+        // For v2, include specVersion in event data; for v1Compat, it's not needed
+        const eventData = compatMode
+          ? {
+              eventType: 'wait_completed' as const,
+              correlationId: waitEvent.correlationId,
+            }
+          : {
+              eventType: 'wait_completed' as const,
+              correlationId: waitEvent.correlationId,
+              specVersion: run.specVersion,
+            };
+        await world.events.create(runId, eventData, { v1Compat: compatMode });
       }
     }
 
