@@ -35,6 +35,11 @@ enum WorkflowErrorKind {
         span: swc_core::common::Span,
         directive: &'static str,
     },
+    DuplicateSerializationClass {
+        span: swc_core::common::Span,
+        class_name: String,
+        first_span: swc_core::common::Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +101,26 @@ fn emit_error(error: WorkflowErrorKind) {
                 directive
             ),
         ),
+        WorkflowErrorKind::DuplicateSerializationClass {
+            span,
+            class_name,
+            first_span,
+        } => {
+            HANDLER.with(|handler| {
+                handler
+                    .struct_span_err(
+                        span,
+                        &format!(
+                            "Multiple classes named \"{}\" have serialization methods. \
+                             Each class with workflow-serialize/workflow-deserialize must have a unique name within the file.",
+                            class_name
+                        ),
+                    )
+                    .span_note(first_span, &format!("first class \"{}\" defined here", class_name))
+                    .emit();
+            });
+            return;
+        }
     };
 
     HANDLER.with(|handler| handler.struct_span_err(span, &msg).emit());
@@ -365,8 +390,8 @@ pub struct StepTransform {
     // (class_name, method_name, step_id)
     static_step_methods_to_strip: Vec<(String, String, String)>,
     // Track classes that need serialization registration (for `this` serialization in static methods)
-    // Set of class names that have static step/workflow methods
-    classes_needing_serialization: HashSet<String>,
+    // Maps class name to span where it was first seen (for duplicate detection)
+    classes_needing_serialization: HashMap<String, swc_core::common::Span>,
     // Track identifiers that are known to be WORKFLOW_SERIALIZE symbols
     // (local name -> "workflow-serialize" or "workflow-deserialize")
     serialization_symbol_identifiers: HashMap<String, String>,
@@ -1234,7 +1259,7 @@ impl StepTransform {
             static_method_step_registrations: Vec::new(),
             static_method_workflow_registrations: Vec::new(),
             static_step_methods_to_strip: Vec::new(),
-            classes_needing_serialization: HashSet::new(),
+            classes_needing_serialization: HashMap::new(),
             serialization_symbol_identifiers: HashMap::new(),
             classes_for_manifest: HashSet::new(),
         }
@@ -3876,8 +3901,11 @@ impl VisitMut for StepTransform {
                     // 1. registerSerializationClass(classId, ClassName) - for deserialization
                     // 2. ClassName.classId = "..." - for serialization (though not typically needed in step mode)
                     // Sort for deterministic output ordering
-                    let mut sorted_classes: Vec<_> =
-                        self.classes_needing_serialization.drain().collect();
+                    let mut sorted_classes: Vec<_> = self
+                        .classes_needing_serialization
+                        .drain()
+                        .map(|(name, _span)| name)
+                        .collect();
                     sorted_classes.sort();
                     for class_name in sorted_classes {
                         // Generate class ID: class//filename//ClassName
@@ -4007,8 +4035,11 @@ impl VisitMut for StepTransform {
                     // This is now the same as step mode - using registerSerializationClass()
                     // which sets both classId and registers in the globalThis Map
                     // Sort for deterministic output ordering
-                    let mut sorted_classes: Vec<_> =
-                        self.classes_needing_serialization.drain().collect();
+                    let mut sorted_classes: Vec<_> = self
+                        .classes_needing_serialization
+                        .drain()
+                        .map(|(name, _span)| name)
+                        .collect();
                     sorted_classes.sort();
                     for class_name in sorted_classes {
                         let registration_call =
@@ -6328,8 +6359,21 @@ impl VisitMut for StepTransform {
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
         if self.has_custom_serialization_methods(&class_decl.class) {
-            self.classes_needing_serialization
-                .insert(class_name.clone());
+            let span = class_decl.class.span;
+            if let Some(&first_span) = self.classes_needing_serialization.get(&class_name) {
+                // Only emit error if this is a DIFFERENT class (different span)
+                // Same span means we're visiting the same class twice (due to SWC visitor mechanics)
+                if first_span != span {
+                    emit_error(WorkflowErrorKind::DuplicateSerializationClass {
+                        span,
+                        class_name: class_name.clone(),
+                        first_span,
+                    });
+                }
+            } else {
+                self.classes_needing_serialization
+                    .insert(class_name.clone(), span);
+            }
         }
 
         // Visit the class body (this populates static_step_methods_to_strip)
@@ -6375,8 +6419,21 @@ impl VisitMut for StepTransform {
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
         if self.has_custom_serialization_methods(&class_expr.class) {
-            self.classes_needing_serialization
-                .insert(class_name.clone());
+            let span = class_expr.class.span;
+            if let Some(&first_span) = self.classes_needing_serialization.get(&class_name) {
+                // Only emit error if this is a DIFFERENT class (different span)
+                // Same span means we're visiting the same class twice (due to SWC visitor mechanics)
+                if first_span != span {
+                    emit_error(WorkflowErrorKind::DuplicateSerializationClass {
+                        span,
+                        class_name: class_name.clone(),
+                        first_span,
+                    });
+                }
+            } else {
+                self.classes_needing_serialization
+                    .insert(class_name.clone(), span);
+            }
         }
 
         // Visit the class body (this populates static_step_methods_to_strip)
@@ -6480,8 +6537,13 @@ impl VisitMut for StepTransform {
                     self.step_function_names.insert(full_name.clone());
 
                     // Track class for serialization (needed for `this` serialization in static method calls)
+                    // Note: We use method.span as a fallback since we don't have the class span here.
+                    // If the class was already added (e.g., via custom serialization methods), this is a no-op.
+                    // The duplicate detection logic in visit_mut_class_decl/visit_mut_class_expr handles
+                    // the case of two different classes with the same name.
                     self.classes_needing_serialization
-                        .insert(class_name.clone());
+                        .entry(class_name.clone())
+                        .or_insert(method.span);
 
                     match self.mode {
                         TransformMode::Step => {

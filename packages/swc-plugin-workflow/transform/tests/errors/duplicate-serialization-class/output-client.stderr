@@ -1,0 +1,28 @@
+  x Multiple classes named "A" have serialization methods. Each class with workflow-serialize/workflow-deserialize must have a unique name within the file.
+    ,-[input.js:16:1]
+ 15 |     export const b = function() {
+ 16 | ,->   return class A {
+ 17 | |       static [Symbol.for('workflow-serialize')](instance) {
+ 18 | |         return { y: instance.y };
+ 19 | |       }
+ 20 | |       static [Symbol.for('workflow-deserialize')](data) {
+ 21 | |         return new A(data);
+ 22 | |       }
+ 23 | `->   }
+ 24 |     }
+    `----
+
+Advice: 
+  > first class "A" defined here
+    ,-[input.js:5:1]
+  4 |     export const a = function() {
+  5 | ,->   return class A {
+  6 | |       static [Symbol.for('workflow-serialize')](instance) {
+  7 | |         return { x: instance.x };
+  8 | |       }
+  9 | |       static [Symbol.for('workflow-deserialize')](data) {
+ 10 | |         return new A(data);
+ 11 | |       }
+ 12 | `->   }
+ 13 |     }
+    `----

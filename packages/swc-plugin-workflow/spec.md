@@ -481,6 +481,39 @@ export class Vector {
 }
 ```
 
+### Duplicate Class Name Error
+
+Classes with serialization methods must have unique names within a file. The plugin emits an error if multiple classes with the same name define serialization methods, since they would produce the same `classId` and conflict at runtime:
+
+```javascript
+// ERROR: Multiple classes named "A" have serialization methods
+export const a = function() {
+  return class A {  // First "A" - classId would be "class//input.js//A"
+    static [Symbol.for('workflow-serialize')](instance) { ... }
+    static [Symbol.for('workflow-deserialize')](data) { ... }
+  }
+}
+
+export const b = function() {
+  return class A {  // Second "A" - same classId collision!
+    static [Symbol.for('workflow-serialize')](instance) { ... }
+    static [Symbol.for('workflow-deserialize')](data) { ... }
+  }
+}
+```
+
+To fix this, give each class a unique name:
+
+```javascript
+export const a = function() {
+  return class PointA { ... }  // Unique name
+}
+
+export const b = function() {
+  return class PointB { ... }  // Unique name
+}
+```
+
 ---
 
 ## Default Exports
@@ -520,6 +553,7 @@ The plugin emits errors for invalid usage:
 | Conflicting directives | Cannot have both `"use step"` and `"use workflow"` at module level |
 | Invalid exports | Module-level directive files can only export async functions |
 | Misspelled directive | Detects typos like `"use steps"` or `"use workflows"` |
+| Duplicate serialization class | Multiple classes with the same name have serialization methods within the same file |
 
 ---
 
