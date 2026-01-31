@@ -69,7 +69,7 @@
   },
   "peerDependencies": {
     "ai": "^5 || ^6",
-    "workflow": "4.0.1-beta.50"
+    "workflow": "^4.0.1-beta.50"
   },
   "dependencies": {
     "@ai-sdk/provider": "^2.0.0 || ^3.0.0",
