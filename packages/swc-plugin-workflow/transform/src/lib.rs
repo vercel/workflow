@@ -492,6 +492,8 @@ impl ClosureVariableCollector {
             BlockStmtOrExpr::Expr(expr) => {
                 collector.collect_from_expr(expr);
             }
+            #[cfg(swc_ast_unknown)]
+            _ => panic!("unknown node"),
         }
 
         // Return closure vars sorted for deterministic output
@@ -522,6 +524,8 @@ impl ClosureVariableCollector {
                         ObjectPatProp::Rest(rest) => {
                             self.collect_param_names(&rest.arg);
                         }
+                        #[cfg(swc_ast_unknown)]
+                        _ => panic!("unknown node"),
                     }
                 }
             }
@@ -594,6 +598,8 @@ impl ClosureVariableCollector {
                         VarDeclOrExpr::Expr(expr) => {
                             self.collect_from_expr(expr);
                         }
+                        #[cfg(swc_ast_unknown)]
+                        _ => panic!("unknown node"),
                     }
                 }
                 if let Some(test) = &for_stmt.test {
@@ -634,6 +640,8 @@ impl ClosureVariableCollector {
                         ObjectPatProp::Rest(rest) => {
                             self.collect_declared_names(&rest.arg);
                         }
+                        #[cfg(swc_ast_unknown)]
+                        _ => panic!("unknown node"),
                     }
                 }
             }
@@ -704,6 +712,8 @@ impl ClosureVariableCollector {
                         PropOrSpread::Spread(spread) => {
                             self.collect_from_expr(&spread.expr);
                         }
+                        #[cfg(swc_ast_unknown)]
+                        _ => panic!("unknown node"),
                     }
                 }
             }
@@ -1391,6 +1401,8 @@ impl StepTransform {
                                     self.declared_identifiers
                                         .insert(namespace.local.sym.to_string());
                                 }
+                                #[cfg(swc_ast_unknown)]
+                                _ => continue,
                             }
                         }
                     }
@@ -1426,6 +1438,8 @@ impl StepTransform {
                         ObjectPatProp::Rest(rest) => {
                             self.collect_idents_from_pat(&rest.arg);
                         }
+                        #[cfg(swc_ast_unknown)]
+                        _ => panic!("unknown node"),
                     }
                 }
             }
@@ -1802,6 +1816,8 @@ impl StepTransform {
                                         // For now, skip them
                                         return None;
                                     }
+                                    #[cfg(swc_ast_unknown)]
+                                    _ => panic!("unknown ast"),
                                 };
 
                                 Some(PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
@@ -1824,6 +1840,8 @@ impl StepTransform {
                                     expr: Box::new(self.pat_to_expr(&rest.arg)),
                                 }))
                             }
+                            #[cfg(swc_ast_unknown)]
+                            _ => panic!("unknown node"),
                         }
                     })
                     .collect();
@@ -3001,6 +3019,8 @@ impl StepTransform {
                             ImportSpecifier::Named(named) => named.local.sym.to_string(),
                             ImportSpecifier::Default(default) => default.local.sym.to_string(),
                             ImportSpecifier::Namespace(ns) => ns.local.sym.to_string(),
+                            #[cfg(swc_ast_unknown)]
+                            _ => panic!("unknown node"),
                         };
 
                         // Keep the import if it's used
@@ -3100,6 +3120,8 @@ impl StepTransform {
                         _ => false, // Keep other patterns
                     }
                 }
+                #[cfg(swc_ast_unknown)]
+                _ => panic!("unknown ast"),
             }
         })
     }
@@ -4283,6 +4305,8 @@ impl VisitMut for StepTransform {
                     });
                 }
             }
+            #[cfg(swc_ast_unknown)]
+            _ => panic!("unknown ast"),
         }
     }
 
@@ -4419,6 +4443,8 @@ impl VisitMut for StepTransform {
                         ImportSpecifier::Namespace(namespace) => {
                             self.module_imports.insert(namespace.local.sym.to_string());
                         }
+                        #[cfg(swc_ast_unknown)]
+                        _ => panic!("unknown node"),
                     }
                 }
             }
@@ -4540,6 +4566,8 @@ impl VisitMut for StepTransform {
                                     },
                                 });
                             }
+                            #[cfg(swc_ast_unknown)]
+                            _ => panic!("unknown node"),
                         }
                     }
                     ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) => {
@@ -4582,6 +4610,8 @@ impl VisitMut for StepTransform {
                             DefaultDecl::TsInterfaceDecl(_) => {
                                 // TypeScript interface is okay
                             }
+                            #[cfg(swc_ast_unknown)]
+                            _ => panic!("unknown ast"),
                         }
                     }
                     ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(expr)) => {
@@ -6011,6 +6041,8 @@ impl VisitMut for StepTransform {
                                                                     )],
                                                                 })
                                                             }
+                                                            #[cfg(swc_ast_unknown)]
+                                                            _ => panic!("unknown ast"),
                                                         },
                                                         is_generator: false,
                                                         is_async: cloned_arrow.is_async,
@@ -6781,6 +6813,8 @@ impl VisitMut for StepTransform {
                                                     arg: Some(expr),
                                                 })],
                                             }),
+                                            #[cfg(swc_ast_unknown)]
+                                            _ => panic!("unknown ast"),
                                         },
                                         is_generator: false,
                                         is_async: cloned_arrow.is_async,
@@ -7348,6 +7382,8 @@ impl VisitMut for StepTransform {
                                                                             ],
                                                                         })
                                                                     }
+                                                                    #[cfg(swc_ast_unknown)]
+                                                                    _ => panic!("unknown ast"),
                                                                 },
                                                                 is_generator: false,
                                                                 is_async: cloned_arrow.is_async,

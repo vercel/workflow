@@ -11,9 +11,13 @@ version      = "0.1.0"
 
 
 [dependencies]
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-swc_core    = { workspace = true, features = ["ecma_plugin_transform"] }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+swc_core   = { workspace = true, features = ["ecma_plugin_transform"] }
 
 [dev-dependencies]
-testing     = { workspace = true }
+testing = { workspace = true }
+
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(swc_ast_unknown)'] }
