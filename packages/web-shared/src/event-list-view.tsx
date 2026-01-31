@@ -152,6 +152,7 @@ function EventRow({ event, env }: { event: Event; env: EnvMap }) {
         onClick={handleToggle}
         className="w-full text-left grid gap-3 items-center px-0 py-2 text-xs hover:brightness-[0.98] transition-all cursor-pointer"
         style={{
+          backgroundColor: 'var(--ds-background-100)',
           gridTemplateColumns: '24px 100px minmax(120px, auto) 1fr 1fr',
         }}
       >
@@ -402,7 +403,7 @@ export function EventListView({ events, env }: EventsListProps) {
         style={{
           gridTemplateColumns: '24px 100px minmax(120px, auto) 1fr 1fr',
           borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'var(--ds-background-100)',
+          backgroundColor: 'transparent',
           color: 'var(--ds-gray-700)',
         }}
       >

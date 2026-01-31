@@ -819,10 +819,10 @@ export async function cancelRun(
     const world = await getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData: 'none' });
     const compatMode = isLegacySpecVersion(run.specVersion);
-    // For v2, include specVersion in event data; for v1Compat, it's not needed
-    const eventData = compatMode
-      ? { eventType: 'run_cancelled' as const }
-      : { eventType: 'run_cancelled' as const, specVersion: run.specVersion };
+    const eventData = {
+      eventType: 'run_cancelled' as const,
+      specVersion: run.specVersion || 1,
+    };
     await world.events.create(runId, eventData, { v1Compat: compatMode });
     return createResponse(undefined);
   } catch (error) {
