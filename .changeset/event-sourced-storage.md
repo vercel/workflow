@@ -1,5 +1,18 @@
 ---
+"@workflow/world-vercel": minor
+"@workflow/world-local": minor
+"@workflow/web-shared": minor
+"@workflow/cli": minor
+"@workflow/core": minor
+"@workflow/errors": minor
+"@workflow/serde": minor
+"@workflow/swc-plugin": minor
+"@workflow/utils": minor
+"@workflow/web": minor
+"workflow": minor
 "@workflow/world": minor
+"@workflow/world-postgres": minor
+"@workflow/world-testing": minor
 ---
 
 **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`

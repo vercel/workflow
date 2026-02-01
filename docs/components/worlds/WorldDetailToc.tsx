@@ -41,6 +41,10 @@ export function WorldDetailToc({ items }: WorldDetailTocProps) {
     return () => observer.disconnect();
   }, [items]);
 
+  if (items.length === 0) {
+    return null;
+  }
+
   return (
     <nav className="space-y-1">
       <p className="font-medium text-sm mb-2">On this page</p>

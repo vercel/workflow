@@ -40,9 +40,9 @@ const proxy = (request: NextRequest, context: NextFetchEvent) => {
 };
 
 export const config = {
-  // Matcher ignoring `/_next/`, `/api/`, static assets, favicon, tarballs, etc.
+  // Matcher ignoring `/_next/`, `/api/`, static assets, favicon, tarballs, SVGs, zips, etc.
   matcher: [
-    '/((?!sitemap.xml|api|_next/static|_next/image|favicon.ico|.*\\.tgz$).*)',
+    '/((?!sitemap.xml|api|_next/static|_next/image|favicon.ico|.*\\.tgz$|.*\\.svg$|.*\\.zip$).*)',
   ],
 };
 

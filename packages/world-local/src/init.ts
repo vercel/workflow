@@ -198,7 +198,6 @@ export function upgradeVersion(
   console.log(
     `[world-local] Upgrading from version ${formatVersion(oldVersion)} to ${formatVersion(newVersion)}`
   );
-  // Future: Add migration logic here when needed
 }
 
 /**
