@@ -13,7 +13,6 @@ import {
   type WorkflowManifest,
 } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
-import { getFilteredTsconfigRaw } from './config-helpers.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
@@ -276,10 +275,6 @@ export abstract class BaseBuilder {
     context: esbuild.BuildContext | undefined;
     manifest: WorkflowManifest;
   }> {
-    const tsconfigRaw = await getFilteredTsconfigRaw(
-      this.config.workingDir,
-      tsconfigPath
-    );
     // These need to handle watching for dev to scan for
     // new entries and changes to existing ones
     const { discoveredSteps: stepFiles, discoveredWorkflows: workflowFiles } =
@@ -359,7 +354,8 @@ export abstract class BaseBuilder {
       minify: false,
       jsx: 'preserve',
       logLevel: 'error',
-      tsconfigRaw,
+      // Use tsconfig for path alias resolution
+      tsconfig: tsconfigPath,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -471,10 +467,6 @@ export abstract class BaseBuilder {
     interimBundleCtx: esbuild.BuildContext;
     bundleFinal: (interimBundleResult: string) => Promise<void>;
   }> {
-    const tsconfigRaw = await getFilteredTsconfigRaw(
-      this.config.workingDir,
-      tsconfigPath
-    );
     const { discoveredWorkflows: workflowFiles } = await this.discoverEntries(
       inputFiles,
       dirname(outfile)
@@ -538,7 +530,8 @@ export abstract class BaseBuilder {
       // This intermediate bundle is executed via runInContext() in a VM, so we need
       // inline source maps to get meaningful stack traces instead of "evalmachine.<anonymous>".
       sourcemap: 'inline',
-      tsconfigRaw,
+      // Use tsconfig for path alias resolution
+      tsconfig: tsconfigPath,
       resolveExtensions: [
         '.ts',
         '.tsx',

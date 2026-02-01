@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
-import { dirname, resolve } from 'node:path';
 import type { WorkflowConfig } from './types.js';
 
 export interface DecoratorOptions {
@@ -67,78 +66,6 @@ export async function getDecoratorOptionsForDirectory(
     cwd,
   });
   return getDecoratorOptionsFromTsConfig(tsconfigPath);
-}
-
-export type EsbuildTsconfigRaw = {
-  compilerOptions?: Record<string, unknown>;
-};
-
-function isPathInsideDir(target: string, dir: string) {
-  const normalizedTarget = resolve(target);
-  const normalizedDir = resolve(dir);
-  return (
-    normalizedTarget === normalizedDir ||
-    normalizedTarget.startsWith(`${normalizedDir}/`)
-  );
-}
-
-/**
- * Reads tsconfig.json/jsconfig.json and returns a filtered tsconfigRaw object
- * that only keeps path aliases resolving inside the working directory.
- */
-export async function getFilteredTsconfigRaw(
-  workingDir: string,
-  tsconfigPath: string | undefined
-): Promise<EsbuildTsconfigRaw | undefined> {
-  if (!tsconfigPath) {
-    return undefined;
-  }
-
-  try {
-    const content = await readFile(tsconfigPath, 'utf-8');
-    const tsconfig: { compilerOptions?: Record<string, unknown> } =
-      JSON5.parse(content);
-    const compilerOptions = tsconfig.compilerOptions || {};
-    const baseUrl =
-      typeof compilerOptions.baseUrl === 'string'
-        ? resolve(dirname(tsconfigPath), compilerOptions.baseUrl)
-        : dirname(tsconfigPath);
-
-    const rawPaths = compilerOptions.paths;
-    if (!rawPaths || typeof rawPaths !== 'object') {
-      return { compilerOptions };
-    }
-
-    const filteredPaths: Record<string, string[]> = {};
-    for (const [alias, targets] of Object.entries(
-      rawPaths as Record<string, unknown>
-    )) {
-      if (!Array.isArray(targets)) {
-        continue;
-      }
-      const keptTargets = targets.filter((target) => {
-        if (typeof target !== 'string') {
-          return false;
-        }
-        const normalizedTarget = target.replace(/\*.*$/, '');
-        const resolvedTarget = resolve(baseUrl, normalizedTarget);
-        return isPathInsideDir(resolvedTarget, workingDir);
-      }) as string[];
-      if (keptTargets.length > 0) {
-        filteredPaths[alias] = keptTargets;
-      }
-    }
-
-    return {
-      compilerOptions: {
-        ...compilerOptions,
-        baseUrl,
-        paths: filteredPaths,
-      },
-    };
-  } catch {
-    return undefined;
-  }
 }
 
 /**
