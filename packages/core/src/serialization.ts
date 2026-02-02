@@ -307,8 +307,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
       if (buffer.length === 0) return;
 
-      const chunksToFlush = buffer;
-      buffer = [];
+      // Copy chunks to flush, but don't clear buffer until write succeeds
+      // This prevents data loss if the write operation fails
+      const chunksToFlush = buffer.slice();
 
       const _runId = await runId;
 
@@ -324,6 +325,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           await world.writeToStream(name, _runId, chunk);
         }
       }
+
+      // Only clear buffer after successful write to prevent data loss
+      buffer = [];
     };
 
     const scheduleFlush = (): void => {

@@ -327,4 +327,21 @@ describe('WorkflowServerWritableStream', () => {
       expect(mockWorld.closeStream).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('error handling', () => {
+    it('should propagate write errors from close', async () => {
+      // Make writeToStreamMulti fail
+      mockWorld.writeToStreamMulti.mockRejectedValue(new Error('Write failed'));
+
+      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const writer = stream.getWriter();
+
+      // Write chunks (buffered, no error yet)
+      await writer.write(new Uint8Array([1, 2, 3]));
+      await writer.write(new Uint8Array([4, 5, 6]));
+
+      // Close should propagate the error from flush
+      await expect(writer.close()).rejects.toThrow('Write failed');
+    });
+  });
 });
