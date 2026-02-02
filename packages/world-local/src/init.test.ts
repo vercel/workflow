@@ -413,9 +413,10 @@ describe('initDataDir', () => {
       expect.stringContaining('Upgrading from version 3.0.0')
     );
 
-    // File should be updated to new version
+    // File should be updated to current package version
     const content = readFileSync(versionPath, 'utf-8');
-    expect(content).toMatch(/^@workflow\/world-local@4\.0\.1/);
+    const packageInfo = await getPackageInfo();
+    expect(content).toBe(`${packageInfo.name}@${packageInfo.version}`);
   });
 
   it('should handle data directory with newer version', async () => {
