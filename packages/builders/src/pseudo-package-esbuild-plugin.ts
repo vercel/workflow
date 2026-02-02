@@ -5,7 +5,12 @@ import type * as esbuild from 'esbuild';
  * throw errors when imported in the wrong context (e.g., client-side vs server-side).
  * In the workflow VM context, we don't need their behavior, so we provide empty modules.
  */
-export const PSEUDO_PACKAGES = new Set(['server-only', 'client-only']);
+export const PSEUDO_PACKAGES = new Set([
+  'server-only',
+  'client-only',
+  'next/dist/compiled/server-only',
+  'next/dist/compiled/client-only',
+]);
 
 /**
  * Creates an esbuild plugin that handles pseudo-packages like 'server-only' and 'client-only'.

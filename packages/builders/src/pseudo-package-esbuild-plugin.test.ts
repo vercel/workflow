@@ -113,6 +113,54 @@ describe('createPseudoPackagePlugin', () => {
     });
   });
 
+  describe('compiled pseudo-packages', () => {
+    it('should replace next/dist/compiled/server-only import', async () => {
+      const testCode = `
+        import 'next/dist/compiled/server-only';
+        export const x = 1;
+      `;
+
+      const { result, tempDir } = await buildWithPlugin(testCode);
+
+      try {
+        expect(result.errors).toHaveLength(0);
+        const output = result.outputFiles?.[0].text;
+        expect(output).toBeDefined();
+        expect(output).not.toContain(
+          "require('next/dist/compiled/server-only')"
+        );
+        expect(output).not.toContain(
+          'require("next/dist/compiled/server-only")'
+        );
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should replace next/dist/compiled/client-only import', async () => {
+      const testCode = `
+        import 'next/dist/compiled/client-only';
+        export const x = 1;
+      `;
+
+      const { result, tempDir } = await buildWithPlugin(testCode);
+
+      try {
+        expect(result.errors).toHaveLength(0);
+        const output = result.outputFiles?.[0].text;
+        expect(output).toBeDefined();
+        expect(output).not.toContain(
+          "require('next/dist/compiled/client-only')"
+        );
+        expect(output).not.toContain(
+          'require("next/dist/compiled/client-only")'
+        );
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('both pseudo-packages', () => {
     it('should handle both server-only and client-only in same file', async () => {
       const testCode = `
@@ -177,10 +225,12 @@ describe('createPseudoPackagePlugin', () => {
   });
 
   describe('PSEUDO_PACKAGES constant', () => {
-    it('should contain server-only and client-only', () => {
+    it('should contain next marker packages', () => {
       expect(PSEUDO_PACKAGES.has('server-only')).toBe(true);
       expect(PSEUDO_PACKAGES.has('client-only')).toBe(true);
-      expect(PSEUDO_PACKAGES.size).toBe(2);
+      expect(PSEUDO_PACKAGES.has('next/dist/compiled/server-only')).toBe(true);
+      expect(PSEUDO_PACKAGES.has('next/dist/compiled/client-only')).toBe(true);
+      expect(PSEUDO_PACKAGES.size).toBe(4);
     });
   });
 });
