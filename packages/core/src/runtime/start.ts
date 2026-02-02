@@ -3,7 +3,7 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import { isLegacySpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
-import { Run } from '../runtime.js';
+import { Run } from './run.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
