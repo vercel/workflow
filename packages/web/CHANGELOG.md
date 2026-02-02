@@ -1,5 +1,22 @@
 # @workflow/web
 
+## 4.1.0-beta.31
+
+### Minor Changes
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
+
+  - Remove `cancel`, `pause`, `resume` from `runs`
+  - Remove `create`, `update` from `runs`, `steps`, `hooks`
+  - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
+  - Add `step_created` event type
+  - Remove `fatal` field from `step_failed` (terminal failure is now implicit)
+  - Add `step_retrying` event with error info for retriable failures
+
+### Patch Changes
+
+- [#814](https://github.com/vercel/workflow/pull/814) [`b16a682`](https://github.com/vercel/workflow/commit/b16a6828af36a2d5adb38fb6a6d1253657001ac8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Move "parse-name" into the `utils` package
+
 ## 4.0.1-beta.30
 
 ### Patch Changes

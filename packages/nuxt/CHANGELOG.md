@@ -1,5 +1,12 @@
 # @workflow/nuxt
 
+## 4.0.1-beta.35
+
+### Patch Changes
+
+- Updated dependencies [[`4ad3fcd`](https://github.com/vercel/workflow/commit/4ad3fcd0a362f3d83a6c272dec6362fe9a562c63)]:
+  - @workflow/nitro@4.0.1-beta.46
+
 ## 4.0.1-beta.34
 
 ### Patch Changes

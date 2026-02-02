@@ -1,5 +1,25 @@
 # @workflow/builders
 
+## 4.0.1-beta.42
+
+### Patch Changes
+
+- [#840](https://github.com/vercel/workflow/pull/840) [`50f50f4`](https://github.com/vercel/workflow/commit/50f50f44d79a3cf1102173ff1865cd8a01723ea3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Create `@workflow/nest` package and add build support for NestJS
+
+- [#831](https://github.com/vercel/workflow/pull/831) [`0b5cc48`](https://github.com/vercel/workflow/commit/0b5cc4814094ecb8ec5be8eb5339c04d97b55c8b) Thanks [@michael-han-dev](https://github.com/michael-han-dev)! - Fix manifest missing workflow-only files (no steps)
+
+- [#898](https://github.com/vercel/workflow/pull/898) [`13d4cee`](https://github.com/vercel/workflow/commit/13d4ceef74e1e51b6471df6a85f03b3b967c3da4) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use proper pluralization in the builder log line
+
+- [#800](https://github.com/vercel/workflow/pull/800) [`4ad3fcd`](https://github.com/vercel/workflow/commit/4ad3fcd0a362f3d83a6c272dec6362fe9a562c63) Thanks [@alandotcom](https://github.com/alandotcom)! - Pass runtime option to Vercel Build Output API functions
+
+- [#864](https://github.com/vercel/workflow/pull/864) [`81c5a83`](https://github.com/vercel/workflow/commit/81c5a835ae647cd94d88ccec8c3b037acdfb6598) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add "classes" object to `manifest.json` file
+
+- Updated dependencies [[`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`a2b688d`](https://github.com/vercel/workflow/commit/a2b688d0623ebbae117877a696c5b9b288d628fd), [`244b94a`](https://github.com/vercel/workflow/commit/244b94a0665087ece694ae881a17d6aaa0ca0a7f), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`1f684df`](https://github.com/vercel/workflow/commit/1f684df6b7b9cd322d5f1aa4a70dcaa3e07c7986), [`81c5a83`](https://github.com/vercel/workflow/commit/81c5a835ae647cd94d88ccec8c3b037acdfb6598), [`b4113da`](https://github.com/vercel/workflow/commit/b4113da9541f3cebf1605d753374025f95259bf8), [`b16a682`](https://github.com/vercel/workflow/commit/b16a6828af36a2d5adb38fb6a6d1253657001ac8), [`bd8116d`](https://github.com/vercel/workflow/commit/bd8116d40bf8d662537bf015d2861f6d1768d69e), [`1060f9d`](https://github.com/vercel/workflow/commit/1060f9d04a372bf6de6c5c3d52063bcc22dba6e8), [`00c7961`](https://github.com/vercel/workflow/commit/00c7961ecb09418d6c23e1346a1b6569eb66a6bf), [`c45bc3f`](https://github.com/vercel/workflow/commit/c45bc3fd15ca201ee568cf7789ff1467cf7ba566)]:
+  - @workflow/errors@4.1.0-beta.14
+  - @workflow/core@4.1.0-beta.51
+  - @workflow/swc-plugin@4.1.0-beta.15
+  - @workflow/utils@4.1.0-beta.11
+
 ## 4.0.1-beta.41
 
 ### Patch Changes

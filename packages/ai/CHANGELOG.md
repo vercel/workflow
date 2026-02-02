@@ -1,5 +1,16 @@
 # @workflow/ai
 
+## 4.0.1-beta.52
+
+### Patch Changes
+
+- [#734](https://github.com/vercel/workflow/pull/734) [`8e87b24`](https://github.com/vercel/workflow/commit/8e87b24f7d7c49bd86487dff4442668aa5366533) Thanks [@pranaygp](https://github.com/pranaygp)! - Support provider-executed tools (e.g., googleSearch, WebSearch)
+
+- [#862](https://github.com/vercel/workflow/pull/862) [`347ffbc`](https://github.com/vercel/workflow/commit/347ffbcabaef1ce5e752cfb16954de1c351f1cb3) Thanks [@gdaybrice](https://github.com/gdaybrice)! - Fix double-serialization of tool output in writeToolOutputToUI. The function was JSON.stringify-ing the entire LanguageModelV2ToolResultPart object instead of extracting the actual tool output value.
+
+- Updated dependencies [[`50f50f4`](https://github.com/vercel/workflow/commit/50f50f44d79a3cf1102173ff1865cd8a01723ea3), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`409972e`](https://github.com/vercel/workflow/commit/409972e3b478e51972e17cb1ef6057f6a5b32c47)]:
+  - workflow@4.1.0-beta.51
+
 ## 4.0.1-beta.51
 
 ### Patch Changes

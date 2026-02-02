@@ -1,5 +1,53 @@
 # @workflow/web-shared
 
+## 4.1.0-beta.46
+
+### Minor Changes
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
+
+  - Remove `cancel`, `pause`, `resume` from `runs`
+  - Remove `create`, `update` from `runs`, `steps`, `hooks`
+  - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
+  - Add `step_created` event type
+  - Remove `fatal` field from `step_failed` (terminal failure is now implicit)
+  - Add `step_retrying` event with error info for retriable failures
+
+### Patch Changes
+
+- [#894](https://github.com/vercel/workflow/pull/894) [`a2b688d`](https://github.com/vercel/workflow/commit/a2b688d0623ebbae117877a696c5b9b288d628fd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix resuming v1 hooks and cancelling/re-running v1 runs from a v2 UI or runtime
+
+- [#869](https://github.com/vercel/workflow/pull/869) [`24ca465`](https://github.com/vercel/workflow/commit/24ca46586940fc48bb993ecde03e595d1471895d) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow recreateRun to accept an optional deploymentId parameter
+
+- [#814](https://github.com/vercel/workflow/pull/814) [`b16a682`](https://github.com/vercel/workflow/commit/b16a6828af36a2d5adb38fb6a6d1253657001ac8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Move "parse-name" into the `utils` package
+
+- [#833](https://github.com/vercel/workflow/pull/833) [`bd8116d`](https://github.com/vercel/workflow/commit/bd8116d40bf8d662537bf015d2861f6d1768d69e) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Remove `skipProxy` and `baseUrl` config options, simplify proxy logic
+
+- [#853](https://github.com/vercel/workflow/pull/853) [`1060f9d`](https://github.com/vercel/workflow/commit/1060f9d04a372bf6de6c5c3d52063bcc22dba6e8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Change user input/output to be binary data (Uint8Array) at the World interface
+
+  This is part of specVersion 2 changes where serialization of workflow and step data uses binary format instead of JSON arrays. This allows the workflow client to be fully responsible for the data serialization format and enables future enhancements such as encryption and compression without the World implementation needing to care about the underlying data representation.
+
+- [#891](https://github.com/vercel/workflow/pull/891) [`0aa50e5`](https://github.com/vercel/workflow/commit/0aa50e5ca4f760540536d54c0b517509272fc357) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add missing 'use client' directives to client components
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Remove deprecated `workflow_completed`, `workflow_failed`, and `workflow_started` events in favor of `run_completed`, `run_failed`, and `run_started` events.
+
+- [#856](https://github.com/vercel/workflow/pull/856) [`f64b776`](https://github.com/vercel/workflow/commit/f64b7761657c46978bcb0df80e0bfc768f2b8a10) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Style the resolve hook modal for theme tokens and align the cancel action with secondary button styling.
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `specVersion` property to World interface
+
+  - All worlds expose `@workflow/world` package version for protocol compatibility
+  - Stored in `run_created` event and `WorkflowRun` schema
+  - Displayed in observability UI
+
+- [#868](https://github.com/vercel/workflow/pull/868) [`c45bc3f`](https://github.com/vercel/workflow/commit/c45bc3fd15ca201ee568cf7789ff1467cf7ba566) Thanks [@pranaygp](https://github.com/pranaygp)! - Add SDK version to workflow run executionContext for observability
+
+- Updated dependencies [[`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`26a9833`](https://github.com/vercel/workflow/commit/26a98330d478dd76192d9897b5a0cc0cf3feacd7), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`b59559b`](https://github.com/vercel/workflow/commit/b59559be70e839025680c4f9873d521170e48e1c), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`a2b688d`](https://github.com/vercel/workflow/commit/a2b688d0623ebbae117877a696c5b9b288d628fd), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`1f684df`](https://github.com/vercel/workflow/commit/1f684df6b7b9cd322d5f1aa4a70dcaa3e07c7986), [`b16a682`](https://github.com/vercel/workflow/commit/b16a6828af36a2d5adb38fb6a6d1253657001ac8), [`bd8116d`](https://github.com/vercel/workflow/commit/bd8116d40bf8d662537bf015d2861f6d1768d69e), [`1060f9d`](https://github.com/vercel/workflow/commit/1060f9d04a372bf6de6c5c3d52063bcc22dba6e8), [`00c7961`](https://github.com/vercel/workflow/commit/00c7961ecb09418d6c23e1346a1b6569eb66a6bf), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`b973b8d`](https://github.com/vercel/workflow/commit/b973b8d00f6459fa675ee9875642e49760f68879), [`c45bc3f`](https://github.com/vercel/workflow/commit/c45bc3fd15ca201ee568cf7789ff1467cf7ba566), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae)]:
+  - @workflow/world@4.1.0-beta.1
+  - @workflow/errors@4.1.0-beta.14
+  - @workflow/world-vercel@4.1.0-beta.29
+  - @workflow/core@4.1.0-beta.51
+  - @workflow/utils@4.1.0-beta.11
+
 ## 4.0.1-beta.45
 
 ### Patch Changes
