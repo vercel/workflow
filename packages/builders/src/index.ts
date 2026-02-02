@@ -10,6 +10,10 @@ export {
 export { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
+export {
+  createPseudoPackagePlugin,
+  PSEUDO_PACKAGES,
+} from './pseudo-package-esbuild-plugin.js';
 export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
 export { StandaloneBuilder } from './standalone.js';
 export { createSwcPlugin } from './swc-esbuild-plugin.js';

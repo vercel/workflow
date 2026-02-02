@@ -1,5 +1,46 @@
 # @workflow/world
 
+## 4.1.0-beta.1
+
+### Minor Changes
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Add backwards compatibility for runs created with different spec versions
+
+  - Add `RunNotSupportedError` for runs requiring newer world versions
+  - Add semver-based version comparison utilities
+  - Legacy runs (< 4.1): route to legacy handlers
+  - `run_cancelled`: skip event storage, directly update run
+  - `wait_completed`: store event only (no entity mutation)
+  - Unknown legacy events: throw error
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
+
+  - Remove `cancel`, `pause`, `resume` from `runs`
+  - Remove `create`, `update` from `runs`, `steps`, `hooks`
+  - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
+  - Add `step_created` event type
+  - Remove `fatal` field from `step_failed` (terminal failure is now implicit)
+  - Add `step_retrying` event with error info for retriable failures
+
+### Patch Changes
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `hook_conflict` event type for duplicate token detection
+
+  - World returns `hook_conflict` event when `hook_created` uses an existing token
+  - Add `HOOK_CONFLICT` error slug
+
+- [#853](https://github.com/vercel/workflow/pull/853) [`1060f9d`](https://github.com/vercel/workflow/commit/1060f9d04a372bf6de6c5c3d52063bcc22dba6e8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Change user input/output to be binary data (Uint8Array) at the World interface
+
+  This is part of specVersion 2 changes where serialization of workflow and step data uses binary format instead of JSON arrays. This allows the workflow client to be fully responsible for the data serialization format and enables future enhancements such as encryption and compression without the World implementation needing to care about the underlying data representation.
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Remove deprecated `workflow_completed`, `workflow_failed`, and `workflow_started` events in favor of `run_completed`, `run_failed`, and `run_started` events.
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `specVersion` property to World interface
+
+  - All worlds expose `@workflow/world` package version for protocol compatibility
+  - Stored in `run_created` event and `WorkflowRun` schema
+  - Displayed in observability UI
+
 ## 4.0.1-beta.13
 
 ### Patch Changes

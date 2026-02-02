@@ -1,5 +1,26 @@
 # @workflow/swc-plugin
 
+## 4.1.0-beta.15
+
+### Minor Changes
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
+
+  - Remove `cancel`, `pause`, `resume` from `runs`
+  - Remove `create`, `update` from `runs`, `steps`, `hooks`
+  - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
+  - Add `step_created` event type
+  - Remove `fatal` field from `step_failed` (terminal failure is now implicit)
+  - Add `step_retrying` event with error info for retriable failures
+
+### Patch Changes
+
+- [#866](https://github.com/vercel/workflow/pull/866) [`244b94a`](https://github.com/vercel/workflow/commit/244b94a0665087ece694ae881a17d6aaa0ca0a7f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for top-level `using` declarations inside of step / workflow functions
+
+- [#864](https://github.com/vercel/workflow/pull/864) [`81c5a83`](https://github.com/vercel/workflow/commit/81c5a835ae647cd94d88ccec8c3b037acdfb6598) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add "classes" object to `manifest.json` file
+
+- [#860](https://github.com/vercel/workflow/pull/860) [`b4113da`](https://github.com/vercel/workflow/commit/b4113da9541f3cebf1605d753374025f95259bf8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Enable custom class serialization transformations for "client" mode
+
 ## 4.0.1-beta.14
 
 ### Patch Changes

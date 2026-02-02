@@ -147,6 +147,9 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             loader = 'tsx';
           }
           const source = await readFile(args.path, 'utf8');
+          const normalizedSource = source
+            .replace(/require\(\s*(['"])server-only\1\s*\)/g, 'void 0')
+            .replace(/require\(\s*(['"])client-only\1\s*\)/g, 'void 0');
 
           // Calculate relative path for SWC plugin
           // The filename parameter is used to generate workflowId/stepId, so it must be relative
@@ -204,7 +207,11 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           }
 
           const { code: transformedCode, workflowManifest } =
-            await applySwcTransform(relativeFilepath, source, options.mode);
+            await applySwcTransform(
+              relativeFilepath,
+              normalizedSource,
+              options.mode
+            );
 
           if (!options.workflowManifest) {
             options.workflowManifest = {};

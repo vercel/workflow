@@ -1,5 +1,37 @@
 # workflow
 
+## 4.1.0-beta.51
+
+### Minor Changes
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
+
+  - Remove `cancel`, `pause`, `resume` from `runs`
+  - Remove `create`, `update` from `runs`, `steps`, `hooks`
+  - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
+  - Add `step_created` event type
+  - Remove `fatal` field from `step_failed` (terminal failure is now implicit)
+  - Add `step_retrying` event with error info for retriable failures
+
+### Patch Changes
+
+- [#840](https://github.com/vercel/workflow/pull/840) [`50f50f4`](https://github.com/vercel/workflow/commit/50f50f44d79a3cf1102173ff1865cd8a01723ea3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Create `@workflow/nest` package and add build support for NestJS
+
+- [#843](https://github.com/vercel/workflow/pull/843) [`409972e`](https://github.com/vercel/workflow/commit/409972e3b478e51972e17cb1ef6057f6a5b32c47) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Expose `dirs` option in `workflows` config object in `withWorkflow()`
+
+- Updated dependencies [[`50f50f4`](https://github.com/vercel/workflow/commit/50f50f44d79a3cf1102173ff1865cd8a01723ea3), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`4ad3fcd`](https://github.com/vercel/workflow/commit/4ad3fcd0a362f3d83a6c272dec6362fe9a562c63), [`a2b688d`](https://github.com/vercel/workflow/commit/a2b688d0623ebbae117877a696c5b9b288d628fd), [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae), [`1f684df`](https://github.com/vercel/workflow/commit/1f684df6b7b9cd322d5f1aa4a70dcaa3e07c7986), [`b16a682`](https://github.com/vercel/workflow/commit/b16a6828af36a2d5adb38fb6a6d1253657001ac8), [`bd8116d`](https://github.com/vercel/workflow/commit/bd8116d40bf8d662537bf015d2861f6d1768d69e), [`1060f9d`](https://github.com/vercel/workflow/commit/1060f9d04a372bf6de6c5c3d52063bcc22dba6e8), [`00c7961`](https://github.com/vercel/workflow/commit/00c7961ecb09418d6c23e1346a1b6569eb66a6bf), [`c45bc3f`](https://github.com/vercel/workflow/commit/c45bc3fd15ca201ee568cf7789ff1467cf7ba566)]:
+  - @workflow/nest@0.0.0-beta.0
+  - @workflow/errors@4.1.0-beta.14
+  - @workflow/cli@4.1.0-beta.51
+  - @workflow/core@4.1.0-beta.51
+  - @workflow/nitro@4.0.1-beta.46
+  - @workflow/astro@4.0.0-beta.25
+  - @workflow/next@4.0.1-beta.47
+  - @workflow/sveltekit@4.0.0-beta.40
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/rollup@4.0.0-beta.9
+  - @workflow/nuxt@4.0.1-beta.35
+
 ## 4.0.1-beta.50
 
 ### Patch Changes
