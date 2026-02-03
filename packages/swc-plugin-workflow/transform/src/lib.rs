@@ -1611,6 +1611,32 @@ impl StepTransform {
                                 }
                                 _ => {}
                             }
+                        } else {
+                            // Not a direct step function - check for nested objects or call expressions
+                            match &mut *kv_prop.value {
+                                Expr::Object(nested_obj) => {
+                                    // Recursively process nested objects with compound path
+                                    let compound_path = format!("{}/{}", parent_var_name, prop_key);
+                                    self.process_object_properties_for_step_functions(
+                                        nested_obj,
+                                        &compound_path,
+                                    );
+                                }
+                                Expr::Call(call_expr) => {
+                                    // Check arguments for object literals containing step functions
+                                    for arg in &mut call_expr.args {
+                                        if let Expr::Object(nested_obj) = &mut *arg.expr {
+                                            let compound_path =
+                                                format!("{}/{}", parent_var_name, prop_key);
+                                            self.process_object_properties_for_step_functions(
+                                                nested_obj,
+                                                &compound_path,
+                                            );
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     Prop::Method(method_prop) => {
@@ -1755,11 +1781,13 @@ impl StepTransform {
         match self.mode {
             TransformMode::Step => {
                 // In step mode, replace with reference to hoisted variable
+                // Replace slashes with $ in parent_var_name to create valid JS identifier
+                let safe_parent_name = parent_var_name.replace('/', "$");
                 let hoist_var_name =
                     if let Some(ref workflow_name) = self.current_workflow_function_name {
-                        format!("{}${}${}", workflow_name, parent_var_name, prop_key)
+                        format!("{}${}${}", workflow_name, safe_parent_name, prop_key)
                     } else {
-                        format!("{}${}", parent_var_name, prop_key)
+                        format!("{}${}", safe_parent_name, prop_key)
                     };
                 *kv_prop.value = Expr::Ident(Ident::new(
                     hoist_var_name.into(),
@@ -3759,10 +3787,12 @@ impl VisitMut for StepTransform {
                         .iter()
                         .map(
                             |(parent_var, prop_name, arrow_expr, _span, workflow_name)| {
+                                // Replace slashes with $ in parent_var to create valid JS identifier
+                                let safe_parent_var = parent_var.replace('/', "$");
                                 let hoist_var_name = if !workflow_name.is_empty() {
-                                    format!("{}${}${}", workflow_name, parent_var, prop_name)
+                                    format!("{}${}${}", workflow_name, safe_parent_var, prop_name)
                                 } else {
-                                    format!("{}${}", parent_var, prop_name)
+                                    format!("{}${}", safe_parent_var, prop_name)
                                 };
                                 let wf_name = if workflow_name.is_empty() {
                                     None
