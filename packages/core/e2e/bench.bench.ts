@@ -303,15 +303,29 @@ describe('Workflow Performance Benchmarks', () => {
     { time: 5000, warmupIterations: 1, teardown }
   );
 
-  bench(
-    'workflow with 10 sequential steps',
-    async () => {
-      const { runId } = await triggerWorkflow('tenSequentialStepsWorkflow', []);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with 10 sequential steps', run);
-    },
-    { time: 5000, iterations: 5, warmupIterations: 1, teardown }
-  );
+  // Sequential step benchmarks at various scales
+  const sequentialStepCounts = [
+    { count: 10, time: 30000 },
+    { count: 50, time: 90000 },
+    { count: 100, time: 150000 },
+    { count: 500, time: 600000 },
+  ] as const;
+
+  for (const { count, time } of sequentialStepCounts) {
+    const name = `workflow with ${count} sequential steps`;
+
+    bench(
+      name,
+      async () => {
+        const { runId } = await triggerWorkflow('sequentialStepsWorkflow', [
+          count,
+        ]);
+        const { run } = await getWorkflowReturnValue(runId);
+        stageTiming(name, run);
+      },
+      { time, iterations: 1, warmupIterations: 0, teardown }
+    );
+  }
 
   bench(
     'workflow with stream',
