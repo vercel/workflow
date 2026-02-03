@@ -17,5 +17,5 @@ export class TestClass {
     }
 }
 registerStepFunction("step//input.js//TestClass.staticMethod", TestClass.staticMethod);
-registerStepFunction("step//input.js//TestClass#instanceMethod", TestClass.prototype.instanceMethod);
+registerStepFunction("step//input.js//TestClass#instanceMethod", TestClass.prototype["instanceMethod"]);
 registerSerializationClass("class//input.js//TestClass", TestClass);

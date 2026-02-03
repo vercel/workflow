@@ -8,5 +8,5 @@ export class TestClass {
     }
 }
 TestClass.staticMethod = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//TestClass.staticMethod");
-TestClass.prototype.instanceMethod = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//TestClass#instanceMethod");
+TestClass.prototype["instanceMethod"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//TestClass#instanceMethod");
 registerSerializationClass("class//input.js//TestClass", TestClass);

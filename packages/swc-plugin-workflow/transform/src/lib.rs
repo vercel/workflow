@@ -3927,10 +3927,14 @@ impl VisitMut for StepTransform {
                                                     DUMMY_SP,
                                                 )),
                                             })),
-                                            prop: MemberProp::Ident(IdentName::new(
-                                                method_name.into(),
-                                                DUMMY_SP,
-                                            )),
+                                            prop: MemberProp::Computed(ComputedPropName {
+                                                span: DUMMY_SP,
+                                                expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                                    span: DUMMY_SP,
+                                                    value: method_name.into(),
+                                                    raw: None,
+                                                }))),
+                                            }),
                                         })),
                                     },
                                 ],
@@ -4148,10 +4152,14 @@ impl VisitMut for StepTransform {
                                                 DUMMY_SP,
                                             )),
                                         })),
-                                        prop: MemberProp::Ident(IdentName::new(
-                                            method_name.into(),
-                                            DUMMY_SP,
-                                        )),
+                                        prop: MemberProp::Computed(ComputedPropName {
+                                            span: DUMMY_SP,
+                                            expr: Box::new(Expr::Lit(Lit::Str(Str {
+                                                span: DUMMY_SP,
+                                                value: method_name.into(),
+                                                raw: None,
+                                            }))),
+                                        }),
                                     },
                                 )),
                                 op: AssignOp::Assign,
@@ -6521,8 +6529,14 @@ impl VisitMut for StepTransform {
             if !static_methods_to_strip.is_empty() || !instance_methods_to_strip.is_empty() {
                 class_decl.class.body.retain(|member| {
                     if let ClassMember::Method(method) = member {
-                        if let PropName::Ident(ident) = &method.key {
-                            let method_name = ident.sym.to_string();
+                        // Handle both identifier and string keys for method names
+                        let method_name = match &method.key {
+                            PropName::Ident(ident) => Some(ident.sym.to_string()),
+                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                            _ => None,
+                        };
+
+                        if let Some(method_name) = method_name {
                             if method.is_static {
                                 return !static_methods_to_strip.contains(&method_name);
                             } else {
@@ -6656,6 +6670,9 @@ impl VisitMut for StepTransform {
                 // Generate full qualified name using # for instance methods: ClassName#methodName
                 let full_name = format!("{}#{}", class_name, method_name);
 
+                // For nested step hoisting, use $ instead of # to produce valid JS identifiers
+                let hoisted_parent_name = format!("{}${}", class_name, method_name);
+
                 self.step_function_names.insert(full_name.clone());
 
                 // Track class for serialization (needed for `this` serialization)
@@ -6678,8 +6695,17 @@ impl VisitMut for StepTransform {
                             method.function.span,
                         ));
 
+                        // Set current_parent_function_name for nested step hoisting
+                        // This prevents self-referential aliases like `const helper = helper;`
+                        // Use $ instead of # to produce valid JS identifiers
+                        let old_parent = self.current_parent_function_name.clone();
+                        self.current_parent_function_name = Some(hoisted_parent_name.clone());
+
                         // Visit children to process nested step functions
                         method.visit_mut_children_with(self);
+
+                        // Restore parent function name
+                        self.current_parent_function_name = old_parent;
                     }
                     TransformMode::Workflow => {
                         // Remove directive for consistency with other modes
@@ -6698,8 +6724,16 @@ impl VisitMut for StepTransform {
                         // Just remove directive, keep the function body
                         self.remove_use_step_directive(&mut method.function.body);
 
+                        // Set current_parent_function_name for nested step hoisting
+                        // Use $ instead of # to produce valid JS identifiers
+                        let old_parent = self.current_parent_function_name.clone();
+                        self.current_parent_function_name = Some(hoisted_parent_name.clone());
+
                         // Visit children to process nested step functions
                         method.visit_mut_children_with(self);
+
+                        // Restore parent function name
+                        self.current_parent_function_name = old_parent;
                     }
                 }
             } else {

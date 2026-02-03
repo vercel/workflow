@@ -21,6 +21,6 @@ export class Calculator {
         return a + b + this.multiplier;
     }
 }
-registerStepFunction("step//input.js//Calculator#multiply", Calculator.prototype.multiply);
-registerStepFunction("step//input.js//Calculator#add", Calculator.prototype.add);
+registerStepFunction("step//input.js//Calculator#multiply", Calculator.prototype["multiply"]);
+registerStepFunction("step//input.js//Calculator#add", Calculator.prototype["add"]);
 registerSerializationClass("class//input.js//Calculator", Calculator);

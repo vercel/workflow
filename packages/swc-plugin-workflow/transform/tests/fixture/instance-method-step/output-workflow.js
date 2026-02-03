@@ -14,6 +14,6 @@ export class Calculator {
         this.multiplier = multiplier;
     }
 }
-Calculator.prototype.multiply = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//Calculator#multiply");
-Calculator.prototype.add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//Calculator#add");
+Calculator.prototype["multiply"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//Calculator#multiply");
+Calculator.prototype["add"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//Calculator#add");
 registerSerializationClass("class//input.js//Calculator", Calculator);

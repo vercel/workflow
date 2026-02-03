@@ -1172,7 +1172,7 @@ export class Counter {
   }
 
   /**
-   * Instance method step: adds the given amount to the counter's value.
+   * Instance method step: returns the sum of the counter's value and the given amount.
    * The `this` context (the Counter instance) is serialized and passed
    * to the step handler, then deserialized before the method is called.
    */

@@ -42,6 +42,7 @@ Examples:
 - `step//src/jobs/order.ts//fetchData`
 - `step//src/jobs/order.ts//processOrder/innerStep` (nested step)
 - `step//src/jobs/order.ts//MyClass.staticMethod` (static method)
+- `step//src/jobs/order.ts//MyClass#instanceMethod` (instance method)
 - `class//src/models/Point.ts//Point` (serialization class)
 
 ---
@@ -170,6 +171,57 @@ function wrapper(multiplier) {
 }
 registerStepFunction("step//input.js//wrapper/_anonymousStep0", wrapper$_anonymousStep0);
 ```
+
+### Instance Method Step
+
+Instance methods can use `"use step"` if the class provides custom serialization methods. The `this` context is serialized when calling the step and deserialized before execution.
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
+
+export class Counter {
+  static [WORKFLOW_SERIALIZE](instance) {
+    return { value: instance.value };
+  }
+  static [WORKFLOW_DESERIALIZE](data) {
+    return new Counter(data.value);
+  }
+  constructor(value) {
+    this.value = value;
+  }
+  async add(amount) {
+    'use step';
+    return this.value + amount;
+  }
+}
+```
+
+Output:
+```javascript
+import { registerStepFunction } from "workflow/internal/private";
+import { registerSerializationClass } from "workflow/internal/class-serialization";
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
+/**__internal_workflows{"steps":{"input.js":{"Counter#add":{"stepId":"step//input.js//Counter#add"}}},"classes":{"input.js":{"Counter":{"classId":"class//input.js//Counter"}}}}*/;
+export class Counter {
+    static [WORKFLOW_SERIALIZE](instance) {
+        return { value: instance.value };
+    }
+    static [WORKFLOW_DESERIALIZE](data) {
+        return new Counter(data.value);
+    }
+    constructor(value) {
+        this.value = value;
+    }
+    async add(amount) {
+        return this.value + amount;
+    }
+}
+registerStepFunction("step//input.js//Counter#add", Counter.prototype["add"]);
+registerSerializationClass("class//input.js//Counter", Counter);
+```
+
+Note: Instance methods use `#` in the step ID (e.g., `Counter#add`) and are registered via `ClassName.prototype["methodName"]`.
 
 ### Module-Level Directive
 
@@ -591,7 +643,7 @@ The plugin emits errors for invalid usage:
 | Error | Description |
 |-------|-------------|
 | Non-async function | Functions with `"use step"` or `"use workflow"` must be async |
-| Instance methods | Only static methods can have directives (not instance methods) |
+| Instance methods with `"use workflow"` | Only static methods can have `"use workflow"` (not instance methods) |
 | Misplaced directive | Directive must be at top of file or start of function body |
 | Conflicting directives | Cannot have both `"use step"` and `"use workflow"` at module level |
 | Invalid exports | Module-level directive files can only export async functions |
@@ -610,6 +662,7 @@ The plugin supports various function declaration styles:
 - `const name = async function() { "use step"; }` - Function expression
 - `{ async method() { "use step"; } }` - Object method
 - `static async method() { "use step"; }` - Static class method
+- `async method() { "use step"; }` - Instance class method (requires custom serialization)
 
 ---
 

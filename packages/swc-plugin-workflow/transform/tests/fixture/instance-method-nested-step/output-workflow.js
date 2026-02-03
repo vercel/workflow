@@ -14,5 +14,5 @@ export class Service {
         this.value = value;
     }
 }
-Service.prototype.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//Service#process");
+Service.prototype["process"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//Service#process");
 registerSerializationClass("class//input.js//Service", Service);
