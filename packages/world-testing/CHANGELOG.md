@@ -1,5 +1,13 @@
 # @workflow/world-testing
 
+## 4.1.0-beta.53
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.1.0-beta.52
+  - workflow@4.1.0-beta.52
+
 ## 4.1.0-beta.52
 
 ### Minor Changes

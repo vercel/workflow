@@ -1,5 +1,14 @@
 # @workflow/builders
 
+## 4.0.1-beta.43
+
+### Patch Changes
+
+- [#911](https://github.com/vercel/workflow/pull/911) [`f40532a`](https://github.com/vercel/workflow/commit/f40532a8720b9b0ecb3cf4983cbfd86065503567) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix workflow bundle to inline pseudo-packages instead of marking them external
+
+- Updated dependencies [[`e4e3281`](https://github.com/vercel/workflow/commit/e4e32812f8f181ad4db72e76f62ba1edf2477b12)]:
+  - @workflow/core@4.1.0-beta.52
+
 ## 4.0.1-beta.42
 
 ### Patch Changes

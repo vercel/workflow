@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.1.0-beta.52
+
+### Patch Changes
+
+- [#916](https://github.com/vercel/workflow/pull/916) [`e4e3281`](https://github.com/vercel/workflow/commit/e4e32812f8f181ad4db72e76f62ba1edf2477b12) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix circular dependency between runtime.ts and runtime/start.ts that caused issues with Bun's module resolution
+
 ## 4.1.0-beta.51
 
 ### Minor Changes
