@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ''
+      full-suite:
+        description: 'Run full benchmark suite including long-running tests'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   benchmark:
@@ -108,6 +113,7 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ inputs.app-name }}
           WORKFLOW_BENCH_BACKEND: ${{ inputs.world-id }}
+          BENCHMARK_FULL_SUITE: ${{ inputs.full-suite }}
         run: |
           cd workbench/${{ inputs.app-name }}
           pnpm start &

@@ -304,17 +304,20 @@ describe('Workflow Performance Benchmarks', () => {
   );
 
   // Sequential step benchmarks at various scales
+  // Set BENCHMARK_FULL_SUITE=true to run the long benchmarks (100+, 500+ steps)
+  const fullSuite = process.env.BENCHMARK_FULL_SUITE === 'true';
   const sequentialStepCounts = [
-    { count: 10, time: 30000 },
-    { count: 50, time: 90000 },
-    { count: 100, time: 150000 },
-    { count: 500, time: 600000 },
+    { count: 10, skip: false, time: 30000 },
+    { count: 50, skip: false, time: 90000 },
+    { count: 100, skip: !fullSuite, time: 150000 },
+    { count: 500, skip: !fullSuite, time: 600000 },
   ] as const;
 
-  for (const { count, time } of sequentialStepCounts) {
+  for (const { count, skip, time } of sequentialStepCounts) {
     const name = `workflow with ${count} sequential steps`;
+    const benchFn = skip ? bench.skip : bench;
 
-    bench(
+    benchFn(
       name,
       async () => {
         const { runId } = await triggerWorkflow('sequentialStepsWorkflow', [
@@ -366,13 +369,14 @@ describe('Workflow Performance Benchmarks', () => {
   );
 
   // Concurrent step benchmarks for Promise.all/Promise.race at various scales
+  // Set BENCHMARK_FULL_SUITE=true to run the long benchmarks (100+, 500+, 1000 steps)
   const concurrentStepCounts = [
     { count: 10, skip: false, time: 30000 },
     { count: 25, skip: false, time: 30000 },
     { count: 50, skip: false, time: 30000 },
-    { count: 100, skip: false, time: 60000 },
-    { count: 500, skip: false, time: 120000 },
-    { count: 1000, skip: true, time: 180000 },
+    { count: 100, skip: !fullSuite, time: 60000 },
+    { count: 500, skip: !fullSuite, time: 120000 },
+    { count: 1000, skip: true, time: 180000 }, // Always skip 1000 - too slow
   ] as const;
 
   const concurrentStepTypes = [
