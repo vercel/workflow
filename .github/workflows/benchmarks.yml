@@ -195,8 +195,8 @@ jobs:
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ matrix.app }}
-          # Run full suite on push to main or when manually triggered with full_suite=true
-          BENCHMARK_FULL_SUITE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.full_suite) }}
+          # Run full suite only when manually triggered with full_suite=true
+          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
         run: |
           cd workbench/${{ matrix.app }}
           pnpm start &
@@ -295,8 +295,8 @@ jobs:
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ matrix.app }}
-          # Run full suite on push to main or when manually triggered with full_suite=true
-          BENCHMARK_FULL_SUITE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.full_suite) }}
+          # Run full suite only when manually triggered with full_suite=true
+          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
         run: |
           cd workbench/${{ matrix.app }}
           pnpm start &
@@ -392,8 +392,8 @@ jobs:
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-          # Run full suite on push to main or when manually triggered with full_suite=true
-          BENCHMARK_FULL_SUITE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.full_suite) }}
+          # Run full suite only when manually triggered with full_suite=true
+          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
         run: |
           pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app.name }}-vercel.json
 
@@ -445,8 +445,8 @@ jobs:
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
       setup-command: ${{ matrix.world.setup-command }}
-      # Run full suite on push to main or when manually triggered with full_suite=true
-      full-suite: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.full_suite) }}
+      # Run full suite only when manually triggered with full_suite=true
+      full-suite: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
     secrets: inherit
 
   # Phase 3: Aggregate all benchmark results and create comparison
