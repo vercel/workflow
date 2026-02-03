@@ -608,7 +608,7 @@ export async function runWorkflow(
     // The filename parameter ensures stack traces show a meaningful name
     // (e.g., "example/workflows/99_e2e.ts") instead of "evalmachine.<anonymous>".
     const parsedName = parseWorkflowName(workflowRun.workflowName);
-    const filename = parsedName?.path || workflowRun.workflowName;
+    const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
     const workflowFn = runInContext(
       `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,

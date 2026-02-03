@@ -37,6 +37,11 @@ export {
   resumeHook,
   resumeWebhook,
 } from './runtime/resume-hook.js';
+export {
+  getRun,
+  Run,
+  type WorkflowReadableStreamOptions,
+} from './runtime/run.js';
 export { type StartOptions, start } from './runtime/start.js';
 export { stepEntrypoint } from './runtime/step-handler.js';
 export {
@@ -45,11 +50,6 @@ export {
   getWorldHandlers,
   setWorld,
 } from './runtime/world.js';
-export {
-  getRun,
-  Run,
-  type WorkflowReadableStreamOptions,
-} from './runtime/run.js';
 
 /**
  * Function that creates a single route which handles any workflow execution
@@ -119,7 +119,7 @@ export function workflowEntrypoint(
                 // Use the run entity from the event response (no extra get call needed)
                 if (!result.run) {
                   throw new WorkflowRuntimeError(
-                    `Event creation for 'run_started' did not return the run entity for run \"${runId}\"`
+                    `Event creation for 'run_started' did not return the run entity for run "${runId}"`
                   );
                 }
                 workflowRun = result.run;
@@ -245,7 +245,7 @@ export function workflowEntrypoint(
                 // Remap error stack using source maps to show original source locations
                 if (errorStack) {
                   const parsedName = parseWorkflowName(workflowName);
-                  const filename = parsedName?.path || workflowName;
+                  const filename = parsedName?.moduleSpecifier || workflowName;
                   errorStack = remapErrorStack(
                     errorStack,
                     filename,
