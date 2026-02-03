@@ -182,6 +182,7 @@ export async function handleSuspension({
           },
           {
             idempotencyKey: queueItem.correlationId,
+            headers: { 'x-workflow-run-id': runId },
           }
         );
       })()
