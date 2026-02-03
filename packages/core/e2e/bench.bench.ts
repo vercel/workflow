@@ -308,6 +308,7 @@ describe('Workflow Performance Benchmarks', () => {
   const fullSuite = process.env.BENCHMARK_FULL_SUITE === 'true';
   const sequentialStepCounts = [
     { count: 10, skip: false, time: 30000 },
+    { count: 25, skip: false, time: 60000 },
     { count: 50, skip: false, time: 90000 },
     { count: 100, skip: !fullSuite, time: 150000 },
     { count: 500, skip: !fullSuite, time: 600000 },
