@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 
 /**
  * Result of resolving a module specifier for a file.
@@ -30,9 +30,8 @@ function findPackageJson(
   filePath: string
 ): { name: string; version: string } | null {
   let dir = dirname(filePath);
-  const root = dirname(dir);
 
-  while (dir !== root) {
+  while (dir !== dirname(dir)) {
     // Check cache first
     const cached = packageJsonCache.get(dir);
     if (cached !== undefined) {
@@ -85,7 +84,8 @@ function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
   }
 
   // Check if the package.json is not the root package.json
-  const rootPkgPath = join(projectRoot, 'package.json');
+  // Use resolve() to normalize paths for cross-platform comparison
+  const rootPkgPath = resolve(projectRoot, 'package.json');
 
   // Walk up to find the package.json directory
   let dir = dirname(filePath);
@@ -93,7 +93,8 @@ function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
     const pkgPath = join(dir, 'package.json');
     if (existsSync(pkgPath)) {
       // If this is the root package.json, it's not a workspace package
-      if (pkgPath === rootPkgPath) {
+      // Use resolve() to normalize both paths before comparison
+      if (resolve(pkgPath) === rootPkgPath) {
         return false;
       }
       // Found a package.json that's not the root - it's a workspace package
