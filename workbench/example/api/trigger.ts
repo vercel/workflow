@@ -36,7 +36,9 @@ export async function POST(req: Request) {
 
   try {
     const workflowFileItems =
-      workflowManifest[workflowFile as keyof typeof workflowManifest];
+      workflowManifest.workflows[
+        workflowFile as keyof typeof workflowManifest.workflows
+      ];
     const run = await start(
       workflowFileItems[workflowFn as keyof typeof workflowFileItems],
       args

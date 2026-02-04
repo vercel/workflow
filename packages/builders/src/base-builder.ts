@@ -627,7 +627,7 @@ export abstract class BaseBuilder {
       await mkdir(dirname(resolvedPath), { recursive: true });
       await writeFile(
         resolvedPath,
-        prefix + JSON.stringify(workflowManifest.workflows, null, 2)
+        prefix + JSON.stringify(workflowManifest, null, 2)
       );
     }
 
