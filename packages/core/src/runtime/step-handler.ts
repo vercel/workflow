@@ -63,12 +63,22 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       const stepName = metadata.queueName.slice('__wkf_step_'.length);
       const world = getWorld();
 
-      // Get the port early to avoid async operations during step execution
-      const port = await getPort();
+      // OPTIMIZATION 0: Run these three async operations concurrently
+      // - getPort(): local async operation
+      // - getSpanKind(): may involve async operations
+      // - world.steps.get(): HTTP call to fetch step entity
+      const [port, spanKind, step_] = await Promise.all([
+        getPort(),
+        getSpanKind('CONSUMER'),
+        world.steps.get(workflowRunId, stepId),
+      ]);
+
+      // Use mutable step variable for later updates
+      let step = step_;
 
       return trace(
         `step ${stepName}`,
-        { kind: await getSpanKind('CONSUMER'), links: spanLinks },
+        { kind: spanKind, links: spanLinks },
         async (span) => {
           span?.setAttributes({
             ...Attribute.StepName(stepName),
@@ -100,8 +110,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...Attribute.StepMaxRetries(maxRetries),
             ...Attribute.StepTracePropagated(!!traceContext),
           });
-
-          let step = await world.steps.get(workflowRunId, stepId);
 
           runtimeLogger.debug('Step execution details', {
             stepName,
@@ -210,13 +218,29 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               return;
             }
 
-            // Start the step via event (event-sourced architecture)
-            // step_started increments the attempt counter in the World implementation
-            const startResult = await world.events.create(workflowRunId, {
+            // OPTIMIZATION 1: Start step_started event creation in background
+            // The HTTP call for step_started can happen while we do CPU work (hydration)
+            const stepStartedPromise = world.events.create(workflowRunId, {
               eventType: 'step_started',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
             });
+
+            // Hydrate the step input arguments, closure variables, and thisVal
+            // This uses step.input from the earlier world.steps.get() call
+            // and runs CPU-bound work while step_started HTTP is in-flight
+            const ops: Promise<void>[] = [];
+            const hydratedInput = hydrateStepArguments(
+              step.input,
+              ops,
+              workflowRunId
+            );
+
+            const args = hydratedInput.args;
+            const thisVal = hydratedInput.thisVal ?? null;
+
+            // Now await step_started - we need attempt/startedAt for context
+            const startResult = await stepStartedPromise;
 
             // Use the step entity from the event response (no extra get call needed)
             if (!startResult.step) {
@@ -306,22 +330,34 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               })
             );
 
-            // Complete the step via event (event-sourced architecture)
-            // The event creation atomically updates the step entity
-            // result was dehydrated above by dehydrateStepReturnValue, which returns Uint8Array
-            await world.events.create(workflowRunId, {
-              eventType: 'step_completed',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-              eventData: {
-                result: result as Uint8Array,
-              },
-            });
+            // OPTIMIZATION 2: Parallelize step_completed with trace serialization
+            // Run step_completed event creation and serializeTraceCarrier() concurrently
+            // The trace carrier will be used in the final queueMessage call
+            const [, traceCarrier] = await Promise.all([
+              world.events.create(workflowRunId, {
+                eventType: 'step_completed',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: stepId,
+                eventData: {
+                  result: result as Uint8Array,
+                },
+              }),
+              serializeTraceCarrier(),
+            ]);
 
             span?.setAttributes({
               ...Attribute.StepStatus('completed'),
               ...Attribute.StepResultType(typeof result),
             });
+
+            // Queue the workflow continuation immediately after step_completed
+            // Using pre-computed traceCarrier from parallel operation
+            await queueMessage(world, `__wkf_workflow_${workflowName}`, {
+              runId: workflowRunId,
+              traceCarrier,
+              requestedAt: new Date(),
+            });
+            return;
           } catch (err: unknown) {
             span?.setAttributes({
               ...Attribute.StepErrorName(getErrorName(err)),
