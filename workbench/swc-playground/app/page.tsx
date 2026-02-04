@@ -22,5 +22,8 @@ function getPluginVersion(): string {
 
 export default function Page() {
   const pluginVersion = getPluginVersion();
-  return <SwcPlayground pluginVersion={pluginVersion} />;
+  const gitCommitSha = process.env.VERCEL_GIT_COMMIT_SHA;
+  return (
+    <SwcPlayground pluginVersion={pluginVersion} gitCommitSha={gitCommitSha} />
+  );
 }

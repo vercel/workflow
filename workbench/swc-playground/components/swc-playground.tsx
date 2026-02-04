@@ -37,9 +37,13 @@ interface CompilationResult {
 
 interface SwcPlaygroundProps {
   pluginVersion?: string;
+  gitCommitSha?: string;
 }
 
-export function SwcPlayground({ pluginVersion }: SwcPlaygroundProps) {
+export function SwcPlayground({
+  pluginVersion,
+  gitCommitSha,
+}: SwcPlaygroundProps) {
   const [code, setCode] = useState(DEFAULT_CODE);
   const [isHydrated, setIsHydrated] = useState(false);
   const [results, setResults] = useState<Record<ViewMode, CompilationResult>>({
@@ -103,6 +107,16 @@ export function SwcPlayground({ pluginVersion }: SwcPlaygroundProps) {
           <span className="text-xs px-2 py-1 bg-muted rounded text-muted-foreground">
             @workflow/swc-plugin{pluginVersion ? `@${pluginVersion}` : ''}
           </span>
+          {gitCommitSha && (
+            <a
+              href={`https://github.com/vercel/workflow/commit/${gitCommitSha}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs px-2 py-1 bg-muted rounded text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {gitCommitSha.slice(0, 7)}
+            </a>
+          )}
         </div>
       </header>
 
