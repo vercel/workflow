@@ -6,6 +6,7 @@
 import { inspect } from 'node:util';
 import { parseClassName } from '@workflow/utils/parse-name';
 import { unflatten } from 'devalue';
+import { runtimeLogger } from './logger.js';
 import {
   getCommonRevivers,
   hydrateStepArguments,
@@ -360,7 +361,7 @@ const hydrateEventData = <
       }
     }
   } catch (error) {
-    console.error('Error hydrating event data', error);
+    runtimeLogger.error('Error hydrating event data', { error });
   }
   return {
     ...event,

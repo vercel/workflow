@@ -53,8 +53,6 @@ export class EventsConsumer {
         handled = callback(currentEvent);
       } catch (error) {
         eventsLogger.error('EventConsumer callback threw an error', { error });
-        // Hopefully shouldn't happen, but we don't want to block the workflow
-        console.error('EventConsumer callback threw an error', error);
       }
       eventsLogger.debug('EventConsumer callback result', {
         handled: EventConsumerResult[handled],

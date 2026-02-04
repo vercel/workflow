@@ -141,8 +141,12 @@ export function workflowEntrypoint(
 
               if (workflowRun.status !== 'running') {
                 // Workflow has already completed or failed, so we can skip it
-                console.warn(
-                  `Workflow "${runId}" has status "${workflowRun.status}", skipping`
+                runtimeLogger.warn(
+                  'Workflow already completed or failed, skipping',
+                  {
+                    workflowRunId: runId,
+                    status: workflowRun.status,
+                  }
                 );
 
                 // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
@@ -253,9 +257,11 @@ export function workflowEntrypoint(
                   );
                 }
 
-                console.error(
-                  `${errorName} while running "${runId}" workflow:\n\n${errorStack}`
-                );
+                runtimeLogger.error('Error while running workflow', {
+                  workflowRunId: runId,
+                  errorName,
+                  errorStack,
+                });
                 // Fail the workflow run via event (event-sourced architecture)
                 await world.events.create(runId, {
                   eventType: 'run_failed',

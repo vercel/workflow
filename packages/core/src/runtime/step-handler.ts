@@ -8,7 +8,7 @@ import {
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
-import { runtimeLogger } from '../logger.js';
+import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
   dehydrateStepReturnValue,
@@ -143,7 +143,11 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           if (step.attempt > maxRetries + 1) {
             const retryCount = step.attempt - 1;
             const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
-            console.error(`[Workflows] "${workflowRunId}" - ${errorMessage}`);
+            stepLogger.error('Step exceeded max retries', {
+              workflowRunId,
+              stepName,
+              retryCount,
+            });
             // Fail the step via event (event-sourced architecture)
             await world.events.create(workflowRunId, {
               eventType: 'step_failed',
@@ -175,9 +179,12 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               // a) pending - initial state, or state set on re-try
               // b) running - if a step fails mid-execution, like a function timeout
               // otherwise, the step has been invoked erroneously
-              console.error(
-                `[Workflows] "${workflowRunId}" - Step invoked erroneously, expected status "pending" or "running", got "${step.status}" instead, skipping execution`
-              );
+              stepLogger.error('Step invoked erroneously, skipping execution', {
+                workflowRunId,
+                stepName,
+                expectedStatus: ['pending', 'running'],
+                actualStatus: step.status,
+              });
               span?.setAttributes({
                 ...Attribute.StepSkipped(true),
                 ...Attribute.StepSkipReason(step.status),
@@ -307,8 +314,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             if (WorkflowAPIError.is(err)) {
               if (err.status === 410) {
                 // Workflow has already completed, so no-op
-                console.warn(
-                  `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
+                stepLogger.warn(
+                  'Workflow run already completed, skipping step',
+                  {
+                    workflowRunId,
+                    stepId,
+                    message: err.message,
+                  }
                 );
                 return;
               }
@@ -316,9 +328,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
             if (FatalError.is(err)) {
               const errorStack = getErrorStack(err);
-              const stackLines = errorStack.split('\n').slice(0, 4);
-              console.error(
-                `[Workflows] "${workflowRunId}" - Encountered \`FatalError\` while executing step "${stepName}":\n  > ${stackLines.join('\n    > ')}\n\nBubbling up error to parent workflow`
+              stepLogger.error(
+                'Encountered FatalError while executing step, bubbling up to parent workflow',
+                {
+                  workflowRunId,
+                  stepName,
+                  errorStack,
+                }
               );
               // Fail the step via event (event-sourced architecture)
               await world.events.create(workflowRunId, {
@@ -349,10 +365,16 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               if (currentAttempt >= maxRetries + 1) {
                 // Max retries reached
                 const errorStack = getErrorStack(err);
-                const stackLines = errorStack.split('\n').slice(0, 4);
                 const retryCount = step.attempt - 1;
-                console.error(
-                  `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${step.attempt}, ${retryCount} ${pluralize('retry', 'retries', retryCount)}):\n  > ${stackLines.join('\n    > ')}\n\n  Max retries reached\n  Bubbling error to parent workflow`
+                stepLogger.error(
+                  'Max retries reached, bubbling error to parent workflow',
+                  {
+                    workflowRunId,
+                    stepName,
+                    attempt: step.attempt,
+                    retryCount,
+                    errorStack,
+                  }
                 );
                 const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${String(err)}`;
                 // Fail the step via event (event-sourced architecture)
@@ -373,14 +395,23 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               } else {
                 // Not at max retries yet - log as a retryable error
                 if (RetryableError.is(err)) {
-                  console.warn(
-                    `[Workflows] "${workflowRunId}" - Encountered \`RetryableError\` while executing step "${stepName}" (attempt ${currentAttempt}):\n  > ${String(err.message)}\n\n  This step has failed but will be retried`
+                  stepLogger.warn(
+                    'Encountered RetryableError, step will be retried',
+                    {
+                      workflowRunId,
+                      stepName,
+                      attempt: currentAttempt,
+                      message: err.message,
+                    }
                   );
                 } else {
-                  const stackLines = getErrorStack(err).split('\n').slice(0, 4);
-                  console.error(
-                    `[Workflows] "${workflowRunId}" - Encountered \`Error\` while executing step "${stepName}" (attempt ${currentAttempt}):\n  > ${stackLines.join('\n    > ')}\n\n  This step has failed but will be retried`
-                  );
+                  const errorStack = getErrorStack(err);
+                  stepLogger.error('Encountered Error, step will be retried', {
+                    workflowRunId,
+                    stepName,
+                    attempt: currentAttempt,
+                    errorStack,
+                  });
                 }
                 // Set step to pending for retry via event (event-sourced architecture)
                 // step_retrying records the error and sets status to pending

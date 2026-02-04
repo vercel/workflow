@@ -9,6 +9,7 @@ import {
   pollReadableLock,
   pollWritableLock,
 } from './flushable-stream.js';
+import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
@@ -157,12 +158,12 @@ function formatSerializationError(context: string, error: unknown): string {
   }
   message += `. Ensure you're ${verb} serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`;
 
-  // Log the problematic value to console for debugging
+  // Log the problematic value for debugging
   if (error instanceof DevalueError && error.value !== undefined) {
-    console.error(
-      `[Workflows] Serialization failed for ${context}. Problematic value:`
-    );
-    console.error(error.value);
+    runtimeLogger.error('Serialization failed', {
+      context,
+      problematicValue: error.value,
+    });
   }
 
   return message;

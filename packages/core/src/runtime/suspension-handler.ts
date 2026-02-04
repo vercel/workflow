@@ -13,6 +13,7 @@ import type {
   WaitInvocationQueueItem,
   WorkflowSuspension,
 } from '../global.js';
+import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
@@ -99,8 +100,12 @@ export async function handleSuspension({
         } catch (err) {
           if (WorkflowAPIError.is(err)) {
             if (err.status === 410) {
-              console.warn(
-                `Workflow run "${runId}" has already completed, skipping hook: ${err.message}`
+              runtimeLogger.warn(
+                'Workflow run already completed, skipping hook',
+                {
+                  workflowRunId: runId,
+                  message: err.message,
+                }
               );
             } else {
               throw err;
@@ -152,7 +157,11 @@ export async function handleSuspension({
             await world.events.create(runId, stepEvent);
           } catch (err) {
             if (WorkflowAPIError.is(err) && err.status === 409) {
-              console.warn(`Step already exists, continuing: ${err.message}`);
+              runtimeLogger.warn('Step already exists, continuing', {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              });
             } else {
               throw err;
             }
@@ -196,7 +205,11 @@ export async function handleSuspension({
             await world.events.create(runId, waitEvent);
           } catch (err) {
             if (WorkflowAPIError.is(err) && err.status === 409) {
-              console.warn(`Wait already exists, continuing: ${err.message}`);
+              runtimeLogger.warn('Wait already exists, continuing', {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              });
             } else {
               throw err;
             }
