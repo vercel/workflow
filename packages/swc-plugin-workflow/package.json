@@ -17,7 +17,8 @@
     "directory": "packages/swc-plugin-workflow"
   },
   "exports": {
-    ".": "./swc_plugin_workflow.wasm"
+    ".": "./swc_plugin_workflow.wasm",
+    "./package.json": "./package.json"
   },
   "peerDependencies": {
     "@swc/core": "catalog:"
