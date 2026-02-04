@@ -208,8 +208,8 @@ Output (Step Mode):
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
 import { agent } from "experimental-agent";
-/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
-var vade$tools$VercelRequest$execute = async (input, ctx) => {
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//input.js//vade/tools/VercelRequest/execute"}}}}*/;
+var vade$tools$VercelRequest$execute = async function(input, ctx) {
     return 1 + 1;
 };
 export const vade = agent({
@@ -219,17 +219,19 @@ export const vade = agent({
         }
     }
 });
-registerStepFunction("step//./input//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
+registerStepFunction("step//input.js//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
 ```
+
+Note: Step functions are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. This applies even when the original step function was defined as an arrow function.
 
 Output (Workflow Mode):
 ```javascript
 import { agent } from "experimental-agent";
-/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//input.js//vade/tools/VercelRequest/execute"}}}}*/;
 export const vade = agent({
     tools: {
         VercelRequest: {
-            execute: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//vade/tools/VercelRequest/execute")
+            execute: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//vade/tools/VercelRequest/execute")
         }
     }
 });
@@ -262,7 +264,7 @@ Output (Step Mode):
 import { registerStepFunction } from "workflow/internal/private";
 import { agent } from "experimental-agent";
 /**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//input.js//vade/tools/VercelRequest/execute"}}}}*/;
-var vade$tools$VercelRequest$execute = async (input, { experimental_context })=>{
+var vade$tools$VercelRequest$execute = async function(input, { experimental_context }) {
     return 1 + 1;
 };
 export const vade = agent({
@@ -275,7 +277,7 @@ export const vade = agent({
 registerStepFunction("step//input.js//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
 ```
 
-Note: The shorthand method is converted to an arrow function expression when hoisted. The `this` binding and closure variables are handled the same way as arrow function step properties.
+Note: Shorthand methods are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. Closure variables are handled the same way as other step functions.
 
 ### Closure Variables
 

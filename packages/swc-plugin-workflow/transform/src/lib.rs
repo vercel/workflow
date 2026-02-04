@@ -332,9 +332,9 @@ pub struct StepTransform {
     // Track all declared identifiers in module scope to avoid collisions
     declared_identifiers: HashSet<String>,
     // Track object property step functions for hoisting in step mode
-    // (parent_var_name, prop_name, arrow_expr, span, parent_workflow_name)
+    // (parent_var_name, prop_name, fn_expr, span, parent_workflow_name, was_arrow)
     object_property_step_functions:
-        Vec<(String, String, ArrowExpr, swc_core::common::Span, String)>,
+        Vec<(String, String, FnExpr, swc_core::common::Span, String, bool)>,
     // Track nested step functions inside workflow functions for hoisting in step mode
     // (fn_name, fn_expr, span, closure_vars, was_arrow, parent_workflow_name)
     nested_step_functions: Vec<(
@@ -1524,18 +1524,57 @@ impl StepTransform {
                                         // Remove the directive first
                                         self.remove_use_step_directive_arrow(&mut arrow_expr.body);
 
+                                        // Convert arrow to function expression for hoisting
+                                        // (preserves `this` binding when called with .call()/.apply())
+                                        let fn_from_arrow = FnExpr {
+                                            ident: None,
+                                            function: Box::new(Function {
+                                                params: arrow_expr
+                                                    .params
+                                                    .iter()
+                                                    .map(|pat| Param {
+                                                        span: DUMMY_SP,
+                                                        decorators: vec![],
+                                                        pat: pat.clone(),
+                                                    })
+                                                    .collect(),
+                                                decorators: vec![],
+                                                span: arrow_expr.span,
+                                                ctxt: SyntaxContext::empty(),
+                                                body: Some(match &*arrow_expr.body {
+                                                    BlockStmtOrExpr::BlockStmt(block) => {
+                                                        block.clone()
+                                                    }
+                                                    BlockStmtOrExpr::Expr(expr) => BlockStmt {
+                                                        span: DUMMY_SP,
+                                                        ctxt: SyntaxContext::empty(),
+                                                        stmts: vec![Stmt::Return(ReturnStmt {
+                                                            span: DUMMY_SP,
+                                                            arg: Some(expr.clone()),
+                                                        })],
+                                                    },
+                                                }),
+                                                is_generator: arrow_expr.is_generator,
+                                                is_async: arrow_expr.is_async,
+                                                type_params: None,
+                                                return_type: arrow_expr.return_type.clone(),
+                                            }),
+                                        };
+
+                                        let span = arrow_expr.span;
+
                                         // Track this as an object property step function (after removing directive)
                                         self.object_property_step_functions.push((
                                             parent_var_name.to_string(),
                                             prop_key.clone(),
-                                            arrow_expr.clone(),
-                                            arrow_expr.span,
+                                            fn_from_arrow,
+                                            span,
                                             self.current_workflow_function_name
                                                 .clone()
                                                 .unwrap_or_default(),
+                                            true, // was_arrow
                                         ));
 
-                                        let span = arrow_expr.span;
                                         let _ = arrow_expr; // Drop the mutable reference
 
                                         self.apply_object_property_transformation(
@@ -1556,47 +1595,19 @@ impl StepTransform {
                                         // Remove the directive first
                                         self.remove_use_step_directive(&mut fn_expr.function.body);
 
-                                        // Convert to arrow expression for hoisting (as arrow functions are simpler to work with)
-                                        let arrow_params: Vec<Pat> = fn_expr
-                                            .function
-                                            .params
-                                            .iter()
-                                            .map(|param| param.pat.clone())
-                                            .collect();
-
-                                        let arrow_from_fn = ArrowExpr {
-                                            span: fn_expr.function.span,
-                                            ctxt: SyntaxContext::empty(),
-                                            is_async: fn_expr.function.is_async,
-                                            is_generator: fn_expr.function.is_generator,
-                                            params: arrow_params,
-                                            body: Box::new(BlockStmtOrExpr::BlockStmt(
-                                                fn_expr
-                                                    .function
-                                                    .body
-                                                    .as_ref()
-                                                    .cloned()
-                                                    .unwrap_or_else(|| BlockStmt {
-                                                        span: DUMMY_SP,
-                                                        ctxt: SyntaxContext::empty(),
-                                                        stmts: vec![],
-                                                    }),
-                                            )),
-                                            type_params: None,
-                                            return_type: fn_expr.function.return_type.clone(),
-                                        };
-
                                         let span = fn_expr.function.span;
 
                                         // Track this as an object property step function (after removing directive)
+                                        // Keep as FnExpr to preserve `this` binding
                                         self.object_property_step_functions.push((
                                             parent_var_name.to_string(),
                                             prop_key.clone(),
-                                            arrow_from_fn,
+                                            fn_expr.clone(),
                                             span,
                                             self.current_workflow_function_name
                                                 .clone()
                                                 .unwrap_or_default(),
+                                            false, // was_arrow
                                         ));
 
                                         let _ = fn_expr; // Drop the mutable reference
@@ -1657,31 +1668,11 @@ impl StepTransform {
                                 // Remove the directive first
                                 self.remove_use_step_directive(&mut method_prop.function.body);
 
-                                // Convert method to arrow expression for hoisting
-                                let arrow_params: Vec<Pat> = method_prop
-                                    .function
-                                    .params
-                                    .iter()
-                                    .map(|param| param.pat.clone())
-                                    .collect();
-
-                                let arrow_from_method = ArrowExpr {
-                                    span: method_prop.function.span,
-                                    ctxt: SyntaxContext::empty(),
-                                    is_async: method_prop.function.is_async,
-                                    is_generator: method_prop.function.is_generator,
-                                    params: arrow_params,
-                                    body: Box::new(BlockStmtOrExpr::BlockStmt(
-                                        method_prop.function.body.as_ref().cloned().unwrap_or_else(
-                                            || BlockStmt {
-                                                span: DUMMY_SP,
-                                                ctxt: SyntaxContext::empty(),
-                                                stmts: vec![],
-                                            },
-                                        ),
-                                    )),
-                                    type_params: None,
-                                    return_type: method_prop.function.return_type.clone(),
+                                // Convert method to function expression for hoisting
+                                // (preserves `this` binding when called with .call()/.apply())
+                                let fn_from_method = FnExpr {
+                                    ident: None,
+                                    function: method_prop.function.clone(),
                                 };
 
                                 let span = method_prop.function.span;
@@ -1690,11 +1681,12 @@ impl StepTransform {
                                 self.object_property_step_functions.push((
                                     parent_var_name.to_string(),
                                     prop_key.clone(),
-                                    arrow_from_method,
+                                    fn_from_method,
                                     span,
                                     self.current_workflow_function_name
                                         .clone()
                                         .unwrap_or_default(),
+                                    false, // was_arrow (methods are not arrows)
                                 ));
 
                                 // Now handle the transformation based on mode
@@ -3788,7 +3780,7 @@ impl VisitMut for StepTransform {
                         .object_property_step_functions
                         .iter()
                         .map(
-                            |(parent_var, prop_name, arrow_expr, _span, workflow_name)| {
+                            |(parent_var, prop_name, fn_expr, _span, workflow_name, _was_arrow)| {
                                 // Replace slashes with $ in parent_var to create valid JS identifier
                                 let safe_parent_var = parent_var.replace('/', "$");
                                 let hoist_var_name = if !workflow_name.is_empty() {
@@ -3804,12 +3796,7 @@ impl VisitMut for StepTransform {
                                 let step_id = self.create_object_property_id(
                                     parent_var, prop_name, false, wf_name,
                                 );
-                                (
-                                    hoist_var_name,
-                                    arrow_expr.clone(),
-                                    step_id,
-                                    parent_var.clone(),
-                                )
+                                (hoist_var_name, fn_expr.clone(), step_id, parent_var.clone())
                             },
                         )
                         .collect();
@@ -3817,8 +3804,9 @@ impl VisitMut for StepTransform {
                     // Now drain and process
                     self.object_property_step_functions.drain(..);
 
-                    for (hoist_var_name, arrow_expr, step_id, _parent_var) in hoisting_info {
-                        // Create a const declaration for the hoisted function
+                    for (hoist_var_name, fn_expr, step_id, _parent_var) in hoisting_info {
+                        // Create a var declaration for the hoisted function
+                        // Using function expression (not arrow) to preserve `this` binding
                         let hoisted_decl =
                             ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
                                 span: DUMMY_SP,
@@ -3834,7 +3822,7 @@ impl VisitMut for StepTransform {
                                         ),
                                         type_ann: None,
                                     }),
-                                    init: Some(Box::new(Expr::Arrow(arrow_expr))),
+                                    init: Some(Box::new(Expr::Fn(fn_expr))),
                                     definite: false,
                                 }],
                                 declare: false,
