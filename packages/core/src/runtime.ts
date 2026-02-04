@@ -141,7 +141,7 @@ export function workflowEntrypoint(
 
               if (workflowRun.status !== 'running') {
                 // Workflow has already completed or failed, so we can skip it
-                runtimeLogger.warn(
+                runtimeLogger.info(
                   'Workflow already completed or failed, skipping',
                   {
                     workflowRunId: runId,

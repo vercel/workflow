@@ -26,8 +26,6 @@ export class EventsConsumer {
   constructor(events: Event[]) {
     this.events = events;
     this.eventIndex = 0;
-
-    eventsLogger.debug('EventsConsumer initialized', { events });
   }
 
   /**
@@ -54,11 +52,6 @@ export class EventsConsumer {
       } catch (error) {
         eventsLogger.error('EventConsumer callback threw an error', { error });
       }
-      eventsLogger.debug('EventConsumer callback result', {
-        handled: EventConsumerResult[handled],
-        eventIndex: this.eventIndex,
-        eventId: currentEvent?.eventId,
-      });
       if (
         handled === EventConsumerResult.Consumed ||
         handled === EventConsumerResult.Finished

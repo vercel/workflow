@@ -65,7 +65,7 @@ const OtelApi = once(async () => {
   try {
     return await import('@opentelemetry/api');
   } catch {
-    runtimeLogger.warn('OpenTelemetry not available, tracing will be disabled');
+    runtimeLogger.info('OpenTelemetry not available, tracing will be disabled');
     return null;
   }
 });

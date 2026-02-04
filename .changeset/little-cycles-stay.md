@@ -2,4 +2,4 @@
 "@workflow/core": patch
 ---
 
-Consolidate console logging to structured logger utility
+Improve logging: consolidate to structured logger, fix log levels, ensure errors/warnings are always visible

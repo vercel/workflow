@@ -8,6 +8,15 @@ function createLogger(namespace: string) {
     const levelDebug = baseDebug.extend(level);
 
     return (message: string, metadata?: Record<string, any>) => {
+      // Always output error/warn to console so users see critical issues
+      // debug/info only output when DEBUG env var is set
+      if (level === 'error') {
+        console.error(`[Workflow] ${message}`, metadata ?? '');
+      } else if (level === 'warn') {
+        console.warn(`[Workflow] ${message}`, metadata ?? '');
+      }
+
+      // Also log to debug library for verbose output when DEBUG is enabled
       levelDebug(message, metadata);
 
       if (levelDebug.enabled) {

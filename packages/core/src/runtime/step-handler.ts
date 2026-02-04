@@ -179,7 +179,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               // a) pending - initial state, or state set on re-try
               // b) running - if a step fails mid-execution, like a function timeout
               // otherwise, the step has been invoked erroneously
-              stepLogger.error('Step invoked erroneously, skipping execution', {
+              stepLogger.warn('Step invoked erroneously, skipping execution', {
                 workflowRunId,
                 stepName,
                 expectedStatus: ['pending', 'running'],
@@ -314,7 +314,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             if (WorkflowAPIError.is(err)) {
               if (err.status === 410) {
                 // Workflow has already completed, so no-op
-                stepLogger.warn(
+                stepLogger.info(
                   'Workflow run already completed, skipping step',
                   {
                     workflowRunId,
@@ -406,7 +406,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   );
                 } else {
                   const errorStack = getErrorStack(err);
-                  stepLogger.error('Encountered Error, step will be retried', {
+                  stepLogger.warn('Encountered Error, step will be retried', {
                     workflowRunId,
                     stepName,
                     attempt: currentAttempt,

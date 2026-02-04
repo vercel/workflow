@@ -100,7 +100,7 @@ export async function handleSuspension({
         } catch (err) {
           if (WorkflowAPIError.is(err)) {
             if (err.status === 410) {
-              runtimeLogger.warn(
+              runtimeLogger.info(
                 'Workflow run already completed, skipping hook',
                 {
                   workflowRunId: runId,
@@ -157,7 +157,7 @@ export async function handleSuspension({
             await world.events.create(runId, stepEvent);
           } catch (err) {
             if (WorkflowAPIError.is(err) && err.status === 409) {
-              runtimeLogger.warn('Step already exists, continuing', {
+              runtimeLogger.info('Step already exists, continuing', {
                 workflowRunId: runId,
                 correlationId: queueItem.correlationId,
                 message: err.message,
@@ -205,7 +205,7 @@ export async function handleSuspension({
             await world.events.create(runId, waitEvent);
           } catch (err) {
             if (WorkflowAPIError.is(err) && err.status === 409) {
-              runtimeLogger.warn('Wait already exists, continuing', {
+              runtimeLogger.info('Wait already exists, continuing', {
                 workflowRunId: runId,
                 correlationId: queueItem.correlationId,
                 message: err.message,
