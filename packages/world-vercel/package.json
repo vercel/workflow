@@ -37,7 +37,16 @@
     "cbor-x": "1.6.0",
     "zod": "catalog:"
   },
+  "peerDependencies": {
+    "@opentelemetry/api": "1"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@opentelemetry/api": "1.9.0",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "genversion": "3.2.0",

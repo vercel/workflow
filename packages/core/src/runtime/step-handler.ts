@@ -232,20 +232,26 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               );
             }
             // Hydrate the step input arguments, closure variables, and thisVal
+            // Track deserialization time for observability
+            const deserializeStartTime = Date.now();
             const ops: Promise<void>[] = [];
             const hydratedInput = hydrateStepArguments(
               step.input,
               ops,
               workflowRunId
             );
+            const deserializeTimeMs = Date.now() - deserializeStartTime;
 
             const args = hydratedInput.args;
             const thisVal = hydratedInput.thisVal ?? null;
 
             span?.setAttributes({
               ...Attribute.StepArgumentsCount(args.length),
+              ...Attribute.QueueDeserializeTimeMs(deserializeTimeMs),
             });
 
+            // Track execution time for observability
+            const executionStartTime = Date.now();
             result = await contextStorage.run(
               {
                 stepMetadata: {
@@ -267,11 +273,23 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               },
               () => stepFn.apply(thisVal, args)
             );
+            const executionTimeMs = Date.now() - executionStartTime;
+
+            span?.setAttributes({
+              ...Attribute.QueueExecutionTimeMs(executionTimeMs),
+            });
 
             // NOTE: None of the code from this point is guaranteed to run
             // Since the step might fail or cause a function timeout and the process might be SIGKILL'd
             // The workflow runtime must be resilient to the below code not executing on a failed step
+            // Track serialization time for observability
+            const serializeStartTime = Date.now();
             result = dehydrateStepReturnValue(result, ops, workflowRunId);
+            const serializeTimeMs = Date.now() - serializeStartTime;
+
+            span?.setAttributes({
+              ...Attribute.QueueSerializeTimeMs(serializeTimeMs),
+            });
 
             waitUntil(
               Promise.all(ops).catch((err) => {

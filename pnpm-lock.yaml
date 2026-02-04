@@ -1361,6 +1361,9 @@ importers:
         specifier: 'catalog:'
         version: 4.1.11
     devDependencies:
+      '@opentelemetry/api':
+        specifier: 1.9.0
+        version: 1.9.0
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0

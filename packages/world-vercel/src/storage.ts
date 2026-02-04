@@ -1,12 +1,13 @@
 import type { Storage } from '@workflow/world';
 import { createWorkflowRunEvent, getWorkflowRunEvents } from './events.js';
 import { getHook, getHookByToken, listHooks } from './hooks.js';
+import { instrumentObject } from './instrumentObject.js';
 import { getWorkflowRun, listWorkflowRuns } from './runs.js';
 import { getStep, listWorkflowRunSteps } from './steps.js';
 import type { APIConfig } from './utils.js';
 
 export function createStorage(config?: APIConfig): Storage {
-  return {
+  const storage: Storage = {
     // Storage interface with namespaced methods
     runs: {
       get: ((id: string, params?: any) =>
@@ -31,5 +32,13 @@ export function createStorage(config?: APIConfig): Storage {
       getByToken: (token) => getHookByToken(token, config),
       list: (params) => listHooks(params, config),
     },
+  };
+
+  // Instrument all storage methods with tracing
+  return {
+    runs: instrumentObject('WORLD.runs', storage.runs),
+    steps: instrumentObject('WORLD.steps', storage.steps),
+    events: instrumentObject('WORLD.events', storage.events),
+    hooks: instrumentObject('WORLD.hooks', storage.hooks),
   };
 }

@@ -5,6 +5,14 @@ import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
+import {
+  trace,
+  getSpanKind,
+  WorldHttpMethod,
+  WorldHttpEndpoint,
+  WorldHttpStatus,
+  WorldParseFormat,
+} from './telemetry.js';
 import { version } from './version.js';
 
 /**
@@ -202,69 +210,98 @@ export async function makeRequest<T>({
   /** Request body data - will be CBOR encoded */
   data?: unknown;
 }): Promise<T> {
-  const { baseUrl, headers } = await getHttpConfig(config);
-  headers.set('Accept', 'application/cbor');
-  // NOTE: Add a unique header to bypass RSC request memoization.
-  // See: https://github.com/vercel/workflow/issues/618
-  headers.set('X-Request-Time', Date.now().toString());
+  const method = options.method || 'GET';
 
-  // Encode body as CBOR if data is provided
-  let body: Buffer | undefined;
-  if (data !== undefined) {
-    headers.set('Content-Type', 'application/cbor');
-    body = encode(data);
-  }
+  return trace(
+    `WORLD.http ${method} ${endpoint}`,
+    { kind: await getSpanKind('CLIENT') },
+    async (span) => {
+      span?.setAttributes({
+        ...WorldHttpMethod(method),
+        ...WorldHttpEndpoint(endpoint),
+      });
 
-  const url = `${baseUrl}${endpoint}`;
-  const request = new Request(url, {
-    ...options,
-    body,
-    headers,
-  });
-  const response = await fetch(request);
+      const { baseUrl, headers } = await getHttpConfig(config);
+      headers.set('Accept', 'application/cbor');
+      // NOTE: Add a unique header to bypass RSC request memoization.
+      // See: https://github.com/vercel/workflow/issues/618
+      headers.set('X-Request-Time', Date.now().toString());
 
-  if (!response.ok) {
-    const errorData: { message?: string; code?: string } =
-      await parseResponseBody(response)
-        .then((r) => r.data as { message?: string; code?: string })
-        .catch(() => ({}));
-    if (process.env.DEBUG === '1') {
-      const stringifiedHeaders = Array.from(headers.entries())
-        .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
-        .join(' ');
-      console.error(
-        `Failed to fetch, reproduce with:\ncurl -X ${request.method} ${stringifiedHeaders} "${url}"`
-      );
+      // Encode body as CBOR if data is provided
+      let body: Buffer | undefined;
+      if (data !== undefined) {
+        headers.set('Content-Type', 'application/cbor');
+        body = encode(data);
+      }
+
+      const url = `${baseUrl}${endpoint}`;
+      const request = new Request(url, {
+        ...options,
+        body,
+        headers,
+      });
+      const response = await fetch(request);
+
+      span?.setAttributes({
+        ...WorldHttpStatus(response.status),
+      });
+
+      if (!response.ok) {
+        const errorData: { message?: string; code?: string } =
+          await parseResponseBody(response)
+            .then((r) => r.data as { message?: string; code?: string })
+            .catch(() => ({}));
+        if (process.env.DEBUG === '1') {
+          const stringifiedHeaders = Array.from(headers.entries())
+            .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
+            .join(' ');
+          console.error(
+            `Failed to fetch, reproduce with:\ncurl -X ${request.method} ${stringifiedHeaders} "${url}"`
+          );
+        }
+        throw new WorkflowAPIError(
+          errorData.message ||
+            `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`,
+          { url, status: response.status, code: errorData.code }
+        );
+      }
+
+      // Parse the response body (CBOR or JSON) with tracing
+      let parseResult: ParseResult;
+      try {
+        parseResult = await trace('WORLD.parse', async (parseSpan) => {
+          const result = await parseResponseBody(response);
+          // Extract format and size from debug context for attributes
+          const contentType = response.headers.get('Content-Type') || '';
+          const isCbor = contentType.includes('application/cbor');
+          parseSpan?.setAttributes({
+            ...WorldParseFormat(isCbor ? 'cbor' : 'json'),
+          });
+          return result;
+        });
+      } catch (error) {
+        const contentType = response.headers.get('Content-Type') || 'unknown';
+        throw new WorkflowAPIError(
+          `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
+          { url, cause: error }
+        );
+      }
+
+      // Validate against the schema with tracing
+      const result = await trace('WORLD.validate', async () => {
+        const validationResult = schema.safeParse(parseResult.data);
+        if (!validationResult.success) {
+          throw new WorkflowAPIError(
+            `Schema validation failed for ${request.method} ${endpoint}:\n\n${validationResult.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
+            { url, cause: validationResult.error }
+          );
+        }
+        return validationResult.data;
+      });
+
+      return result;
     }
-    throw new WorkflowAPIError(
-      errorData.message ||
-        `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`,
-      { url, status: response.status, code: errorData.code }
-    );
-  }
-
-  // Parse the response body (CBOR or JSON)
-  let parseResult: ParseResult;
-  try {
-    parseResult = await parseResponseBody(response);
-  } catch (error) {
-    const contentType = response.headers.get('Content-Type') || 'unknown';
-    throw new WorkflowAPIError(
-      `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
-      { url, cause: error }
-    );
-  }
-
-  // Validate against the schema
-  const result = schema.safeParse(parseResult.data);
-  if (!result.success) {
-    throw new WorkflowAPIError(
-      `Schema validation failed for ${request.method} ${endpoint}:\n\n${result.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
-      { url, cause: result.error }
-    );
-  }
-
-  return result.data;
+  );
 }
 
 interface ParseResult {

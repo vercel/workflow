@@ -230,3 +230,63 @@ export const WorkflowSuspensionStepCount = SemanticConvention<number>(
 export const WorkflowSuspensionWaitCount = SemanticConvention<number>(
   'workflow.suspension.wait_count'
 );
+
+// World/Storage attributes
+
+/** HTTP method used in World storage request */
+export const WorldHttpMethod = SemanticConvention<string>('world.http.method');
+
+/** API endpoint path for World storage request */
+export const WorldHttpEndpoint = SemanticConvention<string>(
+  'world.http.endpoint'
+);
+
+/** HTTP status code from World storage request */
+export const WorldHttpStatus = SemanticConvention<number>('world.http.status');
+
+/** Format used for parsing response body (cbor or json) */
+export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
+  'world.parse.format'
+);
+
+/** Size in bytes of the parsed response body */
+export const WorldParseBytes = SemanticConvention<number>('world.parse.bytes');
+
+// Event loading attributes
+
+/** Number of pagination pages loaded when fetching workflow events */
+export const WorkflowEventsPagesLoaded = SemanticConvention<number>(
+  'workflow.events.pages_loaded'
+);
+
+// Serialization attributes
+
+/** Format used for serialization (e.g., 'devalue') */
+export const SerializeFormat = SemanticConvention<string>('serialize.format');
+
+/** Size in bytes of the serialized data */
+export const SerializeBytes = SemanticConvention<number>('serialize.bytes');
+
+/** Format used for deserialization (e.g., 'devalue') */
+export const DeserializeFormat =
+  SemanticConvention<string>('deserialize.format');
+
+/** Size in bytes of the data being deserialized */
+export const DeserializeBytes = SemanticConvention<number>('deserialize.bytes');
+
+// Queue timing breakdown attributes
+
+/** Time spent deserializing the queue message in milliseconds */
+export const QueueDeserializeTimeMs = SemanticConvention<number>(
+  'queue.deserialize_time_ms'
+);
+
+/** Time spent executing the handler logic in milliseconds */
+export const QueueExecutionTimeMs = SemanticConvention<number>(
+  'queue.execution_time_ms'
+);
+
+/** Time spent serializing the response in milliseconds */
+export const QueueSerializeTimeMs = SemanticConvention<number>(
+  'queue.serialize_time_ms'
+);

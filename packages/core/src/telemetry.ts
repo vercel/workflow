@@ -147,6 +147,12 @@ export async function getActiveSpan() {
   return await withOtel((otel) => otel.trace.getActiveSpan());
 }
 
+/**
+ * Wraps all methods of an object with tracing spans.
+ * @param prefix - Prefix for span names (e.g., "WORLD.runs")
+ * @param o - Object with methods to instrument
+ * @returns Instrumented object with same interface
+ */
 export function instrumentObject<T extends object>(prefix: string, o: T): T {
   const handlers = {} as T;
   for (const key of Object.keys(o) as (keyof T)[]) {
