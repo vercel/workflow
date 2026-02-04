@@ -1,4 +1,6 @@
+import fs from 'fs';
 import type { NextConfig } from 'next';
+import path from 'path';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
 
@@ -136,6 +138,47 @@ export function withWorkflow(
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
       phase !== 'phase-production-server'
     ) {
+      // Check swc-plugin version and invalidate cache if changed
+      const distDir = nextConfig.distDir || '.next';
+      const cacheDir = path.join(distDir, 'cache');
+      const workflowJsonPath = path.join(cacheDir, 'workflow.json');
+      const swcPluginVersion = require('@workflow/swc-plugin/package.json')
+        .version as string;
+
+      let shouldInvalidateCache = false;
+      try {
+        const existing = JSON.parse(fs.readFileSync(workflowJsonPath, 'utf-8'));
+        if (existing.swcPluginVersion !== swcPluginVersion) {
+          shouldInvalidateCache = true;
+        }
+      } catch {
+        // File doesn't exist or is invalid
+        shouldInvalidateCache = true;
+      }
+
+      if (shouldInvalidateCache) {
+        console.log('workflow transform upgraded, invalidating Next.js cache');
+        // Delete cache directories
+        const cacheDirs = [cacheDir, path.join(distDir, 'dev', 'cache')];
+        for (const dir of cacheDirs) {
+          if (fs.existsSync(dir)) {
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+        }
+      }
+
+      // Write workflow.json lazily on process exit
+      process.on('exit', () => {
+        try {
+          fs.mkdirSync(cacheDir, { recursive: true });
+          fs.writeFileSync(
+            workflowJsonPath,
+            JSON.stringify({ swcPluginVersion }, null, 2)
+          );
+        } catch {
+          // Ignore errors on exit
+        }
+      });
       const shouldWatch = process.env.NODE_ENV === 'development';
       const NextBuilder = await getNextBuilder();
       const workflowBuilder = new NextBuilder({
