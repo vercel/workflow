@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { AlertCircle, Loader2, RotateCcw } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import { transformCode } from '@/lib/transform-action';
 import { CodeEditor } from './editor';
-import { Loader2, AlertCircle, RotateCcw } from 'lucide-react';
 
 const STORAGE_KEY = 'swc-playground-code';
 
@@ -59,7 +59,11 @@ export function SwcPlayground({ pluginVersion }: SwcPlaygroundProps) {
   // Save code to localStorage when it changes
   useEffect(() => {
     if (isHydrated) {
-      localStorage.setItem(STORAGE_KEY, code);
+      try {
+        localStorage.setItem(STORAGE_KEY, code);
+      } catch {
+        // localStorage may be disabled or full
+      }
     }
   }, [code, isHydrated]);
 
@@ -67,13 +71,9 @@ export function SwcPlayground({ pluginVersion }: SwcPlaygroundProps) {
     setIsCompiling(true);
 
     try {
-      console.log('[Client] Calling server action to transform code');
       const transformResults = await transformCode(sourceCode);
       setResults(transformResults);
-      console.log(transformResults);
-      console.log('[Client] Received transform results from server');
     } catch (err) {
-      console.error('[Client] Failed to transform code:', err);
       const errorMessage = err instanceof Error ? err.message : 'Server error';
       // Set error state for all modes
       setResults({

@@ -10,7 +10,15 @@ const wasmPath = path.join(
   process.cwd(),
   'node_modules/@workflow/swc-plugin/swc_plugin_workflow.wasm'
 );
-fs.statSync(wasmPath);
+try {
+  fs.statSync(wasmPath);
+} catch (err) {
+  const originalMessage =
+    err instanceof Error ? ` Original error: ${err.message}` : '';
+  throw new Error(
+    `SWC plugin WASM file not found or not accessible at path: ${wasmPath}.${originalMessage}`
+  );
+}
 
 export interface TransformResult {
   workflow: { code: string; error?: string };
@@ -21,8 +29,6 @@ export interface TransformResult {
 export async function transformCode(
   sourceCode: string
 ): Promise<TransformResult> {
-  console.log('[Server] WASM path:', wasmPath);
-
   const modes = ['workflow', 'step', 'client'] as const;
   const results: TransformResult = {
     workflow: { code: '' },
@@ -33,8 +39,6 @@ export async function transformCode(
   await Promise.all(
     modes.map(async (mode) => {
       try {
-        console.log(`[Server] Transforming with mode: ${mode}`);
-
         const output = await swc.transform(sourceCode, {
           filename: 'input.ts',
           swcrc: false,
@@ -54,9 +58,7 @@ export async function transformCode(
         });
 
         results[mode] = { code: output.code };
-        console.log(`[Server] Successfully transformed ${mode}`);
       } catch (err) {
-        console.error(`[Server] Compilation error for mode ${mode}:`, err);
         const errorMessage =
           err instanceof Error
             ? err.message
