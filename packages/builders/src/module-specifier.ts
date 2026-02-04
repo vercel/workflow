@@ -130,14 +130,23 @@ function resolveExportSubpath(filePath: string, pkg: PackageInfo): string {
 }
 
 /**
- * Resolve an export target to a file path, handling conditional exports.
+ * Resolve an export target to a file path, handling conditional exports and arrays.
  */
 function resolveExportTarget(target: unknown): string | null {
   if (typeof target === 'string') {
     return target;
   }
 
-  if (target && typeof target === 'object' && !Array.isArray(target)) {
+  // Handle array exports (fallback chains)
+  if (Array.isArray(target)) {
+    for (const item of target) {
+      const resolved = resolveExportTarget(item);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+
+  if (target && typeof target === 'object') {
     // Conditional export - try common conditions in order of preference
     const conditions = ['workflow', 'default', 'require', 'import', 'node'];
     for (const condition of conditions) {
@@ -145,7 +154,7 @@ function resolveExportTarget(target: unknown): string | null {
       if (typeof value === 'string') {
         return value;
       }
-      // Handle nested conditionals
+      // Handle nested conditionals or arrays
       if (value && typeof value === 'object') {
         const nested = resolveExportTarget(value);
         if (nested) return nested;
@@ -239,30 +248,20 @@ function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
 
   // Check if the package.json is not the root package.json
   // Use resolve() to normalize paths for cross-platform comparison
-  const rootPkgPath = resolve(projectRoot, 'package.json');
+  const rootPkgDir = resolve(projectRoot);
+  const pkgDir = resolve(pkg.dir);
 
-  // Walk up to find the package.json directory
-  let dir = dirname(filePath);
-  while (dir !== dirname(dir)) {
-    const pkgPath = join(dir, 'package.json');
-    if (existsSync(pkgPath)) {
-      // If this is the root package.json, it's not a workspace package
-      // Use resolve() to normalize both paths before comparison
-      if (resolve(pkgPath) === rootPkgPath) {
-        return false;
-      }
-
-      // Found a package.json that's not the root.
-      // Only treat it as a workspace package if it's actually a dependency
-      // of the current project. This prevents sibling apps in a monorepo
-      // from being incorrectly treated as importable packages.
-      const projectDeps = getProjectDependencies(projectRoot);
-      return projectDeps.has(pkg.name);
-    }
-    dir = dirname(dir);
+  // If the package directory is the project root, it's not a workspace package
+  if (pkgDir === rootPkgDir) {
+    return false;
   }
 
-  return false;
+  // Found a package.json that's not the root.
+  // Only treat it as a workspace package if it's actually a dependency
+  // of the current project. This prevents sibling apps in a monorepo
+  // from being incorrectly treated as importable packages.
+  const projectDeps = getProjectDependencies(projectRoot);
+  return projectDeps.has(pkg.name);
 }
 
 /**
