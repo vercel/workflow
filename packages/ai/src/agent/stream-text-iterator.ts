@@ -5,7 +5,6 @@ import type {
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
 import type {
-  FinishReason,
   StepResult,
   StreamTextOnStepFinishCallback,
   ToolChoice,
@@ -24,6 +23,8 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
+import { filterToolSet } from './filter-tools.js';
+import { normalizeFinishReason } from './normalize.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -77,9 +78,9 @@ export async function* streamTextIterator({
   stopConditions?: ModelStopCondition[] | ModelStopCondition;
   maxSteps?: number;
   sendStart?: boolean;
-  onStepFinish?: StreamTextOnStepFinishCallback<any>;
+  onStepFinish?: StreamTextOnStepFinishCallback<ToolSet>;
   onError?: StreamTextOnErrorCallback;
-  prepareStep?: PrepareStepCallback<any>;
+  prepareStep?: PrepareStepCallback<ToolSet>;
   generationSettings?: GenerationSettings;
   toolChoice?: ToolChoice<ToolSet>;
   experimental_context?: unknown;
@@ -103,11 +104,11 @@ export async function* streamTextIterator({
   let currentContext = experimental_context;
   let currentActiveTools: string[] | undefined;
 
-  const steps: StepResult<any>[] = [];
+  const steps: StepResult<ToolSet>[] = [];
   let done = false;
   let isFirstIteration = true;
   let stepNumber = 0;
-  let lastStep: StepResult<any> | undefined;
+  let lastStep: StepResult<ToolSet> | undefined;
   let lastStepWasToolCalls = false;
   let lastStepUIChunks: UIMessageChunk[] | undefined;
   let allAccumulatedUIChunks: UIMessageChunk[] = [];
@@ -291,7 +292,7 @@ export async function* streamTextIterator({
       ];
 
       // Normalize finishReason - AI SDK v6 returns { unified, raw }, v5 returns a string
-      const finishReason = normalizeFinishReason(finish?.finishReason);
+      const { finishReason } = normalizeFinishReason(finish?.finishReason);
 
       if (finishReason === 'tool-calls') {
         lastStepWasToolCalls = true;
@@ -421,6 +422,35 @@ export async function* streamTextIterator({
   return conversationPrompt;
 }
 
+/**
+ * Extract the display-friendly value from a LanguageModelV2ToolResultPart output.
+ *
+ * @internal Exported for testing. The default branch handles V3-only types
+ * (e.g., `execution-denied`) at runtime. When `@ai-sdk/provider` adds V3
+ * output variants to its type definitions, replace the runtime cast with a
+ * proper union member.
+ */
+export function getToolOutputForUI(
+  output: LanguageModelV2ToolResultPart['output']
+): unknown {
+  switch (output.type) {
+    case 'text':
+    case 'error-text':
+    case 'json':
+    case 'error-json':
+    case 'content':
+      return output.value;
+    default: {
+      // Handle V3-only types (e.g., 'execution-denied') at runtime
+      const o = output as { type: string; reason?: string };
+      if (o.type === 'execution-denied') {
+        return o.reason ?? 'Tool execution was denied';
+      }
+      return output;
+    }
+  }
+}
+
 async function writeToolOutputToUI(
   writable: WritableStream<UIMessageChunk>,
   toolResults: LanguageModelV2ToolResultPart[],
@@ -434,7 +464,7 @@ async function writeToolOutputToUI(
       const chunk: UIMessageChunk = {
         type: 'tool-output-available' as const,
         toolCallId: result.toolCallId,
-        output: result.output.value,
+        output: getToolOutputForUI(result.output),
       };
       if (collectUIChunks) {
         chunks.push(chunk);
@@ -445,32 +475,4 @@ async function writeToolOutputToUI(
     writer.releaseLock();
   }
   return chunks;
-}
-
-/**
- * Filter a tool set to only include the specified active tools.
- */
-function filterToolSet(tools: ToolSet, activeTools: string[]): ToolSet {
-  const filtered: ToolSet = {};
-  for (const toolName of activeTools) {
-    if (toolName in tools) {
-      filtered[toolName] = tools[toolName];
-    }
-  }
-  return filtered;
-}
-
-/**
- * Normalize finishReason from different AI SDK versions.
- * - AI SDK v6: returns { unified: 'tool-calls', raw: 'tool_use' }
- * - AI SDK v5: returns 'tool-calls' string directly
- */
-function normalizeFinishReason(raw: unknown): FinishReason | undefined {
-  if (raw == null) return undefined;
-  if (typeof raw === 'string') return raw as FinishReason;
-  if (typeof raw === 'object') {
-    const obj = raw as { unified?: FinishReason; type?: FinishReason };
-    return obj.unified ?? obj.type ?? 'unknown';
-  }
-  return undefined;
 }

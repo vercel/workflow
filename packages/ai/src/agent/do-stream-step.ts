@@ -7,7 +7,6 @@ import type {
   SharedV2ProviderOptions,
 } from '@ai-sdk/provider';
 import {
-  type FinishReason,
   gateway,
   generateId,
   type StepResult,
@@ -21,7 +20,30 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
-import type { CompatibleLanguageModel } from './types.js';
+import { normalizeFinishReason, normalizeUsage } from './normalize.js';
+import type {
+  CompatibleLanguageModel,
+  V3DoStreamRequestMetadata,
+  V3ToolCallExtension,
+  V3ToolInputStartExtension,
+  V3ToolResultExtension,
+} from './types.js';
+
+/**
+ * Internal model interface used at runtime inside doStreamStep.
+ *
+ * Both LanguageModelV2 (AI SDK v5) and LanguageModelV3 (AI SDK v6) satisfy
+ * this at runtime. The V2 call options and stream part types are used here
+ * because they match the installed @ai-sdk/provider version; when a V3 model
+ * is resolved via gateway(), the structural differences (finish reason as
+ * object, nested usage, tool-approval stream parts) are bridged by
+ * {@link normalizeFinishReason} and {@link normalizeUsage} in normalize.ts.
+ */
+interface StreamableModel {
+  doStream(options: LanguageModelV2CallOptions): PromiseLike<{
+    stream: ReadableStream<LanguageModelV2StreamPart>;
+  }>;
+}
 
 export type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 
@@ -111,16 +133,15 @@ export async function doStreamStep(
 ) {
   'use step';
 
-  // Model can be LanguageModelV2 (AI SDK v5) or LanguageModelV3 (AI SDK v6)
-  // Both have compatible doStream interfaces for our use case
-  let model: CompatibleLanguageModel | undefined;
+  // Resolve the model to a StreamableModel for the doStream call.
+  // gateway() returns LanguageModelV2 in AI SDK v5 and LanguageModelV3 in v6.
+  // Both satisfy StreamableModel at runtime; V3 differences (finish reason
+  // as {unified,raw}, nested usage) are normalized in chunksToStep.
+  let model: StreamableModel;
   if (typeof modelInit === 'string') {
-    // gateway() returns LanguageModelV2 in AI SDK v5 and LanguageModelV3 in AI SDK v6
-    // Both are compatible at runtime for doStream operations
-    model = gateway(modelInit) as CompatibleLanguageModel;
+    model = gateway(modelInit) as StreamableModel;
   } else if (typeof modelInit === 'function') {
-    // User-provided model factory - could return V2 or V3
-    model = await modelInit();
+    model = (await modelInit()) as StreamableModel;
   } else {
     throw new Error(
       'Invalid "model initialization" argument. Must be a string or a function that returns a LanguageModel instance.'
@@ -169,6 +190,10 @@ export async function doStreamStep(
 
   const result = await model.doStream(callOptions);
 
+  // Capture request metadata from V3 doStream result for telemetry
+  const doStreamRequest = (result as { request?: V3DoStreamRequestMetadata })
+    .request;
+
   let finish: FinishPart | undefined;
   const toolCalls: LanguageModelV2ToolCall[] = [];
   // Map of tool call ID to provider-executed tool result
@@ -215,12 +240,24 @@ export async function doStreamStep(
           } else if (chunk.type === 'tool-result') {
             // Capture provider-executed tool results
             if (chunk.providerExecuted) {
-              providerExecutedToolResults.set(chunk.toolCallId, {
-                toolCallId: chunk.toolCallId,
-                toolName: chunk.toolName,
-                result: chunk.result,
-                isError: chunk.isError,
-              });
+              const preliminary = (chunk as V3ToolResultExtension).preliminary;
+              // Only store non-preliminary results, or overwrite preliminary with final
+              if (!preliminary) {
+                providerExecutedToolResults.set(chunk.toolCallId, {
+                  toolCallId: chunk.toolCallId,
+                  toolName: chunk.toolName,
+                  result: chunk.result,
+                  isError: chunk.isError,
+                });
+              } else if (!providerExecutedToolResults.has(chunk.toolCallId)) {
+                // Store preliminary result as placeholder until final arrives
+                providerExecutedToolResults.set(chunk.toolCallId, {
+                  toolCallId: chunk.toolCallId,
+                  toolName: chunk.toolName,
+                  result: chunk.result,
+                  isError: chunk.isError,
+                });
+              }
             }
           } else if (chunk.type === 'finish') {
             finish = chunk;
@@ -381,6 +418,8 @@ export async function doStreamStep(
             }
 
             case 'tool-input-start': {
+              // V3 adds optional title and dynamic fields
+              const v3Part = part as typeof part & V3ToolInputStartExtension;
               controller.enqueue({
                 type: 'tool-input-start',
                 toolCallId: part.id,
@@ -388,6 +427,8 @@ export async function doStreamStep(
                 ...(part.providerExecuted != null
                   ? { providerExecuted: part.providerExecuted }
                   : {}),
+                ...(v3Part.title != null ? { title: v3Part.title } : {}),
+                ...(v3Part.dynamic != null ? { dynamic: v3Part.dynamic } : {}),
               });
               break;
             }
@@ -471,9 +512,14 @@ export async function doStreamStep(
             }
 
             default: {
-              // Handle any other chunk types gracefully
-              // const exhaustiveCheck: never = partType;
-              // console.warn(`Unknown chunk type: ${partType}`);
+              // V3 tool-approval-request: not yet supported by DurableAgent.
+              // Warn rather than silently hang waiting for an approval response.
+              if (partType === 'tool-approval-request') {
+                console.warn(
+                  `[DurableAgent] Received tool-approval-request but tool approval is not yet supported. ` +
+                    `The tool call may hang. Consider using tools without needsApproval or handling approval externally.`
+                );
+              }
             }
           }
         },
@@ -492,7 +538,13 @@ export async function doStreamStep(
     )
     .pipeTo(writable, { preventClose: true });
 
-  const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
+  const step = chunksToStep(
+    chunks,
+    toolCalls,
+    conversationPrompt,
+    finish,
+    doStreamRequest
+  );
   return {
     toolCalls,
     finish,
@@ -502,34 +554,15 @@ export async function doStreamStep(
   };
 }
 
-/**
- * Normalize the finish reason to the AI SDK FinishReason type.
- * AI SDK v6 may return an object with a 'type' property,
- * while AI SDK v5 returns a plain string. This function handles both.
- *
- * @internal Exported for testing
- */
-export function normalizeFinishReason(rawFinishReason: unknown): FinishReason {
-  // Handle object-style finish reason (possible in some AI SDK versions/providers)
-  if (typeof rawFinishReason === 'object' && rawFinishReason !== null) {
-    const objReason = rawFinishReason as { type?: string };
-    return (objReason.type as FinishReason) ?? 'unknown';
-  }
-  // Handle string finish reason (standard format)
-  if (typeof rawFinishReason === 'string') {
-    return rawFinishReason as FinishReason;
-  }
-  return 'unknown';
-}
-
 // This is a stand-in for logic in the AI-SDK streamText code which aggregates
 // chunks into a single step result.
 function chunksToStep(
   chunks: LanguageModelV2StreamPart[],
   toolCalls: LanguageModelV2ToolCall[],
   conversationPrompt: LanguageModelV2Prompt,
-  finish?: FinishPart
-): StepResult<any> {
+  finish?: FinishPart,
+  doStreamRequest?: { body?: unknown }
+): StepResult<ToolSet> {
   // Transform chunks to a single step result
   const text = chunks
     .filter(
@@ -600,16 +633,46 @@ function chunksToStep(
     )
     .map((chunk) => chunk);
 
-  const stepResult: StepResult<any> = {
+  // Normalize finish reason — returns both unified and raw
+  const { finishReason, rawFinishReason } = normalizeFinishReason(
+    finish?.finishReason
+  );
+
+  // Map tool calls using actual dynamic flag from stream (not hardcoded)
+  const mapToolCall = (toolCall: LanguageModelV2ToolCall) => {
+    const isDynamic = (toolCall as V3ToolCallExtension).dynamic === true;
+    return {
+      type: 'tool-call' as const,
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      input: JSON.parse(toolCall.input),
+      ...(isDynamic ? { dynamic: true as const } : {}),
+    };
+  };
+
+  const mappedToolCalls = toolCalls.map(mapToolCall);
+  const staticCalls = mappedToolCalls.filter((tc) => !('dynamic' in tc));
+  const dynamicCalls = mappedToolCalls.filter((tc) => 'dynamic' in tc);
+
+  // Use doStreamRequest body if available (V3), otherwise synthesize
+  const requestBody = doStreamRequest?.body
+    ? doStreamRequest.body
+    : JSON.stringify({
+        prompt: conversationPrompt,
+        tools: mappedToolCalls,
+      });
+
+  // Build step result — includes v6 fields (rawFinishReason, expanded usage)
+  // that v5 consumers will simply ignore.
+  //
+  // The `as StepResult<ToolSet>` cast is required because we construct the
+  // object manually from stream parts and the exact shape may drift between
+  // AI SDK versions. This mirrors the AI SDK's own internal pattern of
+  // building StepResult objects imperatively.
+  const stepResult: StepResult<ToolSet> = {
     content: [
       ...(text ? [{ type: 'text' as const, text }] : []),
-      ...toolCalls.map((toolCall) => ({
-        type: 'tool-call' as const,
-        toolCallId: toolCall.toolCallId,
-        toolName: toolCall.toolName,
-        input: JSON.parse(toolCall.input),
-        dynamic: true as const,
-      })),
+      ...mappedToolCalls,
     ],
     text,
     reasoning: reasoning.map((chunk) => ({
@@ -619,38 +682,19 @@ function chunksToStep(
     reasoningText: reasoningText || undefined,
     files,
     sources,
-    toolCalls: toolCalls.map((toolCall) => ({
-      type: 'tool-call' as const,
-      toolCallId: toolCall.toolCallId,
-      toolName: toolCall.toolName,
-      input: JSON.parse(toolCall.input),
-      dynamic: true as const,
-    })),
-    staticToolCalls: [],
-    dynamicToolCalls: toolCalls.map((toolCall) => ({
-      type: 'tool-call' as const,
-      toolCallId: toolCall.toolCallId,
-      toolName: toolCall.toolName,
-      input: JSON.parse(toolCall.input),
-      dynamic: true as const,
-    })),
+    toolCalls: mappedToolCalls,
+    staticToolCalls: staticCalls,
+    dynamicToolCalls: dynamicCalls,
     toolResults: [],
     staticToolResults: [],
     dynamicToolResults: [],
-    finishReason: normalizeFinishReason(finish?.finishReason),
-    usage: finish?.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    finishReason,
+    // rawFinishReason is v6-only; v5 StepResult type ignores extra properties
+    ...(rawFinishReason !== undefined ? { rawFinishReason } : {}),
+    usage: normalizeUsage(finish?.usage),
     warnings: streamStart?.warnings,
     request: {
-      body: JSON.stringify({
-        prompt: conversationPrompt,
-        tools: toolCalls.map((toolCall) => ({
-          type: 'tool-call' as const,
-          toolCallId: toolCall.toolCallId,
-          toolName: toolCall.toolName,
-          input: JSON.parse(toolCall.input),
-          dynamic: true as const,
-        })),
-      }),
+      body: requestBody,
     },
     response: {
       id: responseMetadata?.id ?? 'unknown',
@@ -658,8 +702,8 @@ function chunksToStep(
       modelId: responseMetadata?.modelId ?? 'unknown',
       messages: [],
     },
-    providerMetadata: finish?.providerMetadata || {},
-  };
+    providerMetadata: finish?.providerMetadata ?? {},
+  } as StepResult<ToolSet>;
 
   return stepResult;
 }

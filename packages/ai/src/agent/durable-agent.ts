@@ -24,11 +24,31 @@ import {
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { FatalError } from 'workflow';
+import { filterToolSet } from './filter-tools.js';
+import { addUsage, normalizeUsage, type NormalizedUsage } from './normalize.js';
 import { streamTextIterator } from './stream-text-iterator.js';
 import type { CompatibleLanguageModel } from './types.js';
 
+const TOOL_RESULT_OUTPUT_TYPES = new Set([
+  'text',
+  'json',
+  'content',
+  'error-text',
+  'error-json',
+  'execution-denied',
+]);
+
+function isToolResultOutput(
+  result: unknown
+): result is LanguageModelV2ToolResultPart['output'] {
+  if (typeof result !== 'object' || result === null) return false;
+  const type = (result as Record<string, unknown>).type;
+  return typeof type === 'string' && TOOL_RESULT_OUTPUT_TYPES.has(type);
+}
+
 // Re-export for consumers
 export type { CompatibleLanguageModel } from './types.js';
+export type { NormalizedUsage } from './normalize.js';
 
 /**
  * Re-export the Output helper for structured output specifications.
@@ -215,8 +235,7 @@ export interface GenerationSettings {
  */
 export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
   /**
-   * The current model configuration (string or function).
-   * The function should return a LanguageModel instance (V2 or V3 depending on AI SDK version).
+   * The current model configuration (string or factory function).
    */
   model: string | (() => Promise<CompatibleLanguageModel>);
 
@@ -249,7 +268,6 @@ export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
 export interface PrepareStepResult extends Partial<GenerationSettings> {
   /**
    * Override the model for this step.
-   * The function should return a LanguageModel instance (V2 or V3 depending on AI SDK version).
    */
   model?: string | (() => Promise<CompatibleLanguageModel>);
 
@@ -295,12 +313,22 @@ export type PrepareStepCallback<TTools extends ToolSet = ToolSet> = (
  */
 export interface DurableAgentOptions extends GenerationSettings {
   /**
-   * The model provider to use for the agent.
+   * The model to use for the agent.
    *
-   * This should be a string compatible with the Vercel AI Gateway (e.g., 'anthropic/claude-opus'),
-   * or a step function that returns a LanguageModel instance (V2 or V3 depending on AI SDK version).
+   * Accepts three forms:
+   * - **String** (recommended): A model ID compatible with the Vercel AI Gateway
+   *   (e.g., `'anthropic/claude-opus'`).
+   * - **Model object**: A `LanguageModelV2` (AI SDK v5) or `LanguageModelV3`
+   *   (AI SDK v6) instance. Automatically converted to a `'provider/modelId'`
+   *   string for step boundary serialization. Middleware and wrappers are not
+   *   preserved — use `providerOptions` instead.
+   * - **Factory function** (deprecated): A function returning a `LanguageModel` promise.
+   *   Does not work in workflow mode due to step boundary serialization.
    */
-  model: string | (() => Promise<CompatibleLanguageModel>);
+  model:
+    | string
+    | CompatibleLanguageModel
+    | (() => Promise<CompatibleLanguageModel>);
 
   /**
    * A set of tools available to the agent.
@@ -313,6 +341,9 @@ export interface DurableAgentOptions extends GenerationSettings {
    * Optional system prompt to guide the agent's behavior.
    */
   system?: string;
+
+  /** Alias for system. If both are provided, instructions takes precedence. */
+  instructions?: string;
 
   /**
    * The tool choice strategy. Default: 'auto'.
@@ -341,6 +372,11 @@ export type StreamTextOnFinishCallback<
    * The final messages including all tool calls and results.
    */
   readonly messages: ModelMessage[];
+
+  /**
+   * Total token usage aggregated across all steps.
+   */
+  readonly totalUsage: NormalizedUsage;
 
   /**
    * Context that is passed into tool execution.
@@ -389,6 +425,9 @@ export interface DurableAgentStreamOptions<
    * Optional system prompt override. If provided, overrides the system prompt from the constructor.
    */
   system?: string;
+
+  /** Alias for system. If both are provided, instructions takes precedence. */
+  instructions?: string;
 
   /**
    * The stream to which the agent writes message chunks. For example, use `getWritable<UIMessageChunk>()` to write to the workflow's default output stream.
@@ -625,9 +664,9 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private telemetry?: TelemetrySettings;
 
   constructor(options: DurableAgentOptions & { tools?: TBaseTools }) {
-    this.model = options.model;
+    this.model = resolveModelId(options.model);
     this.tools = (options.tools ?? {}) as TBaseTools;
-    this.system = options.system;
+    this.system = options.instructions ?? options.system;
     this.toolChoice = options.toolChoice as ToolChoice<TBaseTools>;
     this.telemetry = options.experimental_telemetry;
 
@@ -660,12 +699,18 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     options: DurableAgentStreamOptions<TTools, OUTPUT, PARTIAL_OUTPUT>
   ): Promise<DurableAgentStreamResult<TTools, OUTPUT>> {
     const prompt = await standardizePrompt({
-      system: options.system || this.system,
+      // Using ?? (nullish) instead of || (falsy) so empty string '' is a valid system prompt
+      system: options.instructions ?? options.system ?? this.system,
       messages: options.messages,
     });
 
     const modelPrompt = await convertToLanguageModelPrompt({
       prompt,
+      // The model's supportedUrls cannot be resolved here because the model
+      // is instantiated inside the step boundary (doStreamStep). Passing {}
+      // is the safe fallback: all URLs will be downloaded and inlined rather
+      // than passed natively to the provider. This is correct but slightly
+      // less efficient for providers that support native URL handling.
       supportedUrls: {},
       download: options.experimental_download,
     });
@@ -709,7 +754,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     // Filter tools if activeTools is specified
     const effectiveTools =
       options.activeTools && options.activeTools.length > 0
-        ? filterTools(this.tools, options.activeTools as string[])
+        ? filterToolSet(this.tools, options.activeTools as string[])
         : this.tools;
 
     // Initialize context
@@ -742,9 +787,17 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       stopConditions: options.stopWhen,
       maxSteps: options.maxSteps,
       sendStart: options.sendStart ?? true,
-      onStepFinish: options.onStepFinish,
+      // streamTextIterator operates on ToolSet (the base type) internally.
+      // TTools extends ToolSet, so the callbacks are compatible at runtime —
+      // the cast bridges the generic parameter variance that TypeScript
+      // cannot verify structurally across the function boundary.
+      onStepFinish: options.onStepFinish as
+        | StreamTextOnStepFinishCallback<ToolSet>
+        | undefined,
       onError: options.onError,
-      prepareStep: options.prepareStep,
+      prepareStep: options.prepareStep as
+        | PrepareStepCallback<ToolSet>
+        | undefined,
       generationSettings: mergedGenerationSettings,
       toolChoice: effectiveToolChoice as ToolChoice<ToolSet>,
       experimental_context: experimentalContext,
@@ -963,9 +1016,14 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
     // Call onFinish callback if provided (always call, even on errors, but not on abort)
     if (options.onFinish && !wasAborted) {
+      const totalUsage = steps.reduce<NormalizedUsage>(
+        (acc, step) => addUsage(acc, normalizeUsage(step.usage)),
+        normalizeUsage(undefined)
+      );
       await options.onFinish({
         steps,
         messages: messages as ModelMessage[],
+        totalUsage,
         experimental_context: experimentalContext,
         experimental_output: experimentalOutput,
       });
@@ -992,19 +1050,33 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 }
 
 /**
- * Filter tools to only include the specified active tools.
+ * Resolve a model option to the internal representation.
+ * String and function models pass through as-is. Model objects are converted
+ * to a 'provider/modelId' string for step boundary serialization.
  */
-function filterTools<TTools extends ToolSet>(
-  tools: TTools,
-  activeTools: string[]
-): ToolSet {
-  const filtered: ToolSet = {};
-  for (const toolName of activeTools) {
-    if (toolName in tools) {
-      filtered[toolName] = tools[toolName];
-    }
+function resolveModelId(
+  model:
+    | string
+    | CompatibleLanguageModel
+    | (() => Promise<CompatibleLanguageModel>)
+): string | (() => Promise<CompatibleLanguageModel>) {
+  if (typeof model === 'string') {
+    return model;
   }
-  return filtered;
+  if (typeof model === 'function') {
+    console.warn(
+      `[DurableAgent] Factory function model is deprecated and will not work in workflow mode. ` +
+        `Use a string model ID or a LanguageModel object instead.`
+    );
+    return model;
+  }
+  // Model object — extract provider/modelId for gateway resolution inside the step
+  console.warn(
+    `[DurableAgent] Model object "${model.provider}/${model.modelId}" was converted to ` +
+      `a string for step boundary serialization. Middleware and wrappers are not preserved. ` +
+      `Use providerOptions to configure provider-specific settings.`
+  );
+  return `${model.provider}/${model.modelId}`;
 }
 
 async function writeFinishChunk(writable: WritableStream<UIMessageChunk>) {
@@ -1169,6 +1241,16 @@ async function executeTool(
       // Pass experimental context to the tool
       experimental_context: experimentalContext,
     });
+
+    // Pass through typed ToolResultOutput (content, error-text, etc.) without re-wrapping
+    if (isToolResultOutput(toolResult)) {
+      return {
+        type: 'tool-result' as const,
+        toolCallId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+        output: toolResult,
+      };
+    }
 
     // Use the appropriate output type based on the result
     // AI SDK supports 'text' for strings and 'json' for objects

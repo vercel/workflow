@@ -30,8 +30,11 @@ import type {
 } from './durable-agent.js';
 import type { StreamTextIteratorYieldValue } from './stream-text-iterator.js';
 
+/** Default string model ID for tests (streamTextIterator is mocked, so the value is opaque). */
+const TEST_MODEL = 'test/test-model';
+
 /**
- * Creates a mock LanguageModelV2 for testing
+ * Creates a mock LanguageModelV2 for tests that specifically need model objects.
  */
 function createMockModel(): LanguageModelV2 {
   return {
@@ -69,10 +72,8 @@ describe('DurableAgent', () => {
 
       // We need to test the executeTool function indirectly through the agent
       // Create a mock model that will trigger tool calls
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -145,10 +146,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -199,10 +198,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -271,10 +268,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -357,10 +352,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -453,10 +446,8 @@ describe('DurableAgent', () => {
     });
 
     it('should handle provider-executed tool errors with isError flag', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -530,10 +521,8 @@ describe('DurableAgent', () => {
         .spyOn(console, 'warn')
         .mockImplementation(() => {});
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -607,10 +596,8 @@ describe('DurableAgent', () => {
 
   describe('prepareStep callback', () => {
     it('should pass prepareStep callback to streamTextIterator', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -644,10 +631,8 @@ describe('DurableAgent', () => {
     });
 
     it('should allow prepareStep to modify messages', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -690,10 +675,8 @@ describe('DurableAgent', () => {
     });
 
     it('should allow prepareStep to change model dynamically', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -735,10 +718,8 @@ describe('DurableAgent', () => {
     });
 
     it('should provide step information to prepareStep callback', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -805,10 +786,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -894,10 +873,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -983,10 +960,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -1094,10 +1069,8 @@ describe('DurableAgent', () => {
 
   describe('generation settings', () => {
     it('should pass generation settings from constructor to streamTextIterator', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
         temperature: 0.7,
         maxOutputTokens: 1000,
@@ -1136,10 +1109,8 @@ describe('DurableAgent', () => {
     });
 
     it('should allow stream options to override constructor generation settings', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
         temperature: 0.7,
       });
@@ -1177,10 +1148,8 @@ describe('DurableAgent', () => {
 
   describe('maxSteps', () => {
     it('should pass maxSteps to streamTextIterator', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1213,10 +1182,8 @@ describe('DurableAgent', () => {
 
   describe('toolChoice', () => {
     it('should pass toolChoice from constructor to streamTextIterator', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
         toolChoice: 'required',
       });
@@ -1247,10 +1214,8 @@ describe('DurableAgent', () => {
     });
 
     it('should allow stream options to override constructor toolChoice', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
         toolChoice: 'auto',
       });
@@ -1302,10 +1267,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -1340,10 +1303,8 @@ describe('DurableAgent', () => {
 
   describe('callbacks', () => {
     it('should pass onError callback to streamTextIterator', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1387,10 +1348,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -1440,10 +1399,8 @@ describe('DurableAgent', () => {
     });
 
     it('should call onFinish with steps and messages when streaming completes', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1453,7 +1410,7 @@ describe('DurableAgent', () => {
       });
 
       const { streamTextIterator } = await import('./stream-text-iterator.js');
-      const mockStep: StepResult<any> = {
+      const mockStep: StepResult<ToolSet> = {
         content: [{ type: 'text', text: 'Hello' }],
         text: 'Hello',
         reasoningText: undefined,
@@ -1472,7 +1429,7 @@ describe('DurableAgent', () => {
         },
         warnings: [],
         // We're missing some properties that aren't relevant for the test
-      } as unknown as StepResult<any>;
+      } as unknown as StepResult<ToolSet>;
       const mockMessages: LanguageModelV2Prompt = [
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
       ];
@@ -1511,10 +1468,8 @@ describe('DurableAgent', () => {
     });
 
     it('should call onAbort when abort signal is already aborted', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1561,10 +1516,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -1613,10 +1566,8 @@ describe('DurableAgent', () => {
 
   describe('stream result', () => {
     it('should return messages and steps in result', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1625,7 +1576,7 @@ describe('DurableAgent', () => {
         close: vi.fn(),
       });
 
-      const mockStep: StepResult<any> = {
+      const mockStep: StepResult<ToolSet> = {
         content: [{ type: 'text', text: 'Hello' }],
         text: 'Hello',
         reasoningText: undefined,
@@ -1644,7 +1595,7 @@ describe('DurableAgent', () => {
         },
         warnings: [],
         // We're missing some properties that aren't relevant for the test
-      } as unknown as StepResult<any>;
+      } as unknown as StepResult<ToolSet>;
       const finalMessages: LanguageModelV2Prompt = [
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
         { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] },
@@ -1697,10 +1648,8 @@ describe('DurableAgent', () => {
         },
       };
 
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools,
       });
 
@@ -1759,10 +1708,8 @@ describe('DurableAgent', () => {
 
   describe('includeRawChunks', () => {
     it('should pass includeRawChunks to streamTextIterator', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1795,8 +1742,6 @@ describe('DurableAgent', () => {
 
   describe('experimental_telemetry', () => {
     it('should pass telemetry settings from constructor to streamTextIterator', async () => {
-      const mockModel = createMockModel();
-
       const telemetrySettings = {
         isEnabled: true,
         functionId: 'test-agent',
@@ -1804,7 +1749,7 @@ describe('DurableAgent', () => {
       };
 
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
         experimental_telemetry: telemetrySettings,
       });
@@ -1835,10 +1780,8 @@ describe('DurableAgent', () => {
     });
 
     it('should allow stream options to override constructor telemetry', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
         experimental_telemetry: { functionId: 'constructor-id' },
       });
@@ -1872,12 +1815,743 @@ describe('DurableAgent', () => {
     });
   });
 
-  describe('collectUIMessages', () => {
-    it('should return undefined uiMessages when collectUIMessages is false', async () => {
-      const mockModel = createMockModel();
+  describe('model object acceptance', () => {
+    it('should convert V2 model object to string and warn', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const mockModel: LanguageModelV2 = {
+        specificationVersion: 'v2' as const,
+        provider: 'test',
+        modelId: 'test-model',
+        doGenerate: vi.fn(),
+        doStream: vi.fn(),
+        supportedUrls: {},
+      };
 
       const agent = new DurableAgent({
+        model: mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Verify model was converted to string
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'test/test-model',
+        })
+      );
+
+      // Verify informational warning was emitted
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Model object "test/test-model" was converted to a string'
+        )
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
+  describe('V3 model object', () => {
+    it('should convert V3 model object to string', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      // V3 models only need identity properties — doStream is not required
+      // because resolveModelId converts model objects to strings
+      const v3Model = {
+        specificationVersion: 'v3' as const,
+        provider: 'anthropic',
+        modelId: 'claude-opus',
+      };
+
+      const agent = new DurableAgent({
+        model: v3Model,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Verify model was converted to string
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'anthropic/claude-opus',
+        })
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('should produce compound string when provider already contains a slash', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const v2Model: LanguageModelV2 = {
+        specificationVersion: 'v2' as const,
+        provider: 'my-org/anthropic',
+        modelId: 'claude-opus',
+        doGenerate: vi.fn(),
+        doStream: vi.fn(),
+        supportedUrls: {},
+      };
+
+      const agent = new DurableAgent({
+        model: v2Model,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // The compound string includes both slashes — callers should be
+      // aware that provider names containing '/' produce multi-segment IDs
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'my-org/anthropic/claude-opus',
+        })
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
+  describe('factory function deprecation', () => {
+    it('should emit deprecation warning for factory function model', () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const mockModel = createMockModel();
+
+      new DurableAgent({
         model: async () => mockModel,
+        tools: {},
+      });
+
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Factory function model is deprecated')
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
+  describe('instructions alias', () => {
+    it('should set system from instructions in constructor', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const agent = new DurableAgent({
+        model: 'test/test-model',
+        tools: {},
+        instructions: 'You are a helpful assistant.',
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // The system prompt should include the instructions text
+      // We verify this by checking the prompt passed to streamTextIterator
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.arrayContaining([
+            expect.objectContaining({
+              role: 'system',
+              content: 'You are a helpful assistant.',
+            }),
+          ]),
+        })
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('should prefer instructions over system when both provided', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const agent = new DurableAgent({
+        model: 'test/test-model',
+        tools: {},
+        system: 'system prompt',
+        instructions: 'instructions prompt',
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // instructions takes precedence over system
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.arrayContaining([
+            expect.objectContaining({
+              role: 'system',
+              content: 'instructions prompt',
+            }),
+          ]),
+        })
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('should allow stream options.instructions to override constructor system', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const agent = new DurableAgent({
+        model: 'test/test-model',
+        tools: {},
+        system: 'constructor system',
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        instructions: 'stream instructions',
+      });
+
+      // stream instructions should override constructor system
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.arrayContaining([
+            expect.objectContaining({
+              role: 'system',
+              content: 'stream instructions',
+            }),
+          ]),
+        })
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('should allow stream options.instructions to override constructor instructions', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const agent = new DurableAgent({
+        model: 'test/test-model',
+        tools: {},
+        instructions: 'constructor instructions',
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        instructions: 'stream instructions',
+      });
+
+      // stream instructions should override constructor instructions
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.arrayContaining([
+            expect.objectContaining({
+              role: 'system',
+              content: 'stream instructions',
+            }),
+          ]),
+        })
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
+  describe('tool result passthrough', () => {
+    it('should pass through typed ToolResultOutput without re-wrapping', async () => {
+      const contentResult = {
+        type: 'content' as const,
+        value: [{ type: 'text', text: 'hello' }],
+      };
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({}),
+          execute: async () => contentResult,
+        },
+      };
+
+      const agent = new DurableAgent({
+        model: TEST_MODEL,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Verify the typed result was passed through without being wrapped in {type:'json'}
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'testTool',
+        output: contentResult,
+      });
+    });
+
+    it('should still wrap plain objects as json', async () => {
+      const plainResult = { data: 'some value' };
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({}),
+          execute: async () => plainResult,
+        },
+      };
+
+      const agent = new DurableAgent({
+        model: TEST_MODEL,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Plain objects should be wrapped with {type:'json'}
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        output: {
+          type: 'json',
+          value: plainResult,
+        },
+      });
+    });
+
+    it('should still wrap strings as text', async () => {
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({}),
+          execute: async () => 'hello world',
+        },
+      };
+
+      const agent = new DurableAgent({
+        model: TEST_MODEL,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // String results should be wrapped with {type:'text'}
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        output: {
+          type: 'text',
+          value: 'hello world',
+        },
+      });
+    });
+
+    it('should pass through error-text ToolResultOutput without re-wrapping', async () => {
+      const errorTextResult = {
+        type: 'error-text' as const,
+        value: 'Something went wrong',
+      };
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({}),
+          execute: async () => errorTextResult,
+        },
+      };
+
+      const agent = new DurableAgent({
+        model: TEST_MODEL,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'testTool',
+        output: errorTextResult,
+      });
+    });
+
+    it('should pass through error-json ToolResultOutput without re-wrapping', async () => {
+      const errorJsonResult = {
+        type: 'error-json' as const,
+        value: { code: 404, message: 'Not found' },
+      };
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({}),
+          execute: async () => errorJsonResult,
+        },
+      };
+
+      const agent = new DurableAgent({
+        model: TEST_MODEL,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'testTool',
+        output: errorJsonResult,
+      });
+    });
+
+    it('should pass through execution-denied ToolResultOutput without re-wrapping', async () => {
+      const deniedResult = {
+        type: 'execution-denied' as const,
+        reason: 'User denied tool execution',
+      };
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({}),
+          execute: async () => deniedResult,
+        },
+      };
+
+      const agent = new DurableAgent({
+        model: TEST_MODEL,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'testTool',
+        output: deniedResult,
+      });
+    });
+  });
+
+  describe('collectUIMessages', () => {
+    it('should return undefined uiMessages when collectUIMessages is false', async () => {
+      const agent = new DurableAgent({
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1904,10 +2578,8 @@ describe('DurableAgent', () => {
     });
 
     it('should return undefined uiMessages when collectUIMessages is not set', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1933,10 +2605,8 @@ describe('DurableAgent', () => {
     });
 
     it('should pass collectUIChunks to streamTextIterator when collectUIMessages is true', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -1970,10 +2640,8 @@ describe('DurableAgent', () => {
     });
 
     it('should work correctly when collectUIMessages is true and sendFinish is false', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
@@ -2010,15 +2678,15 @@ describe('DurableAgent', () => {
 
       // No finish chunk should have been written to the client
       expect(
-        writtenChunks.find((c: any) => c.type === 'finish')
+        writtenChunks.find(
+          (c) => (c as Record<string, unknown>).type === 'finish'
+        )
       ).toBeUndefined();
     });
 
     it('should not write finish chunk but still return uiMessages when sendFinish is false', async () => {
-      const mockModel = createMockModel();
-
       const agent = new DurableAgent({
-        model: async () => mockModel,
+        model: TEST_MODEL,
         tools: {},
       });
 
