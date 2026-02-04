@@ -27,7 +27,8 @@ export interface TransformResult {
 }
 
 export async function transformCode(
-  sourceCode: string
+  sourceCode: string,
+  moduleSpecifier?: string
 ): Promise<TransformResult> {
   const modes = ['workflow', 'step', 'client'] as const;
   const results: TransformResult = {
@@ -49,7 +50,7 @@ export async function transformCode(
             },
             target: 'es2022',
             experimental: {
-              plugins: [[wasmPath, { mode }]],
+              plugins: [[wasmPath, { mode, moduleSpecifier }]],
             },
           },
           module: {

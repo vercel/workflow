@@ -3,3 +3,4 @@
 .vercel
 next-env.d.ts
 node_modules
+tsconfig.tsbuildinfo
