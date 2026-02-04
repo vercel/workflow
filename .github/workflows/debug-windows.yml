@@ -48,13 +48,3 @@ jobs:
         timeout-minutes: ${{ fromJSON(github.event.inputs.timeout_minutes) }}
         with:
           limit-access-to-actor: true
-          detached: true
-
-      - name: Keep session alive
-        run: |
-          echo "Session is running in detached mode."
-          echo "You can reconnect multiple times until the timeout expires."
-          echo "To end early, create a file: touch C:\continue"
-          while (!(Test-Path "C:\continue")) { Start-Sleep -Seconds 10 }
-        shell: powershell
-        timeout-minutes: ${{ fromJSON(github.event.inputs.timeout_minutes) }}

@@ -56,7 +56,10 @@ export function createDiscoverEntriesPlugin(state: {
           const resolved = await enhancedResolve(args.resolveDir, args.path);
 
           if (resolved) {
-            importParents.set(args.importer, resolved);
+            // Normalize path separators for cross-platform compatibility
+            const normalizedImporter = args.importer.replace(/\\/g, '/');
+            const normalizedResolved = resolved.replace(/\\/g, '/');
+            importParents.set(normalizedImporter, normalizedResolved);
           }
         } catch (_) {}
         return null;
