@@ -1,6 +1,14 @@
 /**
  * Minimal telemetry utilities for world-vercel package.
- * This is a simplified version that doesn't depend on @workflow/core to avoid circular dependencies.
+ *
+ * NOTE: This module intentionally duplicates semantic conventions from @workflow/core
+ * to avoid a circular dependency (world-vercel cannot depend on core).
+ * If you update conventions here, ensure @workflow/core/telemetry/semantic-conventions.ts
+ * remains synchronized.
+ *
+ * NOTE: Unlike the trace() function in @workflow/core, this implementation does not
+ * have special handling for WorkflowSuspension errors because world-vercel operates
+ * at the HTTP layer and never encounters workflow suspension effects.
  */
 import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
@@ -108,9 +116,4 @@ export const ErrorType = SemanticConvention<string>('error.type');
 /** Format used for parsing response body (cbor or json) */
 export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
   'workflow.world.parse.format'
-);
-
-/** Size in bytes of the parsed response body */
-export const WorldParseBytes = SemanticConvention<number>(
-  'workflow.world.parse.bytes'
 );

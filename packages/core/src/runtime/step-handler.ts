@@ -236,6 +236,9 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             }
             // Hydrate the step input arguments, closure variables, and thisVal
             // Track deserialization time for observability
+            // NOTE: This captures only the synchronous portion of hydration. Any async
+            // operations (e.g., stream loading) are added to `ops` and executed later
+            // via Promise.all(ops) - their timing is not included in this measurement.
             const deserializeStartTime = Date.now();
             const ops: Promise<void>[] = [];
             const hydratedInput = hydrateStepArguments(

@@ -275,32 +275,12 @@ export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
   'workflow.world.parse.format'
 );
 
-/** Size in bytes of the parsed response body */
-export const WorldParseBytes = SemanticConvention<number>(
-  'workflow.world.parse.bytes'
-);
-
 // Event loading attributes
 
 /** Number of pagination pages loaded when fetching workflow events */
 export const WorkflowEventsPagesLoaded = SemanticConvention<number>(
   'workflow.events.pages_loaded'
 );
-
-// Serialization attributes
-
-/** Format used for serialization (e.g., 'devalue') */
-export const SerializeFormat = SemanticConvention<string>('serialize.format');
-
-/** Size in bytes of the serialized data */
-export const SerializeBytes = SemanticConvention<number>('serialize.bytes');
-
-/** Format used for deserialization (e.g., 'devalue') */
-export const DeserializeFormat =
-  SemanticConvention<string>('deserialize.format');
-
-/** Size in bytes of the data being deserialized */
-export const DeserializeBytes = SemanticConvention<number>('deserialize.bytes');
 
 // Queue timing breakdown attributes (workflow-specific)
 
