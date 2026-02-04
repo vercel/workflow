@@ -94,8 +94,11 @@ export function workflowEntrypoint(
             span?.setAttributes({
               ...Attribute.WorkflowName(workflowName),
               ...Attribute.WorkflowOperation('execute'),
-              ...Attribute.QueueName(metadata.queueName),
-              ...Attribute.QueueMessageId(metadata.messageId),
+              // Standard OTEL messaging conventions
+              ...Attribute.MessagingSystem('vercel-queue'),
+              ...Attribute.MessagingDestinationName(metadata.queueName),
+              ...Attribute.MessagingMessageId(metadata.messageId),
+              ...Attribute.MessagingOperationType('process'),
               ...getQueueOverhead({ requestedAt }),
             });
 

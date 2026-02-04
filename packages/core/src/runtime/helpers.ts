@@ -341,12 +341,17 @@ export async function queueMessage(
   await trace(
     'queueMessage',
     {
-      attributes: Attribute.QueueName(queueName),
+      // Standard OTEL messaging conventions
+      attributes: {
+        ...Attribute.MessagingSystem('vercel-queue'),
+        ...Attribute.MessagingDestinationName(queueName),
+        ...Attribute.MessagingOperationType('publish'),
+      },
       kind: await getSpanKind('PRODUCER'),
     },
     async (span) => {
       const { messageId } = await world.queue(...args);
-      span?.setAttributes(Attribute.QueueMessageId(messageId));
+      span?.setAttributes(Attribute.MessagingMessageId(messageId));
     }
   );
 }

@@ -179,19 +179,31 @@ export const StepRetryWillRetry = SemanticConvention<boolean>(
   'step.retry.will_retry'
 );
 
-// Queue attributes
+// Queue/Messaging attributes - Standard OTEL messaging conventions
+// See: https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/
 
-/** Name of the queue being used for message processing */
-export const QueueName = SemanticConvention<string>('queue.name');
+/** Messaging system identifier (standard OTEL: messaging.system) */
+export const MessagingSystem = SemanticConvention<string>('messaging.system');
 
-/** The message id being handled */
-export const QueueMessageId = SemanticConvention<MessageId>(
-  'messaging.message.id',
-  'queue.message.id'
+/** Destination name/queue name (standard OTEL: messaging.destination.name) */
+export const MessagingDestinationName = SemanticConvention<string>(
+  'messaging.destination.name'
 );
 
-/** Time taken to enqueue the message in milliseconds */
-export const QueueOverheadMs = SemanticConvention<number>('queue.overhead_ms');
+/** The message id being handled (standard OTEL: messaging.message.id) */
+export const MessagingMessageId = SemanticConvention<MessageId>(
+  'messaging.message.id'
+);
+
+/** Operation type (standard OTEL: messaging.operation.type) */
+export const MessagingOperationType = SemanticConvention<
+  'publish' | 'receive' | 'process'
+>('messaging.operation.type');
+
+/** Time taken to enqueue the message in milliseconds (workflow-specific) */
+export const QueueOverheadMs = SemanticConvention<number>(
+  'workflow.queue.overhead_ms'
+);
 
 // Deployment attributes
 
@@ -231,26 +243,42 @@ export const WorkflowSuspensionWaitCount = SemanticConvention<number>(
   'workflow.suspension.wait_count'
 );
 
-// World/Storage attributes
+// World/Storage attributes - Standard OTEL HTTP conventions
+// See: https://opentelemetry.io/docs/specs/semconv/http/http-spans/
 
-/** HTTP method used in World storage request */
-export const WorldHttpMethod = SemanticConvention<string>('world.http.method');
-
-/** API endpoint path for World storage request */
-export const WorldHttpEndpoint = SemanticConvention<string>(
-  'world.http.endpoint'
+/** HTTP request method (standard OTEL: http.request.method) */
+export const HttpRequestMethod = SemanticConvention<string>(
+  'http.request.method'
 );
 
-/** HTTP status code from World storage request */
-export const WorldHttpStatus = SemanticConvention<number>('world.http.status');
+/** Full URL of the request (standard OTEL: url.full) */
+export const UrlFull = SemanticConvention<string>('url.full');
+
+/** Server hostname (standard OTEL: server.address) */
+export const ServerAddress = SemanticConvention<string>('server.address');
+
+/** Server port (standard OTEL: server.port) */
+export const ServerPort = SemanticConvention<number>('server.port');
+
+/** HTTP response status code (standard OTEL: http.response.status_code) */
+export const HttpResponseStatusCode = SemanticConvention<number>(
+  'http.response.status_code'
+);
+
+/** Error type when request fails (standard OTEL: error.type) */
+export const ErrorType = SemanticConvention<string>('error.type');
+
+// World-specific custom attributes (for workflow-specific context)
 
 /** Format used for parsing response body (cbor or json) */
 export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
-  'world.parse.format'
+  'workflow.world.parse.format'
 );
 
 /** Size in bytes of the parsed response body */
-export const WorldParseBytes = SemanticConvention<number>('world.parse.bytes');
+export const WorldParseBytes = SemanticConvention<number>(
+  'workflow.world.parse.bytes'
+);
 
 // Event loading attributes
 
@@ -274,19 +302,19 @@ export const DeserializeFormat =
 /** Size in bytes of the data being deserialized */
 export const DeserializeBytes = SemanticConvention<number>('deserialize.bytes');
 
-// Queue timing breakdown attributes
+// Queue timing breakdown attributes (workflow-specific)
 
 /** Time spent deserializing the queue message in milliseconds */
 export const QueueDeserializeTimeMs = SemanticConvention<number>(
-  'queue.deserialize_time_ms'
+  'workflow.queue.deserialize_time_ms'
 );
 
 /** Time spent executing the handler logic in milliseconds */
 export const QueueExecutionTimeMs = SemanticConvention<number>(
-  'queue.execution_time_ms'
+  'workflow.queue.execution_time_ms'
 );
 
 /** Time spent serializing the response in milliseconds */
 export const QueueSerializeTimeMs = SemanticConvention<number>(
-  'queue.serialize_time_ms'
+  'workflow.queue.serialize_time_ms'
 );

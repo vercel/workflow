@@ -73,8 +73,11 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           span?.setAttributes({
             ...Attribute.StepName(stepName),
             ...Attribute.StepAttempt(metadata.attempt),
-            ...Attribute.QueueName(metadata.queueName),
-            ...Attribute.QueueMessageId(metadata.messageId),
+            // Standard OTEL messaging conventions
+            ...Attribute.MessagingSystem('vercel-queue'),
+            ...Attribute.MessagingDestinationName(metadata.queueName),
+            ...Attribute.MessagingMessageId(metadata.messageId),
+            ...Attribute.MessagingOperationType('process'),
             ...getQueueOverhead({ requestedAt }),
           });
 

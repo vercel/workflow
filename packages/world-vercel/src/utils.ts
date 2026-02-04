@@ -8,9 +8,12 @@ import type { z } from 'zod';
 import {
   trace,
   getSpanKind,
-  WorldHttpMethod,
-  WorldHttpEndpoint,
-  WorldHttpStatus,
+  HttpRequestMethod,
+  HttpResponseStatusCode,
+  UrlFull,
+  ServerAddress,
+  ServerPort,
+  ErrorType,
   WorldParseFormat,
 } from './telemetry.js';
 import { version } from './version.js';
@@ -211,17 +214,38 @@ export async function makeRequest<T>({
   data?: unknown;
 }): Promise<T> {
   const method = options.method || 'GET';
+  const { baseUrl, headers } = await getHttpConfig(config);
+  const url = `${baseUrl}${endpoint}`;
 
+  // Parse server address and port from URL for OTEL attributes
+  let serverAddress: string | undefined;
+  let serverPort: number | undefined;
+  try {
+    const parsedUrl = new URL(url);
+    serverAddress = parsedUrl.hostname;
+    serverPort = parsedUrl.port
+      ? parseInt(parsedUrl.port, 10)
+      : parsedUrl.protocol === 'https:'
+        ? 443
+        : 80;
+  } catch {
+    // URL parsing failed, skip these attributes
+  }
+
+  // Standard OTEL span name for HTTP client: "{method}"
+  // See: https://opentelemetry.io/docs/specs/semconv/http/http-spans/#name
   return trace(
-    `WORLD.http ${method} ${endpoint}`,
+    `HTTP ${method}`,
     { kind: await getSpanKind('CLIENT') },
     async (span) => {
+      // Set standard OTEL HTTP client attributes
       span?.setAttributes({
-        ...WorldHttpMethod(method),
-        ...WorldHttpEndpoint(endpoint),
+        ...HttpRequestMethod(method),
+        ...UrlFull(url),
+        ...(serverAddress && ServerAddress(serverAddress)),
+        ...(serverPort && ServerPort(serverPort)),
       });
 
-      const { baseUrl, headers } = await getHttpConfig(config);
       headers.set('Accept', 'application/cbor');
       // NOTE: Add a unique header to bypass RSC request memoization.
       // See: https://github.com/vercel/workflow/issues/618
@@ -234,7 +258,6 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
-      const url = `${baseUrl}${endpoint}`;
       const request = new Request(url, {
         ...options,
         body,
@@ -243,7 +266,7 @@ export async function makeRequest<T>({
       const response = await fetch(request);
 
       span?.setAttributes({
-        ...WorldHttpStatus(response.status),
+        ...HttpResponseStatusCode(response.status),
       });
 
       if (!response.ok) {
@@ -259,11 +282,17 @@ export async function makeRequest<T>({
             `Failed to fetch, reproduce with:\ncurl -X ${request.method} ${stringifiedHeaders} "${url}"`
           );
         }
-        throw new WorkflowAPIError(
+        const error = new WorkflowAPIError(
           errorData.message ||
             `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`,
           { url, status: response.status, code: errorData.code }
         );
+        // Record error attributes per OTEL conventions
+        span?.setAttributes({
+          ...ErrorType(errorData.code || `HTTP ${response.status}`),
+        });
+        span?.recordException?.(error);
+        throw error;
       }
 
       // Parse the response body (CBOR or JSON) with tracing

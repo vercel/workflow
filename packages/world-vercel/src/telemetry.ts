@@ -77,26 +77,40 @@ export async function getSpanKind(
 }
 
 // Semantic conventions for World/Storage tracing
+// Standard OTEL conventions: https://opentelemetry.io/docs/specs/semconv/http/http-spans/
 function SemanticConvention<T>(...names: string[]) {
   return (value: T) =>
     Object.fromEntries(names.map((name) => [name, value] as const));
 }
 
-/** HTTP method used in World storage request */
-export const WorldHttpMethod = SemanticConvention<string>('world.http.method');
-
-/** API endpoint path for World storage request */
-export const WorldHttpEndpoint = SemanticConvention<string>(
-  'world.http.endpoint'
+/** HTTP request method (standard OTEL: http.request.method) */
+export const HttpRequestMethod = SemanticConvention<string>(
+  'http.request.method'
 );
 
-/** HTTP status code from World storage request */
-export const WorldHttpStatus = SemanticConvention<number>('world.http.status');
+/** Full URL of the request (standard OTEL: url.full) */
+export const UrlFull = SemanticConvention<string>('url.full');
+
+/** Server hostname (standard OTEL: server.address) */
+export const ServerAddress = SemanticConvention<string>('server.address');
+
+/** Server port (standard OTEL: server.port) */
+export const ServerPort = SemanticConvention<number>('server.port');
+
+/** HTTP response status code (standard OTEL: http.response.status_code) */
+export const HttpResponseStatusCode = SemanticConvention<number>(
+  'http.response.status_code'
+);
+
+/** Error type when request fails (standard OTEL: error.type) */
+export const ErrorType = SemanticConvention<string>('error.type');
 
 /** Format used for parsing response body (cbor or json) */
 export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
-  'world.parse.format'
+  'workflow.world.parse.format'
 );
 
 /** Size in bytes of the parsed response body */
-export const WorldParseBytes = SemanticConvention<number>('world.parse.bytes');
+export const WorldParseBytes = SemanticConvention<number>(
+  'workflow.world.parse.bytes'
+);
