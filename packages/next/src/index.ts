@@ -139,8 +139,12 @@ export function withWorkflow(
       phase !== 'phase-production-server'
     ) {
       // Check swc-plugin version and invalidate cache if changed
-      const distDir = nextConfig.distDir || '.next';
+      const distDir = path.resolve(
+        process.cwd(),
+        nextConfig.distDir || '.next'
+      );
       const cacheDir = path.join(distDir, 'cache');
+      const devCacheDir = path.join(distDir, 'dev', 'cache');
       const workflowJsonPath = path.join(cacheDir, 'workflow.json');
       const swcPluginVersion = require('@workflow/swc-plugin/package.json')
         .version as string;
@@ -159,7 +163,7 @@ export function withWorkflow(
       if (shouldInvalidateCache) {
         console.log('workflow transform upgraded, invalidating Next.js cache');
         // Delete cache directories
-        const cacheDirs = [cacheDir, path.join(distDir, 'dev', 'cache')];
+        const cacheDirs = [cacheDir, devCacheDir];
         for (const dir of cacheDirs) {
           if (fs.existsSync(dir)) {
             fs.rmSync(dir, { recursive: true, force: true });
