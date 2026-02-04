@@ -66,7 +66,7 @@ export async function resumeHook<T = any>(
   payload: T
 ): Promise<Hook> {
   return await waitedUntil(() => {
-    return trace('HOOK.resume', async (span) => {
+    return trace('hook.resume', async (span) => {
       const world = getWorld();
 
       try {

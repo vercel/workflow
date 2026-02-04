@@ -235,7 +235,7 @@ export async function makeRequest<T>({
   // Standard OTEL span name for HTTP client: "{method}"
   // See: https://opentelemetry.io/docs/specs/semconv/http/http-spans/#name
   return trace(
-    `HTTP ${method}`,
+    `http ${method}`,
     { kind: await getSpanKind('CLIENT') },
     async (span) => {
       // Set standard OTEL HTTP client attributes
@@ -298,7 +298,7 @@ export async function makeRequest<T>({
       // Parse the response body (CBOR or JSON) with tracing
       let parseResult: ParseResult;
       try {
-        parseResult = await trace('WORLD.parse', async (parseSpan) => {
+        parseResult = await trace('world.parse', async (parseSpan) => {
           const result = await parseResponseBody(response);
           // Extract format and size from debug context for attributes
           const contentType = response.headers.get('Content-Type') || '';
@@ -317,7 +317,7 @@ export async function makeRequest<T>({
       }
 
       // Validate against the schema with tracing
-      const result = await trace('WORLD.validate', async () => {
+      const result = await trace('world.validate', async () => {
         const validationResult = schema.safeParse(parseResult.data);
         if (!validationResult.success) {
           throw new WorkflowAPIError(

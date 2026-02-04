@@ -36,7 +36,7 @@ export async function runWorkflow(
   workflowRun: WorkflowRun,
   events: Event[]
 ): Promise<Uint8Array | unknown> {
-  return trace(`WORKFLOW.run ${workflowRun.workflowName}`, async (span) => {
+  return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
       ...Attribute.WorkflowName(workflowRun.workflowName),
       ...Attribute.WorkflowRunId(workflowRun.runId),

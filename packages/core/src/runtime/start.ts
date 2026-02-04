@@ -81,7 +81,7 @@ export async function start<TArgs extends unknown[], TResult>(
       );
     }
 
-    return trace(`WORKFLOW.start ${workflowName}`, async (span) => {
+    return trace(`workflow.start ${workflowName}`, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),

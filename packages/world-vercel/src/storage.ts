@@ -35,10 +35,11 @@ export function createStorage(config?: APIConfig): Storage {
   };
 
   // Instrument all storage methods with tracing
+  // NOTE: Span names are lowercase per OTEL semantic conventions
   return {
-    runs: instrumentObject('WORLD.runs', storage.runs),
-    steps: instrumentObject('WORLD.steps', storage.steps),
-    events: instrumentObject('WORLD.events', storage.events),
-    hooks: instrumentObject('WORLD.hooks', storage.hooks),
+    runs: instrumentObject('world.runs', storage.runs),
+    steps: instrumentObject('world.steps', storage.steps),
+    events: instrumentObject('world.events', storage.events),
+    hooks: instrumentObject('world.hooks', storage.hooks),
   };
 }

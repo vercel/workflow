@@ -249,7 +249,7 @@ export async function healthCheck(
  * Events must be in chronological order (ascending) for proper workflow replay.
  */
 export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
-  return trace('WORKFLOW.loadEvents', async (span) => {
+  return trace('workflow.loadEvents', async (span) => {
     span?.setAttributes({
       ...Attribute.WorkflowRunId(runId),
     });

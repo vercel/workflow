@@ -67,7 +67,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       const port = await getPort();
 
       return trace(
-        `STEP ${stepName}`,
+        `step ${stepName}`,
         { kind: await getSpanKind('CONSUMER'), links: spanLinks },
         async (span) => {
           span?.setAttributes({
