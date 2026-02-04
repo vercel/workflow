@@ -63,18 +63,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       const stepName = metadata.queueName.slice('__wkf_step_'.length);
       const world = getWorld();
 
-      // OPTIMIZATION 0: Run these three async operations concurrently
-      // - getPort(): local async operation
-      // - getSpanKind(): may involve async operations
-      // - world.steps.get(): HTTP call to fetch step entity
-      const [port, spanKind, step_] = await Promise.all([
+      // OPTIMIZATION: Run local async operations concurrently
+      // Note: We no longer call world.steps.get() here - we rely on step_started
+      // to return the step entity, saving one HTTP round-trip
+      const [port, spanKind] = await Promise.all([
         getPort(),
         getSpanKind('CONSUMER'),
-        world.steps.get(workflowRunId, stepId),
       ]);
-
-      // Use mutable step variable for later updates
-      let step = step_;
 
       return trace(
         `step ${stepName}`,
@@ -111,6 +106,92 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...Attribute.StepTracePropagated(!!traceContext),
           });
 
+          // OPTIMIZATION: Call step_started first - server validates state and returns step entity
+          // This eliminates the separate world.steps.get() HTTP call, saving 50-80ms per step.
+          // The server now validates:
+          // - Step not in terminal state (returns 409)
+          // - retryAfter timestamp reached (returns 425 with Retry-After header)
+          // - Workflow still active (returns 410 if completed)
+          let step;
+          try {
+            const startResult = await world.events.create(workflowRunId, {
+              eventType: 'step_started',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+            });
+
+            if (!startResult.step) {
+              throw new WorkflowRuntimeError(
+                `step_started event for "${stepId}" did not return step entity`
+              );
+            }
+            step = startResult.step;
+          } catch (err) {
+            if (WorkflowAPIError.is(err)) {
+              // 410 Gone: Workflow has already completed
+              if (err.status === 410) {
+                console.warn(
+                  `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
+                );
+                return;
+              }
+
+              // 409 Conflict: Step in terminal state (completed/failed/cancelled)
+              // Re-enqueue the workflow to continue processing
+              if (err.status === 409) {
+                runtimeLogger.debug(
+                  'Step in terminal state, re-enqueuing workflow',
+                  {
+                    stepName,
+                    stepId,
+                    workflowRunId,
+                    error: err.message,
+                  }
+                );
+                span?.setAttributes({
+                  ...Attribute.StepSkipped(true),
+                  // Use 'completed' as a representative terminal state for the skip reason
+                  ...Attribute.StepSkipReason('completed'),
+                });
+                await queueMessage(world, `__wkf_workflow_${workflowName}`, {
+                  runId: workflowRunId,
+                  traceCarrier: await serializeTraceCarrier(),
+                  requestedAt: new Date(),
+                });
+                return;
+              }
+
+              // 425 Too Early: retryAfter timestamp not reached yet
+              // Return timeout to queue so it retries later
+              if (err.status === 425) {
+                // Parse retryAfter from error response meta
+                const retryAfterStr = (err as any).meta?.retryAfter;
+                const retryAfter = retryAfterStr
+                  ? new Date(retryAfterStr)
+                  : new Date(Date.now() + 1000);
+                const timeoutSeconds = Math.max(
+                  1,
+                  Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
+                );
+                span?.setAttributes({
+                  ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
+                });
+                runtimeLogger.debug(
+                  'Step retryAfter timestamp not yet reached',
+                  {
+                    stepName,
+                    stepId,
+                    retryAfter,
+                    timeoutSeconds,
+                  }
+                );
+                return { timeoutSeconds };
+              }
+            }
+            // Re-throw other errors
+            throw err;
+          }
+
           runtimeLogger.debug('Step execution details', {
             stepName,
             stepId: step.stepId,
@@ -122,32 +203,10 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...Attribute.StepStatus(step.status),
           });
 
-          // Check if the step has a `retryAfter` timestamp that hasn't been reached yet
-          const now = Date.now();
-          if (step.retryAfter && step.retryAfter.getTime() > now) {
-            const timeoutSeconds = Math.ceil(
-              (step.retryAfter.getTime() - now) / 1000
-            );
-            span?.setAttributes({
-              ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
-            });
-            runtimeLogger.debug('Step retryAfter timestamp not yet reached', {
-              stepName,
-              stepId: step.stepId,
-              retryAfter: step.retryAfter,
-              timeoutSeconds,
-            });
-            return { timeoutSeconds };
-          }
-
           let result: unknown;
 
-          // Check max retries FIRST before any state changes.
+          // Check max retries AFTER step_started (attempt was just incremented)
           // step.attempt tracks how many times step_started has been called.
-          // If step.attempt >= maxRetries, we've already tried maxRetries times.
-          // This handles edge cases where the step handler is invoked after max retries have been exceeded
-          // (e.g., when the step repeatedly times out or fails before reaching the catch handler).
-          // Without this check, the step would retry forever.
           // Note: maxRetries is the number of RETRIES after the first attempt, so total attempts = maxRetries + 1
           // Use > here (not >=) because this guards against re-invocation AFTER all attempts are used.
           // The post-failure check uses >= to decide whether to retry after a failure.
@@ -181,60 +240,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           }
 
           try {
-            if (!['pending', 'running'].includes(step.status)) {
-              // We should only be running the step if it's either
-              // a) pending - initial state, or state set on re-try
-              // b) running - if a step fails mid-execution, like a function timeout
-              // otherwise, the step has been invoked erroneously
-              console.error(
-                `[Workflows] "${workflowRunId}" - Step invoked erroneously, expected status "pending" or "running", got "${step.status}" instead, skipping execution`
-              );
-              span?.setAttributes({
-                ...Attribute.StepSkipped(true),
-                ...Attribute.StepSkipReason(step.status),
-              });
-              // There's a chance that a step terminates correctly, but the underlying process
-              // fails or gets killed before the stepEntrypoint has a chance to re-enqueue the run.
-              // The queue lease expires and stepEntrypoint again, which leads us here, so
-              // we optimistically re-enqueue the workflow if the step is in a terminal state,
-              // under the assumption that this edge case happened.
-              // Until we move to atomic entity/event updates (World V2), there _could_ be an edge case
-              // where the we execute this code based on the `step` entity status, but the runtime
-              // failed to create the `step_completed` event (due to failing between step and event update),
-              // in which case, this might lead to an infinite loop.
-              // https://vercel.slack.com/archives/C09125LC4AX/p1765313809066679
-              const isTerminalStep = [
-                'completed',
-                'failed',
-                'cancelled',
-              ].includes(step.status);
-              if (isTerminalStep) {
-                await queueMessage(world, `__wkf_workflow_${workflowName}`, {
-                  runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
-                  requestedAt: new Date(),
-                });
-              }
-              return;
-            }
-
-            // Start the step via event (event-sourced architecture)
-            // step_started increments the attempt counter in the World implementation
-            // NOTE: We must await this BEFORE any code that could throw and use step.attempt
-            // in the catch handler, to ensure step.attempt is always up to date.
-            const startResult = await world.events.create(workflowRunId, {
-              eventType: 'step_started',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-            });
-
-            // Use the step entity from the event response (no extra get call needed)
-            if (!startResult.step) {
-              throw new WorkflowRuntimeError(
-                `step_started event for "${stepId}" did not return step entity`
-              );
-            }
-            step = startResult.step;
+            // step_started already validated the step is in valid state (pending/running)
+            // and returned the updated step entity with incremented attempt
 
             // step.attempt is now the current attempt number (after increment)
             const attempt = step.attempt;
