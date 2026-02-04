@@ -268,17 +268,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             const args = hydratedInput.args;
             const thisVal = hydratedInput.thisVal ?? null;
 
-            // Hydrate the step input arguments, closure variables, and thisVal
-            const ops: Promise<void>[] = [];
-            const hydratedInput = hydrateStepArguments(
-              step.input,
-              ops,
-              workflowRunId
-            );
-
-            const args = hydratedInput.args;
-            const thisVal = hydratedInput.thisVal ?? null;
-
             span?.setAttributes({
               ...Attribute.StepArgumentsCount(args.length),
               ...Attribute.QueueDeserializeTimeMs(deserializeTimeMs),
