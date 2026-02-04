@@ -237,6 +237,46 @@ export const vade = agent({
 
 Note: The step ID includes the full path through nested objects (`vade/tools/VercelRequest/execute`), while the hoisted variable name uses `$` as the separator (`vade$tools$VercelRequest$execute`) to create a valid JavaScript identifier.
 
+#### Shorthand Method Syntax
+
+Shorthand method syntax (non-arrow functions) is also supported in nested object properties:
+
+Input:
+```javascript
+import { agent } from "experimental-agent";
+
+export const vade = agent({
+  tools: {
+    VercelRequest: {
+      async execute(input, { experimental_context }) {
+        "use step";
+        return 1 + 1;
+      },
+    },
+  },
+});
+```
+
+Output (Step Mode):
+```javascript
+import { registerStepFunction } from "workflow/internal/private";
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//input.js//vade/tools/VercelRequest/execute"}}}}*/;
+var vade$tools$VercelRequest$execute = async (input, { experimental_context })=>{
+    return 1 + 1;
+};
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: vade$tools$VercelRequest$execute
+        }
+    }
+});
+registerStepFunction("step//input.js//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
+```
+
+Note: The shorthand method is converted to an arrow function expression when hoisted. The `this` binding and closure variables are handled the same way as arrow function step properties.
+
 ### Closure Variables
 
 When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`:

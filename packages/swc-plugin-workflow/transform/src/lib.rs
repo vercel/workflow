@@ -1701,15 +1701,17 @@ impl StepTransform {
                                 match self.mode {
                                     TransformMode::Step => {
                                         // In step mode, replace method with key-value property referencing the hoisted variable
+                                        // Replace slashes with $ in parent_var_name to create valid JS identifier
+                                        let safe_parent_name = parent_var_name.replace('/', "$");
                                         let hoist_var_name = if let Some(ref workflow_name) =
                                             self.current_workflow_function_name
                                         {
                                             format!(
                                                 "{}${}${}",
-                                                workflow_name, parent_var_name, prop_key
+                                                workflow_name, safe_parent_name, prop_key
                                             )
                                         } else {
-                                            format!("{}${}", parent_var_name, prop_key)
+                                            format!("{}${}", safe_parent_name, prop_key)
                                         };
                                         let step_id = self.create_object_property_id(
                                             parent_var_name,
