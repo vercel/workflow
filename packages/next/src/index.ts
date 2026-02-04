@@ -146,13 +146,13 @@ export function withWorkflow(
       const cacheDir = path.join(distDir, 'cache');
       const devCacheDir = path.join(distDir, 'dev', 'cache');
       const workflowJsonPath = path.join(cacheDir, 'workflow.json');
-      const swcPluginVersion = require('@workflow/swc-plugin/package.json')
-        .version as string;
+      const swcPluginBuildHash = require('@workflow/swc-plugin/build-hash.json')
+        .buildHash as string;
 
       let shouldInvalidateCache = false;
       try {
         const existing = JSON.parse(fs.readFileSync(workflowJsonPath, 'utf-8'));
-        if (existing.swcPluginVersion !== swcPluginVersion) {
+        if (existing.swcPluginBuildHash !== swcPluginBuildHash) {
           shouldInvalidateCache = true;
         }
       } catch {
@@ -177,7 +177,7 @@ export function withWorkflow(
           fs.mkdirSync(cacheDir, { recursive: true });
           fs.writeFileSync(
             workflowJsonPath,
-            JSON.stringify({ swcPluginVersion }, null, 2)
+            JSON.stringify({ swcPluginBuildHash }, null, 2)
           );
         } catch {
           // Ignore errors on exit

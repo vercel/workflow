@@ -21,6 +21,8 @@ node_modules
 target
 # compiled wasm
 *.wasm
+# swc-plugin build hash
+packages/swc-plugin-workflow/build-hash.json
 
 # SWC plugin cache
 .swc
