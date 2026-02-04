@@ -218,29 +218,15 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               return;
             }
 
-            // OPTIMIZATION 1: Start step_started event creation in background
-            // The HTTP call for step_started can happen while we do CPU work (hydration)
-            const stepStartedPromise = world.events.create(workflowRunId, {
+            // Start the step via event (event-sourced architecture)
+            // step_started increments the attempt counter in the World implementation
+            // NOTE: We must await this BEFORE any code that could throw and use step.attempt
+            // in the catch handler, to ensure step.attempt is always up to date.
+            const startResult = await world.events.create(workflowRunId, {
               eventType: 'step_started',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
             });
-
-            // Hydrate the step input arguments, closure variables, and thisVal
-            // This uses step.input from the earlier world.steps.get() call
-            // and runs CPU-bound work while step_started HTTP is in-flight
-            const ops: Promise<void>[] = [];
-            const hydratedInput = hydrateStepArguments(
-              step.input,
-              ops,
-              workflowRunId
-            );
-
-            const args = hydratedInput.args;
-            const thisVal = hydratedInput.thisVal ?? null;
-
-            // Now await step_started - we need attempt/startedAt for context
-            const startResult = await stepStartedPromise;
 
             // Use the step entity from the event response (no extra get call needed)
             if (!startResult.step) {
@@ -271,6 +257,17 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               workflowRunId
             );
             const deserializeTimeMs = Date.now() - deserializeStartTime;
+
+            const args = hydratedInput.args;
+            const thisVal = hydratedInput.thisVal ?? null;
+
+            // Hydrate the step input arguments, closure variables, and thisVal
+            const ops: Promise<void>[] = [];
+            const hydratedInput = hydrateStepArguments(
+              step.input,
+              ops,
+              workflowRunId
+            );
 
             const args = hydratedInput.args;
             const thisVal = hydratedInput.thisVal ?? null;
