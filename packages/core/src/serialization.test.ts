@@ -2231,17 +2231,18 @@ describe('custom class serialization', () => {
       constructor(public value: number) {}
 
       static [WORKFLOW_SERIALIZE](this: typeof Counter, instance: Counter) {
-        // Access static property via `this` - this would fail if `this` is undefined
-        Counter.serializedCount++;
-        return { value: instance.value, serializedAt: Counter.serializedCount };
+        // biome-ignore lint/complexity/noThisInStatic: intentionally testing `this` context binding
+        this.serializedCount++;
+        // biome-ignore lint/complexity/noThisInStatic: intentionally testing `this` context binding
+        return { value: instance.value, serializedAt: this.serializedCount };
       }
 
       static [WORKFLOW_DESERIALIZE](
         this: typeof Counter,
         data: { value: number; serializedAt: number }
       ) {
-        // Access static property via `this` - this would fail if `this` is undefined
-        Counter.deserializedCount++;
+        // biome-ignore lint/complexity/noThisInStatic: intentionally testing `this` context binding
+        this.deserializedCount++;
         return new Counter(data.value);
       }
     }
