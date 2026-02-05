@@ -2,6 +2,8 @@
 "@workflow/world-vercel": patch
 ---
 
-Fix world-vercel telemetry to use parent application's tracer
+Improve world-vercel OTEL telemetry
 
-The world-vercel package was creating spans under a separate 'workflow-world-vercel' service name, causing HTTP spans for workflow-server API calls (step_started, step_completed) to be filtered out when viewing traces for the main application service. Now uses the same 'workflow' tracer name as @workflow/core to ensure all spans are reported under the parent application's service.
+- Use parent application's 'workflow' tracer instead of separate service name
+- Add `peer.service` and RPC semantic conventions for Datadog service maps
+- Include event type in `world.events.create` span names (e.g., `world.events.create step_started`)
