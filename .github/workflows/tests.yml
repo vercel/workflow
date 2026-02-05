@@ -538,7 +538,8 @@ jobs:
       - name: Run E2E Tests (Next.js)
         run: |
           cd workbench/nextjs-turbopack
-          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
+          $logFile = "$env:GITHUB_WORKSPACE/nextjs-server.log"
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..
           pnpm vitest run packages/core/e2e/dev.test.ts
@@ -551,6 +552,19 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
 
+      - name: Print Next.js server logs
+        if: always()
+        shell: powershell
+        run: |
+          $logFile = "$env:GITHUB_WORKSPACE/nextjs-server.log"
+          if (Test-Path $logFile) {
+            Write-Host "=== Next.js Server Logs ===" -ForegroundColor Cyan
+            Get-Content $logFile
+            Write-Host "=== End of Server Logs ===" -ForegroundColor Cyan
+          } else {
+            Write-Host "No server log file found at $logFile" -ForegroundColor Yellow
+          }
+
       - name: Generate E2E summary
         if: always()
         shell: bash
@@ -562,6 +576,15 @@ jobs:
         with:
           name: e2e-results-windows-nextjs-turbopack
           path: e2e-windows-nextjs-turbopack.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload Next.js server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-server-logs-windows
+          path: nextjs-server.log
           retention-days: 7
           if-no-files-found: ignore
 
