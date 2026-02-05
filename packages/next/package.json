@@ -45,7 +45,7 @@
     "@types/node": "catalog:",
     "@types/semver": "7.7.1",
     "@types/watchpack": "2.4.4",
-    "next": "16.0.10"
+    "next": "16.1.6"
   },
   "peerDependencies": {
     "next": ">13"
