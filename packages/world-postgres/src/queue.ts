@@ -106,6 +106,9 @@ export function createQueue(
       );
       const message = QueuePayloadSchema.parse(body);
       const queueName = `${queue}${messageData.id}` as const;
+      // TODO: Custom headers from opts.headers are not propagated into MessageData.
+      // To support this, MessageData schema would need to include a headers field
+      // and the headers would need to be stored/retrieved from pg-boss job data.
       await localWorld.queue(queueName, message, {
         idempotencyKey: messageData.idempotencyKey,
       });

@@ -100,6 +100,7 @@ export function createQueue(config: Partial<Config>): Queue {
               duplex: 'half',
               dispatcher: httpAgent,
               headers: {
+                ...opts?.headers,
                 'content-type': 'application/json',
                 'x-vqs-queue-name': queueName,
                 'x-vqs-message-id': messageId,
