@@ -72,7 +72,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       ]);
 
       return trace(
-        `step ${stepName}`,
+        `STEP ${stepName}`,
         { kind: spanKind, links: spanLinks },
         async (span) => {
           span?.setAttributes({
