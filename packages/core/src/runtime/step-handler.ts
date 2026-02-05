@@ -262,6 +262,9 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 `Step "${stepId}" has no "startedAt" timestamp`
               );
             }
+            // Capture startedAt for use in async callback (TypeScript narrowing doesn't persist)
+            const stepStartedAt = step.startedAt;
+
             // Hydrate the step input arguments, closure variables, and thisVal
             // Track deserialization time for observability
             // NOTE: This captures only the synchronous portion of hydration. Any async
@@ -284,29 +287,31 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               ...Attribute.QueueDeserializeTimeMs(deserializeTimeMs),
             });
 
-            // Track execution time for observability
+            // Execute the step function with tracing
             const executionStartTime = Date.now();
-            result = await contextStorage.run(
-              {
-                stepMetadata: {
-                  stepId,
-                  stepStartedAt: new Date(+step.startedAt),
-                  attempt,
+            result = await trace('step.execute', {}, async () => {
+              return await contextStorage.run(
+                {
+                  stepMetadata: {
+                    stepId,
+                    stepStartedAt: new Date(+stepStartedAt),
+                    attempt,
+                  },
+                  workflowMetadata: {
+                    workflowRunId,
+                    workflowStartedAt: new Date(+workflowStartedAt),
+                    // TODO: there should be a getUrl method on the world interface itself. This
+                    // solution only works for vercel + local worlds.
+                    url: process.env.VERCEL_URL
+                      ? `https://${process.env.VERCEL_URL}`
+                      : `http://localhost:${port ?? 3000}`,
+                  },
+                  ops,
+                  closureVars: hydratedInput.closureVars,
                 },
-                workflowMetadata: {
-                  workflowRunId,
-                  workflowStartedAt: new Date(+workflowStartedAt),
-                  // TODO: there should be a getUrl method on the world interface itself. This
-                  // solution only works for vercel + local worlds.
-                  url: process.env.VERCEL_URL
-                    ? `https://${process.env.VERCEL_URL}`
-                    : `http://localhost:${port ?? 3000}`,
-                },
-                ops,
-                closureVars: hydratedInput.closureVars,
-              },
-              () => stepFn.apply(thisVal, args)
-            );
+                () => stepFn.apply(thisVal, args)
+              );
+            });
             const executionTimeMs = Date.now() - executionStartTime;
 
             span?.setAttributes({

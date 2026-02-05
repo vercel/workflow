@@ -88,7 +88,7 @@ export function workflowEntrypoint(
       return await withTraceContext(traceContext, async () => {
         const world = getWorld();
         return trace(
-          `WORKFLOW ${workflowName}`,
+          `workflow ${workflowName}`,
           { links: spanLinks },
           async (span) => {
             span?.setAttributes({
