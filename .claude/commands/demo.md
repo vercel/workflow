@@ -1,9 +1,51 @@
 ---
 description: Run the 7_full demo workflow
-allowed-tools: Bash(curl:*), Bash(npx workflow:*), Bash(pnpm dev)
+allowed-tools: Bash(curl:*), Bash(npx workflow:*), Bash(pnpm dev), Bash(docker *), Bash(open *)
 ---
 
+Run the demo workflow with OpenTelemetry tracing enabled.
 
-Start the $ARUGMENTS workbench (default to the nextjs turboback workbench  available in the workbenches directory). Run it in dev mode, and also start the workflow web UI (run `npx workflow web` inside the appropriate workbench directory).
+## Steps
 
-Then trigger the 7_full.ts workflow example. you can see how to trigger a specific example by looking at the trigger API route for the workbench - it is probably just a POST request using bash (maybe curl) to this endpoint: <http://localhost:3000/api/trigger\?workflowFile\=workflows/7_full.ts\&workflowFn\=handleUserSignup>>
+1. **Start Jaeger** for OTEL trace visualization (if not already running):
+   ```bash
+   docker run -d --name jaeger-otel \
+     -p 16686:16686 \
+     -p 4317:4317 \
+     -p 4318:4318 \
+     jaegertracing/jaeger:2.4.0 2>&1 || docker start jaeger-otel
+   ```
+
+2. **Open the Jaeger UI** in the browser:
+   ```bash
+   open http://localhost:16686
+   ```
+
+3. **Start the workbench** (default: nextjs-turbopack) with OTEL tracing enabled:
+   ```bash
+   cd workbench/nextjs-turbopack
+   OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318" \
+   OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf" \
+   pnpm dev
+   ```
+
+   Also start the workflow web UI in a separate terminal:
+   ```bash
+   npx workflow web
+   ```
+
+4. **Trigger the 7_full.ts workflow**:
+   ```bash
+   curl -X POST "http://localhost:3000/api/trigger?workflowFile=workflows/7_full.ts&workflowFn=handleUserSignup"
+   ```
+
+5. **View traces** in Jaeger UI at http://localhost:16686 - select service `example-nextjs-workflow`
+
+## Tracing Details
+
+The traces include:
+- Step execution spans with `workflow.queue.overhead_ms`, `step.attempt`, `step.status`
+- Workflow orchestration spans with `workflow.run.status`, `workflow.events.count`
+- Queue message spans with messaging attributes
+
+$ARGUMENTS can specify a different workbench (e.g., "example" or "nextjs-webpack").
