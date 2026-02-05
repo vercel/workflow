@@ -3,10 +3,10 @@
 /node_modules
 
 # Workflow generated files
+/.workflow
 /.nestjs
 /src/_workflows.ts
 /.swc
-/.swcrc
 
 # Logs
 logs

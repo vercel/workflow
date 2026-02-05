@@ -12,6 +12,8 @@ export interface DevTestConfig {
   testWorkflowFile?: string;
   /** The workflows directory relative to appPath. Defaults to 'workflows' */
   workflowsDir?: string;
+  /** Extension to append to ESM imports (e.g., '.js' for NestJS ESM) */
+  esmImportExtension?: string;
 }
 
 function getConfigFromEnv(): DevTestConfig | null {
@@ -137,9 +139,10 @@ export async function myNewStep() {
         const apiFileContent = await fs.readFile(apiFile, 'utf8');
         restoreFiles.push({ path: apiFile, content: apiFileContent });
 
+        const importExt = finalConfig.esmImportExtension ?? '';
         await fs.writeFile(
           apiFile,
-          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/new-workflow';
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/new-workflow${importExt}';
 ${apiFileContent}`
         );
 

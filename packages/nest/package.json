@@ -36,21 +36,13 @@
   },
   "peerDependencies": {
     "@nestjs/common": ">=10.0.0",
-    "@nestjs/core": ">=10.0.0",
-    "@swc/cli": ">=0.4.0",
-    "@swc/core": ">=1.5.0"
+    "@nestjs/core": ">=10.0.0"
   },
   "peerDependenciesMeta": {
     "@nestjs/common": {
       "optional": false
     },
     "@nestjs/core": {
-      "optional": false
-    },
-    "@swc/cli": {
-      "optional": false
-    },
-    "@swc/core": {
       "optional": false
     }
   },

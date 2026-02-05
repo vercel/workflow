@@ -33,7 +33,7 @@ npm i workflow @workflow/nest
 
 ### Configure NestJS for ESM
 
-NestJS with SWC uses ES modules. Add `"type": "module"` to your `package.json`:
+Add `"type": "module"` to your `package.json`:
 
 ```json title="package.json" lineNumbers
 {
@@ -47,57 +47,29 @@ NestJS with SWC uses ES modules. Add `"type": "module"` to your `package.json`:
 When using ESM with NestJS, local imports must include the `.js` extension (e.g., `import { AppModule } from './app.module.js'`). This applies even though your source files are `.ts`.
 </Callout>
 
-### Configure NestJS to use SWC
+### Add Build Scripts
 
-NestJS supports SWC as an alternative compiler for faster builds. The Workflow DevKit uses an SWC plugin to transform workflow files.
-
-Install the required SWC packages:
-
-```package-install
-npm i -D @swc/cli @swc/core
-```
-
-Ensure your `nest-cli.json` has SWC as the builder:
-
-```json title="nest-cli.json" lineNumbers
-{
-  "$schema": "https://json.schemastore.org/nest-cli",
-  "collection": "@nestjs/schematics",
-  "sourceRoot": "src",
-  "compilerOptions": {
-    "builder": "swc",
-    "deleteOutDir": true
-  }
-}
-```
-
-### Initialize SWC Configuration
-
-Run the init command to generate the SWC configuration:
-
-```bash
-npx @workflow/nest init
-```
-
-This creates a `.swcrc` file configured with the Workflow SWC plugin for client-mode transformations.
-
-<Callout>
-Add `.swcrc` to your `.gitignore` as it contains machine-specific absolute paths that shouldn't be committed.
-</Callout>
-
-### Update `package.json`
-
-Add scripts to regenerate the SWC configuration before builds:
+Add the workflow build scripts to your `package.json`:
 
 ```json title="package.json" lineNumbers
 {
   "scripts": {
-    "prebuild": "npx @workflow/nest init --force",
+    "workflow:build": "workflow-nest build",
+    "prebuild": "npm run workflow:build",
     "build": "nest build",
-    "start:dev": "npx @workflow/nest init --force && nest start --watch"
+    "prestart:dev": "npm run workflow:build",
+    "start:dev": "nest start --watch"
   }
 }
 ```
+
+The `workflow-nest build` command discovers your workflow files and generates:
+- Workflow bundles in `.workflow/` directory
+- A `client.js` file with workflow metadata for use with `start()`
+
+<Callout>
+Add `.workflow` to your `.gitignore` as it contains generated files that shouldn't be committed.
+</Callout>
 
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
@@ -156,10 +128,6 @@ The `WorkflowModule` handles workflow bundle building and provides HTTP routing 
 ## Create Your First Workflow
 
 Create a new file for our first workflow in the `src/workflows` directory:
-
-<Callout>
-Workflow files must be inside the `src/` directory so they get compiled with the SWC plugin that enables the `start()` function to work correctly.
-</Callout>
 
 ```typescript title="src/workflows/user-signup.ts" lineNumbers
 import { sleep } from "workflow";
@@ -240,14 +208,16 @@ Taking a look at this code:
 
 ## Create Your Controller
 
-To invoke your new workflow, update your controller with a new endpoint:
+To invoke your new workflow, update your controller with a new endpoint.
+
+First, import the workflow metadata from the generated client file:
 
 {/*@skip-typecheck - NestJS decorators require special TypeScript config*/}
 
 ```typescript title="src/app.controller.ts" lineNumbers
 import { Body, Controller, Post } from '@nestjs/common';
 import { start } from 'workflow/api';
-import { handleUserSignup } from './workflows/user-signup.js';
+import { handleUserSignup } from '../.workflow/client.js'; // [!code highlight]
 
 @Controller()
 export class AppController {
@@ -259,6 +229,10 @@ export class AppController {
 }
 ```
 
+<Callout>
+Note that we import `handleUserSignup` from `.workflow/client.js`, not from the workflow file directly. The generated client file contains workflow metadata objects with `workflowId` attached, which is required for `start()` to work correctly.
+</Callout>
+
 This creates a `POST` endpoint at `/signup` that will trigger your workflow.
 
 </Step>
@@ -267,7 +241,13 @@ This creates a `POST` endpoint at `/signup` that will trigger your workflow.
 
 ## Run in development
 
-To start your development server, run the following command in your terminal:
+Build the workflow bundles first:
+
+```bash
+npm run workflow:build
+```
+
+Then start your development server:
 
 ```bash
 npm run start:dev
@@ -309,12 +289,27 @@ WorkflowModule.forRoot({
   // Directory to scan for workflow files (default: ['src'])
   dirs: ['src'],
 
-  // Output directory for generated bundles (default: '.nestjs/workflow')
-  outDir: '.nestjs/workflow',
+  // Output directory for generated bundles (default: '.workflow')
+  outDir: '.workflow',
 
   // Skip building in production when bundles are pre-built
   skipBuild: false,
 });
+```
+
+## CLI Commands
+
+The `@workflow/nest` package includes a CLI for building workflow bundles:
+
+```bash
+# Build workflow bundles
+npx @workflow/nest build
+
+# Build with custom options
+npx @workflow/nest build --dirs src/workflows --out .workflow
+
+# Watch mode for development
+npx @workflow/nest dev
 ```
 
 ## Deploying to production

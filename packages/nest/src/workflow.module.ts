@@ -20,7 +20,7 @@ export interface WorkflowModuleOptions extends NestBuilderOptions {
   skipBuild?: boolean;
 }
 
-const DEFAULT_OUT_DIR = '.nestjs/workflow';
+const DEFAULT_OUT_DIR = '.workflow';
 
 /**
  * NestJS module that provides workflow functionality.

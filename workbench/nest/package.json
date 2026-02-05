@@ -4,10 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "generate:workflows": "node ../scripts/generate-workflows-registry.js ./src/workflows ./src/_workflows.ts --esm",
-    "setup:swcrc": "node ../../packages/nest/dist/cli.js init --force",
-    "predev": "pnpm generate:workflows && pnpm setup:swcrc",
-    "prebuild": "pnpm generate:workflows && pnpm setup:swcrc",
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js ./src/workflows ./src/_workflows.ts --esm --client",
+    "workflow:build": "node ../../packages/nest/dist/cli.js build --dirs src/workflows",
+    "predev": "pnpm workflow:build && pnpm generate:workflows",
+    "prebuild": "pnpm workflow:build && pnpm generate:workflows",
     "dev": "nest start --watch",
     "build": "nest build",
     "start": "node dist/main.js"

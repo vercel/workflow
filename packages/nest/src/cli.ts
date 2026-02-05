@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { watch } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NestLocalBuilder } from './builder.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -19,6 +21,7 @@ function resolveSwcPluginPath(): string {
 
 /**
  * Generate .swcrc configuration for NestJS with the workflow plugin.
+ * @deprecated Use `npx @workflow/nest build` instead
  */
 function generateSwcrc(pluginPath: string): object {
   return {
@@ -48,15 +51,23 @@ function showHelp(): void {
 @workflow/nest CLI
 
 Commands:
-  init    Generate .swcrc configuration with the workflow plugin
-  help    Show this help message
+  build     Build workflow bundles (recommended)
+  dev       Build and watch for changes
+  init      Generate .swcrc configuration (deprecated)
+  help      Show this help message
 
 Usage:
-  npx @workflow/nest init
+  npx @workflow/nest build          # Build workflow bundles
+  npx @workflow/nest dev            # Build and watch for changes
+  npx @workflow/nest init           # (Deprecated) Generate .swcrc
 
-This command generates a .swcrc file configured with the Workflow SWC plugin
-for client-mode transformations. The plugin path is resolved from the
-@workflow/nest package, so no additional hoisting configuration is needed.
+Options:
+  --dirs <dirs>     Directories to scan (comma-separated, default: src)
+  --out <dir>       Output directory (default: .workflow)
+  --force           Force overwrite existing files
+
+The build command creates workflow bundles and client exports that work
+with any NestJS compiler (tsc, swc, or babel). No .swcrc configuration needed.
 `);
 }
 
@@ -79,6 +90,13 @@ function hasWorkflowPlugin(swcrcContent: string): boolean {
 }
 
 function handleInit(args: string[]): void {
+  console.log(
+    '⚠️  The init command is deprecated. Use `npx @workflow/nest build` instead.'
+  );
+  console.log(
+    '   This provides a simpler setup that works with any compiler.\n'
+  );
+
   const swcrcPath = resolve(process.cwd(), '.swcrc');
   const forceMode = args.includes('--force');
 
@@ -111,10 +129,110 @@ function handleInit(args: string[]): void {
   console.log('3. Run: nest build');
 }
 
+function parseArgs(args: string[]): {
+  dirs: string[];
+  outDir: string;
+  force: boolean;
+} {
+  const dirs: string[] = [];
+  let outDir = '.workflow';
+  let force = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--dirs' && args[i + 1]) {
+      dirs.push(...args[++i].split(',').map((d) => d.trim()));
+    } else if (arg === '--out' && args[i + 1]) {
+      outDir = args[++i];
+    } else if (arg === '--force') {
+      force = true;
+    }
+  }
+
+  return {
+    dirs: dirs.length > 0 ? dirs : ['src'],
+    outDir,
+    force,
+  };
+}
+
+async function handleBuild(args: string[]): Promise<void> {
+  const { dirs, outDir } = parseArgs(args);
+  const workingDir = process.cwd();
+  const fullOutDir = resolve(workingDir, outDir);
+
+  console.log(`Building workflows from: ${dirs.join(', ')}`);
+  console.log(`Output directory: ${outDir}\n`);
+
+  const builder = new NestLocalBuilder({
+    workingDir,
+    dirs,
+    outDir: fullOutDir,
+    watch: false,
+  });
+
+  await builder.build();
+  console.log('\n✓ Build complete');
+}
+
+async function handleDev(args: string[]): Promise<void> {
+  const { dirs, outDir } = parseArgs(args);
+  const workingDir = process.cwd();
+  const fullOutDir = resolve(workingDir, outDir);
+
+  console.log(`Watching workflows in: ${dirs.join(', ')}`);
+  console.log(`Output directory: ${outDir}\n`);
+
+  const builder = new NestLocalBuilder({
+    workingDir,
+    dirs,
+    outDir: fullOutDir,
+    watch: true,
+  });
+
+  // Initial build
+  await builder.build();
+  console.log('\n✓ Initial build complete');
+  console.log('Watching for changes... (press Ctrl+C to stop)\n');
+
+  // Watch for changes
+  const watchDirs = dirs.map((d) => resolve(workingDir, d));
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  for (const dir of watchDirs) {
+    if (!existsSync(dir)) {
+      console.error(`Error: Directory does not exist: ${dir}`);
+      console.error('Please create the directory or specify a different path with --dirs');
+      process.exit(1);
+    }
+    watch(dir, { recursive: true }, (_eventType, filename) => {
+      if (!filename?.endsWith('.ts') && !filename?.endsWith('.js')) return;
+
+      // Debounce rebuilds
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(async () => {
+        console.log(`\nFile changed: ${filename}`);
+        try {
+          await builder.build();
+          console.log('✓ Rebuild complete');
+        } catch (error) {
+          console.error(
+            'Build failed:',
+            error instanceof Error ? error.message : error
+          );
+        }
+      }, 100);
+    });
+  }
+
+  // Keep process running
+  await new Promise(() => {});
+}
+
 /**
  * Main CLI entry point.
  */
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
 
@@ -129,8 +247,18 @@ function main() {
   }
 
   if (command === 'init') {
-    handleInit(args);
+    handleInit(args.slice(1));
     process.exit(0);
+  }
+
+  if (command === 'build') {
+    await handleBuild(args.slice(1));
+    process.exit(0);
+  }
+
+  if (command === 'dev') {
+    await handleDev(args.slice(1));
+    // dev mode keeps running
   }
 
   console.error(`Unknown command: ${command}`);
@@ -138,4 +266,7 @@ function main() {
   process.exit(1);
 }
 
-main();
+main().catch((error) => {
+  console.error('Error:', error instanceof Error ? error.message : error);
+  process.exit(1);
+});
