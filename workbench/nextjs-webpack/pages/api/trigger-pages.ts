@@ -38,34 +38,42 @@ export default async function handler(
 }
 
 async function handlePost(req: NextApiRequest, res: NextApiResponse) {
-  const workflowFile =
-    (req.query.workflowFile as string) || 'workflows/99_e2e.ts';
-  if (!workflowFile) {
+  const workflowFileParam = req.query.workflowFile;
+  if (workflowFileParam !== undefined && typeof workflowFileParam !== 'string') {
+    return res.status(400).send('Invalid workflowFile query parameter');
+  }
+  const workflowFileStr =
+    (workflowFileParam as string | undefined) || 'workflows/99_e2e.ts';
+  if (!workflowFileStr) {
     return res.status(400).send('No workflowFile query parameter provided');
   }
-  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
+  const workflows = allWorkflows[workflowFileStr as keyof typeof allWorkflows];
   if (!workflows) {
-    return res.status(400).send(`Workflow file "${workflowFile}" not found`);
+    return res.status(400).send(`Workflow file "${workflowFileStr}" not found`);
   }
 
-  const workflowFn = (req.query.workflowFn as string) || 'simple';
-  if (!workflowFn) {
+  const workflowFnParam = req.query.workflowFn;
+  if (workflowFnParam !== undefined && typeof workflowFnParam !== 'string') {
+    return res.status(400).send('Invalid workflowFn query parameter');
+  }
+  const workflowFnStr = (workflowFnParam as string | undefined) || 'simple';
+  if (!workflowFnStr) {
     return res.status(400).send('No workflow query parameter provided');
   }
 
   // Handle static method lookups (e.g., "Calculator.calculate")
   let workflow: unknown;
-  if (workflowFn.includes('.')) {
-    const [className, methodName] = workflowFn.split('.');
+  if (workflowFnStr.includes('.')) {
+    const [className, methodName] = workflowFnStr.split('.');
     const cls = workflows[className as keyof typeof workflows];
     if (cls && typeof cls === 'function') {
       workflow = (cls as Record<string, unknown>)[methodName];
     }
   } else {
-    workflow = workflows[workflowFn as keyof typeof workflows];
+    workflow = workflows[workflowFnStr as keyof typeof workflows];
   }
   if (!workflow) {
-    return res.status(400).send(`Workflow "${workflowFn}" not found`);
+    return res.status(400).send(`Workflow "${workflowFnStr}" not found`);
   }
 
   let args: any[] = [];
@@ -86,7 +94,7 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
       args = [42];
     }
   }
-  console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
+  console.log(`Starting "${workflowFnStr}" workflow with args: ${args}`);
 
   try {
     const run = await start(workflow as any, args as any);
