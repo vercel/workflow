@@ -17,9 +17,14 @@ export class StandaloneBuilder extends BaseBuilder {
       inputFiles,
       tsconfigPath,
     };
-    const manifest = await this.buildStepsBundle(options);
-    await this.buildWorkflowsBundle(options);
+    const stepsManifest = await this.buildStepsBundle(options);
+    const workflowsManifest = await this.buildWorkflowsBundle(options);
     await this.buildWebhookFunction();
+
+    // Merge manifests from both bundles
+    // Steps bundle discovers classes from default export conditions
+    // Workflow bundle discovers classes from 'workflow' export conditions
+    const manifest = this.mergeManifests(stepsManifest, workflowsManifest);
 
     // Build unified manifest from workflow bundle
     const workflowBundlePath = this.resolvePath(
@@ -33,6 +38,29 @@ export class StandaloneBuilder extends BaseBuilder {
     });
 
     await this.createClientLibrary();
+  }
+
+  private mergeManifests(
+    stepsManifest: {
+      steps?: Record<string, any>;
+      workflows?: Record<string, any>;
+      classes?: Record<string, any>;
+    },
+    workflowsManifest: {
+      steps?: Record<string, any>;
+      workflows?: Record<string, any>;
+      classes?: Record<string, any>;
+    }
+  ): {
+    steps?: Record<string, any>;
+    workflows?: Record<string, any>;
+    classes?: Record<string, any>;
+  } {
+    return {
+      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
+      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
+      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
+    };
   }
 
   private async buildStepsBundle({
@@ -62,7 +90,7 @@ export class StandaloneBuilder extends BaseBuilder {
   }: {
     inputFiles: string[];
     tsconfigPath?: string;
-  }): Promise<void> {
+  }) {
     console.log(
       'Creating workflows bundle at',
       this.config.workflowsBundlePath
@@ -73,11 +101,13 @@ export class StandaloneBuilder extends BaseBuilder {
     );
     await this.ensureDirectory(workflowBundlePath);
 
-    await this.createWorkflowsBundle({
+    const { manifest } = await this.createWorkflowsBundle({
       outfile: workflowBundlePath,
       inputFiles,
       tsconfigPath,
     });
+
+    return manifest;
   }
 
   private async buildWebhookFunction(): Promise<void> {

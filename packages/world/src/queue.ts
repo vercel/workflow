@@ -59,6 +59,7 @@ export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 export interface QueueOptions {
   deploymentId?: string;
   idempotencyKey?: string;
+  headers?: Record<string, string>;
 }
 
 export interface Queue {

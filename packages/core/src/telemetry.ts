@@ -2,6 +2,7 @@ import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
 import { once } from '@workflow/utils';
 import { WorkflowSuspension } from './global.js';
+import { runtimeLogger } from './logger.js';
 import * as Attr from './telemetry/semantic-conventions.js';
 
 // ============================================================
@@ -64,7 +65,7 @@ const OtelApi = once(async () => {
   try {
     return await import('@opentelemetry/api');
   } catch {
-    console.warn('OpenTelemetry not available, tracing will be disabled');
+    runtimeLogger.info('OpenTelemetry not available, tracing will be disabled');
     return null;
   }
 });

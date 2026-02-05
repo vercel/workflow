@@ -210,7 +210,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             await applySwcTransform(
               relativeFilepath,
               normalizedSource,
-              options.mode
+              options.mode,
+              args.path // Pass absolute path for module specifier resolution
             );
 
           if (!options.workflowManifest) {

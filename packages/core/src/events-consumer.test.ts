@@ -262,23 +262,13 @@ describe('EventsConsumer', () => {
         .fn()
         .mockReturnValue(EventConsumerResult.Finished);
 
-      // Mock console.error to avoid noise in test output
-      const consoleErrorSpy = vi
-        .spyOn(console, 'error')
-        .mockImplementation(() => {});
-
       consumer.subscribe(throwingCallback);
       consumer.subscribe(normalCallback);
       await waitForNextTick();
 
+      // Error is caught and logged via eventsLogger, processing continues to next callback
       expect(throwingCallback).toHaveBeenCalledWith(event);
       expect(normalCallback).toHaveBeenCalledWith(event);
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        'EventConsumer callback threw an error',
-        expect.any(Error)
-      );
-
-      consoleErrorSpy.mockRestore();
     });
 
     it('should handle callback removal during iteration', async () => {

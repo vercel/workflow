@@ -15,14 +15,14 @@ pub fn format_name(prefix: &str, module_path: &str, identifier: impl Display) ->
 ///
 /// If a module_specifier is provided, use it directly.
 /// Otherwise, convert the filepath to a relative path format (prefixed with "./").
-///
-/// The filepath should already be normalized (forward slashes, relative to project root).
 pub fn get_module_path(module_specifier: Option<&str>, filepath: &str) -> String {
     match module_specifier {
         Some(specifier) => specifier.to_string(),
         None => {
+            // Normalize Windows backslashes to forward slashes for consistent IDs across platforms
+            let normalized = filepath.replace('\\', "/");
             // Strip file extension for cleaner IDs
-            let path_without_ext = strip_extension(filepath);
+            let path_without_ext = strip_extension(&normalized);
             format!("./{}", path_without_ext)
         }
     }
@@ -163,5 +163,25 @@ mod tests {
         let module_path = get_module_path(None, "app/api/route.ts");
         let result = format_name("step", &module_path, "processStep");
         assert_eq!(result, "step//./app/api/route//processStep");
+    }
+
+    // Windows path normalization tests
+    #[test]
+    fn test_get_module_path_windows_backslashes() {
+        let result = get_module_path(None, "src\\workflows\\order.ts");
+        assert_eq!(result, "./src/workflows/order");
+    }
+
+    #[test]
+    fn test_get_module_path_windows_mixed_slashes() {
+        let result = get_module_path(None, "src\\workflows/order.ts");
+        assert_eq!(result, "./src/workflows/order");
+    }
+
+    #[test]
+    fn test_format_name_windows_path() {
+        let module_path = get_module_path(None, "src\\workflows\\order.ts");
+        let result = format_name("workflow", &module_path, "handleOrder");
+        assert_eq!(result, "workflow//./src/workflows/order//handleOrder");
     }
 }

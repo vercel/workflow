@@ -54,9 +54,16 @@ export class SvelteKitBuilder extends BaseBuilder {
     };
 
     // Generate the three SvelteKit route handlers
-    const manifest = await this.buildStepsRoute(options);
-    await this.buildWorkflowsRoute(options);
+    const stepsManifest = await this.buildStepsRoute(options);
+    const workflowsManifest = await this.buildWorkflowsRoute(options);
     await this.buildWebhookRoute({ workflowGeneratedDir });
+
+    // Merge manifests from both bundles
+    const manifest = {
+      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
+      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
+      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
+    };
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow/+server.js');
@@ -119,7 +126,7 @@ export const POST = async ({request}) => {
     const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
     await mkdir(workflowsRouteDir, { recursive: true });
 
-    await this.createWorkflowsBundle({
+    const { manifest } = await this.createWorkflowsBundle({
       format: 'esm',
       outfile: join(workflowsRouteDir, '+server.js'),
       bundleFinalOutput: false,
@@ -141,6 +148,8 @@ export const POST = async ({request}) => {
 }`
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
+
+    return manifest;
   }
 
   private async buildWebhookRoute({

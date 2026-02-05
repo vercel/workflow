@@ -19,10 +19,17 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       workflowGeneratedDir,
       tsconfigPath,
     };
-    const manifest = await this.buildStepsFunction(options);
-    await this.buildWorkflowsFunction(options);
+    const stepsManifest = await this.buildStepsFunction(options);
+    const workflowsManifest = await this.buildWorkflowsFunction(options);
     await this.buildWebhookFunction(options);
     await this.createBuildOutputConfig(outputDir);
+
+    // Merge manifests from both bundles
+    const manifest = {
+      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
+      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
+      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
+    };
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow.func/index.js');
@@ -74,12 +81,12 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     inputFiles: string[];
     workflowGeneratedDir: string;
     tsconfigPath?: string;
-  }): Promise<void> {
+  }) {
     console.log('Creating Vercel Build Output API workflows function');
     const workflowsFuncDir = join(workflowGeneratedDir, 'flow.func');
     await mkdir(workflowsFuncDir, { recursive: true });
 
-    await this.createWorkflowsBundle({
+    const { manifest } = await this.createWorkflowsBundle({
       outfile: join(workflowsFuncDir, 'index.js'),
       inputFiles,
       tsconfigPath,
@@ -91,6 +98,8 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       runtime: this.config.runtime,
     });
+
+    return manifest;
   }
 
   private async buildWebhookFunction({

@@ -50,7 +50,13 @@ export type WorkflowManifest = {
 export async function applySwcTransform(
   filename: string,
   source: string,
-  mode: 'workflow' | 'step' | 'client' | false
+  mode: 'workflow' | 'step' | 'client' | false,
+  /**
+   * Optional absolute path to the file being transformed.
+   * Used for module specifier resolution when filename is relative.
+   * If not provided, filename is joined with process.cwd().
+   */
+  absolutePath?: string
 ): Promise<{
   code: string;
   workflowManifest: WorkflowManifest;
@@ -70,9 +76,11 @@ export async function applySwcTransform(
 
   // Resolve module specifier for packages (node_modules or workspace packages)
   const projectRoot = process.cwd();
-  const absoluteFilename = isAbsolute(filename)
-    ? filename
-    : join(projectRoot, filename);
+  const absoluteFilename = absolutePath
+    ? absolutePath
+    : isAbsolute(filename)
+      ? filename
+      : join(projectRoot, filename);
   const { moduleSpecifier } = resolveModuleSpecifier(
     absoluteFilename,
     projectRoot

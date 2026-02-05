@@ -7,36 +7,52 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 export interface ModuleSpecifierResult {
   /**
    * The module specifier to use for ID generation.
-   * - For packages: "{name}@{version}" (e.g., "point@1.0.0", "@myorg/shared@2.0.0")
+   * - For packages: "{name}@{version}" or "{name}/{subpath}@{version}"
+   *   (e.g., "point@1.0.0", "@myorg/shared@2.0.0", "workflow/internal/builtins@4.0.0")
    * - For local files: undefined (plugin will use default "./relative/path" format)
    */
   moduleSpecifier: string | undefined;
 }
 
 /**
- * Cache for package.json lookups to avoid repeated filesystem reads.
- * Maps directory path to parsed package.json or null if not found.
+ * Parsed package.json data with directory information.
  */
-const packageJsonCache = new Map<
-  string,
-  { name: string; version: string } | null
->();
+interface PackageInfo {
+  name: string;
+  version: string;
+  dir: string;
+  exports?: Record<string, unknown>;
+}
+
+/**
+ * Cache for package.json lookups to avoid repeated filesystem reads.
+ * Maps directory path to parsed package.json info or null if not found.
+ */
+const packageJsonCache = new Map<string, PackageInfo | null>();
 
 /**
  * Find and read the nearest package.json for a given file path.
  * Results are cached for performance.
  */
-function findPackageJson(
-  filePath: string
-): { name: string; version: string } | null {
+function findPackageJson(filePath: string): PackageInfo | null {
   let dir = dirname(filePath);
 
+  // Track directories we've visited so we can back-fill the cache
+  const visitedDirs: string[] = [];
+
+  // Walk up the directory tree until we hit the root
   while (dir !== dirname(dir)) {
     // Check cache first
     const cached = packageJsonCache.get(dir);
     if (cached !== undefined) {
+      // Back-fill cache for all visited directories with the same result
+      for (const visitedDir of visitedDirs) {
+        packageJsonCache.set(visitedDir, cached);
+      }
       return cached;
     }
+
+    visitedDirs.push(dir);
 
     const packageJsonPath = join(dir, 'package.json');
     if (existsSync(packageJsonPath)) {
@@ -44,8 +60,17 @@ function findPackageJson(
         const content = readFileSync(packageJsonPath, 'utf-8');
         const parsed = JSON.parse(content);
         if (parsed.name && parsed.version) {
-          const result = { name: parsed.name, version: parsed.version };
+          const result: PackageInfo = {
+            name: parsed.name,
+            version: parsed.version,
+            dir,
+            exports: parsed.exports,
+          };
+          // Cache the result for this directory and all visited directories
           packageJsonCache.set(dir, result);
+          for (const visitedDir of visitedDirs) {
+            packageJsonCache.set(visitedDir, result);
+          }
           return result;
         }
       } catch {
@@ -53,11 +78,102 @@ function findPackageJson(
       }
     }
 
-    packageJsonCache.set(dir, null);
     dir = dirname(dir);
   }
 
+  // No package.json found - cache null for all visited directories
+  for (const visitedDir of visitedDirs) {
+    packageJsonCache.set(visitedDir, null);
+  }
+
   return null;
+}
+
+/**
+ * Resolve the export subpath for a file within a package.
+ * Looks up the package.json exports field to find which subpath maps to the file.
+ *
+ * @param filePath - Absolute path to the file
+ * @param pkg - Package info from findPackageJson
+ * @returns The subpath (e.g., "/internal/builtins") or empty string for root export
+ */
+function resolveExportSubpath(filePath: string, pkg: PackageInfo): string {
+  if (!pkg.exports || typeof pkg.exports !== 'object') {
+    return '';
+  }
+
+  // Get the relative path from package root to the file
+  const normalizedFilePath = filePath.replace(/\\/g, '/');
+  const normalizedPkgDir = pkg.dir.replace(/\\/g, '/');
+  const relativePath = normalizedFilePath.startsWith(normalizedPkgDir + '/')
+    ? './' + normalizedFilePath.substring(normalizedPkgDir.length + 1)
+    : null;
+
+  if (!relativePath) {
+    return '';
+  }
+
+  // Search through exports to find a matching subpath
+  for (const [subpath, target] of Object.entries(pkg.exports)) {
+    const resolvedTarget = resolveExportTarget(target);
+    if (
+      resolvedTarget &&
+      normalizeExportPath(resolvedTarget) === relativePath
+    ) {
+      // Found a match - return the subpath without the leading "."
+      // e.g., "./internal/builtins" -> "/internal/builtins"
+      return subpath === '.' ? '' : subpath.substring(1);
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Resolve an export target to a file path, handling conditional exports and arrays.
+ */
+function resolveExportTarget(target: unknown): string | null {
+  if (typeof target === 'string') {
+    return target;
+  }
+
+  // Handle array exports (fallback chains)
+  if (Array.isArray(target)) {
+    for (const item of target) {
+      const resolved = resolveExportTarget(item);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+
+  if (target && typeof target === 'object') {
+    // Conditional export - try common conditions in order of preference
+    const conditions = ['workflow', 'default', 'require', 'import', 'node'];
+    for (const condition of conditions) {
+      const value = (target as Record<string, unknown>)[condition];
+      if (typeof value === 'string') {
+        return value;
+      }
+      // Handle nested conditionals or arrays
+      if (value && typeof value === 'object') {
+        const nested = resolveExportTarget(value);
+        if (nested) return nested;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Normalize an export path for comparison.
+ */
+function normalizeExportPath(path: string): string {
+  // Ensure it starts with ./
+  if (!path.startsWith('./')) {
+    return './' + path;
+  }
+  return path;
 }
 
 /**
@@ -69,9 +185,56 @@ function isInNodeModules(filePath: string): boolean {
 }
 
 /**
- * Check if a file path is inside a workspace package.
+ * Cache for project dependencies to avoid repeated filesystem reads.
+ * Maps project root to set of dependency package names.
+ */
+const projectDepsCache = new Map<string, Set<string>>();
+
+/**
+ * Get all dependencies (including devDependencies) for a project.
+ */
+function getProjectDependencies(projectRoot: string): Set<string> {
+  const cached = projectDepsCache.get(projectRoot);
+  if (cached) {
+    return cached;
+  }
+
+  const deps = new Set<string>();
+  const pkgPath = join(projectRoot, 'package.json');
+
+  if (existsSync(pkgPath)) {
+    try {
+      const content = readFileSync(pkgPath, 'utf-8');
+      const parsed = JSON.parse(content);
+
+      // Collect all dependency types
+      for (const depType of [
+        'dependencies',
+        'devDependencies',
+        'peerDependencies',
+        'optionalDependencies',
+      ]) {
+        const depObj = parsed[depType];
+        if (depObj && typeof depObj === 'object') {
+          for (const name of Object.keys(depObj)) {
+            deps.add(name);
+          }
+        }
+      }
+    } catch {
+      // Invalid JSON or file not readable
+    }
+  }
+
+  projectDepsCache.set(projectRoot, deps);
+  return deps;
+}
+
+/**
+ * Check if a file path is inside a workspace package that is a dependency of the project.
  * This is a heuristic - we check if the file is in a directory with a package.json
- * that has a "name" field, but is NOT in node_modules.
+ * that has a "name" field, is NOT in node_modules, and is listed as a dependency
+ * of the project.
  */
 function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
   if (isInNodeModules(filePath)) {
@@ -85,25 +248,20 @@ function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
 
   // Check if the package.json is not the root package.json
   // Use resolve() to normalize paths for cross-platform comparison
-  const rootPkgPath = resolve(projectRoot, 'package.json');
+  const rootPkgDir = resolve(projectRoot);
+  const pkgDir = resolve(pkg.dir);
 
-  // Walk up to find the package.json directory
-  let dir = dirname(filePath);
-  while (dir !== dirname(dir)) {
-    const pkgPath = join(dir, 'package.json');
-    if (existsSync(pkgPath)) {
-      // If this is the root package.json, it's not a workspace package
-      // Use resolve() to normalize both paths before comparison
-      if (resolve(pkgPath) === rootPkgPath) {
-        return false;
-      }
-      // Found a package.json that's not the root - it's a workspace package
-      return true;
-    }
-    dir = dirname(dir);
+  // If the package directory is the project root, it's not a workspace package
+  if (pkgDir === rootPkgDir) {
+    return false;
   }
 
-  return false;
+  // Found a package.json that's not the root.
+  // Only treat it as a workspace package if it's actually a dependency
+  // of the current project. This prevents sibling apps in a monorepo
+  // from being incorrectly treated as importable packages.
+  const projectDeps = getProjectDependencies(projectRoot);
+  return projectDeps.has(pkg.name);
 }
 
 /**
@@ -114,9 +272,14 @@ function isWorkspacePackage(filePath: string, projectRoot: string): boolean {
  * @returns The module specifier result
  *
  * @example
- * // File in node_modules
+ * // File in node_modules (root export)
  * resolveModuleSpecifier('/project/node_modules/point/dist/index.js', '/project')
  * // => { moduleSpecifier: 'point@1.0.0' }
+ *
+ * @example
+ * // File in node_modules (subpath export)
+ * resolveModuleSpecifier('/project/node_modules/workflow/dist/internal/builtins.js', '/project')
+ * // => { moduleSpecifier: 'workflow/internal/builtins@4.0.0' }
  *
  * @example
  * // File in workspace package
@@ -149,9 +312,16 @@ export function resolveModuleSpecifier(
     return { moduleSpecifier: undefined };
   }
 
-  // Return the module specifier as "name@version"
+  // Resolve the export subpath (e.g., "/internal/builtins" for "workflow/internal/builtins")
+  const subpath = resolveExportSubpath(filePath, pkg);
+
+  // Return the module specifier as "name/subpath@version" or "name@version"
+  const specifier = subpath
+    ? `${pkg.name}${subpath}@${pkg.version}`
+    : `${pkg.name}@${pkg.version}`;
+
   return {
-    moduleSpecifier: `${pkg.name}@${pkg.version}`,
+    moduleSpecifier: specifier,
   };
 }
 
@@ -160,6 +330,7 @@ export function resolveModuleSpecifier(
  */
 export function clearModuleSpecifierCache(): void {
   packageJsonCache.clear();
+  projectDepsCache.clear();
 }
 
 /**

@@ -13,32 +13,36 @@ const enhancedResolve = promisify(enhancedResolveOriginal);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
-// parent -> child relationship
-export const importParents = new Map<string, string>();
+// parent -> children relationship (a file can import multiple files)
+export const importParents = new Map<string, Set<string>>();
 
-// check if a parent has a child in it's import chain
+// check if a parent has a child in its import chain
 // e.g. if a dependency needs to be bundled because it has
 // a 'use workflow/'use step' directive in it
-export function parentHasChild(parent: string, childToFind: string) {
-  let child: string | undefined;
-  let currentParent: string | undefined = parent;
+export function parentHasChild(parent: string, childToFind: string): boolean {
   const visited = new Set<string>();
+  const queue: string[] = [parent];
 
-  do {
-    if (currentParent) {
-      // Detect circular imports to prevent infinite loop
-      if (visited.has(currentParent)) {
-        break;
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+
+    if (visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+
+    const children = importParents.get(current);
+    if (!children) {
+      continue;
+    }
+
+    for (const child of children) {
+      if (child === childToFind) {
+        return true;
       }
-      visited.add(currentParent);
-      child = importParents.get(currentParent);
+      queue.push(child);
     }
-
-    if (child === childToFind) {
-      return true;
-    }
-    currentParent = child;
-  } while (child && currentParent);
+  }
 
   return false;
 }
@@ -56,7 +60,16 @@ export function createDiscoverEntriesPlugin(state: {
           const resolved = await enhancedResolve(args.resolveDir, args.path);
 
           if (resolved) {
-            importParents.set(args.importer, resolved);
+            // Normalize path separators for cross-platform compatibility
+            const normalizedImporter = args.importer.replace(/\\/g, '/');
+            const normalizedResolved = resolved.replace(/\\/g, '/');
+            // A file can import multiple files, so we store a Set of children
+            let children = importParents.get(normalizedImporter);
+            if (!children) {
+              children = new Set<string>();
+              importParents.set(normalizedImporter, children);
+            }
+            children.add(normalizedResolved);
           }
         } catch (_) {}
         return null;

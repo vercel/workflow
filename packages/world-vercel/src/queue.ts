@@ -114,6 +114,7 @@ export function createQueue(config?: APIConfig): Queue {
         {
           idempotencyKey: opts?.idempotencyKey,
           delaySeconds: opts?.delaySeconds,
+          headers: opts?.headers,
         }
       );
       return { messageId: MessageId.parse(messageId) };

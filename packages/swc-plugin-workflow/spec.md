@@ -35,7 +35,7 @@ This manifest is used by bundlers and the runtime to discover and register workf
 IDs use the format `{type}//{modulePath}//{identifier}` where:
 - `type` is `workflow`, `step`, or `class`
 - `modulePath` is either:
-  - A **module specifier** (e.g., `point@0.0.1`, `@myorg/shared@1.2.3`) when provided via plugin config
+  - A **module specifier** with version (e.g., `point@0.0.1`, `@myorg/shared@1.2.3`, `workflow/internal/builtins@4.0.0`) when provided via plugin config
   - A **relative path** prefixed with `./` (e.g., `./src/jobs/order`) when no specifier is provided
 - `identifier` is the function/class name, with nested functions using `/` separators
 
@@ -53,19 +53,27 @@ import specifier rather than the file path. This is useful for:
 3. **Stable cross-bundle references**: Classes serialized in one bundle can be deserialized in another 
    bundle as long as both use the same module specifier.
 
+4. **Subpath exports**: For packages with multiple entry points (e.g., `workflow/internal/builtins`), 
+   the full subpath is included in the module specifier to avoid collisions between steps with the 
+   same name in different subpaths.
+
 **Plugin Config:**
 ```json
 {
   "mode": "step",
-  "moduleSpecifier": "point@0.0.1"
+  "moduleSpecifier": "workflow/internal/builtins@4.0.0"
 }
 ```
 
 ### Examples
 
-**With module specifier (npm package):**
+**With module specifier (npm package root export):**
 - `class//point@0.0.1//Point`
 - `step//@myorg/tasks@2.0.0//processOrder`
+
+**With module specifier (npm package subpath export):**
+- `step//workflow/internal/builtins@4.0.0//__builtin_response_json`
+- `class//@myorg/shared/models@1.0.0//User`
 
 **Without module specifier (local files):**
 - `workflow//./src/jobs/order//processOrder`
