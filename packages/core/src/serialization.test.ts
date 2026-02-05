@@ -2219,7 +2219,7 @@ describe('custom class serialization', () => {
   });
 
   it('should pass class as this context to WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE', () => {
-    // This test verifies that serialize.call(ctor, value) and deserialize.call(cls, data)
+    // This test verifies that serialize.call(cls, value) and deserialize.call(cls, data)
     // properly pass the class as `this` context, which is required when the serializer/deserializer
     // needs to access static properties or methods on the class
 
