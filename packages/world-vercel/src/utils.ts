@@ -15,6 +15,9 @@ import {
   ServerPort,
   ErrorType,
   WorldParseFormat,
+  PeerService,
+  RpcSystem,
+  RpcService,
 } from './telemetry.js';
 import { version } from './version.js';
 
@@ -244,6 +247,10 @@ export async function makeRequest<T>({
         ...UrlFull(url),
         ...(serverAddress && ServerAddress(serverAddress)),
         ...(serverPort && ServerPort(serverPort)),
+        // Peer service for Datadog service maps
+        ...PeerService('workflow-server'),
+        ...RpcSystem('http'),
+        ...RpcService('workflow-server'),
       });
 
       headers.set('Accept', 'application/cbor');

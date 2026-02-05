@@ -120,3 +120,18 @@ export const ErrorType = SemanticConvention<string>('error.type');
 export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
   'workflow.world.parse.format'
 );
+
+// RPC/Peer Service attributes - For service maps and dependency tracking
+// See: https://opentelemetry.io/docs/specs/semconv/rpc/rpc-spans/
+
+/** The remote service name for Datadog service maps (Datadog-specific: peer.service) */
+export const PeerService = SemanticConvention<string>('peer.service');
+
+/** RPC system identifier (standard OTEL: rpc.system) */
+export const RpcSystem = SemanticConvention<string>('rpc.system');
+
+/** RPC service name (standard OTEL: rpc.service) */
+export const RpcService = SemanticConvention<string>('rpc.service');
+
+/** RPC method name (standard OTEL: rpc.method) */
+export const RpcMethod = SemanticConvention<string>('rpc.method');

@@ -188,3 +188,67 @@ export function linkToCurrentContext(): Promise<[api.Link] | undefined> {
     return [{ context }];
   });
 }
+
+// ============================================================
+// Baggage Propagation Utilities
+// ============================================================
+
+/**
+ * Workflow context to propagate via baggage
+ */
+export interface WorkflowBaggageContext {
+  workflowRunId: string;
+  workflowName: string;
+}
+
+/**
+ * Sets workflow context as OTEL baggage for automatic propagation.
+ * Baggage is propagated across service boundaries via HTTP headers.
+ * @param context - Workflow context to set as baggage
+ * @returns A function to run within the baggage context
+ */
+export async function withWorkflowBaggage<T>(
+  context: WorkflowBaggageContext,
+  fn: () => Promise<T>
+): Promise<T> {
+  const otel = await OtelApi.value;
+  if (!otel) return fn();
+
+  // Create baggage with workflow context
+  const baggage = otel.propagation.createBaggage({
+    'workflow.run_id': { value: context.workflowRunId },
+    'workflow.name': { value: context.workflowName },
+  });
+
+  // Set baggage in context and run function
+  const contextWithBaggage = otel.propagation.setBaggage(
+    otel.context.active(),
+    baggage
+  );
+
+  return otel.context.with(contextWithBaggage, () => fn());
+}
+
+/**
+ * Retrieves workflow context from OTEL baggage.
+ * @returns Workflow context if present in baggage, undefined otherwise
+ */
+export async function getWorkflowBaggage(): Promise<
+  WorkflowBaggageContext | undefined
+> {
+  const otel = await OtelApi.value;
+  if (!otel) return undefined;
+
+  const baggage = otel.propagation.getBaggage(otel.context.active());
+  if (!baggage) return undefined;
+
+  const runId = baggage.getEntry('workflow.run_id')?.value;
+  const name = baggage.getEntry('workflow.name')?.value;
+
+  if (!runId || !name) return undefined;
+
+  return {
+    workflowRunId: runId,
+    workflowName: name,
+  };
+}

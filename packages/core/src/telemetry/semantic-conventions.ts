@@ -298,3 +298,29 @@ export const QueueExecutionTimeMs = SemanticConvention<number>(
 export const QueueSerializeTimeMs = SemanticConvention<number>(
   'workflow.queue.serialize_time_ms'
 );
+
+// RPC/Peer Service attributes - For service maps and dependency tracking
+// See: https://opentelemetry.io/docs/specs/semconv/rpc/rpc-spans/
+
+/** The remote service name for Datadog service maps (Datadog-specific: peer.service) */
+export const PeerService = SemanticConvention<string>('peer.service');
+
+/** RPC system identifier (standard OTEL: rpc.system) */
+export const RpcSystem = SemanticConvention<string>('rpc.system');
+
+/** RPC service name (standard OTEL: rpc.service) */
+export const RpcService = SemanticConvention<string>('rpc.service');
+
+/** RPC method name (standard OTEL: rpc.method) */
+export const RpcMethod = SemanticConvention<string>('rpc.method');
+
+// Error attributes - Standard OTEL error conventions
+// See: https://opentelemetry.io/docs/specs/semconv/exceptions/exceptions-spans/
+
+/** Whether the error is retryable (workflow-specific) */
+export const ErrorRetryable = SemanticConvention<boolean>('error.retryable');
+
+/** Error category (workflow-specific: fatal, retryable, transient) */
+export const ErrorCategory = SemanticConvention<
+  'fatal' | 'retryable' | 'transient'
+>('error.category');

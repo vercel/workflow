@@ -2,7 +2,35 @@
  * Utility to instrument object methods with tracing.
  * This mirrors world-vercel's implementation for consistent observability.
  */
-import { trace } from './telemetry.js';
+import {
+  trace,
+  getSpanKind,
+  PeerService,
+  RpcSystem,
+  RpcService,
+  RpcMethod,
+} from './telemetry.js';
+
+/** Configuration for peer service attribution */
+const WORLD_LOCAL_SERVICE = {
+  peerService: 'world-local',
+  rpcSystem: 'local',
+  rpcService: 'world-local',
+};
+
+/**
+ * Extracts the event type from arguments for events.create calls.
+ * The event data is the second argument and contains eventType.
+ */
+function extractEventType(args: unknown[]): string | undefined {
+  if (args.length >= 2 && typeof args[1] === 'object' && args[1] !== null) {
+    const data = args[1] as Record<string, unknown>;
+    if (typeof data.eventType === 'string') {
+      return data.eventType;
+    }
+  }
+  return undefined;
+}
 
 /**
  * Wraps all methods of an object with tracing spans.
@@ -17,9 +45,33 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
       handlers[key] = o[key];
     } else {
       const f = o[key];
+      const methodName = String(key);
       // @ts-expect-error - dynamic function wrapping
-      handlers[key] = async (...args: unknown[]) =>
-        trace(`${prefix}.${String(key)}`, {}, () => f(...args));
+      handlers[key] = async (...args: unknown[]) => {
+        // Build span name - for events.create, include the event type
+        let spanName = `${prefix}.${methodName}`;
+        if (prefix === 'world.events' && methodName === 'create') {
+          const eventType = extractEventType(args);
+          if (eventType) {
+            spanName = `${prefix}.${methodName} ${eventType}`;
+          }
+        }
+
+        return trace(
+          spanName,
+          { kind: await getSpanKind('INTERNAL') },
+          async (span) => {
+            // Add peer service attributes for service maps
+            span?.setAttributes({
+              ...PeerService(WORLD_LOCAL_SERVICE.peerService),
+              ...RpcSystem(WORLD_LOCAL_SERVICE.rpcSystem),
+              ...RpcService(WORLD_LOCAL_SERVICE.rpcService),
+              ...RpcMethod(`${prefix}.${methodName}`),
+            });
+            return f(...args);
+          }
+        );
+      };
     }
   }
   return handlers;

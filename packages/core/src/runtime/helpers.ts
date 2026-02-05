@@ -339,13 +339,18 @@ export async function queueMessage(
 ) {
   const queueName = args[0];
   await trace(
-    'queueMessage',
+    'queue.publish',
     {
       // Standard OTEL messaging conventions
       attributes: {
         ...Attribute.MessagingSystem('vercel-queue'),
         ...Attribute.MessagingDestinationName(queueName),
         ...Attribute.MessagingOperationType('publish'),
+        // Peer service for Datadog service maps
+        ...Attribute.PeerService('vercel-queue'),
+        ...Attribute.RpcSystem('vercel-queue'),
+        ...Attribute.RpcService('vqs'),
+        ...Attribute.RpcMethod('publish'),
       },
       kind: await getSpanKind('PRODUCER'),
     },

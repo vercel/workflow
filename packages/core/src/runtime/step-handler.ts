@@ -153,6 +153,12 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   // Use 'completed' as a representative terminal state for the skip reason
                   ...Attribute.StepSkipReason('completed'),
                 });
+                // Add span event for step skip
+                span?.addEvent?.('step.skipped', {
+                  'skip.reason': 'terminal_state',
+                  'step.name': stepName,
+                  'step.id': stepId,
+                });
                 await queueMessage(world, `__wkf_workflow_${workflowName}`, {
                   runId: workflowRunId,
                   traceCarrier: await serializeTraceCarrier(),
@@ -175,6 +181,12 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 );
                 span?.setAttributes({
                   ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
+                });
+                // Add span event for delayed retry
+                span?.addEvent?.('step.delayed', {
+                  'delay.reason': 'retry_after_not_reached',
+                  'delay.timeout_seconds': timeoutSeconds,
+                  'delay.retry_after': retryAfter.toISOString(),
                 });
                 runtimeLogger.debug(
                   'Step retryAfter timestamp not yet reached',
@@ -266,26 +278,31 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             const stepStartedAt = step.startedAt;
 
             // Hydrate the step input arguments, closure variables, and thisVal
-            // Track deserialization time for observability
             // NOTE: This captures only the synchronous portion of hydration. Any async
             // operations (e.g., stream loading) are added to `ops` and executed later
             // via Promise.all(ops) - their timing is not included in this measurement.
-            const deserializeStartTime = Date.now();
             const ops: Promise<void>[] = [];
-            const hydratedInput = hydrateStepArguments(
-              step.input,
-              ops,
-              workflowRunId
+            const hydratedInput = await trace(
+              'step.hydrate',
+              {},
+              async (hydrateSpan) => {
+                const startTime = Date.now();
+                const result = hydrateStepArguments(
+                  step.input,
+                  ops,
+                  workflowRunId
+                );
+                const durationMs = Date.now() - startTime;
+                hydrateSpan?.setAttributes({
+                  ...Attribute.StepArgumentsCount(result.args.length),
+                  ...Attribute.QueueDeserializeTimeMs(durationMs),
+                });
+                return result;
+              }
             );
-            const deserializeTimeMs = Date.now() - deserializeStartTime;
 
             const args = hydratedInput.args;
             const thisVal = hydratedInput.thisVal ?? null;
-
-            span?.setAttributes({
-              ...Attribute.StepArgumentsCount(args.length),
-              ...Attribute.QueueDeserializeTimeMs(deserializeTimeMs),
-            });
 
             // Execute the step function with tracing
             const executionStartTime = Date.now();
@@ -321,14 +338,24 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // NOTE: None of the code from this point is guaranteed to run
             // Since the step might fail or cause a function timeout and the process might be SIGKILL'd
             // The workflow runtime must be resilient to the below code not executing on a failed step
-            // Track serialization time for observability
-            const serializeStartTime = Date.now();
-            result = dehydrateStepReturnValue(result, ops, workflowRunId);
-            const serializeTimeMs = Date.now() - serializeStartTime;
-
-            span?.setAttributes({
-              ...Attribute.QueueSerializeTimeMs(serializeTimeMs),
-            });
+            result = await trace(
+              'step.dehydrate',
+              {},
+              async (dehydrateSpan) => {
+                const startTime = Date.now();
+                const dehydrated = dehydrateStepReturnValue(
+                  result,
+                  ops,
+                  workflowRunId
+                );
+                const durationMs = Date.now() - startTime;
+                dehydrateSpan?.setAttributes({
+                  ...Attribute.QueueSerializeTimeMs(durationMs),
+                  ...Attribute.StepResultType(typeof dehydrated),
+                });
+                return dehydrated;
+              }
+            );
 
             waitUntil(
               Promise.all(ops).catch((err) => {
@@ -368,9 +395,26 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             });
             return;
           } catch (err: unknown) {
+            // Record exception for OTEL error tracking
+            if (err instanceof Error) {
+              span?.recordException?.(err);
+            }
+
+            // Determine error category and retryability
+            const isFatal = FatalError.is(err);
+            const isRetryable = RetryableError.is(err);
+            const errorCategory = isFatal
+              ? 'fatal'
+              : isRetryable
+                ? 'retryable'
+                : 'transient';
+
             span?.setAttributes({
               ...Attribute.StepErrorName(getErrorName(err)),
               ...Attribute.StepErrorMessage(String(err)),
+              ...Attribute.ErrorType(getErrorName(err)),
+              ...Attribute.ErrorCategory(errorCategory),
+              ...Attribute.ErrorRetryable(!isFatal),
             });
 
             if (WorkflowAPIError.is(err)) {
@@ -388,7 +432,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               }
             }
 
-            if (FatalError.is(err)) {
+            if (isFatal) {
               const errorStack = getErrorStack(err);
               stepLogger.error(
                 'Encountered FatalError while executing step, bubbling up to parent workflow',
@@ -501,6 +545,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 span?.setAttributes({
                   ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
                   ...Attribute.StepRetryWillRetry(true),
+                });
+
+                // Add span event for retry scheduling
+                span?.addEvent?.('retry.scheduled', {
+                  'retry.timeout_seconds': timeoutSeconds,
+                  'retry.attempt': currentAttempt,
+                  'retry.max_retries': maxRetries,
                 });
 
                 // It's a retryable error - so have the queue keep the message visible
