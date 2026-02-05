@@ -460,7 +460,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (isStepTerminal(validatedStep.status)) {
           throw new WorkflowAPIError(
             `Cannot modify step in terminal state "${validatedStep.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
 
