@@ -9,6 +9,9 @@
  * NOTE: Unlike the trace() function in @workflow/core, this implementation does not
  * have special handling for WorkflowSuspension errors because world-vercel operates
  * at the HTTP layer and never encounters workflow suspension effects.
+ *
+ * IMPORTANT: This module uses the same tracer name 'workflow' as @workflow/core to ensure
+ * all spans are reported under the parent application's service, not as a separate service.
  */
 import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
@@ -28,7 +31,7 @@ let tracerPromise: Promise<api.Tracer | null> | null = null;
 async function getTracer(): Promise<api.Tracer | null> {
   if (!tracerPromise) {
     tracerPromise = getOtelApi().then((otel) =>
-      otel ? otel.trace.getTracer('workflow-world-vercel') : null
+      otel ? otel.trace.getTracer('workflow') : null
     );
   }
   return tracerPromise;
