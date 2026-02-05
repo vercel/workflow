@@ -62,11 +62,12 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
           { kind: await getSpanKind('CLIENT') },
           async (span) => {
             // Add peer service attributes for service maps
+            // Use spanName for rpc.method so Datadog shows event type in resource
             span?.setAttributes({
               ...PeerService(WORKFLOW_SERVER_SERVICE.peerService),
               ...RpcSystem(WORKFLOW_SERVER_SERVICE.rpcSystem),
               ...RpcService(WORKFLOW_SERVER_SERVICE.rpcService),
-              ...RpcMethod(`${prefix}.${methodName}`),
+              ...RpcMethod(spanName),
             });
             return f(...args);
           }
