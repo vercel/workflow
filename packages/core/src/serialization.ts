@@ -569,7 +569,7 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       }
 
       // Serialize the instance using the custom serializer
-      const data = serialize(value);
+      const data = serialize.call(ctor, value);
       return { classId, data };
     },
     Set: (value) => value instanceof global.Set && Array.from(value),
@@ -890,7 +890,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
       }
 
       // Deserialize the instance using the custom deserializer
-      return deserialize(data);
+      return deserialize.call(cls, data);
     },
     Set: (value) => new global.Set(value),
     StepFunction: (value) => {
