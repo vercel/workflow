@@ -557,11 +557,7 @@ export abstract class BaseBuilder {
     // calls directly, so we just need to import the files (Map is initialized via banner)
     const workflowImports = workflowFiles.map(createImport).join('\n');
 
-    // Include serde-only files for class registration side effects.
-    // Note: If a package has serde classes that aren't exported via the 'workflow'
-    // condition, those classes won't be available in the workflow bundle. Packages
-    // should export all serializable classes (including internal ones used during
-    // serialization) via their 'workflow' export condition.
+    // Include serde-only files for class registration side effects
     const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
 
     const imports = serdeImports
