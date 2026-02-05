@@ -1153,13 +1153,6 @@ export async function fetchWorkflowsManifest(
 }
 
 /**
- * Health check result with latency information
- */
-export interface HealthCheckResultWithLatency extends HealthCheckResult {
-  latencyMs: number;
-}
-
-/**
  * Run a queue-based health check on a workflow endpoint.
  *
  * This sends a health check message through the Queue infrastructure,
@@ -1175,18 +1168,14 @@ export async function runHealthCheck(
   worldEnv: EnvMap,
   endpoint: HealthCheckEndpoint,
   options?: { timeout?: number }
-): Promise<ServerActionResult<HealthCheckResultWithLatency>> {
-  const startTime = Date.now();
+): Promise<ServerActionResult<HealthCheckResult>> {
   try {
     const world = await getWorldFromEnv(worldEnv);
     const result = await healthCheck(world, endpoint, options);
-    const latencyMs = Date.now() - startTime;
     return createResponse({
       ...result,
-      latencyMs,
     });
   } catch (error) {
-    const latencyMs = Date.now() - startTime;
     // For health check failures, we want to return success=true with healthy=false
     // so the UI can display the error properly, rather than propagating the server
     // action error. This allows the health check result to be parsed by the UI
@@ -1195,7 +1184,7 @@ export async function runHealthCheck(
     return createResponse({
       healthy: false,
       error: errorMessage,
-      latencyMs,
+      latencyMs: undefined,
     });
   }
 }
