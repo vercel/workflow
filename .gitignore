@@ -34,5 +34,3 @@ packages/swc-plugin-workflow/build-hash.json
 
 .DS_Store
 
-# bd (beads) local state
-.beads/
