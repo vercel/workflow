@@ -1,16 +1,7 @@
 'use client';
 
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import {
-  cancelRun,
-  type EnvMap,
-  type Event,
-  getErrorMessage,
-  reenqueueRun,
-  useWorkflowRuns,
-} from '@workflow/web-shared';
-import { fetchEvents, fetchRun } from '@workflow/web-shared/server';
-import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
+import type { Event, WorkflowRun, WorkflowRunStatus } from '@workflow/world';
 import {
   AlertCircle,
   ArrowDownAZ,
@@ -55,6 +46,14 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { useTableSelection } from '@/lib/hooks/use-table-selection';
+import {
+  cancelRun,
+  getErrorMessage,
+  reenqueueRun,
+  useWorkflowRuns,
+} from '@/lib/workflow-api-client';
+import type { EnvMap } from '@/server/workflow-server-actions';
+import { fetchEvents, fetchRun } from '@/server/workflow-server-actions';
 import { useServerConfig } from '@/lib/world-config-context';
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';

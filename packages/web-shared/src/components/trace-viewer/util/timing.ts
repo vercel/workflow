@@ -1,4 +1,4 @@
-import { formatDuration } from '../../lib/utils';
+import { formatDuration } from '../../../lib/utils';
 
 export { formatDuration };
 

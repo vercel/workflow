@@ -1,5 +1,12 @@
 import { constants } from 'node:fs';
-import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import {
+  access,
+  copyFile,
+  mkdir,
+  readFile,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
@@ -67,11 +74,25 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow/+server.js');
-    await this.createManifest({
+    const manifestJson = await this.createManifest({
       workflowBundlePath,
       manifestDir: workflowGeneratedDir,
       manifest,
     });
+
+    // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
+    // SvelteKit serves files from static/ at the root URL.
+    if (this.shouldExposePublicManifest && manifestJson) {
+      const staticManifestDir = join(
+        this.config.workingDir,
+        'static/.well-known/workflow/v1'
+      );
+      await mkdir(staticManifestDir, { recursive: true });
+      await copyFile(
+        join(workflowGeneratedDir, 'manifest.json'),
+        join(staticManifestDir, 'manifest.json')
+      );
+    }
   }
 
   private async buildStepsRoute({

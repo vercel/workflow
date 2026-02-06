@@ -7,7 +7,7 @@
   "scripts": {
     "workflow": "workflow",
     "wf": "wf",
-    "build": "workflow build --target vercel-build-output-api --workflow-manifest manifest.js && rm -rf .vercel/output/static && cp -rv public .vercel/output/static"
+    "build": "workflow build --target vercel-build-output-api --workflow-manifest manifest.js"
   },
   "devDependencies": {
     "@workflow/world-postgres": "workspace:*",

@@ -10,6 +10,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
 
 export interface StartOptions {
@@ -161,7 +162,7 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       await world.queue(
-        `__wkf_workflow_${workflowName}`,
+        getWorkflowQueueName(workflowName),
         {
           runId,
           traceCarrier,

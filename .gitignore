@@ -34,5 +34,7 @@ packages/swc-plugin-workflow/build-hash.json
 
 .DS_Store
 
-# bd (beads) local state
-.beads/
+# Generated manifest files copied to static asset directories by builders
+workbench/nextjs-*/public/.well-known/workflow
+workbench/sveltekit/static/.well-known/workflow
+

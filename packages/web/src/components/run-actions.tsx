@@ -1,18 +1,9 @@
 'use client';
 
-import {
-  analyzeEvents,
-  cancelRun,
-  type EnvMap,
-  type Event,
-  recreateRun,
-  reenqueueRun,
-  wakeUpRun,
-} from '@workflow/web-shared';
-import type { WorkflowRunStatus } from '@workflow/world';
+import { analyzeEvents } from '@workflow/web-shared';
+import type { Event, WorkflowRunStatus } from '@workflow/world';
 import {
   AlarmClockOff,
-  Loader2,
   MoreHorizontal,
   RotateCw,
   XCircle,
@@ -31,6 +22,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import {
+  cancelRun,
+  recreateRun,
+  reenqueueRun,
+  wakeUpRun,
+} from '@/lib/workflow-api-client';
+import type { EnvMap } from '@/server/workflow-server-actions';
 import { Button } from './ui/button';
 
 // ============================================================================

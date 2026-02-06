@@ -1,12 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { readStream } from './api/workflow-api-client';
-import type { EnvMap } from './api/workflow-server-actions';
 
 interface StreamViewerProps {
-  env: EnvMap;
   streamId: string;
+  chunks: Chunk[];
+  isLive: boolean;
+  error?: string | null;
 }
 
 interface Chunk {
@@ -19,15 +19,15 @@ interface Chunk {
  * It connects to a stream and displays chunks as they arrive,
  * with auto-scroll functionality.
  */
-export function StreamViewer({ env, streamId }: StreamViewerProps) {
-  const [chunks, setChunks] = useState<Chunk[]>([]);
-  const [isLive, setIsLive] = useState(true);
+export function StreamViewer({
+  streamId,
+  chunks,
+  isLive,
+  error,
+}: StreamViewerProps) {
   // TODO: Handle 410 error specifically (stream expired)
-  const [error, setError] = useState<string | null>(null);
   const [hasMoreBelow, setHasMoreBelow] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const chunkIdRef = useRef(0);
 
   const checkScrollPosition = useCallback(() => {
     if (scrollRef.current) {
@@ -46,71 +46,6 @@ export function StreamViewer({ env, streamId }: StreamViewerProps) {
     // Check scroll position after content changes
     checkScrollPosition();
   }, [chunks.length, checkScrollPosition]);
-
-  useEffect(() => {
-    let mounted = true;
-    abortControllerRef.current = new AbortController();
-
-    const handleStreamEnd = () => {
-      if (mounted) {
-        setIsLive(false);
-      }
-    };
-
-    const handleStreamError = (err: unknown) => {
-      if (mounted) {
-        setError(err instanceof Error ? err.message : String(err));
-        setIsLive(false);
-      }
-    };
-
-    const addChunk = (value: unknown) => {
-      if (mounted && value !== undefined && value !== null) {
-        const chunkId = chunkIdRef.current++;
-        const text =
-          typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-        setChunks((prev) => [...prev, { id: chunkId, text }]);
-      }
-    };
-
-    const processStreamChunks = async (
-      reader: ReadableStreamDefaultReader<unknown>
-    ) => {
-      for (;;) {
-        if (abortControllerRef.current?.signal.aborted) {
-          break;
-        }
-
-        const { value, done } = await reader.read();
-
-        if (done) {
-          handleStreamEnd();
-          break;
-        }
-
-        addChunk(value);
-      }
-    };
-
-    const readStreamData = async () => {
-      try {
-        const stream = await readStream(env, streamId);
-        const reader = stream.getReader();
-        await processStreamChunks(reader);
-      } catch (err) {
-        handleStreamError(err);
-      }
-    };
-
-    void readStreamData();
-
-    return () => {
-      mounted = false;
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [env, streamId]);
 
   return (
     <div className="flex flex-col h-full pb-4">

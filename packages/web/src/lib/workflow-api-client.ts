@@ -9,12 +9,12 @@ import type {
   WorkflowRunStatus,
 } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getPaginationDisplay } from '../lib/utils';
-import {
-  hookEventsToHookEntity,
-  waitEventsToWaitEntity,
-} from '../workflow-traces/trace-span-construction';
-import type { EnvMap, ServerActionError } from './workflow-server-actions';
+import { getPaginationDisplay } from './utils';
+import { waitEventsToWaitEntity } from '@workflow/web-shared';
+import type {
+  EnvMap,
+  ServerActionError,
+} from '@/server/workflow-server-actions';
 import {
   cancelRun as cancelRunServerAction,
   fetchEvents,
@@ -34,7 +34,7 @@ import {
   type StopSleepOptions,
   type StopSleepResult,
   wakeUpRun as wakeUpRunServerAction,
-} from './workflow-server-actions';
+} from '@/server/workflow-server-actions';
 
 const MAX_ITEMS = 1000;
 const LIVE_POLL_LIMIT = 10;
@@ -962,7 +962,10 @@ async function fetchResourceWithCorrelationId(
   env: EnvMap,
   resource: 'run' | 'step' | 'hook',
   resourceId: string,
-  options: { runId?: string; resolveData?: 'none' | 'all' } = {}
+  options: {
+    runId?: string;
+    resolveData?: 'none' | 'all';
+  } = {}
 ): Promise<{
   data: WorkflowRun | Step | Hook;
   correlationId: string;
@@ -1021,21 +1024,41 @@ export function useWorkflowResourceData(
   env: EnvMap,
   resource: 'run' | 'step' | 'hook' | 'sleep',
   resourceId: string,
-  options: { refreshInterval?: number; runId?: string } = {}
+  options: {
+    refreshInterval?: number;
+    runId?: string;
+    /** If false, skip fetching (useful when data is provided externally) */
+    enabled?: boolean;
+  } = {}
 ) {
-  const { refreshInterval = 0, runId } = options;
+  const { refreshInterval = 0, runId, enabled = true } = options;
 
   const [data, setData] = useState<WorkflowRun | Step | Hook | Event | null>(
     null
   );
   // const [events, setEvents] = useState<Event[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<Error | null>(null);
 
   const fetchData = useCallback(async () => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     setData(null);
     setError(null);
-    if (resource === 'hook' || resource === 'sleep') {
+    if (resource === 'hook') {
+      const { error, result } = await unwrapServerActionResult(
+        fetchHook(env, resourceId, 'all')
+      );
+      if (error) {
+        setError(error);
+        return;
+      }
+      setData(result);
+      return;
+    }
+    if (resource === 'sleep') {
       const { error, result } = await unwrapServerActionResult(
         fetchEventsByCorrelationId(env, resourceId, {
           sortOrder: 'asc',
@@ -1048,10 +1071,7 @@ export function useWorkflowResourceData(
         return;
       }
       const events = result.data as unknown as Event[];
-      const data =
-        resource === 'hook'
-          ? hookEventsToHookEntity(events)
-          : waitEventsToWaitEntity(events);
+      const data = waitEventsToWaitEntity(events);
       if (data === null) {
         setError(
           new Error(
@@ -1070,9 +1090,7 @@ export function useWorkflowResourceData(
         env,
         resource,
         resourceId,
-        {
-          runId,
-        }
+        { runId }
       );
       setData(resourceData);
     } catch (error: unknown) {
@@ -1085,14 +1103,7 @@ export function useWorkflowResourceData(
     } finally {
       setLoading(false);
     }
-
-    // // Fetch events by correlation ID
-    // const eventsData = await fetchAllEventsByCorrelationId(
-    //   env,
-    //   correlationId
-    // );
-    // setEvents(eventsData);
-  }, [env, resource, resourceId, runId]);
+  }, [env, resource, resourceId, runId, enabled]);
 
   // Initial load
   useEffect(() => {

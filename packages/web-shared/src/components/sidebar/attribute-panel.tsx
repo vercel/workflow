@@ -5,9 +5,9 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import type { ReactNode } from 'react';
 import { createContext, useContext, useMemo, useState } from 'react';
-import { ErrorCard } from '../components/ui/error-card';
-import { useDarkMode } from '../hooks/use-dark-mode';
-import { extractConversation, isDoStreamStep } from '../lib/utils';
+import { ErrorCard } from '../ui/error-card';
+import { useDarkMode } from '../../hooks/use-dark-mode';
+import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
 

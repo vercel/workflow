@@ -1,56 +1,26 @@
 'use client';
 
-import { useCallback } from 'react';
-import useSWR from 'swr';
-import {
-  type EnvMap,
-  fetchEventsByCorrelationId,
-} from '../api/workflow-server-actions';
-import { ErrorCard } from '../components/ui/error-card';
-import type { SpanEvent } from '../trace-viewer/types';
-import { convertEventsToSpanEvents } from '../workflow-traces/trace-span-construction';
+import { useMemo } from 'react';
+import { ErrorCard } from '../ui/error-card';
+import type { SpanEvent } from '../trace-viewer/types.js';
 import { AttributeBlock, localMillisecondTime } from './attribute-panel';
 import { DetailCard } from './detail-card';
 
 export function EventsList({
-  correlationId,
-  env,
   events,
-  expiredAt,
+  fullEvents,
+  isLoading = false,
+  error,
 }: {
-  correlationId: string;
-  env: EnvMap;
   events: SpanEvent[];
-  expiredAt?: string | Date;
+  fullEvents?: SpanEvent[] | null;
+  isLoading?: boolean;
+  error?: Error | null;
 }) {
-  const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
-  const fetchEvents = useCallback(() => {
-    return fetchEventsByCorrelationId(env, correlationId, {
-      sortOrder: 'asc',
-      limit: 100,
-      withData: !hasExpired,
-    }).then((evts) => {
-      if (!evts.success) {
-        throw new Error(evts.error?.message || 'Failed to fetch events');
-      }
-      return convertEventsToSpanEvents(evts.data.data || [], false);
-    });
-  }, [env, correlationId, hasExpired]);
-
-  const {
-    data,
-    error: eventError,
-    isLoading: eventsLoading,
-  } = useSWR<SpanEvent[] | null>(
-    ['workflow', 'events', correlationId],
-    fetchEvents,
-    {
-      fallbackData: events,
-      revalidateOnFocus: false,
-    }
+  const displayData = useMemo(
+    () => (fullEvents?.length ? fullEvents : events) || [],
+    [events, fullEvents]
   );
-
-  const displayData = (data?.length ? data : events) || [];
 
   return (
     <div className="mt-2" style={{ color: 'var(--ds-gray-1000)' }}>
@@ -58,20 +28,20 @@ export function EventsList({
         className="text-heading-16 font-medium mt-4 mb-2"
         style={{ color: 'var(--ds-gray-1000)' }}
       >
-        Events {!eventsLoading && `(${displayData.length})`}
+        Events {!isLoading && `(${displayData.length})`}
       </h3>
-      {eventError ? (
+      {error ? (
         <ErrorCard
           title="Failed to load full event list"
-          details={eventError?.message}
+          details={error?.message}
           className="my-4"
         />
       ) : null}
-      {eventsLoading ? <div>Loading events...</div> : null}
-      {!eventsLoading && !eventError && displayData.length === 0 && (
+      {isLoading ? <div>Loading events...</div> : null}
+      {!isLoading && !error && displayData.length === 0 && (
         <div className="text-sm">No events found</div>
       )}
-      {displayData.length > 0 && !eventError ? (
+      {displayData.length > 0 && !error ? (
         <div className="flex flex-col gap-2">
           {displayData.map((event, index) => (
             <DetailCard
@@ -124,16 +94,17 @@ export function EventsList({
                     </div>
                   ))}
               </div>
-              {/* Event data section */}
-              {eventError && (
-                <div className="text-xs text-red-500 mt-2">
-                  Error loading event data
-                </div>
-              )}
-              {!eventError && !eventsLoading && event.attributes.eventData && (
+              {error ? (
+                <ErrorCard
+                  title="Failed to load event data"
+                  details={String(error)}
+                  className="my-4"
+                />
+              ) : null}
+              {!error && !isLoading && event.attributes.eventData != null && (
                 <div className="mt-2">
                   <AttributeBlock
-                    isLoading={eventsLoading}
+                    isLoading={isLoading}
                     attribute="eventData"
                     value={event.attributes.eventData}
                   />

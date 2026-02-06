@@ -50,6 +50,15 @@ const EventWithRefsSchema = z.object({
   specVersion: z.number().default(1),
 });
 
+// Events where the client uses the response entity data need 'resolve' (default).
+// Events where the client discards the response can use 'lazy' to skip expensive
+// S3 ref resolution on the server, saving ~200-460ms per event.
+const eventsNeedingResolve = new Set([
+  'run_created', // client reads result.run.runId
+  'run_started', // client reads result.run (checks startedAt, status)
+  'step_started', // client reads result.step (checks attempt, state)
+]);
+
 // Functions
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
@@ -132,10 +141,14 @@ export async function createWorkflowRunEvent(
   // For run_created events, runId is null - use "null" string in the URL path
   const runIdPath = id === null ? 'null' : id;
 
+  const remoteRefBehavior = eventsNeedingResolve.has(data.eventType)
+    ? 'resolve'
+    : 'lazy';
+
   const wireResult = await makeRequest({
     endpoint: `/v2/runs/${runIdPath}/events`,
     options: { method: 'POST' },
-    data,
+    data: { ...data, remoteRefBehavior },
     config,
     schema: EventResultWireSchema,
   });

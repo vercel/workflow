@@ -1,10 +1,10 @@
 'use client';
 
-import type { PublicServerConfig } from '@workflow/web-shared/server';
+import type { PublicServerConfig } from '@/server/workflow-server-actions';
 import { createContext, type ReactNode, useContext } from 'react';
 
 // Re-export PublicServerConfig for convenience
-export type { PublicServerConfig } from '@workflow/web-shared/server';
+export type { PublicServerConfig } from '@/server/workflow-server-actions';
 
 /**
  * Context value providing server configuration info to the UI.
@@ -35,7 +35,7 @@ interface ServerConfigProviderProps {
  * Provider component that makes server configuration available to child components.
  *
  * The serverConfig should be fetched during server-side rendering using
- * getPublicServerConfig() from @workflow/web-shared/server.
+ * getPublicServerConfig() from @/server/workflow-server-actions.
  */
 export function ServerConfigProvider({
   children,

@@ -19,6 +19,23 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
 import { queueMessage } from './helpers.js';
 
+/**
+ * Extracts W3C trace context headers from a trace carrier for HTTP propagation.
+ * Returns an object with `traceparent` and optionally `tracestate` headers.
+ */
+function extractTraceHeaders(
+  traceCarrier: Record<string, string>
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (traceCarrier.traceparent) {
+    headers.traceparent = traceCarrier.traceparent;
+  }
+  if (traceCarrier.tracestate) {
+    headers.tracestate = traceCarrier.tracestate;
+  }
+  return headers;
+}
+
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
   world: World;
@@ -169,6 +186,10 @@ export async function handleSuspension({
         }
 
         // Queue step execution message
+        // Serialize trace context once and include in both payload and headers
+        // Payload: for manual context restoration in step handler
+        // Headers: for automatic trace propagation by Vercel's infrastructure
+        const traceCarrier = await serializeTraceCarrier();
         await queueMessage(
           world,
           `__wkf_step_${queueItem.stepName}`,
@@ -177,12 +198,15 @@ export async function handleSuspension({
             workflowRunId: runId,
             workflowStartedAt,
             stepId: queueItem.correlationId,
-            traceCarrier: await serializeTraceCarrier(),
+            traceCarrier,
             requestedAt: new Date(),
           },
           {
             idempotencyKey: queueItem.correlationId,
-            headers: { 'x-workflow-run-id': runId },
+            headers: {
+              'x-workflow-run-id': runId,
+              ...extractTraceHeaders(traceCarrier),
+            },
           }
         );
       })()

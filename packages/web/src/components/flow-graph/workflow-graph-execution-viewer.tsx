@@ -18,11 +18,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import { GitBranch, Loader2, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import {
-  type EnvMap,
-  formatDuration,
-  useWorkflowResourceData,
-} from '@workflow/web-shared';
+import { formatDuration } from '@workflow/web-shared';
+import type { EnvMap } from '@/server/workflow-server-actions';
+import { useWorkflowResourceData } from '@/lib/workflow-api-client';
 import { StatusBadge } from '@/components/display-utils/status-badge';
 import { Badge } from '@/components/ui/badge';
 import type {

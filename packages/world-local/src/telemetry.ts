@@ -1,14 +1,9 @@
 /**
- * Minimal telemetry utilities for world-vercel package.
+ * Minimal telemetry utilities for world-local package.
  *
- * NOTE: This module intentionally duplicates semantic conventions from @workflow/core
- * to avoid a circular dependency (world-vercel cannot depend on core).
- * If you update conventions here, ensure @workflow/core/telemetry/semantic-conventions.ts
- * remains synchronized.
- *
- * NOTE: Unlike the trace() function in @workflow/core, this implementation does not
- * have special handling for WorkflowSuspension errors because world-vercel operates
- * at the HTTP layer and never encounters workflow suspension effects.
+ * NOTE: This module is a simplified version of world-vercel's telemetry.
+ * It provides tracing capabilities for local development to match
+ * the observability experience in production.
  *
  * IMPORTANT: This module uses the same tracer name 'workflow' as @workflow/core to ensure
  * all spans are reported under the parent application's service, not as a separate service.
@@ -88,41 +83,11 @@ export async function getSpanKind(
 }
 
 // Semantic conventions for World/Storage tracing
-// Standard OTEL conventions: https://opentelemetry.io/docs/specs/semconv/http/http-spans/
+// Standard OTEL conventions for peer service mapping
 function SemanticConvention<T>(...names: string[]) {
   return (value: T) =>
     Object.fromEntries(names.map((name) => [name, value] as const));
 }
-
-/** HTTP request method (standard OTEL: http.request.method) */
-export const HttpRequestMethod = SemanticConvention<string>(
-  'http.request.method'
-);
-
-/** Full URL of the request (standard OTEL: url.full) */
-export const UrlFull = SemanticConvention<string>('url.full');
-
-/** Server hostname (standard OTEL: server.address) */
-export const ServerAddress = SemanticConvention<string>('server.address');
-
-/** Server port (standard OTEL: server.port) */
-export const ServerPort = SemanticConvention<number>('server.port');
-
-/** HTTP response status code (standard OTEL: http.response.status_code) */
-export const HttpResponseStatusCode = SemanticConvention<number>(
-  'http.response.status_code'
-);
-
-/** Error type when request fails (standard OTEL: error.type) */
-export const ErrorType = SemanticConvention<string>('error.type');
-
-/** Format used for parsing response body (cbor or json) */
-export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
-  'workflow.world.parse.format'
-);
-
-// RPC/Peer Service attributes - For service maps and dependency tracking
-// See: https://opentelemetry.io/docs/specs/semconv/rpc/rpc-spans/
 
 /** The remote service name for Datadog service maps (Datadog-specific: peer.service) */
 export const PeerService = SemanticConvention<string>('peer.service');

@@ -149,7 +149,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         ) {
           throw new WorkflowAPIError(
             `Cannot transition run from terminal state "${currentRun.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
 
@@ -160,7 +160,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         ) {
           throw new WorkflowAPIError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
       }
@@ -194,7 +194,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         if (isStepTerminal(validatedStep.status)) {
           throw new WorkflowAPIError(
             `Cannot modify step in terminal state "${validatedStep.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
 
@@ -409,6 +409,23 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         // Sets startedAt only on the first start (not updated on retries)
         // Reuse validatedStep from validation (already read above)
         if (validatedStep) {
+          // Check if retryAfter timestamp hasn't been reached yet
+          if (
+            validatedStep.retryAfter &&
+            validatedStep.retryAfter.getTime() > Date.now()
+          ) {
+            const err = new WorkflowAPIError(
+              `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
+              { status: 425 }
+            );
+            // Add meta for step-handler to extract retryAfter timestamp
+            (err as any).meta = {
+              stepId: data.correlationId,
+              retryAfter: validatedStep.retryAfter.toISOString(),
+            };
+            throw err;
+          }
+
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           const stepPath = path.join(
             basedir,
@@ -422,6 +439,8 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             startedAt: validatedStep.startedAt ?? now,
             // Increment attempt counter on every start
             attempt: validatedStep.attempt + 1,
+            // Clear retryAfter now that the step has started
+            retryAfter: undefined,
             updatedAt: now,
           };
           await writeJSON(stepPath, step, { overwrite: true });

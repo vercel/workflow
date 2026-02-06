@@ -6,7 +6,9 @@
   "main": "dist/index.js",
   "files": [
     "dist",
-    "docs/**/*"
+    "docs/**/*",
+    "runtime.js",
+    "runtime.d.ts"
   ],
   "directories": {
     "doc": "./docs"
@@ -26,11 +28,38 @@
       "workflow": "./dist/workflow/index.js",
       "default": "./dist/index.js"
     },
-    "./runtime": "./dist/runtime.js",
-    "./private": "./dist/private.js",
-    "./class-serialization": "./dist/class-serialization.js",
-    "./builtins": "./dist/builtins.js",
-    "./serialization": "./dist/serialization.js",
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    },
+    "./runtime/start": {
+      "types": "./dist/runtime/start.d.ts",
+      "default": "./dist/runtime/start.js"
+    },
+    "./runtime/helpers": {
+      "types": "./dist/runtime/helpers.d.ts",
+      "default": "./dist/runtime/helpers.js"
+    },
+    "./runtime/resume-hook": {
+      "types": "./dist/runtime/resume-hook.d.ts",
+      "default": "./dist/runtime/resume-hook.js"
+    },
+    "./private": {
+      "types": "./dist/private.d.ts",
+      "default": "./dist/private.js"
+    },
+    "./class-serialization": {
+      "types": "./dist/class-serialization.d.ts",
+      "default": "./dist/class-serialization.js"
+    },
+    "./builtins": {
+      "types": "./dist/builtins.d.ts",
+      "default": "./dist/builtins.js"
+    },
+    "./serialization": {
+      "types": "./dist/serialization.d.ts",
+      "default": "./dist/serialization.js"
+    },
     "./observability": {
       "types": "./dist/observability.d.ts",
       "node": "./dist/observability.js",

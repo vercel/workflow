@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { access, mkdir, stat, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import Watchpack from 'watchpack';
 
@@ -62,11 +62,25 @@ export async function getNextBuilder() {
 
       // Write unified manifest to workflow generated directory
       const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
-      await this.createManifest({
+      const manifestJson = await this.createManifest({
         workflowBundlePath,
         manifestDir: workflowGeneratedDir,
         manifest,
       });
+
+      // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
+      // Next.js serves files from public/ at the root URL.
+      if (this.shouldExposePublicManifest && manifestJson) {
+        const publicManifestDir = join(
+          this.config.workingDir,
+          'public/.well-known/workflow/v1'
+        );
+        await mkdir(publicManifestDir, { recursive: true });
+        await copyFile(
+          join(workflowGeneratedDir, 'manifest.json'),
+          join(publicManifestDir, 'manifest.json')
+        );
+      }
 
       await this.writeFunctionsConfig(outputDir);
 

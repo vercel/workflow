@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
-import { getPublicServerConfig } from '@workflow/web-shared/server';
+import { getPublicServerConfig } from '@/server/workflow-server-actions';
 import { connection } from 'next/server';
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
 import { LayoutClient } from './layout-client';

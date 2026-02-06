@@ -3,14 +3,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { hydrateResourceIO } from '@workflow/core/observability';
+import { createWorld } from '@workflow/core/runtime';
+import * as workflowRunHelpers from '@workflow/core/runtime';
 import {
-  createWorld,
   type HealthCheckEndpoint,
   type HealthCheckResult,
   healthCheck,
-  resumeHook as resumeHookRuntime,
-  start,
-} from '@workflow/core/runtime';
+} from '@workflow/core/runtime/helpers';
+import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-hook';
 import {
   getDeserializeStream,
   getExternalRevivers,
@@ -20,14 +20,17 @@ import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import {
   type Event,
   type Hook,
-  isLegacySpecVersion,
-  SPEC_VERSION_LEGACY,
   type Step,
   type WorkflowRun,
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
-import { createVercelWorld } from '@workflow/world-vercel';
+import {
+  type APIConfig,
+  createQueue,
+  createStorage,
+  createStreamer,
+} from '@workflow/world-vercel';
 
 /**
  * Environment variable map for world configuration.
@@ -39,6 +42,14 @@ import { createVercelWorld } from '@workflow/world-vercel';
  * this parameter for backwards compatibility and future extensibility.
  */
 export type EnvMap = Record<string, string | undefined>;
+
+function createVercelWorld(config?: APIConfig): World {
+  return {
+    ...createQueue(config),
+    ...createStorage(config),
+    ...createStreamer(config),
+  };
+}
 
 /**
  * Public configuration info that is safe to send to the client.
@@ -817,13 +828,7 @@ export async function cancelRun(
 ): Promise<ServerActionResult<void>> {
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const run = await world.runs.get(runId, { resolveData: 'none' });
-    const compatMode = isLegacySpecVersion(run.specVersion);
-    const eventData = {
-      eventType: 'run_cancelled' as const,
-      specVersion: run.specVersion || 1,
-    };
-    await world.events.create(runId, eventData, { v1Compat: compatMode });
+    await workflowRunHelpers.cancelRun(world, runId);
     return createResponse(undefined);
   } catch (error) {
     return createServerActionError<void>(error, 'world.events.create', {
@@ -844,21 +849,14 @@ export async function recreateRun(
 ): Promise<ServerActionResult<string>> {
   try {
     const world = await getWorldFromEnv({ ...worldEnv });
-    const run = await world.runs.get(runId);
-    // Get original input/output
-    const hydratedRun = hydrate(run as WorkflowRun);
-
-    // Preserve original specVersion - if undefined (legacy v1), use SPEC_VERSION_LEGACY
-    const newRun = await start(
-      { workflowId: run.workflowName },
-      hydratedRun.input as unknown as unknown[],
+    const newRunId = await workflowRunHelpers.recreateRunFromExisting(
+      world,
+      runId,
       {
-        deploymentId: deploymentId ?? run.deploymentId,
-        world,
-        specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+        deploymentId,
       }
     );
-    return createResponse(newRun.runId);
+    return createResponse(newRunId);
   } catch (error) {
     return createServerActionError<string>(error, 'recreateRun', { runId });
   }
@@ -876,19 +874,7 @@ export async function reenqueueRun(
 ): Promise<ServerActionResult<void>> {
   try {
     const world = await getWorldFromEnv({ ...worldEnv });
-    const run = await world.runs.get(runId);
-    const deploymentId = run.deploymentId;
-
-    await world.queue(
-      `__wkf_workflow_${run.workflowName}`,
-      {
-        runId,
-      },
-      {
-        deploymentId,
-      }
-    );
-
+    await workflowRunHelpers.reenqueueRun(world, runId);
     return createResponse(undefined);
   } catch (error) {
     return createServerActionError<void>(error, 'reenqueueRun', { runId });
@@ -926,71 +912,8 @@ export async function wakeUpRun(
 ): Promise<ServerActionResult<StopSleepResult>> {
   try {
     const world = await getWorldFromEnv({ ...worldEnv });
-    const run = await world.runs.get(runId);
-    const deploymentId = run.deploymentId;
-    const compatMode = isLegacySpecVersion(run.specVersion);
-
-    // Fetch all events for the run
-    const eventsResult = await world.events.list({
-      runId,
-      pagination: { limit: 1000 },
-      resolveData: 'none',
-    });
-
-    // Find wait_created events without matching wait_completed events
-    const waitCreatedEvents = eventsResult.data.filter(
-      (e) => e.eventType === 'wait_created'
-    );
-    const waitCompletedCorrelationIds = new Set(
-      eventsResult.data
-        .filter((e) => e.eventType === 'wait_completed')
-        .map((e) => e.correlationId)
-    );
-
-    let pendingWaits = waitCreatedEvents.filter(
-      (e) => !waitCompletedCorrelationIds.has(e.correlationId)
-    );
-
-    // If specific correlation IDs are provided, filter to only those
-    if (options?.correlationIds && options.correlationIds.length > 0) {
-      const targetCorrelationIds = new Set(options.correlationIds);
-      pendingWaits = pendingWaits.filter(
-        (e) => e.correlationId && targetCorrelationIds.has(e.correlationId)
-      );
-    }
-
-    // Create wait_completed events for each pending wait
-    for (const waitEvent of pendingWaits) {
-      if (waitEvent.correlationId) {
-        // For v2, include specVersion in event data; for v1Compat, it's not needed
-        const eventData = compatMode
-          ? {
-              eventType: 'wait_completed' as const,
-              correlationId: waitEvent.correlationId,
-            }
-          : {
-              eventType: 'wait_completed' as const,
-              correlationId: waitEvent.correlationId,
-              specVersion: run.specVersion,
-            };
-        await world.events.create(runId, eventData, { v1Compat: compatMode });
-      }
-    }
-
-    // Re-enqueue the run to wake it up
-    if (pendingWaits.length > 0) {
-      await world.queue(
-        `__wkf_workflow_${run.workflowName}`,
-        {
-          runId,
-        },
-        {
-          deploymentId,
-        }
-      );
-    }
-
-    return createResponse({ stoppedCount: pendingWaits.length });
+    const result = await workflowRunHelpers.wakeUpRun(world, runId, options);
+    return createResponse(result);
   } catch (error) {
     return createServerActionError<StopSleepResult>(error, 'wakeUpRun', {
       runId,
@@ -1151,6 +1074,15 @@ export async function fetchWorkflowsManifest(
     workflows: {},
   });
 }
+
+/**
+ * Health check result with latency information
+ */
+export interface HealthCheckResultWithLatency extends HealthCheckResult {
+  latencyMs: number;
+}
+
+export type { HealthCheckEndpoint, HealthCheckResult };
 
 /**
  * Run a queue-based health check on a workflow endpoint.

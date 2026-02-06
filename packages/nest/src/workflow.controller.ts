@@ -1,4 +1,5 @@
-import { All, Controller, Post, Req, Res } from '@nestjs/common';
+import { readFileSync } from 'node:fs';
+import { All, Controller, Get, Post, Req, Res } from '@nestjs/common';
 import { join } from 'pathe';
 
 // Module-level state for configuration
@@ -108,6 +109,34 @@ export class WorkflowController {
     const { POST } = await import(join(outDir, 'webhook.mjs'));
     const webRequest = toWebRequest(req);
     const webResponse = await POST(webRequest);
+    await sendWebResponse(res, webResponse);
+  }
+
+  @Get('manifest.json')
+  async handleManifest(@Res() res: any) {
+    if (process.env.WORKFLOW_PUBLIC_MANIFEST !== '1') {
+      if (typeof res.code === 'function') {
+        res.code(404).send('');
+      } else {
+        res.status(404).end('');
+      }
+      return;
+    }
+    const outDir = getOutDir();
+    let manifest: string;
+    try {
+      manifest = readFileSync(join(outDir, 'manifest.json'), 'utf-8');
+    } catch {
+      if (typeof res.code === 'function') {
+        res.code(404).send('');
+      } else {
+        res.status(404).end('');
+      }
+      return;
+    }
+    const webResponse = new Response(manifest, {
+      headers: { 'content-type': 'application/json' },
+    });
     await sendWebResponse(res, webResponse);
   }
 }

@@ -13,6 +13,26 @@ import { getWorld } from './world.js';
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 
+/**
+ * Pattern for safe workflow names. Only allows alphanumeric characters,
+ * underscores, hyphens, dots, and forward slashes (for namespaced workflows).
+ */
+const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-.\/]+$/;
+
+/**
+ * Validates a workflow name and returns the corresponding queue name.
+ * Ensures the workflow name only contains safe characters before
+ * interpolating it into the queue name string.
+ */
+export function getWorkflowQueueName(workflowName: string): ValidQueueName {
+  if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
+    throw new Error(
+      `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, or forward slashes`
+    );
+  }
+  return `__wkf_workflow_${workflowName}` as ValidQueueName;
+}
+
 const generateId = monotonicFactory();
 
 /**
@@ -343,13 +363,18 @@ export async function queueMessage(
 ) {
   const queueName = args[0];
   await trace(
-    'queueMessage',
+    'queue.publish',
     {
       // Standard OTEL messaging conventions
       attributes: {
         ...Attribute.MessagingSystem('vercel-queue'),
         ...Attribute.MessagingDestinationName(queueName),
         ...Attribute.MessagingOperationType('publish'),
+        // Peer service for Datadog service maps
+        ...Attribute.PeerService('vercel-queue'),
+        ...Attribute.RpcSystem('vercel-queue'),
+        ...Attribute.RpcService('vqs'),
+        ...Attribute.RpcMethod('publish'),
       },
       kind: await getSpanKind('PRODUCER'),
     },

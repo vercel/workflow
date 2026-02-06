@@ -1028,8 +1028,18 @@ export const OPTIONS = handler;`;
   }
 
   /**
+   * Whether the manifest should be exposed as a public HTTP route.
+   * Controlled by the `WORKFLOW_PUBLIC_MANIFEST` environment variable.
+   */
+  protected get shouldExposePublicManifest(): boolean {
+    return process.env.WORKFLOW_PUBLIC_MANIFEST === '1';
+  }
+
+  /**
    * Creates a manifest JSON file containing step/workflow/class metadata
    * and graph data for visualization.
+   *
+   * @returns The manifest JSON string, or undefined if manifest creation failed.
    */
   protected async createManifest({
     workflowBundlePath,
@@ -1039,7 +1049,7 @@ export const OPTIONS = handler;`;
     workflowBundlePath: string;
     manifestDir: string;
     manifest: WorkflowManifest;
-  }): Promise<void> {
+  }): Promise<string | undefined> {
     const buildStart = Date.now();
     console.log('Creating manifest...');
 
@@ -1054,12 +1064,10 @@ export const OPTIONS = handler;`;
       const classes = this.convertClassesManifest(manifest.classes);
 
       const output = { version: '1.0.0', steps, workflows, classes };
+      const manifestJson = JSON.stringify(output, null, 2);
 
       await mkdir(manifestDir, { recursive: true });
-      await writeFile(
-        join(manifestDir, 'manifest.json'),
-        JSON.stringify(output, null, 2)
-      );
+      await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
 
       const stepCount = Object.values(steps).reduce(
         (acc, s) => acc + Object.keys(s).length,
@@ -1078,11 +1086,14 @@ export const OPTIONS = handler;`;
         `Created manifest with ${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, and ${classCount} ${pluralize('class', 'classes', classCount)}`,
         `${Date.now() - buildStart}ms`
       );
+
+      return manifestJson;
     } catch (error) {
       console.warn(
         'Failed to create manifest:',
         error instanceof Error ? error.message : String(error)
       );
+      return undefined;
     }
   }
 

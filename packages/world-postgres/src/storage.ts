@@ -264,6 +264,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .select({
       status: Schema.steps.status,
       startedAt: Schema.steps.startedAt,
+      retryAfter: Schema.steps.retryAfter,
     })
     .from(Schema.steps)
     .where(
@@ -411,7 +412,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         ) {
           throw new WorkflowAPIError(
             `Cannot transition run from terminal state "${currentRun.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
 
@@ -422,7 +423,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         ) {
           throw new WorkflowAPIError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
       }
@@ -430,8 +431,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Step-related event validation (ordering and terminal state)
       // Fetch status + startedAt so we can reuse for step_started (avoid double read)
       // Skip validation for step_completed/step_failed - use conditional UPDATE instead
-      let validatedStep: { status: string; startedAt: Date | null } | null =
-        null;
+      let validatedStep: {
+        status: string;
+        startedAt: Date | null;
+        retryAfter: Date | null;
+      } | null = null;
       const stepEventsNeedingValidation = ['step_started', 'step_retrying'];
       if (
         stepEventsNeedingValidation.includes(data.eventType) &&
@@ -456,7 +460,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (isStepTerminal(validatedStep.status)) {
           throw new WorkflowAPIError(
             `Cannot modify step in terminal state "${validatedStep.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
 
@@ -643,7 +647,25 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Sets startedAt (maps to startedAt) only on first start
       // Reuse validatedStep from validation (already read above)
       if (data.eventType === 'step_started') {
+        // Check if retryAfter timestamp hasn't been reached yet
+        if (
+          validatedStep?.retryAfter &&
+          validatedStep.retryAfter.getTime() > Date.now()
+        ) {
+          const err = new WorkflowAPIError(
+            `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
+            { status: 425 }
+          );
+          // Add meta for step-handler to extract retryAfter timestamp
+          (err as any).meta = {
+            stepId: data.correlationId,
+            retryAfter: validatedStep.retryAfter.toISOString(),
+          };
+          throw err;
+        }
+
         const isFirstStart = !validatedStep?.startedAt;
+        const hadRetryAfter = !!validatedStep?.retryAfter;
 
         const [stepValue] = await drizzle
           .update(Schema.steps)
@@ -653,6 +675,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             attempt: sql`${Schema.steps.attempt} + 1`,
             // Only set startedAt on first start (not updated on retries)
             ...(isFirstStart ? { startedAt: now } : {}),
+            // Clear retryAfter now that the step has started
+            ...(hadRetryAfter ? { retryAfter: null } : {}),
           })
           .where(
             and(
@@ -703,7 +727,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (['completed', 'failed'].includes(existing.status)) {
             throw new WorkflowAPIError(
               `Cannot modify step in terminal state "${existing.status}"`,
-              { status: 410 }
+              { status: 409 }
             );
           }
         }
@@ -757,7 +781,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           if (['completed', 'failed'].includes(existing.status)) {
             throw new WorkflowAPIError(
               `Cannot modify step in terminal state "${existing.status}"`,
-              { status: 410 }
+              { status: 409 }
             );
           }
         }

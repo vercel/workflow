@@ -1,6 +1,6 @@
 /**
  * Utility to instrument object methods with tracing.
- * This is a minimal version for world-vercel to avoid circular dependencies with @workflow/core.
+ * This mirrors world-vercel's implementation for consistent observability.
  */
 import {
   trace,
@@ -12,10 +12,10 @@ import {
 } from './telemetry.js';
 
 /** Configuration for peer service attribution */
-const WORKFLOW_SERVER_SERVICE = {
-  peerService: 'workflow-server',
-  rpcSystem: 'http',
-  rpcService: 'workflow-server',
+const WORLD_LOCAL_SERVICE = {
+  peerService: 'world-local',
+  rpcSystem: 'local',
+  rpcService: 'world-local',
 };
 
 /**
@@ -59,14 +59,14 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
 
         return trace(
           spanName,
-          { kind: await getSpanKind('CLIENT') },
+          { kind: await getSpanKind('INTERNAL') },
           async (span) => {
             // Add peer service attributes for service maps
             // Use spanName for rpc.method so Datadog shows event type in resource
             span?.setAttributes({
-              ...PeerService(WORKFLOW_SERVER_SERVICE.peerService),
-              ...RpcSystem(WORKFLOW_SERVER_SERVICE.rpcSystem),
-              ...RpcService(WORKFLOW_SERVER_SERVICE.rpcService),
+              ...PeerService(WORLD_LOCAL_SERVICE.peerService),
+              ...RpcSystem(WORLD_LOCAL_SERVICE.rpcSystem),
+              ...RpcService(WORLD_LOCAL_SERVICE.rpcService),
               ...RpcMethod(spanName),
             });
             return f(...args);

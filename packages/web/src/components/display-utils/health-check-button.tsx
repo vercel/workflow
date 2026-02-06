@@ -5,7 +5,7 @@ import {
   type HealthCheckEndpoint,
   type HealthCheckResultWithLatency,
   runHealthCheck,
-} from '@workflow/web-shared';
+} from '@/server/workflow-server-actions';
 import { Activity, Loader2 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';

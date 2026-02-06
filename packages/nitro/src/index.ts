@@ -95,6 +95,11 @@ export default {
         '/.well-known/workflow/v1/flow',
         'workflow/workflows.mjs'
       );
+
+      // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
+      if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
+        addManifestHandler(nitro);
+      }
     }
   },
 } satisfies NitroModule;
@@ -122,6 +127,48 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
       } catch (error) {
         console.error('Handler error:', error);
         return new Response('Internal Server Error', { status: 500 });
+      }
+    };
+  `;
+  }
+}
+
+function addManifestHandler(nitro: Nitro) {
+  const route = '/.well-known/workflow/v1/manifest.json';
+  const virtualId = '#workflow/manifest-handler';
+  const manifestPath = join(nitro.options.buildDir, 'workflow/manifest.json');
+
+  nitro.options.handlers.push({ route, handler: virtualId });
+
+  if (!nitro.routing) {
+    // Nitro v2 (legacy)
+    nitro.options.virtual[virtualId] = /* js */ `
+    import { fromWebHandler } from "h3";
+    import { readFileSync } from "node:fs";
+    function GET() {
+      try {
+        const manifest = readFileSync(${JSON.stringify(manifestPath)}, "utf-8");
+        return new Response(manifest, {
+          headers: { "content-type": "application/json" },
+        });
+      } catch {
+        return new Response("Manifest not found", { status: 404 });
+      }
+    }
+    export default fromWebHandler(GET);
+  `;
+  } else {
+    // Nitro v3+
+    nitro.options.virtual[virtualId] = /* js */ `
+    import { readFileSync } from "node:fs";
+    export default async () => {
+      try {
+        const manifest = readFileSync(${JSON.stringify(manifestPath)}, "utf-8");
+        return new Response(manifest, {
+          headers: { "content-type": "application/json" },
+        });
+      } catch {
+        return new Response("Manifest not found", { status: 404 });
       }
     };
   `;

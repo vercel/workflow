@@ -1,7 +1,7 @@
 'use client';
 
 import React, { type ReactNode } from 'react';
-import { ErrorCard } from './components/ui/error-card';
+import { ErrorCard } from './ui/error-card';
 
 interface ErrorBoundaryProps {
   children: ReactNode;

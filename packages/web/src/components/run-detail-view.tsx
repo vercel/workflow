@@ -2,19 +2,13 @@
 
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
-  cancelRun,
-  type EnvMap,
   ErrorBoundary,
-  type Event,
   EventListView,
-  recreateRun,
-  type Step,
   StreamViewer,
-  useWorkflowStreams,
-  useWorkflowTraceViewerData,
-  type WorkflowRun,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
+import type { SpanSelectionInfo } from '@workflow/web-shared';
+import type { Event, Step, WorkflowRun } from '@workflow/world';
 import {
   AlertCircle,
   GitBranch,
@@ -53,6 +47,19 @@ import {
 } from '@/components/ui/tooltip';
 import { mapRunToExecution } from '@/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '@/lib/flow-graph/use-workflow-graph';
+import {
+  cancelRun,
+  recreateRun,
+  resumeHook,
+  unwrapServerActionResult,
+  useWorkflowResourceData,
+  useWorkflowStreams,
+  useWorkflowTraceViewerData,
+  wakeUpRun,
+} from '@/lib/workflow-api-client';
+import type { EnvMap } from '@/server/workflow-server-actions';
+import { fetchEventsByCorrelationId } from '@/server/workflow-server-actions';
+import { useStreamReader } from '@/lib/hooks/use-stream-reader';
 import { useServerConfig } from '@/lib/world-config-context';
 
 import { CopyableText } from './display-utils/copyable-text';
@@ -219,6 +226,44 @@ export function RunDetailView({
     [updateSearchParams]
   );
 
+  const handleWakeUpSleep = useCallback(
+    async (runId: string, correlationId: string) => {
+      return wakeUpRun(env, runId, { correlationIds: [correlationId] });
+    },
+    [env]
+  );
+
+  const handleResolveHook = useCallback(
+    async (hookToken: string, payload: unknown) => {
+      await resumeHook(env, hookToken, payload);
+    },
+    [env]
+  );
+
+  const handleLoadEventData = useCallback(
+    async (event: Event) => {
+      if (!event.correlationId) {
+        return null;
+      }
+      const { error, result } = await unwrapServerActionResult(
+        fetchEventsByCorrelationId(env, event.correlationId, {
+          sortOrder: 'asc',
+          limit: 100,
+          withData: true,
+        })
+      );
+      if (error) {
+        throw error;
+      }
+      const fullEvent = result.data.find((e) => e.eventId === event.eventId);
+      if (fullEvent && 'eventData' in fullEvent) {
+        return fullEvent.eventData;
+      }
+      return null;
+    },
+    [env]
+  );
+
   // Only show graph tab for local backend
   const isLocalBackend =
     serverConfig.backendId === 'local' ||
@@ -237,12 +282,39 @@ export function RunDetailView({
   } = useWorkflowTraceViewerData(env, runId, { live: true });
   const run = runData ?? ({} as WorkflowRun);
 
+  const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
+    null
+  );
+  const {
+    data: spanDetailData,
+    loading: spanDetailLoading,
+    error: spanDetailError,
+  } = useWorkflowResourceData(
+    env,
+    spanSelection?.resource ?? 'run',
+    spanSelection?.resourceId ?? '',
+    {
+      runId: spanSelection?.runId,
+      enabled: Boolean(spanSelection?.resource && spanSelection?.resourceId),
+    }
+  );
+
+  const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
+    setSpanSelection(info);
+  }, []);
+
   // Fetch streams for this run
   const {
     streams,
     loading: streamsLoading,
     error: streamsError,
   } = useWorkflowStreams(env, runId);
+
+  const {
+    chunks: streamChunks,
+    isLive: streamIsLive,
+    error: streamError,
+  } = useStreamReader(env, selectedStreamId);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);
@@ -559,10 +631,15 @@ export function RunDetailView({
                     steps={allSteps}
                     events={allEvents}
                     hooks={allHooks}
-                    env={env}
                     run={run}
                     isLoading={loading}
+                    spanDetailData={spanDetailData}
+                    spanDetailLoading={spanDetailLoading}
+                    spanDetailError={spanDetailError}
+                    onSpanSelect={handleSpanSelect}
                     onStreamClick={handleStreamClick}
+                    onWakeUpSleep={handleWakeUpSleep}
+                    onResolveHook={handleResolveHook}
                   />
                 </div>
               </ErrorBoundary>
@@ -571,7 +648,10 @@ export function RunDetailView({
             <TabsContent value="events" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load events list">
                 <div className="h-full">
-                  <EventListView events={allEvents} env={env} />
+                  <EventListView
+                    events={allEvents}
+                    onLoadEventData={handleLoadEventData}
+                  />
                 </div>
               </ErrorBoundary>
             </TabsContent>
@@ -638,7 +718,12 @@ export function RunDetailView({
                   {/* Stream viewer */}
                   <div className="flex-1 min-w-0">
                     {selectedStreamId ? (
-                      <StreamViewer env={env} streamId={selectedStreamId} />
+                      <StreamViewer
+                        streamId={selectedStreamId}
+                        chunks={streamChunks}
+                        isLive={streamIsLive}
+                        error={streamError}
+                      />
                     ) : (
                       <div
                         className="h-full flex items-center justify-center rounded-lg border"

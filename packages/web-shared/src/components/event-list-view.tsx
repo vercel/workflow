@@ -3,8 +3,6 @@
 import type { Event } from '@workflow/world';
 import { ChevronRight, Loader2 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
-import type { EnvMap } from './api/workflow-server-actions';
-import { fetchEventsByCorrelationId } from './api/workflow-server-actions';
 import { getEventColor } from './workflow-traces/event-colors';
 
 /**
@@ -44,19 +42,25 @@ function formatEventDateTime(date: Date): string {
 function formatEventType(eventType: Event['eventType']): string {
   return eventType
     .split('_')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 }
 
 interface EventsListProps {
   events: Event[] | null;
-  env: EnvMap;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
 }
 
 /**
  * Single event row component with expandable details
  */
-function EventRow({ event, env }: { event: Event; env: EnvMap }) {
+function EventRow({
+  event,
+  onLoadEventData,
+}: {
+  event: Event;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
+}) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(null);
@@ -83,27 +87,13 @@ function EventRow({ event, env }: { event: Event; env: EnvMap }) {
     setLoadError(null);
 
     try {
-      const result = await fetchEventsByCorrelationId(
-        env,
-        event.correlationId,
-        {
-          sortOrder: 'asc',
-          limit: 100,
-          withData: true,
-        }
-      );
-
-      if (!result.success) {
-        setLoadError(result.error?.message || 'Failed to load event details');
+      if (!onLoadEventData) {
+        setLoadError('Event details unavailable');
         return;
       }
-
-      // Find our specific event in the results
-      const fullEvent = result.data.data.find(
-        (e) => e.eventId === event.eventId
-      );
-      if (fullEvent && 'eventData' in fullEvent) {
-        setLoadedEventData(fullEvent.eventData);
+      const eventData = await onLoadEventData(event);
+      if (eventData !== null && eventData !== undefined) {
+        setLoadedEventData(eventData);
       }
     } catch (err) {
       setLoadError(
@@ -113,11 +103,10 @@ function EventRow({ event, env }: { event: Event; env: EnvMap }) {
       setIsLoading(false);
     }
   }, [
-    env,
     event.correlationId,
-    event.eventId,
     loadedEventData,
     hasExistingEventData,
+    onLoadEventData,
   ]);
 
   // Handle expand/collapse
@@ -374,7 +363,7 @@ function AttributeRow({
  * Displays a list of all events for a workflow run as colored cards in a pseudo-table.
  * Events are sorted by createdAt (oldest first).
  */
-export function EventListView({ events, env }: EventsListProps) {
+export function EventListView({ events, onLoadEventData }: EventsListProps) {
   // Sort events by createdAt (oldest first)
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
@@ -417,7 +406,11 @@ export function EventListView({ events, env }: EventsListProps) {
       {/* Event rows */}
       <div className="flex flex-col gap-2">
         {sortedEvents.map((event) => (
-          <EventRow key={event.eventId} event={event} env={env} />
+          <EventRow
+            key={event.eventId}
+            event={event}
+            onLoadEventData={onLoadEventData}
+          />
         ))}
       </div>
 

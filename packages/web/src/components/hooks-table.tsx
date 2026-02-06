@@ -1,14 +1,10 @@
 'use client';
 
 import {
-  type EnvMap,
-  getErrorMessage,
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
   useHookActions,
-  useWorkflowHooks,
 } from '@workflow/web-shared';
-import { fetchEventsByCorrelationId } from '@workflow/web-shared/server';
 import type { Event, Hook } from '@workflow/world';
 import {
   AlertCircle,
@@ -44,6 +40,13 @@ import {
 import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { TableSkeleton } from './display-utils/table-skeleton';
+import {
+  getErrorMessage,
+  resumeHook,
+  useWorkflowHooks,
+} from '@/lib/workflow-api-client';
+import type { EnvMap } from '@/server/workflow-server-actions';
+import { fetchEventsByCorrelationId } from '@/server/workflow-server-actions';
 
 interface HooksTableProps {
   runId?: string;
@@ -92,7 +95,9 @@ export function HooksTable({
 
   // Hook actions for resolve functionality
   const hookActions = useHookActions({
-    env,
+    onResolve: async (hook, payload) => {
+      await resumeHook(env, hook.token, payload);
+    },
     callbacks: {
       onSuccess: refresh,
     },

@@ -4,8 +4,6 @@ import type { Hook, WorkflowRunStatus } from '@workflow/world';
 import { Send } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
-import { resumeHook } from './api/workflow-api-client';
-import type { EnvMap } from './api/workflow-server-actions';
 import { ResolveHookModal } from './sidebar/resolve-hook-modal';
 
 // ============================================================================
@@ -18,7 +16,7 @@ export interface HookActionCallbacks {
 }
 
 export interface UseHookActionsOptions {
-  env: EnvMap;
+  onResolve: (hook: Hook, payload: unknown) => Promise<void>;
   callbacks?: HookActionCallbacks;
 }
 
@@ -44,7 +42,7 @@ export interface UseHookActionsReturn {
  * Use this to coordinate the resolve modal across components.
  */
 export function useHookActions({
-  env,
+  onResolve,
   callbacks,
 }: UseHookActionsOptions): UseHookActionsReturn {
   const [isResolving, setIsResolving] = useState(false);
@@ -64,7 +62,7 @@ export function useHookActions({
 
       try {
         setIsResolving(true);
-        await resumeHook(env, selectedHook.token, payload);
+        await onResolve(selectedHook, payload);
         toast.success('Hook resolved', {
           description: 'The payload has been sent and the hook resolved.',
         });
@@ -80,7 +78,7 @@ export function useHookActions({
         setIsResolving(false);
       }
     },
-    [env, selectedHook, isResolving, callbacks]
+    [onResolve, selectedHook, isResolving, callbacks]
   );
 
   return {
