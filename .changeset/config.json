@@ -15,6 +15,7 @@
     "nextjs-turbopack",
     "nextjs-webpack",
     "workflow-devkit-compiler-playground",
+    "@workflow/docs-typecheck",
     "@workflow/example-*"
   ]
 }
