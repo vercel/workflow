@@ -8,6 +8,7 @@ import type {
   RunCreatedEventRequest,
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
+import type { WorkflowManifestData } from './manifest.js';
 import type { Queue } from './queue.js';
 import type {
   GetWorkflowRunParams,
@@ -177,4 +178,24 @@ export interface World extends Queue, Storage, Streamer {
    * For example, in the case of a queue backed World, this would start the queue processing.
    */
   start?(): Promise<void>;
+
+  /**
+   * Optional manifest access. Provides the workflow manifest which contains
+   * metadata about all workflows, steps, and classes discovered during the build.
+   *
+   * Not all World implementations may support manifest storage.
+   * When not supported, this property is undefined.
+   */
+  manifest?: {
+    /**
+     * Retrieve the stored workflow manifest.
+     * Returns null if no manifest has been stored.
+     */
+    get(): Promise<WorkflowManifestData | null>;
+
+    /**
+     * Store a workflow manifest. Called during the build process.
+     */
+    set(manifest: WorkflowManifestData): Promise<void>;
+  };
 }

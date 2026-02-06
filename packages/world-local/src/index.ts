@@ -2,6 +2,7 @@ import type { World } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
 import { initDataDir } from './init.js';
+import { createManifestStore } from './manifest.js';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
@@ -37,6 +38,7 @@ export function createLocalWorld(args?: Partial<Config>): World {
     ...createQueue(mergedConfig),
     ...createStorage(mergedConfig.dataDir),
     ...createStreamer(mergedConfig.dataDir),
+    manifest: createManifestStore(mergedConfig.dataDir),
     async start() {
       await initDataDir(mergedConfig.dataDir);
     },
