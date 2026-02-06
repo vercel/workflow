@@ -1032,11 +1032,7 @@ export const OPTIONS = handler;`;
    * Controlled by the `WORKFLOW_PUBLIC_MANIFEST` environment variable.
    */
   protected get shouldExposePublicManifest(): boolean {
-    const value = process.env.WORKFLOW_PUBLIC_MANIFEST;
-    console.log(
-      `[workflow] WORKFLOW_PUBLIC_MANIFEST=${JSON.stringify(value)} (shouldExpose=${value === '1'})`
-    );
-    return value === '1';
+    return process.env.WORKFLOW_PUBLIC_MANIFEST === '1';
   }
 
   /**

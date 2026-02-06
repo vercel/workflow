@@ -46,18 +46,10 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
         outputDir,
         'static/.well-known/workflow/v1'
       );
-      console.log(
-        `[workflow] VercelBOA: copying manifest to ${staticManifestDir}/manifest.json`
-      );
       await mkdir(staticManifestDir, { recursive: true });
       await copyFile(
         join(workflowGeneratedDir, 'manifest.json'),
         join(staticManifestDir, 'manifest.json')
-      );
-      console.log('[workflow] VercelBOA: manifest copied successfully');
-    } else {
-      console.log(
-        `[workflow] VercelBOA: skipping public manifest (shouldExpose=${this.shouldExposePublicManifest}, hasManifest=${!!manifestJson})`
       );
     }
 

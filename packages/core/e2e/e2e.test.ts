@@ -86,14 +86,16 @@ async function fetchManifest(): Promise<WorkflowManifest> {
 }
 
 /**
- * Looks up the workflowId from the manifest for a given workflow file and function name.
+ * Looks up the workflow metadata from the manifest for a given workflow file and function name.
+ * Returns an object that can be passed directly to `start()`.
+ *
  * The manifest contains the exact IDs produced by the SWC transform during the build,
  * which handles symlink resolution and path normalization correctly.
  */
-async function getWorkflowId(
+async function getWorkflowMetadata(
   workflowFile: string,
   workflowFn: string
-): Promise<string> {
+): Promise<{ workflowId: string }> {
   const manifest = await fetchManifest();
 
   // The manifest keys are relative file paths as seen by the builder.
@@ -107,7 +109,7 @@ async function getWorkflowId(
     ) {
       const entry = functions[workflowFn];
       if (entry) {
-        return entry.workflowId;
+        return entry;
       }
     }
   }
@@ -122,7 +124,7 @@ async function getWorkflowId(
     ) {
       const entry = functions[workflowFn];
       if (entry) {
-        return entry.workflowId;
+        return entry;
       }
     }
   }
@@ -133,48 +135,21 @@ async function getWorkflowId(
   );
 }
 
-async function triggerWorkflow(
-  workflow: string | { workflowFile: string; workflowFn: string },
-  args: any[],
-  options?: { usePagesRouter?: boolean }
-): Promise<{ runId: string; run: Run<any> }> {
-  // Pages Router tests still go through HTTP to validate the Pages Router integration
-  if (options?.usePagesRouter) {
-    return triggerWorkflowViaHttp(workflow, args, '/api/trigger-pages');
-  }
-
-  const workflowFn =
-    typeof workflow === 'string' ? workflow : workflow.workflowFn;
-  const workflowFile =
-    typeof workflow === 'string'
-      ? 'workflows/99_e2e.ts'
-      : workflow.workflowFile;
-
-  const workflowId = await getWorkflowId(workflowFile, workflowFn);
-  const run = await start({ workflowId }, args);
-
-  // Collect runId for observability links (Vercel world only)
-  if (process.env.WORKFLOW_VERCEL_ENV) {
-    const testName = expect.getState().currentTestName || workflowFn;
-    collectedRunIds.push({
-      testName,
-      runId: run.runId,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  return { runId: run.runId, run };
-}
+/**
+ * Shorthand for looking up workflow metadata from workflows/99_e2e.ts.
+ * Usage: `const run = await start(await e2e('addTenWorkflow'), [123]);`
+ */
+const e2e = (fn: string) => getWorkflowMetadata('workflows/99_e2e.ts', fn);
 
 /**
  * Triggers a workflow via HTTP POST. Used only for Pages Router tests
  * that specifically need to validate the HTTP trigger endpoint.
  */
-async function triggerWorkflowViaHttp(
+async function startWorkflowViaHttp(
   workflow: string | { workflowFile: string; workflowFn: string },
   args: any[],
   endpoint: string
-): Promise<{ runId: string; run: Run<any> }> {
+): Promise<Run<any>> {
   const url = new URL(endpoint, deploymentUrl);
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;
@@ -186,7 +161,6 @@ async function triggerWorkflowViaHttp(
   url.searchParams.set('workflowFile', workflowFile);
   url.searchParams.set('workflowFn', workflowFn);
 
-  // For the HTTP path, we send args as JSON in query params
   if (args.length > 0) {
     url.searchParams.set('args', args.map(String).join(','));
   }
@@ -205,23 +179,9 @@ async function triggerWorkflowViaHttp(
     );
   }
   const result = await res.json();
+  const run = getRun(result.runId);
 
-  // Collect runId for observability links (Vercel world only)
-  if (process.env.WORKFLOW_VERCEL_ENV) {
-    const testName = expect.getState().currentTestName || workflowFn;
-    collectedRunIds.push({
-      testName,
-      runId: result.runId,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  return { runId: result.runId, run: getRun(result.runId) };
-}
-
-async function getWorkflowReturnValue(runId: string) {
-  const run = getRun(runId);
-  return run.returnValue;
+  return run;
 }
 
 // NOTE: Temporarily disabling concurrent tests to avoid flakiness.
@@ -263,8 +223,12 @@ describe('e2e', () => {
       workflowFn: 'addTenWorkflow',
     },
   ])('addTenWorkflow', { timeout: 60_000 }, async (workflow) => {
-    const run = await triggerWorkflow(workflow, [123]);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(
+      await getWorkflowMetadata(workflow.workflowFile, workflow.workflowFn),
+      [123]
+    );
+
+    const returnValue = await run.returnValue;
     expect(returnValue).toBe(133);
 
     const { json } = await cliInspectJson(`runs ${run.runId} --withData`);
@@ -298,33 +262,34 @@ describe('e2e', () => {
   test.skipIf(shouldSkipReactRenderTest)(
     'should work with react rendering in step',
     async () => {
-      const run = await triggerWorkflow(
-        {
-          workflowFile: 'workflows/8_react_render.tsx',
-          workflowFn: 'reactWorkflow',
-        },
+      const run = await start(
+        await getWorkflowMetadata(
+          'workflows/8_react_render.tsx',
+          'reactWorkflow'
+        ),
         []
       );
-      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      const returnValue = await run.returnValue;
       expect(returnValue).toBe('<div>hello world <!-- -->2</div>');
     }
   );
 
   test('promiseAllWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('promiseAllWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(await e2e('promiseAllWorkflow'), []);
+    const returnValue = await run.returnValue;
     expect(returnValue).toBe('ABC');
   });
 
   test('promiseRaceWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('promiseRaceWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(await e2e('promiseRaceWorkflow'), []);
+    const returnValue = await run.returnValue;
     expect(returnValue).toBe('B');
   });
 
   test('promiseAnyWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('promiseAnyWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(await e2e('promiseAnyWorkflow'), []);
+    const returnValue = await run.returnValue;
     expect(returnValue).toBe('B');
   });
 
@@ -335,8 +300,8 @@ describe('e2e', () => {
     'readableStreamWorkflow',
     { timeout: 60_000 },
     async () => {
-      const run = await triggerWorkflow('readableStreamWorkflow', []);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('readableStreamWorkflow'), []);
+      const returnValue = await run.returnValue;
       expect(returnValue).toBeInstanceOf(ReadableStream);
 
       const decoder = new TextDecoder();
@@ -353,7 +318,7 @@ describe('e2e', () => {
     const token = Math.random().toString(36).slice(2);
     const customData = Math.random().toString(36).slice(2);
 
-    const run = await triggerWorkflow('hookWorkflow', [token, customData]);
+    const run = await start(await e2e('hookWorkflow'), [token, customData]);
 
     // Wait a few seconds so that the webhook is registered.
     // TODO: make this more efficient when we add subscription support.
@@ -401,7 +366,7 @@ describe('e2e', () => {
     body = await res.json();
     expect(body.runId).toBe(run.runId);
 
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const returnValue = await run.returnValue;
     expect(returnValue).toBeInstanceOf(Array);
     expect(returnValue.length).toBe(3);
     expect(returnValue[0].message).toBe('one');
@@ -420,7 +385,7 @@ describe('e2e', () => {
     const token2 = Math.random().toString(36).slice(2);
     const token3 = Math.random().toString(36).slice(2);
 
-    const run = await triggerWorkflow('webhookWorkflow', [
+    const run = await start(await e2e('webhookWorkflow'), [
       token,
       token2,
       token3,
@@ -478,7 +443,7 @@ describe('e2e', () => {
     const body3 = await res3.text();
     expect(body3).toBe('Hello from webhook!');
 
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const returnValue = await run.returnValue;
     expect(returnValue).toHaveLength(3);
     expect(returnValue[0].url).toBe(
       new URL(
@@ -524,21 +489,21 @@ describe('e2e', () => {
   });
 
   test('sleepingWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('sleepingWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(await e2e('sleepingWorkflow'), []);
+    const returnValue = await run.returnValue;
     expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
     expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
   });
 
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('nullByteWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(await e2e('nullByteWorkflow'), []);
+    const returnValue = await run.returnValue;
     expect(returnValue).toBe('null byte \0');
   });
 
   test('workflowAndStepMetadataWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('workflowAndStepMetadataWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(await e2e('workflowAndStepMetadataWorkflow'), []);
+    const returnValue = await run.returnValue;
 
     expect(returnValue).toHaveProperty('workflowMetadata');
     expect(returnValue).toHaveProperty('stepMetadata');
@@ -594,7 +559,7 @@ describe('e2e', () => {
     'outputStreamWorkflow',
     { timeout: 60_000 },
     async () => {
-      const { runId, run } = await triggerWorkflow('outputStreamWorkflow', []);
+      const run = await start(await e2e('outputStreamWorkflow'), []);
       const reader = run.getReadable().getReader();
       const namedReader = run.getReadable({ namespace: 'test' }).getReader();
 
@@ -629,7 +594,7 @@ describe('e2e', () => {
       const r3Named = await namedReader.read();
       expect(r3Named.done).toBe(true);
 
-      const returnValue = await getWorkflowReturnValue(runId);
+      const returnValue = await run.returnValue;
       expect(returnValue).toEqual('done');
     }
   );
@@ -638,10 +603,7 @@ describe('e2e', () => {
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
     { timeout: 60_000 },
     async () => {
-      const { runId, run } = await triggerWorkflow(
-        'outputStreamInsideStepWorkflow',
-        []
-      );
+      const run = await start(await e2e('outputStreamInsideStepWorkflow'), []);
       const reader = run.getReadable().getReader();
       const namedReader = run.getReadable({ namespace: 'step-ns' }).getReader();
 
@@ -676,14 +638,14 @@ describe('e2e', () => {
       const r3Named = await namedReader.read();
       expect(r3Named.done).toBe(true);
 
-      const returnValue = await getWorkflowReturnValue(runId);
+      const returnValue = await run.returnValue;
       expect(returnValue).toEqual('done');
     }
   );
 
   test('fetchWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('fetchWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(await e2e('fetchWorkflow'), []);
+    const returnValue = await run.returnValue;
     expect(returnValue).toMatchObject({
       userId: 1,
       id: 1,
@@ -693,8 +655,8 @@ describe('e2e', () => {
   });
 
   test('promiseRaceStressTestWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('promiseRaceStressTestWorkflow', []);
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const run = await start(await e2e('promiseRaceStressTestWorkflow'), []);
+    const returnValue = await run.returnValue;
     // Completion order can vary across worlds and scheduling environments.
     expect([...returnValue].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
   });
@@ -707,10 +669,8 @@ describe('e2e', () => {
           'nested function calls preserve message and stack trace',
           { timeout: 60_000 },
           async () => {
-            const run = await triggerWorkflow('errorWorkflowNested', []);
-            const error = await getWorkflowReturnValue(run.runId).catch(
-              (e: unknown) => e
-            );
+            const run = await start(await e2e('errorWorkflowNested'), []);
+            const error = await run.returnValue.catch((e: unknown) => e);
 
             expect(WorkflowRunFailedError.is(error)).toBe(true);
             assert(WorkflowRunFailedError.is(error));
@@ -737,10 +697,8 @@ describe('e2e', () => {
           'cross-file imports preserve message and stack trace',
           { timeout: 60_000 },
           async () => {
-            const run = await triggerWorkflow('errorWorkflowCrossFile', []);
-            const error = await getWorkflowReturnValue(run.runId).catch(
-              (e: unknown) => e
-            );
+            const run = await start(await e2e('errorWorkflowCrossFile'), []);
+            const error = await run.returnValue.catch((e: unknown) => e);
 
             expect(WorkflowRunFailedError.is(error)).toBe(true);
             assert(WorkflowRunFailedError.is(error));
@@ -769,8 +727,8 @@ describe('e2e', () => {
           'basic step error preserves message and stack trace',
           { timeout: 60_000 },
           async () => {
-            const run = await triggerWorkflow('errorStepBasic', []);
-            const result = await getWorkflowReturnValue(run.runId);
+            const run = await start(await e2e('errorStepBasic'), []);
+            const result = await run.returnValue;
 
             // Workflow catches the error and returns it
             expect(result.caught).toBe(true);
@@ -819,8 +777,8 @@ describe('e2e', () => {
           'cross-file step error preserves message and function names in stack',
           { timeout: 60_000 },
           async () => {
-            const run = await triggerWorkflow('errorStepCrossFile', []);
-            const result = await getWorkflowReturnValue(run.runId);
+            const run = await start(await e2e('errorStepCrossFile'), []);
+            const result = await run.returnValue;
 
             // Workflow catches the error and returns message + stack
             expect(result.caught).toBe(true);
@@ -874,8 +832,8 @@ describe('e2e', () => {
         'regular Error retries until success',
         { timeout: 60_000 },
         async () => {
-          const run = await triggerWorkflow('errorRetrySuccess', []);
-          const result = await getWorkflowReturnValue(run.runId);
+          const run = await start(await e2e('errorRetrySuccess'), []);
+          const result = await run.returnValue;
 
           expect(result.finalAttempt).toBe(3);
 
@@ -894,10 +852,8 @@ describe('e2e', () => {
         'FatalError fails immediately without retries',
         { timeout: 60_000 },
         async () => {
-          const run = await triggerWorkflow('errorRetryFatal', []);
-          const error = await getWorkflowReturnValue(run.runId).catch(
-            (e: unknown) => e
-          );
+          const run = await start(await e2e('errorRetryFatal'), []);
+          const error = await run.returnValue.catch((e: unknown) => e);
 
           expect(WorkflowRunFailedError.is(error)).toBe(true);
           assert(WorkflowRunFailedError.is(error));
@@ -918,8 +874,8 @@ describe('e2e', () => {
         'RetryableError respects custom retryAfter delay',
         { timeout: 60_000 },
         async () => {
-          const run = await triggerWorkflow('errorRetryCustomDelay', []);
-          const result = await getWorkflowReturnValue(run.runId);
+          const run = await start(await e2e('errorRetryCustomDelay'), []);
+          const result = await run.returnValue;
 
           expect(result.attempt).toBe(2);
           expect(result.duration).toBeGreaterThan(10_000);
@@ -927,8 +883,8 @@ describe('e2e', () => {
       );
 
       test('maxRetries=0 disables retries', { timeout: 60_000 }, async () => {
-        const run = await triggerWorkflow('errorRetryDisabled', []);
-        const result = await getWorkflowReturnValue(run.runId);
+        const run = await start(await e2e('errorRetryDisabled'), []);
+        const result = await run.returnValue;
 
         expect(result.failed).toBe(true);
         expect(result.attempt).toBe(1);
@@ -940,8 +896,8 @@ describe('e2e', () => {
         'FatalError can be caught and detected with FatalError.is()',
         { timeout: 60_000 },
         async () => {
-          const run = await triggerWorkflow('errorFatalCatchable', []);
-          const result = await getWorkflowReturnValue(run.runId);
+          const run = await start(await e2e('errorFatalCatchable'), []);
+          const result = await run.returnValue;
 
           expect(result.caught).toBe(true);
           expect(result.isFatal).toBe(true);
@@ -993,7 +949,7 @@ describe('e2e', () => {
       const customData = Math.random().toString(36).slice(2);
 
       // Start first workflow
-      const run1 = await triggerWorkflow('hookCleanupTestWorkflow', [
+      const run1 = await start(await e2e('hookCleanupTestWorkflow'), [
         token,
         customData,
       ]);
@@ -1017,7 +973,7 @@ describe('e2e', () => {
       expect(body.runId).toBe(run1.runId);
 
       // Get first workflow result
-      const run1Result = await getWorkflowReturnValue(run1.runId);
+      const run1Result = await run1.returnValue;
       expect(run1Result).toMatchObject({
         message: 'test-message-1',
         customData,
@@ -1025,7 +981,7 @@ describe('e2e', () => {
       });
 
       // Now verify token can be reused for a second workflow
-      const run2 = await triggerWorkflow('hookCleanupTestWorkflow', [
+      const run2 = await start(await e2e('hookCleanupTestWorkflow'), [
         token,
         customData,
       ]);
@@ -1048,7 +1004,7 @@ describe('e2e', () => {
       expect(body.runId).toBe(run2.runId);
 
       // Get second workflow result
-      const run2Result = await getWorkflowReturnValue(run2.runId);
+      const run2Result = await run2.returnValue;
       expect(run2Result).toMatchObject({
         message: 'test-message-2',
         customData,
@@ -1072,7 +1028,7 @@ describe('e2e', () => {
       const customData = Math.random().toString(36).slice(2);
 
       // Start first workflow - it will create a hook and wait for a payload
-      const run1 = await triggerWorkflow('hookCleanupTestWorkflow', [
+      const run1 = await start(await e2e('hookCleanupTestWorkflow'), [
         token,
         customData,
       ]);
@@ -1082,15 +1038,13 @@ describe('e2e', () => {
 
       // Start second workflow with the SAME token while first is still running
       // This should fail because the hook token is already in use
-      const run2 = await triggerWorkflow('hookCleanupTestWorkflow', [
+      const run2 = await start(await e2e('hookCleanupTestWorkflow'), [
         token,
         customData,
       ]);
 
       // The second workflow should fail with a hook token conflict error
-      const run2Error = await getWorkflowReturnValue(run2.runId).catch(
-        (e: unknown) => e
-      );
+      const run2Error = await run2.returnValue.catch((e: unknown) => e);
       expect(WorkflowRunFailedError.is(run2Error)).toBe(true);
       assert(WorkflowRunFailedError.is(run2Error));
       expect(run2Error.cause.message).toContain(
@@ -1114,7 +1068,7 @@ describe('e2e', () => {
       expect(res.status).toBe(200);
 
       // Verify workflow 1 completed successfully
-      const run1Result = await getWorkflowReturnValue(run1.runId);
+      const run1Result = await run1.returnValue;
       expect(run1Result).toMatchObject({
         message: 'test-concurrent',
         customData,
@@ -1132,8 +1086,8 @@ describe('e2e', () => {
     async () => {
       // This workflow passes a step function reference to another step
       // The receiving step calls the passed function and returns the result
-      const run = await triggerWorkflow('stepFunctionPassingWorkflow', []);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('stepFunctionPassingWorkflow'), []);
+      const returnValue = await run.returnValue;
 
       // doubleNumber(10) = 20, then multiply by 2 = 40
       expect(returnValue).toBe(40);
@@ -1165,8 +1119,8 @@ describe('e2e', () => {
       // This workflow creates a nested step function with closure variables,
       // then passes it to another step which invokes it.
       // The closure variables should be serialized and preserved across the call.
-      const run = await triggerWorkflow('stepFunctionWithClosureWorkflow', []);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('stepFunctionWithClosureWorkflow'), []);
+      const returnValue = await run.returnValue;
 
       // Expected: "Wrapped: Result: 21"
       // - calculate(7) uses closure vars: prefix="Result: ", multiplier=3
@@ -1189,8 +1143,8 @@ describe('e2e', () => {
     async () => {
       // This workflow uses a nested step function that references closure variables
       // from the parent workflow scope (multiplier, prefix, baseValue)
-      const run = await triggerWorkflow('closureVariableWorkflow', [7]);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('closureVariableWorkflow'), [7]);
+      const returnValue = await run.returnValue;
 
       // Expected: baseValue (7) * multiplier (3) = 21, prefixed with "Result: "
       expect(returnValue).toBe('Result: 21');
@@ -1204,10 +1158,10 @@ describe('e2e', () => {
       // This workflow spawns another workflow using start() inside a step function
       // This is the recommended pattern for spawning workflows from within workflows
       const inputValue = 42;
-      const run = await triggerWorkflow('spawnWorkflowFromStepWorkflow', [
+      const run = await start(await e2e('spawnWorkflowFromStepWorkflow'), [
         inputValue,
       ]);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const returnValue = await run.returnValue;
 
       // Verify the parent workflow completed
       expect(returnValue).toHaveProperty('parentInput');
@@ -1363,8 +1317,8 @@ describe('e2e', () => {
     async () => {
       // This workflow uses a step that calls a helper function imported via @repo/* path alias
       // which resolves to a file outside the workbench directory (../../lib/steps/paths-alias-test.ts)
-      const run = await triggerWorkflow('pathsAliasWorkflow', []);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('pathsAliasWorkflow'), []);
+      const returnValue = await run.returnValue;
 
       // The step should return the helper's identifier string
       expect(returnValue).toBe('pathsAliasHelper');
@@ -1388,14 +1342,9 @@ describe('e2e', () => {
       // Calculator.calculate(5, 3) should:
       // 1. MathService.add(5, 3) = 8
       // 2. MathService.multiply(8, 2) = 16
-      const run = await triggerWorkflow(
-        {
-          workflowFile: 'workflows/99_e2e.ts',
-          workflowFn: 'Calculator.calculate',
-        },
-        [5, 3]
-      );
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('Calculator.calculate'), [5, 3]);
+
+      const returnValue = await run.returnValue;
 
       expect(returnValue).toBe(16);
 
@@ -1416,14 +1365,9 @@ describe('e2e', () => {
       // 1. AllInOneService.double(10) = 20
       // 2. AllInOneService.triple(10) = 30
       // 3. return 20 + 30 = 50
-      const run = await triggerWorkflow(
-        {
-          workflowFile: 'workflows/99_e2e.ts',
-          workflowFn: 'AllInOneService.processNumber',
-        },
-        [10]
-      );
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('AllInOneService.processNumber'), [10]);
+
+      const returnValue = await run.returnValue;
 
       expect(returnValue).toBe(50);
 
@@ -1444,14 +1388,12 @@ describe('e2e', () => {
       // - ChainableService.multiplyByClassValue(5) uses `this.multiplier` (10) -> 5 * 10 = 50
       // - ChainableService.doubleAndMultiply(5) uses `this.multiplier` (10) -> 5 * 2 * 10 = 100
       // - sum = 50 + 100 = 150
-      const run = await triggerWorkflow(
-        {
-          workflowFile: 'workflows/99_e2e.ts',
-          workflowFn: 'ChainableService.processWithThis',
-        },
+      const run = await start(
+        await e2e('ChainableService.processWithThis'),
         [5]
       );
-      const returnValue = await getWorkflowReturnValue(run.runId);
+
+      const returnValue = await run.returnValue;
 
       expect(returnValue).toEqual({
         multiplied: 50, // 5 * 10
@@ -1481,8 +1423,8 @@ describe('e2e', () => {
       // 2. multiplyByFactor.apply({ factor: 3 }, [20]) = 60
       // 3. multiplyByFactor.call({ factor: 5 }, 60) = 300
       // Total: 10 * 2 * 3 * 5 = 300
-      const run = await triggerWorkflow('thisSerializationWorkflow', [10]);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('thisSerializationWorkflow'), [10]);
+      const returnValue = await run.returnValue;
 
       expect(returnValue).toBe(300);
 
@@ -1508,8 +1450,8 @@ describe('e2e', () => {
       // 2. transformPoint(point, 2) -> Point(6, 8)
       // 3. transformPoint(scaled, 3) -> Point(18, 24)
       // 4. sumPoints([Point(1,2), Point(3,4), Point(5,6)]) -> Point(9, 12)
-      const run = await triggerWorkflow('customSerializationWorkflow', [3, 4]);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('customSerializationWorkflow'), [3, 4]);
+      const returnValue = await run.returnValue;
 
       expect(returnValue).toEqual({
         original: { x: 3, y: 4 },
@@ -1546,8 +1488,8 @@ describe('e2e', () => {
       // 3. counter.multiply(3) -> 5 * 3 = 15
       // 4. counter.describe('test counter') -> { label: 'test counter', value: 5 }
       // 5. Create Counter(100), call counter2.add(50) -> 100 + 50 = 150
-      const run = await triggerWorkflow('instanceMethodStepWorkflow', [5]);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('instanceMethodStepWorkflow'), [5]);
+      const returnValue = await run.returnValue;
 
       expect(returnValue).toEqual({
         initialValue: 5,
@@ -1616,8 +1558,8 @@ describe('e2e', () => {
       // The critical part is step 2: the workflow code never imports Vector,
       // so without cross-context registration it wouldn't know how to deserialize it.
 
-      const run = await triggerWorkflow('crossContextSerdeWorkflow', []);
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await start(await e2e('crossContextSerdeWorkflow'), []);
+      const returnValue = await run.returnValue;
 
       // Verify all the vector operations worked correctly
       expect(returnValue).toEqual({
@@ -1649,15 +1591,15 @@ describe('e2e', () => {
 
   describe.skipIf(!isNextJsApp)('pages router', () => {
     test('addTenWorkflow via pages router', { timeout: 60_000 }, async () => {
-      const run = await triggerWorkflow(
+      const run = await startWorkflowViaHttp(
         {
           workflowFile: 'workflows/99_e2e.ts',
           workflowFn: 'addTenWorkflow',
         },
         [123],
-        { usePagesRouter: true }
+        '/api/trigger-pages'
       );
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const returnValue = await run.returnValue;
       expect(returnValue).toBe(133);
     });
 
@@ -1665,19 +1607,23 @@ describe('e2e', () => {
       'promiseAllWorkflow via pages router',
       { timeout: 60_000 },
       async () => {
-        const run = await triggerWorkflow('promiseAllWorkflow', [], {
-          usePagesRouter: true,
-        });
-        const returnValue = await getWorkflowReturnValue(run.runId);
+        const run = await startWorkflowViaHttp(
+          'promiseAllWorkflow',
+          [],
+          '/api/trigger-pages'
+        );
+        const returnValue = await run.returnValue;
         expect(returnValue).toBe('ABC');
       }
     );
 
     test('sleepingWorkflow via pages router', { timeout: 60_000 }, async () => {
-      const run = await triggerWorkflow('sleepingWorkflow', [], {
-        usePagesRouter: true,
-      });
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const run = await startWorkflowViaHttp(
+        'sleepingWorkflow',
+        [],
+        '/api/trigger-pages'
+      );
+      const returnValue = await run.returnValue;
       expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
       expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
     });

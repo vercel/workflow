@@ -87,18 +87,10 @@ export class SvelteKitBuilder extends BaseBuilder {
         this.config.workingDir,
         'static/.well-known/workflow/v1'
       );
-      console.log(
-        `[workflow] SvelteKit: copying manifest to ${staticManifestDir}/manifest.json`
-      );
       await mkdir(staticManifestDir, { recursive: true });
       await copyFile(
         join(workflowGeneratedDir, 'manifest.json'),
         join(staticManifestDir, 'manifest.json')
-      );
-      console.log('[workflow] SvelteKit: manifest copied successfully');
-    } else {
-      console.log(
-        `[workflow] SvelteKit: skipping public manifest (shouldExpose=${this.shouldExposePublicManifest}, hasManifest=${!!manifestJson})`
       );
     }
   }
