@@ -75,10 +75,20 @@ export async function getNextBuilder() {
           this.config.workingDir,
           'public/.well-known/workflow/v1'
         );
+        console.log(
+          `[workflow] Next.js: copying manifest to ${publicManifestDir}/manifest.json`
+        );
         await mkdir(publicManifestDir, { recursive: true });
         await copyFile(
           join(workflowGeneratedDir, 'manifest.json'),
           join(publicManifestDir, 'manifest.json')
+        );
+        console.log(
+          '[workflow] Next.js: manifest copied to public/ successfully'
+        );
+      } else {
+        console.log(
+          `[workflow] Next.js: skipping public manifest (shouldExpose=${this.shouldExposePublicManifest}, hasManifest=${!!manifestJson})`
         );
       }
 

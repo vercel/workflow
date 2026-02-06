@@ -84,6 +84,9 @@ export class LocalBuilder extends BaseBuilder {
     // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
     // Astro maps `foo.json.js` to the URL `/foo.json`
     if (this.shouldExposePublicManifest && manifestJson) {
+      console.log(
+        `[workflow] Astro: writing manifest route to ${join(workflowGeneratedDir, 'manifest.json.js')}`
+      );
       await writeFile(
         join(workflowGeneratedDir, 'manifest.json.js'),
         `export function GET() {

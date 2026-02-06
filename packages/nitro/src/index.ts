@@ -97,8 +97,14 @@ export default {
       );
 
       // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
+      console.log(
+        `[workflow] Nitro: WORKFLOW_PUBLIC_MANIFEST=${JSON.stringify(process.env.WORKFLOW_PUBLIC_MANIFEST)}`
+      );
       if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
+        console.log('[workflow] Nitro: adding manifest handler');
         addManifestHandler(nitro);
+      } else {
+        console.log('[workflow] Nitro: skipping manifest handler');
       }
     }
   },
