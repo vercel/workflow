@@ -15,6 +15,17 @@ import {
   isLocalDeployment,
 } from './utils';
 
+// Manifest type matching the structure from BaseBuilder.createManifest()
+interface WorkflowManifest {
+  version: string;
+  workflows: Record<
+    string,
+    Record<string, { workflowId: string; graph?: unknown }>
+  >;
+  steps: Record<string, Record<string, { stepId: string }>>;
+  classes?: Record<string, Record<string, { classId: string }>>;
+}
+
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
@@ -51,23 +62,76 @@ function writeE2EMetadata() {
   fs.writeFileSync(getE2EMetadataPath(), JSON.stringify(metadata, null, 2));
 }
 
-// Mapping of workbench apps that place workflows under src/ instead of the project root.
-// The SWC transform generates workflow IDs with relative paths from the project root,
-// so sveltekit/astro/nest get a "src/" prefix in their workflow IDs.
-const WORKFLOWS_PREFIX: Record<string, string> = {
-  sveltekit: 'src/',
-  astro: 'src/',
-  nest: 'src/',
-};
+// Cached manifest fetched from the deployment
+let cachedManifest: WorkflowManifest | null = null;
 
 /**
- * Constructs the workflow ID in the SWC naming format:
- *   workflow//./{prefix}{fileWithoutExt}//{functionName}
+ * Fetches the workflow manifest from the deployment URL.
+ * The manifest is served as a static file at /manifest.json by each workbench app
+ * (configured via WORKFLOW_MANIFEST_PATH in the workbench's dev/build scripts).
  */
-function getWorkflowId(workflowFile: string, workflowFn: string): string {
+async function fetchManifest(): Promise<WorkflowManifest> {
+  if (cachedManifest) return cachedManifest;
+
+  const url = new URL('/manifest.json', deploymentUrl);
+  const res = await fetch(url, {
+    headers: getProtectionBypassHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`
+    );
+  }
+  cachedManifest = (await res.json()) as WorkflowManifest;
+  return cachedManifest;
+}
+
+/**
+ * Looks up the workflowId from the manifest for a given workflow file and function name.
+ * The manifest contains the exact IDs produced by the SWC transform during the build,
+ * which handles symlink resolution and path normalization correctly.
+ */
+async function getWorkflowId(
+  workflowFile: string,
+  workflowFn: string
+): Promise<string> {
+  const manifest = await fetchManifest();
+
+  // The manifest keys are relative file paths as seen by the builder.
+  // Due to symlinks, the key may differ from the workflowFile we pass
+  // (e.g., "example/workflows/99_e2e.ts" vs "workflows/99_e2e.ts").
+  // Search all files for the matching function name and workflow file suffix.
+  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
+    if (
+      manifestFile.endsWith(workflowFile) ||
+      workflowFile.endsWith(manifestFile)
+    ) {
+      const entry = functions[workflowFn];
+      if (entry) {
+        return entry.workflowId;
+      }
+    }
+  }
+
+  // If suffix matching didn't find it, try stripping the extension for matching
   const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
-  const prefix = WORKFLOWS_PREFIX[process.env.APP_NAME!] || '';
-  return `workflow//./${prefix}${fileWithoutExt}//${workflowFn}`;
+  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
+    const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
+    if (
+      manifestFileWithoutExt.endsWith(fileWithoutExt) ||
+      fileWithoutExt.endsWith(manifestFileWithoutExt)
+    ) {
+      const entry = functions[workflowFn];
+      if (entry) {
+        return entry.workflowId;
+      }
+    }
+  }
+
+  throw new Error(
+    `Workflow "${workflowFn}" not found in manifest for file "${workflowFile}". ` +
+      `Available files: ${Object.keys(manifest.workflows).join(', ')}`
+  );
 }
 
 async function triggerWorkflow(
@@ -87,7 +151,7 @@ async function triggerWorkflow(
       ? 'workflows/99_e2e.ts'
       : workflow.workflowFile;
 
-  const workflowId = getWorkflowId(workflowFile, workflowFn);
+  const workflowId = await getWorkflowId(workflowFile, workflowFn);
   const run = await start({ workflowId }, args);
 
   // Collect runId for observability links (Vercel world only)
