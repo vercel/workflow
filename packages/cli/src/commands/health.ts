@@ -388,8 +388,6 @@ export default class Health extends BaseCommand {
     world: any,
     flags: { timeout: number; json: boolean; verbose: boolean }
   ): Promise<EndpointHealthResult> {
-    const startTime = Date.now();
-
     if (!flags.json) {
       logger.log(`Checking ${endpoint} endpoint...`);
     }
@@ -402,11 +400,9 @@ export default class Health extends BaseCommand {
       flags.verbose
     );
 
-    const latencyMs = Date.now() - startTime;
-
     if (!flags.json) {
       const message = result.healthy
-        ? formatHealthyResult(endpoint, latencyMs)
+        ? formatHealthyResult(endpoint, result.latencyMs)
         : formatUnhealthyResult(endpoint, result.error);
       logger.log(message);
     }
@@ -415,7 +411,7 @@ export default class Health extends BaseCommand {
       endpoint,
       healthy: result.healthy,
       error: result.error,
-      latencyMs,
+      latencyMs: result.latencyMs,
     };
   }
 

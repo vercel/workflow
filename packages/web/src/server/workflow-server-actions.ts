@@ -3,8 +3,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { hydrateResourceIO } from '@workflow/core/observability';
-import { createWorld } from '@workflow/core/runtime';
 import * as workflowRunHelpers from '@workflow/core/runtime';
+import { createWorld } from '@workflow/core/runtime';
 import {
   type HealthCheckEndpoint,
   type HealthCheckResult,
@@ -17,13 +17,13 @@ import {
 } from '@workflow/core/serialization';
 import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
-import {
-  type Event,
-  type Hook,
-  type Step,
-  type WorkflowRun,
-  type WorkflowRunStatus,
-  type World,
+import type {
+  Event,
+  Hook,
+  Step,
+  WorkflowRun,
+  WorkflowRunStatus,
+  World,
 } from '@workflow/world';
 import {
   type APIConfig,
@@ -1073,13 +1073,6 @@ export async function fetchWorkflowsManifest(
     steps: {},
     workflows: {},
   });
-}
-
-/**
- * Health check result with latency information
- */
-export interface HealthCheckResultWithLatency extends HealthCheckResult {
-  latencyMs: number;
 }
 
 export type { HealthCheckEndpoint, HealthCheckResult };

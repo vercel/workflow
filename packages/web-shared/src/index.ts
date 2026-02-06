@@ -7,7 +7,11 @@ export {
   parseWorkflowName,
 } from '@workflow/utils/parse-name';
 export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
-
+export * from './components';
+export {
+  hookEventsToHookEntity,
+  waitEventsToWaitEntity,
+} from './components/workflow-traces/trace-span-construction';
 export type { EventAnalysis } from './lib/event-analysis';
 export {
   analyzeEvents,
@@ -23,8 +27,3 @@ export {
   identifyStreamSteps,
   isDoStreamStep,
 } from './lib/utils';
-export * from './components';
-export {
-  hookEventsToHookEntity,
-  waitEventsToWaitEntity,
-} from './components/workflow-traces/trace-span-construction';
