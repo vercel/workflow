@@ -34,3 +34,7 @@ packages/swc-plugin-workflow/build-hash.json
 
 .DS_Store
 
+# Generated manifest files copied to static asset directories by builders
+workbench/nextjs-*/public/.well-known/workflow
+workbench/sveltekit/static/.well-known/workflow
+
