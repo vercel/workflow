@@ -1,7 +1,7 @@
 import { __private_getClosureVars, registerStepFunction } from "workflow/internal/private";
 import { DurableAgent } from '@workflow/ai/agent';
 import { gateway } from 'ai';
-/**__internal_workflows{"workflows":{"input.js":{"wflow":{"workflowId":"workflow//./input//wflow"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"f":{"stepId":"step//./input//f"},"fn":{"stepId":"step//./input//fn"},"namedStepWithClosureVars":{"stepId":"step//./input//namedStepWithClosureVars"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//_anonymousStep0":{"name":"_anonymousStep0","source":"input.js"},"step//./input//_anonymousStep1":{"name":"_anonymousStep1","source":"input.js"},"step//./input//_anonymousStep2":{"name":"_anonymousStep2","source":"input.js"},"step//./input//_anonymousStep3":{"name":"_anonymousStep3","source":"input.js"},"step//./input//_anonymousStep4":{"name":"_anonymousStep4","source":"input.js"},"step//./input//f":{"name":"f","source":"input.js"},"step//./input//fn":{"name":"fn","source":"input.js"},"step//./input//namedStepWithClosureVars":{"name":"namedStepWithClosureVars","source":"input.js"}},"workflows":{"workflow//./input//wflow":{"name":"wflow","source":"input.js"}}}*/;
 var stepWrapperReturnArrowFunctionVar$fn = async ()=>{
     const { a, b, c } = __private_getClosureVars();
     return a + b + c;

@@ -61,7 +61,10 @@ export interface WorkflowGraphManifest {
 }
 
 /**
- * Raw manifest types matching the new JSON structure from the SWC plugin
+ * Raw manifest types matching the JSON structure from the SWC plugin.
+ * We support two formats:
+ * - Legacy (pre-1.0.0): file-path keyed structure
+ * - New (1.0.0+): ID-keyed structure with exports
  */
 export interface RawManifestStep {
   stepId: string;
@@ -78,7 +81,11 @@ export interface RawGraphNode {
   metadata?: NodeMetadata;
 }
 
-export interface RawManifestWorkflowEntry {
+/**
+ * Legacy format (pre-1.0.0): workflows keyed by file path, then by function name
+ * { [filePath]: { [workflowName]: { workflowId, graph } } }
+ */
+export interface LegacyManifestWorkflowEntry {
   workflowId: string;
   graph: {
     nodes: RawGraphNode[];
@@ -86,11 +93,45 @@ export interface RawManifestWorkflowEntry {
   };
 }
 
-export interface RawWorkflowsManifest {
-  version: string;
-  steps: Record<string, Record<string, RawManifestStep>>;
-  workflows: Record<string, Record<string, RawManifestWorkflowEntry>>;
+export interface LegacyWorkflowsManifest {
+  version?: string;
+  steps?: Record<string, Record<string, RawManifestStep>>;
+  workflows?: Record<string, Record<string, LegacyManifestWorkflowEntry>>;
 }
+
+/**
+ * New format (1.0.0+): workflows keyed by workflow ID
+ * { [workflowId]: { workflowId, name, exports, graph } }
+ */
+export interface NewManifestWorkflowEntry {
+  workflowId: string;
+  name: string;
+  exports: Record<string, string>;
+  graph?: {
+    nodes: RawGraphNode[];
+    edges: GraphEdge[];
+  };
+}
+
+export interface NewWorkflowsManifest {
+  version: string;
+  steps?: Record<
+    string,
+    { stepId: string; name: string; exports: Record<string, string> }
+  >;
+  workflows?: Record<string, NewManifestWorkflowEntry>;
+  classes?: Record<
+    string,
+    { classId: string; name: string; exports: Record<string, string> }
+  >;
+}
+
+/**
+ * Union type for raw manifest - can be either legacy or new format
+ */
+export type RawWorkflowsManifest =
+  | LegacyWorkflowsManifest
+  | NewWorkflowsManifest;
 
 /**
  * Types for overlaying execution data on workflow graphs

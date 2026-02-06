@@ -10,8 +10,7 @@ export function hooks(world: string) {
     const token = Date.now().toString(36);
     const customData = `my-custom-data-${token}`;
     const result = await server.invoke(
-      'workflows/hooks.ts',
-      'collectWithHook',
+      'workflow//./workflows/hooks//collectWithHook',
       [token, customData]
     );
     expect(result.runId).toMatch(/^wrun_.+/);

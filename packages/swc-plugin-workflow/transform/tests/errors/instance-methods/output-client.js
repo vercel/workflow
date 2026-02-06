@@ -1,5 +1,5 @@
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"TestClass#instanceMethod":{"stepId":"step//./input//TestClass#instanceMethod"},"TestClass.staticMethod":{"stepId":"step//./input//TestClass.staticMethod"}}},"classes":{"input.js":{"TestClass":{"classId":"class//./input//TestClass"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//TestClass#instanceMethod":{"name":"TestClass#instanceMethod","source":"input.js"},"step//./input//TestClass.staticMethod":{"name":"TestClass.staticMethod","source":"input.js"}},"classes":{"class//./input//TestClass":{"name":"TestClass","source":"input.js"}}}*/;
 export class TestClass {
     // OK: instance methods can have "use step" directive
     async instanceMethod() {

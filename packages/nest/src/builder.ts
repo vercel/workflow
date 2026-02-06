@@ -1,5 +1,9 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
+import {
+  BaseBuilder,
+  createBaseBuilderConfig,
+  mergeManifests,
+} from '@workflow/builders';
 import { join } from 'pathe';
 
 export interface NestBuilderOptions {
@@ -74,11 +78,7 @@ export class NestLocalBuilder extends BaseBuilder {
     });
 
     // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
+    const manifest = mergeManifests(stepsManifest, workflowsManifest);
 
     // Generate manifest
     await this.createManifest({

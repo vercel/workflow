@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+import { mergeManifests } from './manifest-utils.js';
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -25,11 +26,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createBuildOutputConfig(outputDir);
 
     // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
+    const manifest = mergeManifests(stepsManifest, workflowsManifest);
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow.func/index.js');

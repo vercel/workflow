@@ -1,5 +1,5 @@
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"validStep":{"stepId":"step//./input//validStep"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//validStep":{"name":"validStep","source":"input.js"}}}*/;
 // These should all error - only async functions allowed
 export const value = 42;
 export function syncFunc() {

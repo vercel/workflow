@@ -1,6 +1,6 @@
 import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
-/**__internal_workflows{"steps":{"input.js":{"Service#process":{"stepId":"step//./input//Service#process"},"helper":{"stepId":"step//./input//helper"}}},"classes":{"input.js":{"Service":{"classId":"class//./input//Service"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//Service#process":{"name":"Service#process","source":"input.js"},"step//./input//helper":{"name":"helper","source":"input.js"}},"classes":{"class//./input//Service":{"name":"Service","source":"input.js"}}}*/;
 export class Service {
     static [WORKFLOW_SERIALIZE](instance) {
         return {

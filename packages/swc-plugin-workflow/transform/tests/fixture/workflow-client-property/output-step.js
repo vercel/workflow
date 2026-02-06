@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"arrowWorkflow":{"workflowId":"workflow//./input//arrowWorkflow"},"default":{"workflowId":"workflow//./input//defaultWorkflow"},"internalWorkflow":{"workflowId":"workflow//./input//internalWorkflow"},"myWorkflow":{"workflowId":"workflow//./input//myWorkflow"}}}}*/;
+/**__internal_workflows{"workflows":{"workflow//./input//arrowWorkflow":{"name":"arrowWorkflow","source":"input.js"},"workflow//./input//defaultWorkflow":{"name":"default","source":"input.js"},"workflow//./input//internalWorkflow":{"name":"internalWorkflow","source":"input.js"},"workflow//./input//myWorkflow":{"name":"myWorkflow","source":"input.js"}}}*/;
 // Test workflow functions in client mode
 export async function myWorkflow() {
     throw new Error("You attempted to execute workflow myWorkflow function directly. To start a workflow, use start(myWorkflow) from workflow/api");

@@ -1,5 +1,5 @@
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"testStep":{"stepId":"step//./input//testStep"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//testStep":{"name":"testStep","source":"input.js"}}}*/;
 // This is the TypeScript-transformed output of:
 // async function testStep() {
 //   'use step';

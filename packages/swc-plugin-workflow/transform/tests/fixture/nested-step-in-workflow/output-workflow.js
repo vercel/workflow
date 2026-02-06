@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//./input//example"}}},"steps":{"input.js":{"arrowStep":{"stepId":"step//./input//arrowStep"},"helpers/objectStep":{"stepId":"step//./input//example/helpers/objectStep"},"letArrowStep":{"stepId":"step//./input//letArrowStep"},"step":{"stepId":"step//./input//step"},"varArrowStep":{"stepId":"step//./input//varArrowStep"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//arrowStep":{"name":"arrowStep","source":"input.js"},"step//./input//example/helpers/objectStep":{"name":"helpers/objectStep","source":"input.js"},"step//./input//letArrowStep":{"name":"letArrowStep","source":"input.js"},"step//./input//step":{"name":"step","source":"input.js"},"step//./input//varArrowStep":{"name":"varArrowStep","source":"input.js"}},"workflows":{"workflow//./input//example":{"name":"example","source":"input.js"}}}*/;
 export async function example(a, b) {
     var step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//example/step");
     // Arrow function with const

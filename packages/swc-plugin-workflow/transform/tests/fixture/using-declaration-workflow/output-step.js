@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//./input//myWorkflow"}}}}*/;
+/**__internal_workflows{"workflows":{"workflow//./input//myWorkflow":{"name":"myWorkflow","source":"input.js"}}}*/;
 // This is the TypeScript-transformed output of:
 // async function myWorkflow() {
 //   'use workflow';

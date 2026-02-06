@@ -1,6 +1,6 @@
 import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
-/**__internal_workflows{"steps":{"input.js":{"Calculator#add":{"stepId":"step//./input//Calculator#add"},"Calculator#multiply":{"stepId":"step//./input//Calculator#multiply"}}},"classes":{"input.js":{"Calculator":{"classId":"class//./input//Calculator"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//Calculator#add":{"name":"Calculator#add","source":"input.js"},"step//./input//Calculator#multiply":{"name":"Calculator#multiply","source":"input.js"}},"classes":{"class//./input//Calculator":{"name":"Calculator","source":"input.js"}}}*/;
 export class Calculator {
     static [WORKFLOW_SERIALIZE](instance) {
         return {

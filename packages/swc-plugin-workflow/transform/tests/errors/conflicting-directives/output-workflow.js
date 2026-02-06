@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"test":{"stepId":"step//./input//test"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//test":{"name":"test","source":"input.js"}}}*/;
 // Error: Can't have both directives in the same file
 'use step';
 'use workflow';

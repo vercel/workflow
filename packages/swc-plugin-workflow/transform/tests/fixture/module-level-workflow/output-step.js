@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"arrowWorkflow":{"workflowId":"workflow//./input//arrowWorkflow"},"workflow":{"workflowId":"workflow//./input//workflow"}}}}*/;
+/**__internal_workflows{"workflows":{"workflow//./input//arrowWorkflow":{"name":"arrowWorkflow","source":"input.js"},"workflow//./input//workflow":{"name":"workflow","source":"input.js"}}}*/;
 async function local(input) {
     return input.foo;
 }

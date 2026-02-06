@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"exportedStepArrow":{"stepId":"step//./input//exportedStepArrow"},"normalStep":{"stepId":"step//./input//normalStep"},"stepArrow":{"stepId":"step//./input//stepArrow"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//exportedStepArrow":{"name":"exportedStepArrow","source":"input.js"},"step//./input//normalStep":{"name":"normalStep","source":"input.js"},"step//./input//stepArrow":{"name":"stepArrow","source":"input.js"}}}*/;
 let stepArrow = async ()=>{
     return 1;
 };

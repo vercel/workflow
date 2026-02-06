@@ -3,6 +3,7 @@ import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
+  mergeManifests,
   NORMALIZE_REQUEST_CODE,
   type SvelteKitConfig,
 } from '@workflow/builders';
@@ -59,11 +60,7 @@ export class SvelteKitBuilder extends BaseBuilder {
     await this.buildWebhookRoute({ workflowGeneratedDir });
 
     // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
+    const manifest = mergeManifests(stepsManifest, workflowsManifest);
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow/+server.js');

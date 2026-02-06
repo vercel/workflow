@@ -1,6 +1,6 @@
 import { registerStepFunction } from "workflow/internal/private";
 import fs from 'fs/promises';
-/**__internal_workflows{"steps":{"input.js":{"myFactory/myStep":{"stepId":"step//./input//myFactory/myStep"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//myFactory/myStep":{"name":"myFactory/myStep","source":"input.js"}}}*/;
 var myFactory$myStep = async ()=>{
     await fs.mkdir('test');
 };

@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"default":{"workflowId":"workflow//./input//default"}}}}*/;
+/**__internal_workflows{"workflows":{"workflow//./input//default":{"name":"default","source":"input.js"}}}*/;
 // Existing variable named __default
 const __default = "existing variable";
 // Use it to avoid unused variable

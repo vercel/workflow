@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"__default":{"workflowId":"workflow//./input//__default"}}}}*/;
+/**__internal_workflows{"workflows":{"workflow//./input//__default":{"name":"__default","source":"input.js"}}}*/;
 // User explicitly names their workflow function __default
 // The workflow ID should use "__default", not normalize to "default"
 export async function __default() {

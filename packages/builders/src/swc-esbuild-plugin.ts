@@ -11,6 +11,7 @@ import {
   jsTsRegex,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+import { mergeRawManifest } from './manifest-utils.js';
 
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow' | 'client';
@@ -218,17 +219,14 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             options.workflowManifest = {};
           }
 
-          options.workflowManifest.workflows = Object.assign(
-            options.workflowManifest.workflows || {},
-            workflowManifest.workflows
-          );
-          options.workflowManifest.steps = Object.assign(
-            options.workflowManifest.steps || {},
-            workflowManifest.steps
-          );
-          options.workflowManifest.classes = Object.assign(
-            options.workflowManifest.classes || {},
-            workflowManifest.classes
+          // Merge raw manifest into final manifest with exports keyed by condition
+          // step/client mode uses 'default' condition, workflow mode uses 'workflow'
+          const condition =
+            options.mode === 'workflow' ? 'workflow' : 'default';
+          mergeRawManifest(
+            options.workflowManifest,
+            workflowManifest,
+            condition
           );
 
           return {

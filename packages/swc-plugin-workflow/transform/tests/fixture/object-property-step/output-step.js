@@ -1,7 +1,7 @@
 import { registerStepFunction } from "workflow/internal/private";
 import * as z from 'zod';
 import { tool } from 'ai';
-/**__internal_workflows{"steps":{"input.js":{"timeTool/execute":{"stepId":"step//./input//timeTool/execute"},"weatherTool/execute":{"stepId":"step//./input//weatherTool/execute"},"weatherTool2/execute":{"stepId":"step//./input//weatherTool2/execute"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//timeTool/execute":{"name":"timeTool/execute","source":"input.js"},"step//./input//weatherTool/execute":{"name":"weatherTool/execute","source":"input.js"},"step//./input//weatherTool2/execute":{"name":"weatherTool2/execute","source":"input.js"}}}*/;
 var weatherTool$execute = async ({ location })=>{
     return {
         location,

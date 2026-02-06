@@ -1,6 +1,6 @@
 import { registerStepFunction } from "workflow/internal/private";
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-/**__internal_workflows{"steps":{"input.js":{"TestClass#stepMethod":{"stepId":"step//./input//TestClass#stepMethod"},"stepWithArguments":{"stepId":"step//./input//stepWithArguments"},"stepWithThis":{"stepId":"step//./input//stepWithThis"}}},"classes":{"input.js":{"TestClass":{"classId":"class//./input//TestClass"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//TestClass#stepMethod":{"name":"TestClass#stepMethod","source":"input.js"},"step//./input//stepWithArguments":{"name":"stepWithArguments","source":"input.js"},"step//./input//stepWithThis":{"name":"stepWithThis","source":"input.js"}},"classes":{"class//./input//TestClass":{"name":"TestClass","source":"input.js"}}}*/;
 export async function stepWithThis() {
     // `this` is allowed in step functions
     return this.value;

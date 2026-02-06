@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"default":{"workflowId":"workflow//./input//default"}}}}*/;
+/**__internal_workflows{"workflows":{"workflow//./input//default":{"name":"default","source":"input.js"}}}*/;
 const __default = async function() {
     const result = await someStep();
     return result;

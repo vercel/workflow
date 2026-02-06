@@ -1,5 +1,5 @@
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"workflows":{"input.js":{"validWorkflow":{"workflowId":"workflow//./input//validWorkflow"}}},"steps":{"input.js":{"validStep":{"stepId":"step//./input//validStep"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//validStep":{"name":"validStep","source":"input.js"}},"workflows":{"workflow//./input//validWorkflow":{"name":"validWorkflow","source":"input.js"}}}*/;
 // Error: sync function with use step
 export function syncStep() {
     'use step';

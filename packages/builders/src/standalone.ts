@@ -1,4 +1,5 @@
 import { BaseBuilder } from './base-builder.js';
+import { mergeManifests } from './manifest-utils.js';
 import type { WorkflowConfig } from './types.js';
 
 export class StandaloneBuilder extends BaseBuilder {
@@ -24,7 +25,7 @@ export class StandaloneBuilder extends BaseBuilder {
     // Merge manifests from both bundles
     // Steps bundle discovers classes from default export conditions
     // Workflow bundle discovers classes from 'workflow' export conditions
-    const manifest = this.mergeManifests(stepsManifest, workflowsManifest);
+    const manifest = mergeManifests(stepsManifest, workflowsManifest);
 
     // Build unified manifest from workflow bundle
     const workflowBundlePath = this.resolvePath(
@@ -38,29 +39,6 @@ export class StandaloneBuilder extends BaseBuilder {
     });
 
     await this.createClientLibrary();
-  }
-
-  private mergeManifests(
-    stepsManifest: {
-      steps?: Record<string, any>;
-      workflows?: Record<string, any>;
-      classes?: Record<string, any>;
-    },
-    workflowsManifest: {
-      steps?: Record<string, any>;
-      workflows?: Record<string, any>;
-      classes?: Record<string, any>;
-    }
-  ): {
-    steps?: Record<string, any>;
-    workflows?: Record<string, any>;
-    classes?: Record<string, any>;
-  } {
-    return {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
   }
 
   private async buildStepsBundle({

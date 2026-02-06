@@ -1,4 +1,4 @@
-/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//add":{"name":"add","source":"input.js"}}}*/;
 export async function add(a, b) {
     return a + b;
 }

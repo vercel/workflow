@@ -3,10 +3,6 @@ import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { getWorkbenchAppPath } from './utils';
 
-interface ManifestStep {
-  stepId: string;
-}
-
 interface ManifestNode {
   id: string;
   type: string;
@@ -25,8 +21,17 @@ interface ManifestNode {
   };
 }
 
+// New ID-keyed manifest format
+interface ManifestStep {
+  stepId: string;
+  name: string;
+  exports: Record<string, string>;
+}
+
 interface ManifestWorkflow {
   workflowId: string;
+  name: string;
+  exports: Record<string, string>;
   graph: {
     nodes: ManifestNode[];
     edges: Array<{
@@ -40,8 +45,8 @@ interface ManifestWorkflow {
 
 interface Manifest {
   version: string;
-  steps: Record<string, Record<string, ManifestStep>>;
-  workflows: Record<string, Record<string, ManifestWorkflow>>;
+  steps: Record<string, ManifestStep>; // keyed by step ID
+  workflows: Record<string, ManifestWorkflow>; // keyed by workflow ID
 }
 
 // Map project names to their manifest paths
@@ -60,21 +65,24 @@ function validateSteps(steps: Manifest['steps']) {
   expect(steps).toBeDefined();
   expect(typeof steps).toBe('object');
 
-  const stepFiles = Object.keys(steps);
-  expect(stepFiles.length).toBeGreaterThan(0);
+  const stepIds = Object.keys(steps);
+  expect(stepIds.length).toBeGreaterThan(0);
 
-  for (const filePath of stepFiles) {
-    // Skip internal builtins from packages/workflow/dist/internal/builtins.js
-    if (filePath.includes('builtins.js')) {
+  for (const [stepId, stepData] of Object.entries(steps)) {
+    // Skip internal builtins
+    if (stepId.includes('builtins')) {
       continue;
     }
 
-    const fileSteps = steps[filePath];
-    for (const [stepName, stepData] of Object.entries(fileSteps)) {
-      expect(stepData.stepId).toBeDefined();
-      expect(stepData.stepId).toContain('step//');
-      expect(stepData.stepId).toContain(stepName);
-    }
+    // Validate step ID format
+    expect(stepId).toContain('step//');
+    // Validate stepId field matches the key
+    expect(stepData.stepId).toBe(stepId);
+    // Validate name is present
+    expect(stepData.name).toBeDefined();
+    // Validate exports object
+    expect(stepData.exports).toBeDefined();
+    expect(typeof stepData.exports).toBe('object');
   }
 }
 
@@ -112,17 +120,21 @@ function validateWorkflows(workflows: Manifest['workflows']) {
   expect(workflows).toBeDefined();
   expect(typeof workflows).toBe('object');
 
-  const workflowFiles = Object.keys(workflows);
-  expect(workflowFiles.length).toBeGreaterThan(0);
+  const workflowIds = Object.keys(workflows);
+  expect(workflowIds.length).toBeGreaterThan(0);
 
-  for (const filePath of workflowFiles) {
-    const fileWorkflows = workflows[filePath];
-    for (const [workflowName, workflowData] of Object.entries(fileWorkflows)) {
-      expect(workflowData.workflowId).toBeDefined();
-      expect(workflowData.workflowId).toContain('workflow//');
-      expect(workflowData.workflowId).toContain(workflowName);
-      validateWorkflowGraph(workflowData.graph);
-    }
+  for (const [workflowId, workflowData] of Object.entries(workflows)) {
+    // Validate workflow ID format
+    expect(workflowId).toContain('workflow//');
+    // Validate workflowId field matches the key
+    expect(workflowData.workflowId).toBe(workflowId);
+    // Validate name is present
+    expect(workflowData.name).toBeDefined();
+    // Validate exports object
+    expect(workflowData.exports).toBeDefined();
+    expect(typeof workflowData.exports).toBe('object');
+    // Validate graph
+    validateWorkflowGraph(workflowData.graph);
   }
 }
 
@@ -161,15 +173,16 @@ describe.each(Object.keys(MANIFEST_PATHS))('manifest generation', (project) => {
 });
 
 /**
- * Helper to find a workflow by name in the manifest
+ * Helper to find a workflow by name in the manifest.
+ * Searches through all workflows and matches by the `name` field.
  */
 function findWorkflow(
   manifest: Manifest,
   workflowName: string
 ): ManifestWorkflow | undefined {
-  for (const fileWorkflows of Object.values(manifest.workflows)) {
-    if (workflowName in fileWorkflows) {
-      return fileWorkflows[workflowName];
+  for (const workflow of Object.values(manifest.workflows)) {
+    if (workflow.name === workflowName) {
+      return workflow;
     }
   }
   return undefined;

@@ -7,6 +7,10 @@
 import type {
   GraphEdge,
   GraphNode,
+  LegacyManifestWorkflowEntry,
+  LegacyWorkflowsManifest,
+  NewManifestWorkflowEntry,
+  NewWorkflowsManifest,
   RawGraphNode,
   RawWorkflowsManifest,
   WorkflowGraph,
@@ -170,16 +174,133 @@ function calculateNodePositions(
 }
 
 /**
- * Converts the new manifest format to the format expected by UI components
+ * Detects whether a manifest is in the new ID-keyed format (1.0.0+)
+ * or the legacy file-path-keyed format.
  *
- * New format:
+ * New format has workflow entries with `name` and `exports` fields.
+ * Legacy format has nested structure: { [filePath]: { [workflowName]: { workflowId, graph } } }
+ */
+function isNewManifestFormat(
+  raw: RawWorkflowsManifest
+): raw is NewWorkflowsManifest {
+  if (!raw?.workflows) return false;
+
+  // Check the first workflow entry to determine format
+  const firstEntry = Object.values(raw.workflows)[0];
+  if (!firstEntry) return false;
+
+  // New format: entries have `name` and `exports` fields directly
+  // Legacy format: entries are nested objects keyed by workflow name
+  return (
+    typeof firstEntry === 'object' &&
+    'name' in firstEntry &&
+    'exports' in firstEntry
+  );
+}
+
+/**
+ * Adapts a legacy format manifest (file-path keyed) to the UI format
+ *
+ * Legacy format:
  * {
- *   version: "1.0.0",
- *   steps: { [filePath]: { [stepName]: { stepId } } },
+ *   version?: string,
  *   workflows: { [filePath]: { [workflowName]: { workflowId, graph: { nodes, edges } } } }
  * }
+ */
+function adaptLegacyManifest(
+  raw: LegacyWorkflowsManifest
+): WorkflowGraphManifest {
+  const workflows: Record<string, WorkflowGraph> = {};
+
+  if (!raw?.workflows) {
+    return { version: raw?.version || '1.0.0', workflows: {} };
+  }
+
+  for (const [filePath, workflowsInFile] of Object.entries(raw.workflows)) {
+    for (const [workflowName, entry] of Object.entries(workflowsInFile)) {
+      const typedEntry = entry as LegacyManifestWorkflowEntry;
+      // Calculate positions for nodes since they're not provided
+      const positionedNodes = calculateNodePositions(
+        typedEntry.graph.nodes,
+        typedEntry.graph.edges
+      );
+
+      const workflowGraph: WorkflowGraph = {
+        workflowId: typedEntry.workflowId,
+        workflowName: workflowName,
+        filePath: filePath,
+        nodes: positionedNodes,
+        edges: typedEntry.graph.edges,
+      };
+
+      // Use workflowId as the key for lookup
+      workflows[typedEntry.workflowId] = workflowGraph;
+    }
+  }
+
+  return {
+    version: raw.version || '1.0.0',
+    workflows,
+  };
+}
+
+/**
+ * Adapts a new format manifest (ID-keyed) to the UI format
  *
- * Expected format:
+ * New format (1.0.0+):
+ * {
+ *   version: "1.0.0",
+ *   workflows: { [workflowId]: { workflowId, name, exports: { workflow?: string, default?: string }, graph?: { nodes, edges } } }
+ * }
+ */
+function adaptNewManifest(raw: NewWorkflowsManifest): WorkflowGraphManifest {
+  const workflows: Record<string, WorkflowGraph> = {};
+
+  if (!raw?.workflows) {
+    return { version: raw?.version || '1.0.0', workflows: {} };
+  }
+
+  for (const [workflowId, entry] of Object.entries(raw.workflows)) {
+    const typedEntry = entry as NewManifestWorkflowEntry;
+
+    // Get file path from exports (prefer workflow condition, fall back to default)
+    const filePath =
+      typedEntry.exports?.workflow || typedEntry.exports?.default || 'unknown';
+
+    // Skip if no graph data
+    if (!typedEntry.graph) {
+      continue;
+    }
+
+    // Calculate positions for nodes since they're not provided
+    const positionedNodes = calculateNodePositions(
+      typedEntry.graph.nodes,
+      typedEntry.graph.edges
+    );
+
+    const workflowGraph: WorkflowGraph = {
+      workflowId: workflowId,
+      workflowName: typedEntry.name,
+      filePath: filePath,
+      nodes: positionedNodes,
+      edges: typedEntry.graph.edges,
+    };
+
+    // Use workflowId as the key for lookup
+    workflows[workflowId] = workflowGraph;
+  }
+
+  return {
+    version: raw.version,
+    workflows,
+  };
+}
+
+/**
+ * Converts a raw manifest to the format expected by UI components.
+ * Supports both legacy (file-path keyed) and new (ID-keyed) formats.
+ *
+ * Expected output format:
  * {
  *   version: "1.0.0",
  *   workflows: { [workflowId]: { workflowId, workflowName, filePath, nodes, edges } }
@@ -188,8 +309,6 @@ function calculateNodePositions(
 export function adaptManifest(
   raw: RawWorkflowsManifest
 ): WorkflowGraphManifest {
-  const workflows: Record<string, WorkflowGraph> = {};
-
   console.log('[adaptManifest] Raw manifest version:', raw?.version);
   console.log(
     '[adaptManifest] Raw workflows keys:',
@@ -201,34 +320,21 @@ export function adaptManifest(
     return { version: raw?.version || '1.0.0', workflows: {} };
   }
 
-  for (const [filePath, workflowsInFile] of Object.entries(raw.workflows)) {
-    for (const [workflowName, entry] of Object.entries(workflowsInFile)) {
-      // Calculate positions for nodes since they're not provided
-      const positionedNodes = calculateNodePositions(
-        entry.graph.nodes,
-        entry.graph.edges
-      );
+  // Detect format and adapt accordingly
+  const isNewFormat = isNewManifestFormat(raw);
+  console.log(
+    '[adaptManifest] Detected format:',
+    isNewFormat ? 'new (ID-keyed)' : 'legacy (file-path keyed)'
+  );
 
-      const workflowGraph: WorkflowGraph = {
-        workflowId: entry.workflowId,
-        workflowName: workflowName,
-        filePath: filePath,
-        nodes: positionedNodes,
-        edges: entry.graph.edges,
-      };
-
-      // Use workflowId as the key for lookup
-      workflows[entry.workflowId] = workflowGraph;
-    }
-  }
+  const result = isNewFormat
+    ? adaptNewManifest(raw as NewWorkflowsManifest)
+    : adaptLegacyManifest(raw as LegacyWorkflowsManifest);
 
   console.log(
     '[adaptManifest] Adapted workflows count:',
-    Object.keys(workflows).length
+    Object.keys(result.workflows).length
   );
 
-  return {
-    version: raw.version,
-    workflows,
-  };
+  return result;
 }

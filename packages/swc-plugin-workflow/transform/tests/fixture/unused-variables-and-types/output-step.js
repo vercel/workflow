@@ -2,7 +2,7 @@ import { registerStepFunction } from "workflow/internal/private";
 import { Resend } from 'resend';
 import { generatePostcardEmailTemplate } from '@/lib/template';
 import { unusedImport } from './unused';
-/**__internal_workflows{"steps":{"input.js":{"sendRecipientEmail":{"stepId":"step//./input//sendRecipientEmail"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//sendRecipientEmail":{"name":"sendRecipientEmail","source":"input.js"}}}*/;
 const resend = new Resend(process.env.RESEND_API_KEY);
 const unusedVariable = 'this should be removed';
 function unusedHelper() {

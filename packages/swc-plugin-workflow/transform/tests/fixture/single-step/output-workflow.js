@@ -1,2 +1,2 @@
-/**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//add":{"name":"add","source":"input.js"}}}*/;
 export var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//add");

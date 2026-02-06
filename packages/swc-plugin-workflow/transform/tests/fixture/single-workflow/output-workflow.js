@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"workflow":{"workflowId":"workflow//./input//workflow"}}}}*/;
+/**__internal_workflows{"workflows":{"workflow//./input//workflow":{"name":"workflow","source":"input.js"}}}*/;
 export async function workflow(a, b) {
     return add(a, b);
 }

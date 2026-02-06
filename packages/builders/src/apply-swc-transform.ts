@@ -23,25 +23,66 @@ function getDecoratorOptions() {
   return cached;
 }
 
+/**
+ * Raw manifest format emitted by SWC plugin for a single file.
+ * Has `source` as a single string (the file being transformed).
+ */
+export type RawWorkflowManifest = {
+  steps?: {
+    [stepId: string]: {
+      name: string;
+      source: string;
+    };
+  };
+  workflows?: {
+    [workflowId: string]: {
+      name: string;
+      source: string;
+    };
+  };
+  classes?: {
+    [classId: string]: {
+      name: string;
+      source: string;
+    };
+  };
+};
+
+/**
+ * Final manifest format with exports keyed by condition.
+ * This is what gets written to manifest.json.
+ *
+ * Each entry includes its own ID for easy use with APIs like `start()`.
+ */
 export type WorkflowManifest = {
   steps?: {
-    [relativeFileName: string]: {
-      [functionName: string]: {
-        stepId: string;
+    [stepId: string]: {
+      stepId: string;
+      name: string;
+      exports: {
+        [condition: string]: string;
       };
     };
   };
   workflows?: {
-    [relativeFileName: string]: {
-      [functionName: string]: {
-        workflowId: string;
+    [workflowId: string]: {
+      workflowId: string;
+      name: string;
+      exports: {
+        [condition: string]: string;
+      };
+      graph?: {
+        nodes: unknown[];
+        edges: unknown[];
       };
     };
   };
   classes?: {
-    [relativeFileName: string]: {
-      [className: string]: {
-        classId: string;
+    [classId: string]: {
+      classId: string;
+      name: string;
+      exports: {
+        [condition: string]: string;
       };
     };
   };
@@ -59,7 +100,7 @@ export async function applySwcTransform(
   absolutePath?: string
 ): Promise<{
   code: string;
-  workflowManifest: WorkflowManifest;
+  workflowManifest: RawWorkflowManifest;
 }> {
   const decoratorOptions = await getDecoratorOptions();
 
@@ -131,7 +172,7 @@ export async function applySwcTransform(
 
   const parsedWorkflows = JSON.parse(
     workflowCommentMatch?.[1] || '{}'
-  ) as WorkflowManifest;
+  ) as RawWorkflowManifest;
 
   return {
     code: result.code,

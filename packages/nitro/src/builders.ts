@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
+  mergeManifests,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
@@ -72,11 +73,7 @@ export class LocalBuilder extends BaseBuilder {
     });
 
     // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
+    const manifest = mergeManifests(stepsManifest, workflowsManifest);
 
     // Generate manifest
     const workflowBundlePath = join(this.#outDir, 'workflows.mjs');

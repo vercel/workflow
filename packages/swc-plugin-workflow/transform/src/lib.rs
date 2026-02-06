@@ -3201,8 +3201,11 @@ impl StepTransform {
     }
 
     // Generate metadata comment for the transformed file
+    // New format: keyed by ID with name and source as properties
+    // { "steps": { "step//pkg@1.0//add": { "name": "add", "source": "path/file.ts" } } }
     fn generate_metadata_comment(&self) -> String {
-        let mut metadata = std::collections::HashMap::new();
+        let relative_filename = self.filename.replace('\\', "/"); // Normalize path separators
+        let mut parts = Vec::new();
 
         // Build steps metadata (including object properties)
         if !self.step_function_names.is_empty()
@@ -3213,19 +3216,25 @@ impl StepTransform {
                 .iter()
                 .map(|fn_name| {
                     let step_id = self.create_id(Some(fn_name), DUMMY_SP, false);
-                    format!("\"{}\":{{\"stepId\":\"{}\"}}", fn_name, step_id)
+                    format!(
+                        "\"{}\":{{\"name\":\"{}\",\"source\":\"{}\"}}",
+                        step_id, fn_name, relative_filename
+                    )
                 })
                 .collect();
 
             // Add object property step functions to metadata
             for (parent_var, prop_name, step_id) in &self.object_property_workflow_conversions {
                 let key = format!("{}/{}", parent_var, prop_name);
-                steps_entries.push(format!("\"{}\":{{\"stepId\":\"{}\"}}", key, step_id));
+                steps_entries.push(format!(
+                    "\"{}\":{{\"name\":\"{}\",\"source\":\"{}\"}}",
+                    step_id, key, relative_filename
+                ));
             }
 
             if !steps_entries.is_empty() {
                 steps_entries.sort();
-                metadata.insert("steps", format!("{{{}}}", steps_entries.join(",")));
+                parts.push(format!("\"steps\":{{{}}}", steps_entries.join(",")));
             }
         }
 
@@ -3256,11 +3265,14 @@ impl StepTransform {
                         actual_name
                     };
                     let workflow_id = self.create_id(Some(id_name), DUMMY_SP, true);
-                    format!("\"{}\":{{\"workflowId\":\"{}\"}}", fn_name_str, workflow_id)
+                    format!(
+                        "\"{}\":{{\"name\":\"{}\",\"source\":\"{}\"}}",
+                        workflow_id, fn_name_str, relative_filename
+                    )
                 })
                 .collect();
 
-            metadata.insert("workflows", format!("{{{}}}", workflow_entries.join(",")));
+            parts.push(format!("\"workflows\":{{{}}}", workflow_entries.join(",")));
         }
 
         // Build classes metadata
@@ -3273,34 +3285,14 @@ impl StepTransform {
                 .into_iter()
                 .map(|class_name| {
                     let class_id = naming::format_name("class", &module_path, class_name);
-                    format!("\"{}\":{{\"classId\":\"{}\"}}", class_name, class_id)
+                    format!(
+                        "\"{}\":{{\"name\":\"{}\",\"source\":\"{}\"}}",
+                        class_id, class_name, relative_filename
+                    )
                 })
                 .collect();
 
-            metadata.insert("classes", format!("{{{}}}", class_entries.join(",")));
-        }
-
-        // Build the final comment structure
-        let relative_filename = self.filename.replace('\\', "/"); // Normalize path separators
-        let mut parts = Vec::new();
-
-        if metadata.contains_key("workflows") {
-            parts.push(format!(
-                "\"workflows\":{{\"{}\":{}}}",
-                relative_filename, metadata["workflows"]
-            ));
-        }
-        if metadata.contains_key("steps") {
-            parts.push(format!(
-                "\"steps\":{{\"{}\":{}}}",
-                relative_filename, metadata["steps"]
-            ));
-        }
-        if metadata.contains_key("classes") {
-            parts.push(format!(
-                "\"classes\":{{\"{}\":{}}}",
-                relative_filename, metadata["classes"]
-            ));
+            parts.push(format!("\"classes\":{{{}}}", class_entries.join(",")));
         }
 
         if parts.is_empty() {

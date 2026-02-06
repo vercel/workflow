@@ -1,5 +1,5 @@
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"workflows":{"input.js":{"workflowFunction":{"workflowId":"workflow//./input//workflowFunction"}}},"steps":{"input.js":{"stepFunction":{"stepId":"step//./input//stepFunction"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//stepFunction":{"name":"stepFunction","source":"input.js"}},"workflows":{"workflow//./input//workflowFunction":{"name":"workflowFunction","source":"input.js"}}}*/;
 async function stepFunction(a, b) {
     return a + b;
 }

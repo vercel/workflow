@@ -1,5 +1,5 @@
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"exportedNamedStep":{"stepId":"step//./input//exportedNamedStep"},"namedStep":{"stepId":"step//./input//namedStep"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//exportedNamedStep":{"name":"exportedNamedStep","source":"input.js"},"step//./input//namedStep":{"name":"namedStep","source":"input.js"}}}*/;
 async function namedStep() {
     return 1;
 }

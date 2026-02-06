@@ -1,7 +1,7 @@
 import { registerStepFunction } from "workflow/internal/private";
 import { helper } from './helper';
 import { unusedHelper } from './unused-helper';
-/**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//./input//processData"}}}}*/;
+/**__internal_workflows{"steps":{"step//./input//processData":{"name":"processData","source":"input.js"}}}*/;
 // This variable is exported but not used anywhere in this file
 export const CONFIG = {
     apiKey: 'test-key',

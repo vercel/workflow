@@ -17,6 +17,7 @@ export async function getNextBuilder() {
     BaseBuilder: BaseBuilderClass,
     STEP_QUEUE_TRIGGER,
     WORKFLOW_QUEUE_TRIGGER,
+    mergeManifests,
     // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
   } = (await eval(
     'import("@workflow/builders")'
@@ -48,17 +49,10 @@ export async function getNextBuilder() {
       await this.buildWebhookRoute({ workflowGeneratedDir });
 
       // Merge manifests from both bundles
-      const manifest = {
-        steps: { ...stepsManifest.steps, ...workflowsBundle?.manifest?.steps },
-        workflows: {
-          ...stepsManifest.workflows,
-          ...workflowsBundle?.manifest?.workflows,
-        },
-        classes: {
-          ...stepsManifest.classes,
-          ...workflowsBundle?.manifest?.classes,
-        },
-      };
+      const manifest = mergeManifests(
+        stepsManifest,
+        workflowsBundle?.manifest || {}
+      );
 
       // Write unified manifest to workflow generated directory
       const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
