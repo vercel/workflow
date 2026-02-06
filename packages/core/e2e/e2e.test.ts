@@ -161,6 +161,9 @@ async function startWorkflowViaHttp(
   url.searchParams.set('workflowFile', workflowFile);
   url.searchParams.set('workflowFn', workflowFn);
 
+  // Note: when args is empty, the server may use default args (e.g., [42]).
+  // This is acceptable for Pages Router tests since the workflows called
+  // with empty args don't use their arguments.
   if (args.length > 0) {
     url.searchParams.set('args', args.map(String).join(','));
   }
