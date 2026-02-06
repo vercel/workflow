@@ -1008,8 +1008,8 @@ importers:
         specifier: workspace:*
         version: link:../world
       '@workflow/world-vercel':
-        specifier: 4.1.0-beta.29
-        version: 4.1.0-beta.29
+        specifier: workspace:*
+        version: link:../world-vercel
       '@xyflow/react':
         specifier: 12.9.3
         version: 12.9.3(@types/react@19.1.13)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -8019,10 +8019,6 @@ packages:
       '@opentelemetry/sdk-metrics': '>=1.19.0 <2.0.0'
       '@opentelemetry/sdk-trace-base': '>=1.19.0 <2.0.0'
 
-  '@vercel/queue@0.0.0-alpha.34':
-    resolution: {integrity: sha512-xy5MNbsAoN9W1gtjNkKEg8SHEsnoEj3KbQQH7EaAtqJ0ZfdPo13XLOdqvAR5IO+4X5F0nyPENMVFilzzaSAYiA==}
-    engines: {node: '>=20.0.0'}
-
   '@vercel/queue@0.0.0-alpha.36':
     resolution: {integrity: sha512-+0RWV/ljyK0lXH7LYUbTJ02UJLhPfZIvzMOjhMdD6tEm8o+VzJGJY9KwIljohtdfeep78cFUGuWvNmT+bi29Wg==}
     engines: {node: '>=20.0.0'}
@@ -8269,14 +8265,6 @@ packages:
 
   '@workflow/utils@4.1.0-beta.11':
     resolution: {integrity: sha512-4fIstKn3jSN7pyJzp8RZ4Rbrohpxa+mc3sKji7wDGnqzD9GnSbm3+WOhGAduvYZubsAHN7HmXrfZ96EPLXtu6g==}
-
-  '@workflow/world-vercel@4.1.0-beta.29':
-    resolution: {integrity: sha512-5BYyFRgYYJMxoRDkRnp2YeP0X3+nkMD3/yWg3LkaIHaF7TTMYpXlxIOTEwZXccI3UEZJhNBLn5QW70+g09ieBQ==}
-
-  '@workflow/world@4.1.0-beta.1':
-    resolution: {integrity: sha512-DM7dI8IHRHeqP9EnCe+z70TGX/TX4losuLc2uBPm8BPk3VNNI/AI7DSybPCD5WJREM4QNgdOeHUsJop1xQ5SiA==}
-    peerDependencies:
-      zod: 4.1.11
 
   '@xhmikosr/archive-type@7.1.0':
     resolution: {integrity: sha512-xZEpnGplg1sNPyEgFh0zbHxqlw5dtYg6viplmWSxUj12+QjU9SKu3U/2G73a15pEjLaOqTefNSZ1fOPUOT4Xgg==}
@@ -22494,11 +22482,6 @@ snapshots:
       '@opentelemetry/sdk-metrics': 1.30.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/sdk-trace-base': 1.30.1(@opentelemetry/api@1.9.0)
 
-  '@vercel/queue@0.0.0-alpha.34':
-    dependencies:
-      '@vercel/oidc': 3.0.5
-      mixpart: 0.0.5-alpha.1
-
   '@vercel/queue@0.0.0-alpha.36':
     dependencies:
       '@vercel/oidc': 3.0.5
@@ -22884,19 +22867,6 @@ snapshots:
   '@workflow/utils@4.1.0-beta.11':
     dependencies:
       ms: 2.1.3
-
-  '@workflow/world-vercel@4.1.0-beta.29':
-    dependencies:
-      '@vercel/oidc': 3.0.5
-      '@vercel/queue': 0.0.0-alpha.34
-      '@workflow/errors': 4.1.0-beta.14
-      '@workflow/world': 4.1.0-beta.1(zod@4.1.11)
-      cbor-x: 1.6.0
-      zod: 4.1.11
-
-  '@workflow/world@4.1.0-beta.1(zod@4.1.11)':
-    dependencies:
-      zod: 4.1.11
 
   '@xhmikosr/archive-type@7.1.0':
     dependencies:
