@@ -34,3 +34,7 @@ packages/swc-plugin-workflow/build-hash.json
 
 .DS_Store
 
+# Generated manifest files in workbench static directories
+workbench/*/public/manifest.json
+workbench/sveltekit/static/manifest.json
+

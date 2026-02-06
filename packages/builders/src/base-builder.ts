@@ -1055,11 +1055,19 @@ export const OPTIONS = handler;`;
 
       const output = { version: '1.0.0', steps, workflows, classes };
 
+      const manifestJson = JSON.stringify(output, null, 2);
+
       await mkdir(manifestDir, { recursive: true });
-      await writeFile(
-        join(manifestDir, 'manifest.json'),
-        JSON.stringify(output, null, 2)
-      );
+      await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
+
+      // If WORKFLOW_MANIFEST_PATH is set, also write the manifest there.
+      // This is used by workbench apps to expose the manifest as a static file.
+      const extraManifestPath = process.env.WORKFLOW_MANIFEST_PATH;
+      if (extraManifestPath) {
+        const resolvedPath = resolve(extraManifestPath);
+        await mkdir(dirname(resolvedPath), { recursive: true });
+        await writeFile(resolvedPath, manifestJson);
+      }
 
       const stepCount = Object.values(steps).reduce(
         (acc, s) => acc + Object.keys(s).length,

@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { join } from 'node:path';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
@@ -21,6 +22,9 @@ async function bootstrap() {
   app.use(expressModule.json());
   app.use(expressModule.text({ type: 'text/*' }));
   app.use(expressModule.raw({ type: 'application/octet-stream' }));
+
+  // Serve static files from public/ (e.g., manifest.json for e2e tests)
+  app.useStaticAssets(join(process.cwd(), 'public'));
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);

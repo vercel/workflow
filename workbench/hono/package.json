@@ -8,8 +8,8 @@
     "generate:workflows": "node ../scripts/generate-workflows-registry.js",
     "predev": "pnpm generate:workflows",
     "prebuild": "pnpm generate:workflows",
-    "dev": "nitro dev",
-    "build": "nitro build",
+    "dev": "WORKFLOW_MANIFEST_PATH=public/manifest.json nitro dev",
+    "build": "WORKFLOW_MANIFEST_PATH=public/manifest.json nitro build",
     "start": "node .output/server/index.mjs"
   },
   "devDependencies": {

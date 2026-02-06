@@ -7,8 +7,8 @@
     "generate:workflows": "node ../scripts/generate-workflows-registry.js ./src/workflows src/lib/_workflows.ts",
     "predev": "pnpm generate:workflows",
     "prebuild": "pnpm generate:workflows",
-    "dev": "astro dev",
-    "build": "astro build",
+    "dev": "WORKFLOW_MANIFEST_PATH=public/manifest.json astro dev",
+    "build": "WORKFLOW_MANIFEST_PATH=public/manifest.json astro build",
     "preview": "astro preview",
     "astro": "astro",
     "start": "node scripts/start-with-pg.mjs"

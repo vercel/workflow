@@ -11,8 +11,8 @@
     "copy:index": "mkdir -p public && cp index.html public/index.html",
     "prebuild": "pnpm generate:workflows && pnpm copy:index",
     "postbuild": "rm -f public/index.html",
-    "build": "nitro build",
-    "dev": "nitro dev",
+    "build": "WORKFLOW_MANIFEST_PATH=public/manifest.json nitro build",
+    "dev": "WORKFLOW_MANIFEST_PATH=public/manifest.json nitro dev",
     "start": "node .output/server/index.mjs"
   },
   "dependencies": {

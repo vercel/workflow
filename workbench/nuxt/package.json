@@ -8,8 +8,8 @@
     "generate:workflows": "node ../scripts/generate-workflows-registry.js",
     "predev": "pnpm generate:workflows",
     "prebuild": "pnpm generate:workflows",
-    "dev": "nuxt dev",
-    "build": "nuxt build",
+    "dev": "WORKFLOW_MANIFEST_PATH=public/manifest.json nuxt dev",
+    "build": "WORKFLOW_MANIFEST_PATH=public/manifest.json nuxt build",
     "start": "node .output/server/index.mjs"
   },
   "devDependencies": {

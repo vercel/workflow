@@ -8,8 +8,8 @@
     "setup:swcrc": "node ../../packages/nest/dist/cli.js init --force",
     "predev": "pnpm generate:workflows && pnpm setup:swcrc",
     "prebuild": "pnpm generate:workflows && pnpm setup:swcrc",
-    "dev": "nest start --watch",
-    "build": "nest build",
+    "dev": "WORKFLOW_MANIFEST_PATH=public/manifest.json nest start --watch",
+    "build": "WORKFLOW_MANIFEST_PATH=public/manifest.json nest build",
     "start": "node dist/main.js"
   },
   "engines": {
