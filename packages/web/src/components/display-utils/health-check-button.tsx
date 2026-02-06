@@ -48,7 +48,7 @@ export function HealthCheckButton() {
 
       if (allHealthy) {
         const totalLatency = results.reduce(
-          (sum, r) => sum + r.result.latencyMs,
+          (sum, r) => sum + (r.result.latencyMs ?? 0),
           0
         );
         toast.success('All endpoints healthy', {
