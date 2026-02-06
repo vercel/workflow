@@ -67,13 +67,13 @@ let cachedManifest: WorkflowManifest | null = null;
 
 /**
  * Fetches the workflow manifest from the deployment URL.
- * The manifest is served as a static file at /manifest.json by each workbench app
- * (configured via WORKFLOW_MANIFEST_PATH in the workbench's dev/build scripts).
+ * The manifest is served at /.well-known/workflow/v1/manifest.json by each
+ * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
  */
 async function fetchManifest(): Promise<WorkflowManifest> {
   if (cachedManifest) return cachedManifest;
 
-  const url = new URL('/manifest.json', deploymentUrl);
+  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
   const res = await fetch(url, {
     headers: getProtectionBypassHeaders(),
   });

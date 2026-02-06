@@ -5,6 +5,5 @@ export default defineConfig({
   routes: {
     '/**': './src/index.ts',
   },
-  publicAssets: [{ dir: 'public' }],
   plugins: ['plugins/start-pg-world.ts'],
 });
