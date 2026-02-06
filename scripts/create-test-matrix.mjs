@@ -34,7 +34,7 @@ const DEV_TEST_CONFIGS = {
   vite: {
     generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
-    apiFilePath: 'routes/api/trigger.post.ts',
+    apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
   hono: {
