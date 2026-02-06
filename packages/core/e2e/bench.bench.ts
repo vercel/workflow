@@ -14,6 +14,15 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
+console.log('[bench] deploymentUrl:', deploymentUrl);
+console.log('[bench] isLocalDeployment:', isLocalDeployment());
+console.log('[bench] WORKFLOW_VERCEL_ENV:', process.env.WORKFLOW_VERCEL_ENV);
+console.log('[bench] VERCEL_DEPLOYMENT_ID:', process.env.VERCEL_DEPLOYMENT_ID);
+console.log(
+  '[bench] WORKFLOW_TARGET_WORLD:',
+  process.env.WORKFLOW_TARGET_WORLD
+);
+
 // Configure the World for the bench runner process (same as e2e tests)
 if (isLocalDeployment()) {
   process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
@@ -22,14 +31,19 @@ if (isLocalDeployment()) {
   const isNextJs = appName.includes('nextjs') || appName.includes('next-');
   const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
   process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+  console.log(
+    '[bench] configured local world, dataDir:',
+    process.env.WORKFLOW_LOCAL_DATA_DIR
+  );
 } else if (process.env.WORKFLOW_VERCEL_ENV) {
-  // Vercel benchmarks: verify the deployment ID is set so the World
-  // initializes as Vercel rather than falling back to local
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     throw new Error(
       'VERCEL_DEPLOYMENT_ID is required for Vercel benchmarks but is not set'
     );
   }
+  console.log('[bench] configured for Vercel world');
+} else {
+  console.log('[bench] no special world configuration');
 }
 
 // Manifest type and helpers (same as e2e tests)
@@ -47,11 +61,22 @@ let cachedManifest: WorkflowManifest | null = null;
 async function fetchManifest(): Promise<WorkflowManifest> {
   if (cachedManifest) return cachedManifest;
   const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
-  const res = await fetch(url, { headers: getProtectionBypassHeaders() });
+  console.log('[bench] fetching manifest from:', url.toString());
+  const res = await fetch(url, {
+    headers: getProtectionBypassHeaders(),
+    signal: AbortSignal.timeout(30_000),
+    redirect: 'follow',
+  });
+  console.log('[bench] manifest response status:', res.status, 'url:', res.url);
   if (!res.ok) {
-    throw new Error(`Failed to fetch manifest: ${res.status}`);
+    const text = await res.text();
+    throw new Error(`Failed to fetch manifest: ${res.status} ${text}`);
   }
   cachedManifest = (await res.json()) as WorkflowManifest;
+  console.log(
+    '[bench] manifest loaded, workflows:',
+    Object.keys(cachedManifest.workflows).join(', ')
+  );
   return cachedManifest;
 }
 
@@ -303,8 +328,14 @@ describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with no steps',
     async () => {
-      const run = await start(await benchWf('noStepsWorkflow'), [42]);
+      console.log('[bench] resolving workflow metadata...');
+      const wf = await benchWf('noStepsWorkflow');
+      console.log('[bench] calling start() with workflowId:', wf.workflowId);
+      const run = await start(wf, [42]);
+      console.log('[bench] start() returned, runId:', run.runId);
+      console.log('[bench] awaiting returnValue...');
       await awaitReturnValue(run);
+      console.log('[bench] returnValue resolved');
       const timings = await getRunTimings(run);
       stageTiming('workflow with no steps', timings);
     },
