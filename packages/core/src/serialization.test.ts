@@ -1,6 +1,7 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
+import type { Encryptor } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { getStepFunction, registerStepFunction } from './private.js';
@@ -3537,5 +3538,266 @@ describe('getDeserializeStream legacy fallback', () => {
     expect(results).toHaveLength(2);
     expect(results[0]).toBe('hello');
     expect(results[1]).toBe('world');
+  });
+});
+
+describe('encryption integration', () => {
+  // Create a mock encryptor that actually encrypts/decrypts
+  const createTestEncryptor = (): Encryptor => {
+    // Simple XOR-based "encryption" for testing (NOT secure, just for tests)
+    const xorKey = 0x42;
+
+    return {
+      async encrypt(data: Uint8Array, context: { runId: string }) {
+        // Add 'encr' prefix and XOR the data
+        const result = new Uint8Array(4 + data.length);
+        result.set(new TextEncoder().encode('encr'), 0);
+        for (let i = 0; i < data.length; i++) {
+          result[4 + i] =
+            data[i] ^
+            xorKey ^
+            (context.runId.charCodeAt(i % context.runId.length) & 0xff);
+        }
+        return result;
+      },
+      async decrypt(data: Uint8Array, context: { runId: string }) {
+        // Check prefix and XOR back
+        const prefix = new TextDecoder().decode(data.subarray(0, 4));
+        if (prefix !== 'encr') {
+          throw new Error(`Invalid prefix: ${prefix}`);
+        }
+        const result = new Uint8Array(data.length - 4);
+        for (let i = 0; i < result.length; i++) {
+          result[i] =
+            data[4 + i] ^
+            xorKey ^
+            (context.runId.charCodeAt(i % context.runId.length) & 0xff);
+        }
+        return result;
+      },
+    };
+  };
+
+  it('should encrypt workflow arguments when encryptor is provided', async () => {
+    const testEncryptor = createTestEncryptor();
+    const testRunId = 'wrun_test123';
+    const testValue = { message: 'secret data', count: 42 };
+
+    const encrypted = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testEncryptor,
+      [],
+      globalThis,
+      false
+    );
+
+    // Should be a Uint8Array with 'encr' prefix
+    expect(encrypted).toBeInstanceOf(Uint8Array);
+    const prefix = new TextDecoder().decode(
+      (encrypted as Uint8Array).subarray(0, 4)
+    );
+    expect(prefix).toBe('encr');
+  });
+
+  it('should decrypt workflow arguments when encryptor is provided', async () => {
+    const testEncryptor = createTestEncryptor();
+    const testRunId = 'wrun_test123';
+    const testValue = { message: 'secret data', count: 42 };
+
+    const encrypted = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testEncryptor,
+      [],
+      globalThis,
+      false
+    );
+
+    const decrypted = await hydrateWorkflowArguments(
+      encrypted,
+      testRunId,
+      testEncryptor,
+      globalThis,
+      {}
+    );
+
+    expect(decrypted).toEqual(testValue);
+  });
+
+  it('should fail to decrypt with wrong runId', async () => {
+    const testEncryptor = createTestEncryptor();
+    const testRunId = 'wrun_test123';
+    const wrongRunId = 'wrun_wrong456';
+    const testValue = { message: 'secret data' };
+
+    const encrypted = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testEncryptor,
+      [],
+      globalThis,
+      false
+    );
+
+    // Decrypting with wrong runId should produce garbage (in real crypto would fail auth)
+    // Our simple XOR produces bytes that aren't valid JSON, so hydration throws
+    await expect(
+      hydrateWorkflowArguments(
+        encrypted,
+        wrongRunId,
+        testEncryptor,
+        globalThis,
+        {}
+      )
+    ).rejects.toThrow();
+  });
+
+  it('should not encrypt when no encryptor is provided', async () => {
+    const noEncryptor: Encryptor = {};
+    const testRunId = 'wrun_test123';
+    const testValue = { message: 'plain data' };
+
+    const serialized = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      noEncryptor,
+      [],
+      globalThis,
+      false
+    );
+
+    // Should be a Uint8Array with 'devl' prefix (not encrypted)
+    expect(serialized).toBeInstanceOf(Uint8Array);
+    const prefix = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(0, 4)
+    );
+    expect(prefix).toBe('devl');
+  });
+
+  it('should handle unencrypted data when encryptor is provided', async () => {
+    const testEncryptor = createTestEncryptor();
+    const testRunId = 'wrun_test123';
+    const testValue = { message: 'plain data' };
+
+    // Serialize without encryption
+    const serialized = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      {}, // no encryptor
+      [],
+      globalThis,
+      false
+    );
+
+    // Hydrate with encryptor - should still work because data isn't encrypted
+    const hydrated = await hydrateWorkflowArguments(
+      serialized,
+      testRunId,
+      testEncryptor,
+      globalThis,
+      {}
+    );
+
+    expect(hydrated).toEqual(testValue);
+  });
+
+  it('should encrypt step arguments', async () => {
+    const testEncryptor = createTestEncryptor();
+    const testRunId = 'wrun_test123';
+    const testValue = ['arg1', { nested: 'value' }, 123];
+
+    // dehydrateStepArguments signature: (value, runId, encryptor, global, v1Compat)
+    const encrypted = await dehydrateStepArguments(
+      testValue,
+      testRunId,
+      testEncryptor,
+      globalThis,
+      false
+    );
+
+    // Should have 'encr' prefix
+    expect(encrypted).toBeInstanceOf(Uint8Array);
+    const prefix = new TextDecoder().decode(
+      (encrypted as Uint8Array).subarray(0, 4)
+    );
+    expect(prefix).toBe('encr');
+
+    // Should round-trip correctly
+    // hydrateStepArguments signature: (value, runId, encryptor, ops, global)
+    const decrypted = await hydrateStepArguments(
+      encrypted,
+      testRunId,
+      testEncryptor,
+      [],
+      globalThis
+    );
+
+    expect(decrypted).toEqual(testValue);
+  });
+
+  it('should encrypt step return values', async () => {
+    const testEncryptor = createTestEncryptor();
+    const testRunId = 'wrun_test123';
+    const testValue = { result: 'success', data: [1, 2, 3] };
+
+    const encrypted = await dehydrateStepReturnValue(
+      testValue,
+      testRunId,
+      testEncryptor,
+      [],
+      globalThis
+    );
+
+    // Should have 'encr' prefix
+    expect(encrypted).toBeInstanceOf(Uint8Array);
+    const prefix = new TextDecoder().decode(
+      (encrypted as Uint8Array).subarray(0, 4)
+    );
+    expect(prefix).toBe('encr');
+
+    // Should round-trip correctly
+    const decrypted = await hydrateStepReturnValue(
+      encrypted,
+      testRunId,
+      testEncryptor,
+      globalThis
+    );
+
+    expect(decrypted).toEqual(testValue);
+  });
+
+  it('should encrypt workflow return values', async () => {
+    const testEncryptor = createTestEncryptor();
+    const testRunId = 'wrun_test123';
+    const testValue = { final: 'result', timestamp: Date.now() };
+
+    // dehydrateWorkflowReturnValue signature: (value, runId, encryptor, global)
+    const encrypted = await dehydrateWorkflowReturnValue(
+      testValue,
+      testRunId,
+      testEncryptor,
+      globalThis
+    );
+
+    // Should have 'encr' prefix
+    expect(encrypted).toBeInstanceOf(Uint8Array);
+    const prefix = new TextDecoder().decode(
+      (encrypted as Uint8Array).subarray(0, 4)
+    );
+    expect(prefix).toBe('encr');
+
+    // Should round-trip correctly
+    // hydrateWorkflowReturnValue signature: (value, runId, encryptor, ops, global, extraRevivers)
+    const decrypted = await hydrateWorkflowReturnValue(
+      encrypted,
+      testRunId,
+      testEncryptor,
+      [],
+      globalThis,
+      {}
+    );
+
+    expect(decrypted).toEqual(testValue);
   });
 });
