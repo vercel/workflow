@@ -287,7 +287,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     async create(runId, data, params): Promise<EventResult> {
       const eventId = `wevt_${ulid()}`;
 
-      // For run_created events, generate runId server-side if null or empty
+      // For run_created events, use client-provided runId or generate one server-side
       let effectiveRunId: string;
       if (data.eventType === 'run_created' && (!runId || runId === '')) {
         effectiveRunId = `wrun_${ulid()}`;

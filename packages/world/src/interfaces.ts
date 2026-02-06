@@ -26,7 +26,7 @@ import type {
 export interface Streamer {
   writeToStream(
     name: string,
-    runId: string | Promise<string>,
+    runId: string,
     chunk: string | Uint8Array
   ): Promise<void>;
 
@@ -38,16 +38,16 @@ export interface Streamer {
    * If not implemented, the caller should fall back to sequential writeToStream() calls.
    *
    * @param name - The stream name
-   * @param runId - The run ID (can be a promise)
+   * @param runId - The run ID
    * @param chunks - Array of chunks to write, in order
    */
   writeToStreamMulti?(
     name: string,
-    runId: string | Promise<string>,
+    runId: string,
     chunks: (string | Uint8Array)[]
   ): Promise<void>;
 
-  closeStream(name: string, runId: string | Promise<string>): Promise<void>;
+  closeStream(name: string, runId: string): Promise<void>;
   readFromStream(
     name: string,
     startIndex?: number
@@ -127,15 +127,15 @@ export interface Storage {
   events: {
     /**
      * Create a run_created event to start a new workflow run.
-     * The runId parameter must be null - the server generates and returns the runId.
+     * The runId may be provided by the client or left as null for the server to generate.
      *
-     * @param runId - Must be null for run_created events
+     * @param runId - Client-generated runId, or null for server-generated
      * @param data - The run_created event data
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and run entity
      */
     create(
-      runId: null,
+      runId: string | null,
       data: RunCreatedEventRequest,
       params?: CreateEventParams
     ): Promise<EventResult>;

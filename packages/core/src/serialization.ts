@@ -280,15 +280,9 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
-  constructor(name: string, runId: string | Promise<string>) {
-    // runId can be a promise, because we need a runID to write to a stream,
-    // but at class instantiation time, we might not have a run ID yet. This
-    // mainly happens when calling start() for a workflow with already-serialized
-    // arguments.
-    if (typeof runId !== 'string' && !(runId instanceof Promise)) {
-      throw new Error(
-        `"runId" must be a string or a promise that resolves to a string, got "${typeof runId}"`
-      );
+  constructor(name: string, runId: string) {
+    if (typeof runId !== 'string') {
+      throw new Error(`"runId" must be a string, got "${typeof runId}"`);
     }
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`"name" is required, got "${name}"`);
@@ -312,18 +306,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // This prevents data loss if the write operation fails
       const chunksToFlush = buffer.slice();
 
-      const _runId = await runId;
-
       // Use writeToStreamMulti if available for batch writes
       if (
         typeof world.writeToStreamMulti === 'function' &&
         chunksToFlush.length > 1
       ) {
-        await world.writeToStreamMulti(name, _runId, chunksToFlush);
+        await world.writeToStreamMulti(name, runId, chunksToFlush);
       } else {
         // Fall back to sequential writes
         for (const chunk of chunksToFlush) {
-          await world.writeToStream(name, _runId, chunk);
+          await world.writeToStream(name, runId, chunk);
         }
       }
 
@@ -361,8 +353,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Flush any remaining buffered chunks
         await flush();
 
-        const _runId = await runId;
-        await world.closeStream(name, _runId);
+        await world.closeStream(name, runId);
       },
       abort() {
         // Clean up timer to prevent leaks
@@ -620,7 +611,7 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
 export function getExternalReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string | Promise<string>
+  runId: string
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -727,7 +718,7 @@ export function getWorkflowReducers(
 function getStepReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string | Promise<string>
+  runId: string
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -926,7 +917,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 export function getExternalRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string | Promise<string>
+  runId: string
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1138,7 +1129,7 @@ export function getWorkflowRevivers(
 function getStepRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string | Promise<string>
+  runId: string
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1315,7 +1306,7 @@ function getStepRevivers(
 export function dehydrateWorkflowArguments(
   value: unknown,
   ops: Promise<void>[],
-  runId: string | Promise<string>,
+  runId: string,
   global: Record<string, any> = globalThis,
   v1Compat = false
 ): Uint8Array | unknown {
@@ -1412,7 +1403,7 @@ export function dehydrateWorkflowReturnValue(
 export function hydrateWorkflowReturnValue(
   value: Uint8Array | unknown,
   ops: Promise<void>[],
-  runId: string | Promise<string>,
+  runId: string,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1480,7 +1471,7 @@ export function dehydrateStepArguments(
 export function hydrateStepArguments(
   value: Uint8Array | unknown,
   ops: Promise<any>[],
-  runId: string | Promise<string>,
+  runId: string,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1519,7 +1510,7 @@ export function hydrateStepArguments(
 export function dehydrateStepReturnValue(
   value: unknown,
   ops: Promise<any>[],
-  runId: string | Promise<string>,
+  runId: string,
   global: Record<string, any> = globalThis,
   v1Compat = false
 ): Uint8Array | unknown {

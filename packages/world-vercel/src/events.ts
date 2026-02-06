@@ -138,7 +138,7 @@ export async function createWorkflowRunEvent(
     return { event: wireResult };
   }
 
-  // For run_created events, runId is null - use "null" string in the URL path
+  // For run_created events, runId may be client-provided or null
   const runIdPath = id === null ? 'null' : id;
 
   const remoteRefBehavior = eventsNeedingResolve.has(data.eventType)
