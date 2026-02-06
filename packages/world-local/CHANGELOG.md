@@ -1,5 +1,37 @@
 # @workflow/world-local
 
+## 4.1.0-beta.29
+
+### Patch Changes
+
+- [#922](https://github.com/vercel/workflow/pull/922) [`0ce46b9`](https://github.com/vercel/workflow/commit/0ce46b91d9c8ca3349f43cdf3a5d75a948d6f5ad) Thanks [@pranaygp](https://github.com/pranaygp)! - Add support for custom headers in queue messages
+
+- [#867](https://github.com/vercel/workflow/pull/867) [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add optional `writeToStreamMulti` function to the World interface
+
+- [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve OpenTelemetry tracing instrumentation
+
+  - Add W3C trace context headers to step queue messages for cross-service trace linking
+  - Add `peer.service` and RPC semantic conventions for external service attribution
+  - Add `step.hydrate` and `step.dehydrate` spans for argument serialization visibility
+  - Add `workflow.replay` span for workflow event replay tracking
+  - Rename `queueMessage` span to `queue.publish` following OTEL messaging conventions
+  - Add OTEL baggage propagation for workflow context (`workflow.run_id`, `workflow.name`)
+  - Add span events for milestones: `retry.scheduled`, `step.skipped`, `step.delayed`
+  - Enhance error telemetry with `recordException()` and error categorization (fatal/retryable/transient)
+  - Use uppercase span names (WORKFLOW, STEP) for consistency with HTTP spans
+  - Add world-local OTEL instrumentation matching world-vercel
+
+- [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Optimize step handler performance and improve server-side validation
+
+  - Skip initial `world.steps.get()` call in step handler (saves one HTTP round-trip)
+  - Add server-side `retryAfter` validation to local and postgres worlds (HTTP 425 when not reached)
+  - Fix HTTP status code for step terminal state: return 409 (Conflict) instead of 410
+  - Fix race condition: await `step_started` event before hydration to ensure correct attempt count
+
+- Updated dependencies [[`0ce46b9`](https://github.com/vercel/workflow/commit/0ce46b91d9c8ca3349f43cdf3a5d75a948d6f5ad), [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3)]:
+  - @workflow/world@4.1.0-beta.2
+  - @workflow/errors@4.1.0-beta.14
+
 ## 4.1.0-beta.28
 
 ### Minor Changes

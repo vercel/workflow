@@ -1,5 +1,24 @@
 # workflow
 
+## 4.1.0-beta.53
+
+### Patch Changes
+
+- [#961](https://github.com/vercel/workflow/pull/961) [`fc07710`](https://github.com/vercel/workflow/commit/fc077108efa14b8c8620df5fe49db184f9fdea5d) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Remove `dirs` option from `workflows` config object in `withWorkflow()` and related documentation
+
+- Updated dependencies [[`0ce46b9`](https://github.com/vercel/workflow/commit/0ce46b91d9c8ca3349f43cdf3a5d75a948d6f5ad), [`35a9f0c`](https://github.com/vercel/workflow/commit/35a9f0cb0360ffc48c8a8e7db3a299924ab48375), [`fed805a`](https://github.com/vercel/workflow/commit/fed805a15f0ad6ac8de04abbb6163f1ea09ead16), [`f090de1`](https://github.com/vercel/workflow/commit/f090de1eb48ad8ec3fd776e9d084310d56a7ac29), [`79e988f`](https://github.com/vercel/workflow/commit/79e988fa85f0ebdd5c8913b8de84e01c55d020b9), [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3), [`e0061b8`](https://github.com/vercel/workflow/commit/e0061b861d0e3c3dc15853aed331fb1bbab71408), [`38e8d55`](https://github.com/vercel/workflow/commit/38e8d5571d2ee4b80387943f8f39a93b6e4bc751), [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6), [`73bf7be`](https://github.com/vercel/workflow/commit/73bf7be925a8ffc0c6fce0cc75b6092243882088), [`efb33b2`](https://github.com/vercel/workflow/commit/efb33b2b5edf6ccb1ec2f02f1d99f2a009333780), [`8ab1ba2`](https://github.com/vercel/workflow/commit/8ab1ba24d6ba291add0a271049eff24628c83a05), [`661724c`](https://github.com/vercel/workflow/commit/661724c01e78691abad26fa99bd44f254a70f2dd), [`8114792`](https://github.com/vercel/workflow/commit/8114792600a851fbf14cf41f8340e646aef36368), [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6)]:
+  - @workflow/core@4.1.0-beta.53
+  - @workflow/sveltekit@4.0.0-beta.42
+  - @workflow/nitro@4.0.1-beta.48
+  - @workflow/nest@0.0.0-beta.2
+  - @workflow/next@4.0.1-beta.49
+  - @workflow/rollup@4.0.0-beta.10
+  - @workflow/astro@4.0.0-beta.27
+  - @workflow/cli@4.1.0-beta.53
+  - @workflow/errors@4.1.0-beta.14
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/nuxt@4.0.1-beta.37
+
 ## 4.1.0-beta.52
 
 ### Patch Changes

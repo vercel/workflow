@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.0-beta.32
+
+### Patch Changes
+
+- [#927](https://github.com/vercel/workflow/pull/927) [`f090de1`](https://github.com/vercel/workflow/commit/f090de1eb48ad8ec3fd776e9d084310d56a7ac29) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added subpatch exports for runtime modules to allow direct imports in core. Refactored web-shared to be a thin package that exported UI components and world-actions. Updated web package to consume the UI components and world-actions from web-shared.
+
 ## 4.1.0-beta.31
 
 ### Minor Changes

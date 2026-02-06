@@ -1,5 +1,26 @@
 # @workflow/world-vercel
 
+## 4.1.0-beta.30
+
+### Patch Changes
+
+- [#922](https://github.com/vercel/workflow/pull/922) [`0ce46b9`](https://github.com/vercel/workflow/commit/0ce46b91d9c8ca3349f43cdf3a5d75a948d6f5ad) Thanks [@pranaygp](https://github.com/pranaygp)! - Add support for custom headers in queue messages
+
+- [#867](https://github.com/vercel/workflow/pull/867) [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add optional `writeToStreamMulti` function to the World interface
+
+- [#933](https://github.com/vercel/workflow/pull/933) [`79e988f`](https://github.com/vercel/workflow/commit/79e988fa85f0ebdd5c8913b8de84e01c55d020b9) Thanks [@pranaygp](https://github.com/pranaygp)! - Add OTEL tracing for HTTP requests and storage operations using standard OTEL semantic conventions
+
+- [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve world-vercel telemetry and event creation performance
+
+  - Use parent application's 'workflow' tracer instead of separate service name
+  - Add `peer.service` and RPC semantic conventions for Datadog service maps
+  - Include event type in `world.events.create` span names (e.g., `world.events.create step_started`)
+  - Use lazy ref resolution for fire-and-forget events to skip S3 ref resolution (~200-460ms savings)
+
+- Updated dependencies [[`0ce46b9`](https://github.com/vercel/workflow/commit/0ce46b91d9c8ca3349f43cdf3a5d75a948d6f5ad), [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3)]:
+  - @workflow/world@4.1.0-beta.2
+  - @workflow/errors@4.1.0-beta.14
+
 ## 4.1.0-beta.29
 
 ### Minor Changes

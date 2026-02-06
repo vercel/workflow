@@ -1,5 +1,28 @@
 # @workflow/swc-plugin
 
+## 4.1.0-beta.16
+
+### Patch Changes
+
+- [#901](https://github.com/vercel/workflow/pull/901) [`35a9f0c`](https://github.com/vercel/workflow/commit/35a9f0cb0360ffc48c8a8e7db3a299924ab48375) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix module specifier cache bug and add subpath export resolution for package IDs
+
+- [#872](https://github.com/vercel/workflow/pull/872) [`b9c782d`](https://github.com/vercel/workflow/commit/b9c782d75f5452265764cd36d5e306060f8703c3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix class ID generation when class is bound to a variable
+
+- [#874](https://github.com/vercel/workflow/pull/874) [`b5296a7`](https://github.com/vercel/workflow/commit/b5296a7a32b9037aa03c71d87e785fa2d5384a11) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add discovered serializable classes in all context modes
+
+- [#777](https://github.com/vercel/workflow/pull/777) [`c1d7c8d`](https://github.com/vercel/workflow/commit/c1d7c8dbb44afb7434acb07fee500ecaa1224fb0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for "use step" functions in class instance methods
+
+- [#899](https://github.com/vercel/workflow/pull/899) [`73bf7be`](https://github.com/vercel/workflow/commit/73bf7be925a8ffc0c6fce0cc75b6092243882088) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Change compiler ID generation logic to use Node.js import specifiers
+
+  IDs for workflows, steps, and classes now use module specifiers:
+
+  - Local files use `./path/to/file` format instead of `path/to/file.ext`
+  - Package files use `packageName@version` format (e.g., `workflow@4.0.1`)
+
+  This enables stable IDs across different package.json export conditions.
+
+- [#859](https://github.com/vercel/workflow/pull/859) [`8114792`](https://github.com/vercel/workflow/commit/8114792600a851fbf14cf41f8340e646aef36368) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add discovery for custom classes with workflow serialization
+
 ## 4.1.0-beta.15
 
 ### Minor Changes
