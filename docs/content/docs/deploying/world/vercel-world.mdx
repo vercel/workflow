@@ -127,3 +127,7 @@ For more details, see the [Vercel Workflow documentation](https://vercel.com/doc
 See the [Vercel Workflow documentation](https://vercel.com/docs/workflow) for current pricing and to learn more.
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
+
+## Limitations
+
+The Vercel World backend infrastructure is currently deployed in a single region (`iad1`). Applications deployed to other regions will route all workflow operational requests to `iad1`, which may result in higher latency. For best performance, we currently recommend deploying your Vercel apps that use Workflow to `iad1`. We plan to deploy the backend globally to colocate it closer to your applications soon.
