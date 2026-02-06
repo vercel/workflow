@@ -12,13 +12,14 @@ type HealthCheckEndpoint = 'workflow' | 'step';
 interface HealthCheckResult {
   healthy: boolean;
   error?: string;
+  latencyMs?: number;
 }
 
 interface EndpointHealthResult {
   endpoint: HealthCheckEndpoint;
   healthy: boolean;
   error?: string;
-  latencyMs: number;
+  latencyMs?: number;
 }
 
 function formatHealthyResult(endpoint: string, latencyMs: number): string {
@@ -402,7 +403,7 @@ export default class Health extends BaseCommand {
 
     if (!flags.json) {
       const message = result.healthy
-        ? formatHealthyResult(endpoint, result.latencyMs)
+        ? formatHealthyResult(endpoint, result.latencyMs ?? 0)
         : formatUnhealthyResult(endpoint, result.error);
       logger.log(message);
     }
