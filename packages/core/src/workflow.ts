@@ -680,12 +680,12 @@ export async function runWorkflow(
       );
     }
 
-    const args = await hydrateWorkflowArguments(
+    const args = (await hydrateWorkflowArguments(
       workflowRun.input,
       workflowRun.runId,
       encryptionKey,
       vmGlobalThis
-    );
+    )) as any[];
 
     span?.setAttributes({
       ...Attribute.WorkflowArgumentsCount(args.length),
