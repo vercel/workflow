@@ -1,5 +1,4 @@
 import { WorkflowRunFailedError } from '@workflow/errors';
-import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import fs from 'fs';
 import path from 'path';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
@@ -235,12 +234,15 @@ describe('e2e', () => {
       // Set base URL so the local queue can reach the running workbench app
       process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
 
-      // Discover and set the data directory used by the workbench app
+      // Set the data directory to match the workbench app's data directory.
+      // We must set this explicitly (not discover it) because the data dir
+      // may not exist yet when the test starts — the app creates it on first use.
+      // Next.js uses .next/workflow-data, all other frameworks use .workflow-data.
       const appPath = getWorkbenchAppPath();
-      const { dataDir } = await findWorkflowDataDir(appPath);
-      if (dataDir) {
-        process.env.WORKFLOW_LOCAL_DATA_DIR = dataDir;
-      }
+      const appName = process.env.APP_NAME!;
+      const isNextJs = appName.includes('nextjs') || appName.includes('next-');
+      const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
+      process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
     }
     // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI
     // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
