@@ -22,6 +22,14 @@ if (isLocalDeployment()) {
   const isNextJs = appName.includes('nextjs') || appName.includes('next-');
   const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
   process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+} else if (process.env.WORKFLOW_VERCEL_ENV) {
+  // Vercel benchmarks: verify the deployment ID is set so the World
+  // initializes as Vercel rather than falling back to local
+  if (!process.env.VERCEL_DEPLOYMENT_ID) {
+    throw new Error(
+      'VERCEL_DEPLOYMENT_ID is required for Vercel benchmarks but is not set'
+    );
+  }
 }
 
 // Manifest type and helpers (same as e2e tests)
@@ -99,6 +107,27 @@ const bufferedTimings: Map<
   string,
   { run: any; extra?: { firstByteTimeMs?: number; slurpTimeMs?: number } }[]
 > = new Map();
+
+/**
+ * Await run.returnValue with a timeout to prevent benchmarks from hanging.
+ */
+async function awaitReturnValue<T>(
+  run: Run<T>,
+  timeoutMs = 120_000
+): Promise<T> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(
+      () =>
+        reject(
+          new Error(
+            `run.returnValue timed out after ${timeoutMs}ms for run ${run.runId}`
+          )
+        ),
+      timeoutMs
+    )
+  );
+  return Promise.race([run.returnValue, timeout]);
+}
 
 /**
  * Collect run timing metadata from a completed run.
@@ -275,7 +304,7 @@ describe('Workflow Performance Benchmarks', () => {
     'workflow with no steps',
     async () => {
       const run = await start(await benchWf('noStepsWorkflow'), [42]);
-      await run.returnValue;
+      await awaitReturnValue(run);
       const timings = await getRunTimings(run);
       stageTiming('workflow with no steps', timings);
     },
@@ -286,7 +315,7 @@ describe('Workflow Performance Benchmarks', () => {
     'workflow with 1 step',
     async () => {
       const run = await start(await benchWf('oneStepWorkflow'), [100]);
-      await run.returnValue;
+      await awaitReturnValue(run);
       const timings = await getRunTimings(run);
       stageTiming('workflow with 1 step', timings);
     },
@@ -314,7 +343,7 @@ describe('Workflow Performance Benchmarks', () => {
         const run = await start(await benchWf('sequentialStepsWorkflow'), [
           count,
         ]);
-        await run.returnValue;
+        await awaitReturnValue(run);
         const timings = await getRunTimings(run);
         stageTiming(name, timings);
       },
@@ -326,7 +355,7 @@ describe('Workflow Performance Benchmarks', () => {
     'workflow with stream',
     async () => {
       const run = await start(await benchWf('streamWorkflow'), []);
-      const value = await run.returnValue;
+      const value = await awaitReturnValue(run);
       const timings = await getRunTimings(run);
       // Consume the entire stream and track:
       // - firstByteTimeMs: time from workflow start to first byte
@@ -386,7 +415,7 @@ describe('Workflow Performance Benchmarks', () => {
         name,
         async () => {
           const run = await start(await benchWf(workflow), [count]);
-          await run.returnValue;
+          await awaitReturnValue(run);
           const timings = await getRunTimings(run);
           stageTiming(name, timings);
         },
