@@ -1,5 +1,49 @@
 # @workflow/core
 
+## 4.1.0-beta.53
+
+### Patch Changes
+
+- [#922](https://github.com/vercel/workflow/pull/922) [`0ce46b9`](https://github.com/vercel/workflow/commit/0ce46b91d9c8ca3349f43cdf3a5d75a948d6f5ad) Thanks [@pranaygp](https://github.com/pranaygp)! - Add support for custom headers in queue messages
+
+- [#927](https://github.com/vercel/workflow/pull/927) [`f090de1`](https://github.com/vercel/workflow/commit/f090de1eb48ad8ec3fd776e9d084310d56a7ac29) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added subpatch exports for runtime modules to allow direct imports in core. Refactored web-shared to be a thin package that exported UI components and world-actions. Updated web package to consume the UI components and world-actions from web-shared.
+
+- [#933](https://github.com/vercel/workflow/pull/933) [`79e988f`](https://github.com/vercel/workflow/commit/79e988fa85f0ebdd5c8913b8de84e01c55d020b9) Thanks [@pranaygp](https://github.com/pranaygp)! - Add OTEL tracing for event loading and queue timing breakdown using standard OTEL semantic conventions
+
+- [#867](https://github.com/vercel/workflow/pull/867) [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add optional `writeToStreamMulti` function to the World interface
+
+- [#935](https://github.com/vercel/workflow/pull/935) [`e0061b8`](https://github.com/vercel/workflow/commit/e0061b861d0e3c3dc15853aed331fb1bbab71408) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve logging: consolidate to structured logger, fix log levels, ensure errors/warnings are always visible
+
+- [#873](https://github.com/vercel/workflow/pull/873) [`38e8d55`](https://github.com/vercel/workflow/commit/38e8d5571d2ee4b80387943f8f39a93b6e4bc751) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Ensure class serialization / deserialization only happens in the proper global context
+
+- [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve OpenTelemetry tracing instrumentation
+
+  - Add W3C trace context headers to step queue messages for cross-service trace linking
+  - Add `peer.service` and RPC semantic conventions for external service attribution
+  - Add `step.hydrate` and `step.dehydrate` spans for argument serialization visibility
+  - Add `workflow.replay` span for workflow event replay tracking
+  - Rename `queueMessage` span to `queue.publish` following OTEL messaging conventions
+  - Add OTEL baggage propagation for workflow context (`workflow.run_id`, `workflow.name`)
+  - Add span events for milestones: `retry.scheduled`, `step.skipped`, `step.delayed`
+  - Enhance error telemetry with `recordException()` and error categorization (fatal/retryable/transient)
+  - Use uppercase span names (WORKFLOW, STEP) for consistency with HTTP spans
+  - Add world-local OTEL instrumentation matching world-vercel
+
+- [#947](https://github.com/vercel/workflow/pull/947) [`efb33b2`](https://github.com/vercel/workflow/commit/efb33b2b5edf6ccb1ec2f02f1d99f2a009333780) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Pass class as `this` context to custom serializer/deserializer methods
+
+- [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Optimize step handler performance and improve server-side validation
+
+  - Skip initial `world.steps.get()` call in step handler (saves one HTTP round-trip)
+  - Add server-side `retryAfter` validation to local and postgres worlds (HTTP 425 when not reached)
+  - Fix HTTP status code for step terminal state: return 409 (Conflict) instead of 410
+  - Fix race condition: await `step_started` event before hydration to ensure correct attempt count
+
+- Updated dependencies [[`0ce46b9`](https://github.com/vercel/workflow/commit/0ce46b91d9c8ca3349f43cdf3a5d75a948d6f5ad), [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3), [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6), [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6), [`79e988f`](https://github.com/vercel/workflow/commit/79e988fa85f0ebdd5c8913b8de84e01c55d020b9), [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6)]:
+  - @workflow/world@4.1.0-beta.2
+  - @workflow/world-vercel@4.1.0-beta.30
+  - @workflow/world-local@4.1.0-beta.29
+  - @workflow/errors@4.1.0-beta.14
+
 ## 4.1.0-beta.52
 
 ### Patch Changes
