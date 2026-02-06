@@ -1,3 +1,4 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -65,6 +66,16 @@ export default {
 
       nitro.hooks.hook('build:before', async () => {
         await builder.build();
+
+        // For prod: write the manifest handler file with inlined content
+        // now that the builder has generated the manifest. Rollup will
+        // bundle this file into the compiled output.
+        if (
+          !nitro.options.dev &&
+          process.env.WORKFLOW_PUBLIC_MANIFEST === '1'
+        ) {
+          writeManifestHandler(nitro);
+        }
       });
 
       // Allows for HMR - but skip the first dev:reload since build:before already ran
@@ -98,6 +109,20 @@ export default {
 
       // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
       if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
+        // Write a placeholder manifest-data.mjs so rollup can resolve the
+        // import. It will be overwritten with the real manifest in build:before.
+        // Write a placeholder handler file so rollup can resolve the path
+        // during prod compilation. It will be overwritten with the real
+        // manifest content by writeManifestHandler() in build:before.
+        if (!nitro.options.dev) {
+          const dir = join(nitro.options.buildDir, 'workflow');
+          mkdirSync(dir, { recursive: true });
+          const handlerPath = join(dir, 'manifest-handler.mjs');
+          writeFileSync(
+            handlerPath,
+            'export default async () => new Response("Manifest not found", { status: 404 });\n'
+          );
+        }
         addManifestHandler(nitro);
       }
     }
@@ -133,17 +158,21 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
   }
 }
 
+const MANIFEST_VIRTUAL_ID = '#workflow/manifest-handler';
+
 function addManifestHandler(nitro: Nitro) {
+  const route = '/.well-known/workflow/v1/manifest.json';
   const manifestPath = join(nitro.options.buildDir, 'workflow/manifest.json');
+  const handlerPath = join(
+    nitro.options.buildDir,
+    'workflow/manifest-handler.mjs'
+  );
 
   if (nitro.options.dev) {
     // Dev mode: use a virtual handler that reads the manifest from disk at
-    // request time. The absolute path is valid because we're on the same machine.
-    const route = '/.well-known/workflow/v1/manifest.json';
-    const virtualId = '#workflow/manifest-handler';
-    nitro.options.handlers.push({ route, handler: virtualId });
-
-    nitro.options.virtual[virtualId] = !nitro.routing
+    // request time. The absolute path is valid because we're on the build machine.
+    nitro.options.handlers.push({ route, handler: MANIFEST_VIRTUAL_ID });
+    nitro.options.virtual[MANIFEST_VIRTUAL_ID] = !nitro.routing
       ? /* js */ `
       import { fromWebHandler } from "h3";
       import { readFileSync } from "node:fs";
@@ -173,21 +202,52 @@ function addManifestHandler(nitro: Nitro) {
       };
     `;
   } else {
-    // Prod mode: copy the manifest to Nitro's public output directory after
-    // the build completes. Nitro serves files from .output/public/ as static
-    // assets, so the manifest will be available at the well-known URL.
-    nitro.hooks.hook('compiled', async () => {
-      const { copyFile, mkdir } = await import('node:fs/promises');
-      try {
-        const publicDir = join(
-          nitro.options.output.publicDir,
-          '.well-known/workflow/v1'
-        );
-        await mkdir(publicDir, { recursive: true });
-        await copyFile(manifestPath, join(publicDir, 'manifest.json'));
-      } catch {
-        // Manifest not available — skip
-      }
-    });
+    // Prod mode: register a physical handler file that will be written by
+    // writeManifestHandler() after the builder generates the manifest.
+    // This file is bundled by rollup into the compiled output.
+    nitro.options.handlers.push({ route, handler: handlerPath });
+  }
+}
+
+/**
+ * Writes a physical manifest handler file with the manifest content inlined.
+ * Must be called after the builder generates the manifest (during build:before)
+ * and before Nitro compiles the bundle with rollup.
+ */
+function writeManifestHandler(nitro: Nitro) {
+  const manifestPath = join(nitro.options.buildDir, 'workflow/manifest.json');
+  const handlerPath = join(
+    nitro.options.buildDir,
+    'workflow/manifest-handler.mjs'
+  );
+  const dir = join(nitro.options.buildDir, 'workflow');
+  mkdirSync(dir, { recursive: true });
+
+  try {
+    const manifestContent = readFileSync(manifestPath, 'utf-8');
+    JSON.parse(manifestContent); // validate
+
+    const handlerCode = !nitro.routing
+      ? `import { fromWebHandler } from "h3";
+const manifest = ${JSON.stringify(manifestContent)};
+export default fromWebHandler(() => new Response(manifest, {
+  headers: { "content-type": "application/json" },
+}));
+`
+      : `const manifest = ${JSON.stringify(manifestContent)};
+export default async () => new Response(manifest, {
+  headers: { "content-type": "application/json" },
+});
+`;
+    writeFileSync(handlerPath, handlerCode);
+  } catch {
+    // Write a 404 fallback handler
+    const fallback = !nitro.routing
+      ? `import { fromWebHandler } from "h3";
+export default fromWebHandler(() => new Response("Manifest not found", { status: 404 }));
+`
+      : `export default async () => new Response("Manifest not found", { status: 404 });
+`;
+    writeFileSync(handlerPath, fallback);
   }
 }
