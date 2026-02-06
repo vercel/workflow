@@ -1,23 +1,15 @@
 import {
   Body,
   Controller,
-  Get,
   HttpCode,
   HttpException,
   HttpStatus,
   Post,
-  Query,
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import {
-  WorkflowRunFailedError,
-  WorkflowRunNotCompletedError,
-} from 'workflow/internal/errors';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
+import { getHookByToken, resumeHook } from 'workflow/api';
 import { getWorld, healthCheck } from 'workflow/runtime';
-import { allWorkflows } from './_workflows.js';
 
 @Controller('api')
 export class AppController {
@@ -47,200 +39,6 @@ export class AppController {
     });
 
     return res.status(HttpStatus.OK).json(hook);
-  }
-
-  @Post('trigger')
-  async startWorkflowRun(
-    @Query('workflowFile') workflowFile: string = 'workflows/99_e2e.ts',
-    @Query('workflowFn') workflowFn: string = 'simple',
-    @Query('args') argsParam: string | undefined,
-    @Body() bodyData: any
-  ) {
-    if (!workflowFile) {
-      throw new HttpException(
-        'No workflowFile query parameter provided',
-        HttpStatus.BAD_REQUEST
-      );
-    }
-    const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
-    if (!workflows) {
-      throw new HttpException(
-        `Workflow file "${workflowFile}" not found`,
-        HttpStatus.BAD_REQUEST
-      );
-    }
-
-    if (!workflowFn) {
-      throw new HttpException(
-        'No workflow query parameter provided',
-        HttpStatus.BAD_REQUEST
-      );
-    }
-
-    // Handle static method lookups (e.g., "Calculator.calculate")
-    let workflow: unknown;
-    if (workflowFn.includes('.')) {
-      const [className, methodName] = workflowFn.split('.');
-      const cls = workflows[className as keyof typeof workflows];
-      if (cls && typeof cls === 'function') {
-        workflow = (cls as Record<string, unknown>)[methodName];
-      }
-    } else {
-      workflow = workflows[workflowFn as keyof typeof workflows];
-    }
-    if (!workflow) {
-      throw new HttpException(
-        `Workflow "${workflowFn}" not found`,
-        HttpStatus.BAD_REQUEST
-      );
-    }
-
-    let args: any[] = [];
-
-    // Args from query string
-    if (argsParam) {
-      args = argsParam.split(',').map((arg) => {
-        const num = parseFloat(arg);
-        return Number.isNaN(num) ? arg.trim() : num;
-      });
-    } else if (Buffer.isBuffer(bodyData) && bodyData.byteLength > 0) {
-      // Body is binary serialized data (application/octet-stream)
-      args = hydrateWorkflowArguments(new Uint8Array(bodyData), globalThis);
-    } else {
-      args = [42];
-    }
-    console.log(
-      `Starting "${workflowFn}" workflow with args: ${JSON.stringify(args)}`
-    );
-
-    try {
-      const run = await start(workflow as any, args as any);
-      console.log('Run:', run);
-      return run;
-    } catch (err) {
-      console.error(`Failed to start!!`, err);
-      throw err;
-    }
-  }
-
-  @Get('trigger')
-  async getWorkflowRunResult(
-    @Query('runId') runId: string | undefined,
-    @Query('output-stream') outputStreamParam: string | undefined,
-    @Res() res: Response
-  ) {
-    if (!runId) {
-      throw new HttpException('No runId provided', HttpStatus.BAD_REQUEST);
-    }
-
-    if (outputStreamParam) {
-      const namespace =
-        outputStreamParam === '1' ? undefined : outputStreamParam;
-      const run = getRun(runId);
-      const stream = run.getReadable({
-        namespace,
-      });
-
-      res.setHeader('Content-Type', 'application/octet-stream');
-      const reader = stream.getReader();
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          // Add JSON framing to each chunk, wrapping binary data in base64
-          const data =
-            value instanceof Uint8Array
-              ? { data: Buffer.from(value).toString('base64') }
-              : value;
-          res.write(`${JSON.stringify(data)}\n`);
-        }
-        res.end();
-      } catch (error) {
-        console.error('Error streaming data:', error);
-        res.end();
-      }
-      return;
-    }
-
-    try {
-      const run = getRun(runId);
-      const returnValue = await run.returnValue;
-      console.log('Return value:', returnValue);
-
-      // Include run metadata in headers
-      const [createdAt, startedAt, completedAt] = await Promise.all([
-        run.createdAt,
-        run.startedAt,
-        run.completedAt,
-      ]);
-
-      res.setHeader(
-        'X-Workflow-Run-Created-At',
-        createdAt?.toISOString() || ''
-      );
-      res.setHeader(
-        'X-Workflow-Run-Started-At',
-        startedAt?.toISOString() || ''
-      );
-      res.setHeader(
-        'X-Workflow-Run-Completed-At',
-        completedAt?.toISOString() || ''
-      );
-
-      if (returnValue instanceof ReadableStream) {
-        res.setHeader('Content-Type', 'application/octet-stream');
-        const reader = returnValue.getReader();
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(value);
-          }
-          res.end();
-        } catch (streamError) {
-          console.error('Error streaming return value:', streamError);
-          res.end();
-        }
-        return;
-      }
-
-      return res.json(returnValue);
-    } catch (error) {
-      if (error instanceof Error) {
-        if (WorkflowRunNotCompletedError.is(error)) {
-          return res.status(HttpStatus.ACCEPTED).json({
-            ...error,
-            name: error.name,
-            message: error.message,
-          });
-        }
-
-        if (WorkflowRunFailedError.is(error)) {
-          const cause = error.cause as any;
-          return res.status(HttpStatus.BAD_REQUEST).json({
-            ...error,
-            name: error.name,
-            message: error.message,
-            cause: {
-              message: cause.message,
-              stack: cause.stack,
-              code: cause.code,
-            },
-          });
-        }
-      }
-
-      console.error(
-        'Unexpected error while getting workflow return value:',
-        error
-      );
-      return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
-        error: 'Internal server error',
-      });
-    }
   }
 
   @Post('test-health-check')

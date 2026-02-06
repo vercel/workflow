@@ -1,14 +1,18 @@
-import { withResolvers } from '@workflow/utils';
+import { WorkflowRunFailedError } from '@workflow/errors';
+import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import fs from 'fs';
 import path from 'path';
-import { afterAll, assert, describe, expect, test } from 'vitest';
-import { dehydrateWorkflowArguments } from '../src/serialization';
+import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
+import type { Run } from '../src/runtime';
+import { getRun, start } from '../src/runtime';
 import {
   cliHealthJson,
   cliInspectJson,
   getProtectionBypassHeaders,
+  getWorkbenchAppPath,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
+  isLocalDeployment,
 } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -47,15 +51,35 @@ function writeE2EMetadata() {
   fs.writeFileSync(getE2EMetadataPath(), JSON.stringify(metadata, null, 2));
 }
 
+// Mapping of workbench apps that place workflows under src/ instead of the project root.
+// The SWC transform generates workflow IDs with relative paths from the project root,
+// so sveltekit/astro/nest get a "src/" prefix in their workflow IDs.
+const WORKFLOWS_PREFIX: Record<string, string> = {
+  sveltekit: 'src/',
+  astro: 'src/',
+  nest: 'src/',
+};
+
+/**
+ * Constructs the workflow ID in the SWC naming format:
+ *   workflow//./{prefix}{fileWithoutExt}//{functionName}
+ */
+function getWorkflowId(workflowFile: string, workflowFn: string): string {
+  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  const prefix = WORKFLOWS_PREFIX[process.env.APP_NAME!] || '';
+  return `workflow//./${prefix}${fileWithoutExt}//${workflowFn}`;
+}
+
 async function triggerWorkflow(
   workflow: string | { workflowFile: string; workflowFn: string },
   args: any[],
   options?: { usePagesRouter?: boolean }
-): Promise<{ runId: string }> {
-  const endpoint = options?.usePagesRouter
-    ? '/api/trigger-pages'
-    : '/api/trigger';
-  const url = new URL(endpoint, deploymentUrl);
+): Promise<{ runId: string; run: Run<any> }> {
+  // Pages Router tests still go through HTTP to validate the Pages Router integration
+  if (options?.usePagesRouter) {
+    return triggerWorkflowViaHttp(workflow, args, '/api/trigger-pages');
+  }
+
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;
   const workflowFile =
@@ -63,31 +87,8 @@ async function triggerWorkflow(
       ? 'workflows/99_e2e.ts'
       : workflow.workflowFile;
 
-  url.searchParams.set('workflowFile', workflowFile);
-  url.searchParams.set('workflowFn', workflowFn);
-
-  const ops: Promise<void>[] = [];
-  const { promise: runIdPromise, resolve: resolveRunId } =
-    withResolvers<string>();
-  const dehydratedArgs = dehydrateWorkflowArguments(args, ops, runIdPromise);
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      ...getProtectionBypassHeaders(),
-      'Content-Type': 'application/octet-stream',
-    },
-    body: dehydratedArgs.buffer as BodyInit,
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to trigger workflow: ${res.url} ${
-        res.status
-      }: ${await res.text()}`
-    );
-  }
-  const run = await res.json();
-  resolveRunId(run.runId);
+  const workflowId = getWorkflowId(workflowFile, workflowFn);
+  const run = await start({ workflowId }, args);
 
   // Collect runId for observability links (Vercel world only)
   if (process.env.WORKFLOW_VERCEL_ENV) {
@@ -99,43 +100,88 @@ async function triggerWorkflow(
     });
   }
 
-  // Resolve and wait for any stream operations
-  await Promise.all(ops);
+  return { runId: run.runId, run };
+}
 
-  return run;
+/**
+ * Triggers a workflow via HTTP POST. Used only for Pages Router tests
+ * that specifically need to validate the HTTP trigger endpoint.
+ */
+async function triggerWorkflowViaHttp(
+  workflow: string | { workflowFile: string; workflowFn: string },
+  args: any[],
+  endpoint: string
+): Promise<{ runId: string; run: Run<any> }> {
+  const url = new URL(endpoint, deploymentUrl);
+  const workflowFn =
+    typeof workflow === 'string' ? workflow : workflow.workflowFn;
+  const workflowFile =
+    typeof workflow === 'string'
+      ? 'workflows/99_e2e.ts'
+      : workflow.workflowFile;
+
+  url.searchParams.set('workflowFile', workflowFile);
+  url.searchParams.set('workflowFn', workflowFn);
+
+  // For the HTTP path, we send args as JSON in query params
+  if (args.length > 0) {
+    url.searchParams.set('args', args.map(String).join(','));
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      ...getProtectionBypassHeaders(),
+    },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Failed to trigger workflow: ${res.url} ${
+        res.status
+      }: ${await res.text()}`
+    );
+  }
+  const result = await res.json();
+
+  // Collect runId for observability links (Vercel world only)
+  if (process.env.WORKFLOW_VERCEL_ENV) {
+    const testName = expect.getState().currentTestName || workflowFn;
+    collectedRunIds.push({
+      testName,
+      runId: result.runId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return { runId: result.runId, run: getRun(result.runId) };
 }
 
 async function getWorkflowReturnValue(runId: string) {
-  // We need to poll the GET endpoint until the workflow run is completed.
-  // TODO: make this more efficient when we add subscription support.
-  while (true) {
-    const url = new URL('/api/trigger', deploymentUrl);
-    url.searchParams.set('runId', runId);
-
-    const res = await fetch(url, { headers: getProtectionBypassHeaders() });
-
-    if (res.status === 202) {
-      // Workflow run is still running, so we need to wait and poll again
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-      continue;
-    }
-    const contentType = res.headers.get('Content-Type');
-
-    if (contentType?.includes('application/json')) {
-      return await res.json();
-    }
-
-    if (contentType?.includes('application/octet-stream')) {
-      return res.body;
-    }
-
-    throw new Error(`Unexpected content type: ${contentType}`);
-  }
+  const run = getRun(runId);
+  return run.returnValue;
 }
 
 // NOTE: Temporarily disabling concurrent tests to avoid flakiness.
 // TODO: Re-enable concurrent tests after conf when we have more time to investigate.
 describe('e2e', () => {
+  // Configure the World for the test runner process so that start() and
+  // run.returnValue can communicate with the same backend as the workbench app.
+  beforeAll(async () => {
+    if (isLocalDeployment()) {
+      // Set base URL so the local queue can reach the running workbench app
+      process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
+
+      // Discover and set the data directory used by the workbench app
+      const appPath = getWorkbenchAppPath();
+      const { dataDir } = await findWorkflowDataDir(appPath);
+      if (dataDir) {
+        process.env.WORKFLOW_LOCAL_DATA_DIR = dataDir;
+      }
+    }
+    // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI
+    // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
+  });
+
   // Write E2E metadata file with runIds for observability links
   afterAll(() => {
     writeE2EMetadata();
@@ -471,52 +517,42 @@ describe('e2e', () => {
   });
 
   test('outputStreamWorkflow', { timeout: 60_000 }, async () => {
-    const run = await triggerWorkflow('outputStreamWorkflow', []);
-    const stream = await fetch(
-      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`,
-      { headers: getProtectionBypassHeaders() }
-    );
-    const namedStream = await fetch(
-      `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=test`,
-      { headers: getProtectionBypassHeaders() }
-    );
-    const textDecoderStream = new TextDecoderStream();
-    stream.body?.pipeThrough(textDecoderStream);
-    const reader = textDecoderStream.readable.getReader();
+    const { runId, run } = await triggerWorkflow('outputStreamWorkflow', []);
+    const reader = run.getReadable().getReader();
+    const namedReader = run.getReadable({ namespace: 'test' }).getReader();
 
-    const namedTextDecoderStream = new TextDecoderStream();
-    namedStream.body?.pipeThrough(namedTextDecoderStream);
-    const namedReader = namedTextDecoderStream.readable.getReader();
-
+    // First chunk from default stream: binary data
     const r1 = await reader.read();
     assert(r1.value);
-    const chunk1 = JSON.parse(r1.value);
-    const binaryData = Buffer.from(chunk1.data, 'base64');
-    expect(binaryData.toString()).toEqual('Hello, world!');
+    assert(r1.value instanceof Uint8Array);
+    expect(Buffer.from(r1.value).toString()).toEqual('Hello, world!');
 
+    // First chunk from named stream: binary data
     const r1Named = await namedReader.read();
     assert(r1Named.value);
-    const chunk1Named = JSON.parse(r1Named.value);
-    const binaryDataNamed = Buffer.from(chunk1Named.data, 'base64');
-    expect(binaryDataNamed.toString()).toEqual('Hello, named stream!');
+    assert(r1Named.value instanceof Uint8Array);
+    expect(Buffer.from(r1Named.value).toString()).toEqual(
+      'Hello, named stream!'
+    );
 
+    // Second chunk from default stream: JSON object
     const r2 = await reader.read();
     assert(r2.value);
-    const chunk2 = JSON.parse(r2.value);
-    expect(chunk2).toEqual({ foo: 'test' });
+    expect(r2.value).toEqual({ foo: 'test' });
 
+    // Second chunk from named stream: JSON object
     const r2Named = await namedReader.read();
     assert(r2Named.value);
-    const chunk2Named = JSON.parse(r2Named.value);
-    expect(chunk2Named).toEqual({ foo: 'bar' });
+    expect(r2Named.value).toEqual({ foo: 'bar' });
 
+    // Streams should be closed
     const r3 = await reader.read();
     expect(r3.done).toBe(true);
 
     const r3Named = await namedReader.read();
     expect(r3Named.done).toBe(true);
 
-    const returnValue = await getWorkflowReturnValue(run.runId);
+    const returnValue = await getWorkflowReturnValue(runId);
     expect(returnValue).toEqual('done');
   });
 
@@ -524,50 +560,36 @@ describe('e2e', () => {
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
     { timeout: 60_000 },
     async () => {
-      const run = await triggerWorkflow('outputStreamInsideStepWorkflow', []);
-      const stream = await fetch(
-        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=1`,
-        { headers: getProtectionBypassHeaders() }
+      const { runId, run } = await triggerWorkflow(
+        'outputStreamInsideStepWorkflow',
+        []
       );
-      const namedStream = await fetch(
-        `${deploymentUrl}/api/trigger?runId=${run.runId}&output-stream=step-ns`,
-        { headers: getProtectionBypassHeaders() }
-      );
-      const textDecoderStream = new TextDecoderStream();
-      stream.body?.pipeThrough(textDecoderStream);
-      const reader = textDecoderStream.readable.getReader();
+      const reader = run.getReadable().getReader();
+      const namedReader = run.getReadable({ namespace: 'step-ns' }).getReader();
 
-      const namedTextDecoderStream = new TextDecoderStream();
-      namedStream.body?.pipeThrough(namedTextDecoderStream);
-      const namedReader = namedTextDecoderStream.readable.getReader();
-
-      // First message from default stream
+      // First message from default stream: binary data
       const r1 = await reader.read();
       assert(r1.value);
-      const chunk1 = JSON.parse(r1.value);
-      const binaryData1 = Buffer.from(chunk1.data, 'base64');
-      expect(binaryData1.toString()).toEqual('Hello from step!');
+      assert(r1.value instanceof Uint8Array);
+      expect(Buffer.from(r1.value).toString()).toEqual('Hello from step!');
 
-      // First message from named stream
+      // First message from named stream: JSON object
       const r1Named = await namedReader.read();
       assert(r1Named.value);
-      const chunk1Named = JSON.parse(r1Named.value);
-      expect(chunk1Named).toEqual({
+      expect(r1Named.value).toEqual({
         message: 'Hello from named stream in step!',
       });
 
-      // Second message from default stream
+      // Second message from default stream: binary data
       const r2 = await reader.read();
       assert(r2.value);
-      const chunk2 = JSON.parse(r2.value);
-      const binaryData2 = Buffer.from(chunk2.data, 'base64');
-      expect(binaryData2.toString()).toEqual('Second message');
+      assert(r2.value instanceof Uint8Array);
+      expect(Buffer.from(r2.value).toString()).toEqual('Second message');
 
-      // Second message from named stream
+      // Second message from named stream: JSON object
       const r2Named = await namedReader.read();
       assert(r2Named.value);
-      const chunk2Named = JSON.parse(r2Named.value);
-      expect(chunk2Named).toEqual({ counter: 42 });
+      expect(r2Named.value).toEqual({ counter: 42 });
 
       // Verify streams are closed
       const r3 = await reader.read();
@@ -576,7 +598,7 @@ describe('e2e', () => {
       const r3Named = await namedReader.read();
       expect(r3Named.done).toBe(true);
 
-      const returnValue = await getWorkflowReturnValue(run.runId);
+      const returnValue = await getWorkflowReturnValue(runId);
       expect(returnValue).toEqual('done');
     }
   );
@@ -608,21 +630,24 @@ describe('e2e', () => {
           { timeout: 60_000 },
           async () => {
             const run = await triggerWorkflow('errorWorkflowNested', []);
-            const result = await getWorkflowReturnValue(run.runId);
+            const error = await getWorkflowReturnValue(run.runId).catch(
+              (e: unknown) => e
+            );
 
-            expect(result.name).toBe('WorkflowRunFailedError');
-            expect(result.cause.message).toContain('Nested workflow error');
+            expect(WorkflowRunFailedError.is(error)).toBe(true);
+            assert(WorkflowRunFailedError.is(error));
+            expect(error.cause.message).toContain('Nested workflow error');
 
             // Workflow source maps are not properly supported everywhere. Check the definition
             // of hasWorkflowSourceMaps() to see where they are supported
             if (hasWorkflowSourceMaps()) {
               // Stack shows call chain: errorNested1 -> errorNested2 -> errorNested3
-              expect(result.cause.stack).toContain('errorNested1');
-              expect(result.cause.stack).toContain('errorNested2');
-              expect(result.cause.stack).toContain('errorNested3');
-              expect(result.cause.stack).toContain('errorWorkflowNested');
-              expect(result.cause.stack).toContain('99_e2e.ts');
-              expect(result.cause.stack).not.toContain('evalmachine');
+              expect(error.cause.stack).toContain('errorNested1');
+              expect(error.cause.stack).toContain('errorNested2');
+              expect(error.cause.stack).toContain('errorNested3');
+              expect(error.cause.stack).toContain('errorWorkflowNested');
+              expect(error.cause.stack).toContain('99_e2e.ts');
+              expect(error.cause.stack).not.toContain('evalmachine');
             }
 
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
@@ -635,21 +660,24 @@ describe('e2e', () => {
           { timeout: 60_000 },
           async () => {
             const run = await triggerWorkflow('errorWorkflowCrossFile', []);
-            const result = await getWorkflowReturnValue(run.runId);
+            const error = await getWorkflowReturnValue(run.runId).catch(
+              (e: unknown) => e
+            );
 
-            expect(result.name).toBe('WorkflowRunFailedError');
-            expect(result.cause.message).toContain(
+            expect(WorkflowRunFailedError.is(error)).toBe(true);
+            assert(WorkflowRunFailedError.is(error));
+            expect(error.cause.message).toContain(
               'Error from imported helper module'
             );
 
             // Workflow source maps are not properly supported everywhere. Check the definition
             // of hasWorkflowSourceMaps() to see where they are supported
             if (hasWorkflowSourceMaps()) {
-              expect(result.cause.stack).toContain('throwError');
-              expect(result.cause.stack).toContain('callThrower');
-              expect(result.cause.stack).toContain('errorWorkflowCrossFile');
-              expect(result.cause.stack).toContain('helpers.ts');
-              expect(result.cause.stack).not.toContain('evalmachine');
+              expect(error.cause.stack).toContain('throwError');
+              expect(error.cause.stack).toContain('callThrower');
+              expect(error.cause.stack).toContain('errorWorkflowCrossFile');
+              expect(error.cause.stack).toContain('helpers.ts');
+              expect(error.cause.stack).not.toContain('evalmachine');
             }
 
             const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
@@ -789,10 +817,13 @@ describe('e2e', () => {
         { timeout: 60_000 },
         async () => {
           const run = await triggerWorkflow('errorRetryFatal', []);
-          const result = await getWorkflowReturnValue(run.runId);
+          const error = await getWorkflowReturnValue(run.runId).catch(
+            (e: unknown) => e
+          );
 
-          expect(result.name).toBe('WorkflowRunFailedError');
-          expect(result.cause.message).toContain('Fatal step error');
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('Fatal step error');
 
           const { json: steps } = await cliInspectJson(
             `steps --runId ${run.runId}`
@@ -979,9 +1010,12 @@ describe('e2e', () => {
       ]);
 
       // The second workflow should fail with a hook token conflict error
-      const run2Result = await getWorkflowReturnValue(run2.runId);
-      expect(run2Result.name).toBe('WorkflowRunFailedError');
-      expect(run2Result.cause.message).toContain(
+      const run2Error = await getWorkflowReturnValue(run2.runId).catch(
+        (e: unknown) => e
+      );
+      expect(WorkflowRunFailedError.is(run2Error)).toBe(true);
+      assert(WorkflowRunFailedError.is(run2Error));
+      expect(run2Error.cause.message).toContain(
         'already in use by another workflow'
       );
 
