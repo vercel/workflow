@@ -130,4 +130,4 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 ## Limitations
 
-The Vercel World backend infrastructure is currently deployed in a single region (`iad1`). Applications deployed to other regions will route all workflow operational requests to `iad1`, which may result in higher latency. For best performance, we currently recommend deploying your Vercel apps that use Workflow to `iad1`. We plan to deploy the backend globally to colocate it closer to your applications soon.
+- **Single-region deployment** - The backend infrastructure is currently deployed only in `iad1`. Applications in other regions will route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy your Vercel apps using Workflow to `iad1`. Global deployment is planned to colocate the backend closer to your applications.
