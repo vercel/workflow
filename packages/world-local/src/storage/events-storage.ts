@@ -149,7 +149,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         ) {
           throw new WorkflowAPIError(
             `Cannot transition run from terminal state "${currentRun.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
 
@@ -160,7 +160,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         ) {
           throw new WorkflowAPIError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`,
-            { status: 410 }
+            { status: 409 }
           );
         }
       }

@@ -63,9 +63,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       const stepName = metadata.queueName.slice('__wkf_step_'.length);
       const world = getWorld();
 
-      // OPTIMIZATION: Run local async operations concurrently
-      // Note: We no longer call world.steps.get() here - we rely on step_started
-      // to return the step entity, saving one HTTP round-trip
+      // Resolve local async values concurrently before entering the trace span
       const [port, spanKind] = await Promise.all([
         getPort(),
         getSpanKind('CONSUMER'),
@@ -106,9 +104,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...Attribute.StepTracePropagated(!!traceContext),
           });
 
-          // OPTIMIZATION: Call step_started first - server validates state and returns step entity
-          // This eliminates the separate world.steps.get() HTTP call, saving 50-80ms per step.
-          // The server now validates:
+          // step_started validates state and returns the step entity, so no separate
+          // world.steps.get() call is needed. The server checks:
           // - Step not in terminal state (returns 409)
           // - retryAfter timestamp reached (returns 425 with Retry-After header)
           // - Workflow still active (returns 410 if completed)
@@ -366,9 +363,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               })
             );
 
-            // OPTIMIZATION 2: Parallelize step_completed with trace serialization
-            // Run step_completed event creation and serializeTraceCarrier() concurrently
-            // The trace carrier will be used in the final queueMessage call
+            // Run step_completed and trace serialization concurrently;
+            // the trace carrier is used in the final queueMessage call below
             const [, traceCarrier] = await Promise.all([
               world.events.create(workflowRunId, {
                 eventType: 'step_completed',
@@ -386,8 +382,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               ...Attribute.StepResultType(typeof result),
             });
 
-            // Queue the workflow continuation immediately after step_completed
-            // Using pre-computed traceCarrier from parallel operation
+            // Queue the workflow continuation with the concurrently-resolved trace carrier
             await queueMessage(world, `__wkf_workflow_${workflowName}`, {
               runId: workflowRunId,
               traceCarrier,
