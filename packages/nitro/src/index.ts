@@ -134,43 +134,60 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
 }
 
 function addManifestHandler(nitro: Nitro) {
-  const route = '/.well-known/workflow/v1/manifest.json';
-  const virtualId = '#workflow/manifest-handler';
   const manifestPath = join(nitro.options.buildDir, 'workflow/manifest.json');
 
-  nitro.options.handlers.push({ route, handler: virtualId });
+  if (nitro.options.dev) {
+    // Dev mode: use a virtual handler that reads the manifest from disk at
+    // request time. The absolute path is valid because we're on the same machine.
+    const route = '/.well-known/workflow/v1/manifest.json';
+    const virtualId = '#workflow/manifest-handler';
+    nitro.options.handlers.push({ route, handler: virtualId });
 
-  if (!nitro.routing) {
-    // Nitro v2 (legacy)
-    nitro.options.virtual[virtualId] = /* js */ `
-    import { fromWebHandler } from "h3";
-    import { readFileSync } from "node:fs";
-    function GET() {
-      try {
-        const manifest = readFileSync(${JSON.stringify(manifestPath)}, "utf-8");
-        return new Response(manifest, {
-          headers: { "content-type": "application/json" },
-        });
-      } catch {
-        return new Response("Manifest not found", { status: 404 });
+    nitro.options.virtual[virtualId] = !nitro.routing
+      ? /* js */ `
+      import { fromWebHandler } from "h3";
+      import { readFileSync } from "node:fs";
+      function GET() {
+        try {
+          const manifest = readFileSync(${JSON.stringify(manifestPath)}, "utf-8");
+          return new Response(manifest, {
+            headers: { "content-type": "application/json" },
+          });
+        } catch {
+          return new Response("Manifest not found", { status: 404 });
+        }
       }
-    }
-    export default fromWebHandler(GET);
-  `;
+      export default fromWebHandler(GET);
+    `
+      : /* js */ `
+      import { readFileSync } from "node:fs";
+      export default async () => {
+        try {
+          const manifest = readFileSync(${JSON.stringify(manifestPath)}, "utf-8");
+          return new Response(manifest, {
+            headers: { "content-type": "application/json" },
+          });
+        } catch {
+          return new Response("Manifest not found", { status: 404 });
+        }
+      };
+    `;
   } else {
-    // Nitro v3+
-    nitro.options.virtual[virtualId] = /* js */ `
-    import { readFileSync } from "node:fs";
-    export default async () => {
+    // Prod mode: copy the manifest to Nitro's public output directory after
+    // the build completes. Nitro serves files from .output/public/ as static
+    // assets, so the manifest will be available at the well-known URL.
+    nitro.hooks.hook('compiled', async () => {
+      const { copyFile, mkdir } = await import('node:fs/promises');
       try {
-        const manifest = readFileSync(${JSON.stringify(manifestPath)}, "utf-8");
-        return new Response(manifest, {
-          headers: { "content-type": "application/json" },
-        });
+        const publicDir = join(
+          nitro.options.output.publicDir,
+          '.well-known/workflow/v1'
+        );
+        await mkdir(publicDir, { recursive: true });
+        await copyFile(manifestPath, join(publicDir, 'manifest.json'));
       } catch {
-        return new Response("Manifest not found", { status: 404 });
+        // Manifest not available — skip
       }
-    };
-  `;
+    });
   }
 }
