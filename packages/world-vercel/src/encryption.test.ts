@@ -1,14 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-const { mockFetch } = vi.hoisted(() => ({
-  mockFetch: vi.fn(),
-}));
-vi.stubGlobal('fetch', mockFetch);
-vi.mock('./http-client.js', () => ({
-  getDispatcher: vi.fn().mockReturnValue({}),
-}));
-
-import { deriveRunKey, fetchRunKey } from './encryption.js';
+import { decrypt, encrypt } from '@workflow/core/encryption';
+import { describe, expect, it } from 'vitest';
+import { deriveRunKey } from './encryption.js';
 
 const testProjectId = 'prj_test123';
 const testRunId = 'wrun_abc123';
@@ -94,47 +86,94 @@ describe('deriveRunKey', () => {
   });
 });
 
-describe('fetchRunKey', () => {
-  const deploymentId = 'dpl_test123';
+describe('deriveRunKey + core encrypt/decrypt round-trip', () => {
+  it('should encrypt and decrypt data correctly', async () => {
+    const key = await deriveRunKey(testDeploymentKey, testProjectId, testRunId);
+    const plaintext = new TextEncoder().encode('Hello, World!');
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-    mockFetch.mockReset();
+    const encrypted = await encrypt(key, plaintext);
+    const decrypted = await decrypt(key, encrypted);
+
+    expect(decrypted).toEqual(plaintext);
+    expect(new TextDecoder().decode(decrypted)).toBe('Hello, World!');
   });
 
-  it('should return undefined when API returns null key', async () => {
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ key: null }), { status: 200 })
+  it('should encrypt and decrypt empty data', async () => {
+    const key = await deriveRunKey(testDeploymentKey, testProjectId, testRunId);
+    const plaintext = new Uint8Array(0);
+
+    const encrypted = await encrypt(key, plaintext);
+    const decrypted = await decrypt(key, encrypted);
+
+    expect(decrypted).toEqual(plaintext);
+  });
+
+  it('should encrypt and decrypt large data', async () => {
+    const key = await deriveRunKey(testDeploymentKey, testProjectId, testRunId);
+    const plaintext = new Uint8Array(65536);
+    crypto.getRandomValues(plaintext);
+
+    const encrypted = await encrypt(key, plaintext);
+    const decrypted = await decrypt(key, encrypted);
+
+    expect(decrypted).toEqual(plaintext);
+  });
+
+  it('should produce different ciphertext for same data (random nonce)', async () => {
+    const key = await deriveRunKey(testDeploymentKey, testProjectId, testRunId);
+    const plaintext = new TextEncoder().encode('test');
+
+    const encrypted1 = await encrypt(key, plaintext);
+    const encrypted2 = await encrypt(key, plaintext);
+
+    expect(encrypted1).not.toEqual(encrypted2);
+
+    const decrypted1 = await decrypt(key, encrypted1);
+    const decrypted2 = await decrypt(key, encrypted2);
+    expect(decrypted1).toEqual(plaintext);
+    expect(decrypted2).toEqual(plaintext);
+  });
+
+  it('should fail to decrypt with a key derived from a different runId', async () => {
+    const key1 = await deriveRunKey(
+      testDeploymentKey,
+      testProjectId,
+      'wrun_run1'
+    );
+    const key2 = await deriveRunKey(
+      testDeploymentKey,
+      testProjectId,
+      'wrun_run2'
     );
 
-    const result = await fetchRunKey(deploymentId, testProjectId, testRunId, {
-      token: 'test-token',
-    });
+    const plaintext = new TextEncoder().encode('sensitive data');
+    const encrypted = await encrypt(key1, plaintext);
 
-    expect(result).toBeUndefined();
+    await expect(decrypt(key2, encrypted)).rejects.toThrow();
   });
 
-  it('should return a Uint8Array when API returns a valid key', async () => {
-    const keyBase64 = Buffer.from(testDeploymentKey).toString('base64');
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ key: keyBase64 }), { status: 200 })
-    );
+  it('should fail to decrypt tampered ciphertext', async () => {
+    const key = await deriveRunKey(testDeploymentKey, testProjectId, testRunId);
+    const plaintext = new TextEncoder().encode('test');
+    const encrypted = await encrypt(key, plaintext);
 
-    const result = await fetchRunKey(deploymentId, testProjectId, testRunId, {
-      token: 'test-token',
-    });
+    const tampered = new Uint8Array(encrypted);
+    tampered[20] ^= 0xff;
 
-    expect(result).toBeInstanceOf(Uint8Array);
-    expect(result).toEqual(Buffer.from(keyBase64, 'base64'));
+    await expect(decrypt(key, tampered)).rejects.toThrow();
   });
 
-  it('should throw on non-ok response', async () => {
-    mockFetch.mockResolvedValueOnce(new Response('Not found', { status: 404 }));
+  it('should produce raw encrypted data without format prefix', async () => {
+    const key = await deriveRunKey(testDeploymentKey, testProjectId, testRunId);
+    const plaintext = new TextEncoder().encode('test');
 
-    await expect(
-      fetchRunKey(deploymentId, testProjectId, testRunId, {
-        token: 'test-token',
-      })
-    ).rejects.toThrow('HTTP 404');
+    const encrypted = await encrypt(key, plaintext);
+
+    // Core encrypt produces [nonce][ciphertext], NOT 'encr' prefix
+    const prefix = new TextDecoder().decode(encrypted.subarray(0, 4));
+    expect(prefix).not.toBe('encr');
+
+    // Minimum size: 12 (nonce) + 16 (auth tag) = 28 bytes
+    expect(encrypted.length).toBeGreaterThanOrEqual(28);
   });
 });
