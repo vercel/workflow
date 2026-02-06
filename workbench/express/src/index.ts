@@ -1,6 +1,8 @@
 import express from 'express';
 import { getHookByToken, resumeHook } from 'workflow/api';
 import { getWorld, healthCheck } from 'workflow/runtime';
+// Side-effect import to keep _workflows in Nitro's dependency graph for HMR
+import '../_workflows.js';
 
 const app = express();
 

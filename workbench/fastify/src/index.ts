@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 import Fastify from 'fastify';
 import { getHookByToken, resumeHook } from 'workflow/api';
 import { getWorld, healthCheck } from 'workflow/runtime';
+// Side-effect import to keep _workflows in Nitro's dependency graph for HMR
+import '../_workflows.js';
 
 type JsonResult = { ok: true; value: any } | { ok: false; error: Error };
 const parseJson = (text: string): JsonResult => {
