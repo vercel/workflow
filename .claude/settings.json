@@ -6,9 +6,7 @@
       "Bash(pnpm changeset:*)",
       "Bash(/dev/null)",
       "Bash(pnpm build:*)",
-      "Bash(pnpm typecheck:*)",
-      "Bash(bd:*)",
-      "Skill(beads:*)"
+      "Bash(pnpm typecheck:*)"
     ],
     "deny": ["Read(./.env)", "Read(./.env.*)"],
     "additionalDirectories": ["../workflow-server"]
