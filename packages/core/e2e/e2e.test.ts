@@ -3,7 +3,14 @@ import fs from 'fs';
 import path from 'path';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
-import { getRun, start } from '../src/runtime';
+import {
+  getHookByToken,
+  getRun,
+  getWorld,
+  healthCheck,
+  resumeHook,
+  start,
+} from '../src/runtime';
 import {
   cliHealthJson,
   cliInspectJson,
@@ -323,51 +330,37 @@ describe('e2e', () => {
 
     const run = await start(await e2e('hookWorkflow'), [token, customData]);
 
-    // Wait a few seconds so that the webhook is registered.
+    // Wait a few seconds so that the hook is registered.
     // TODO: make this more efficient when we add subscription support.
     await new Promise((resolve) => setTimeout(resolve, 5_000));
 
-    const hookUrl = new URL('/api/hook', deploymentUrl);
-
-    let res = await fetch(hookUrl, {
-      method: 'POST',
-      headers: getProtectionBypassHeaders(),
-      body: JSON.stringify({ token, data: { message: 'one' } }),
+    // Look up the hook and resume it with the first payload
+    let hook = await getHookByToken(token);
+    expect(hook.runId).toBe(run.runId);
+    await resumeHook(hook, {
+      message: 'one',
+      customData: (hook.metadata as any)?.customData,
     });
-    expect(res.status).toBe(200);
-    let body = await res.json();
-    expect(body.runId).toBe(run.runId);
 
     // Invalid token test
-    res = await fetch(hookUrl, {
-      method: 'POST',
-      headers: getProtectionBypassHeaders(),
-      body: JSON.stringify({ token: 'invalid' }),
-    });
-    // NOTE: For Nitro apps (Vite, Hono, etc.) in dev mode, status 404 does some
-    // unexpected stuff and could return a Vite SPA fallback or can cause a Hono route to hang.
-    // This is because Nitro passes the 404 requests to the dev server to handle.
-    expect(res.status).toBeOneOf([404, 422]);
-    body = await res.json();
-    expect(body).toBeNull();
+    await expect(getHookByToken('invalid')).rejects.toThrow(/not found/i);
 
-    res = await fetch(hookUrl, {
-      method: 'POST',
-      headers: getProtectionBypassHeaders(),
-      body: JSON.stringify({ token, data: { message: 'two' } }),
+    // Resume with second payload
+    hook = await getHookByToken(token);
+    expect(hook.runId).toBe(run.runId);
+    await resumeHook(hook, {
+      message: 'two',
+      customData: (hook.metadata as any)?.customData,
     });
-    expect(res.status).toBe(200);
-    body = await res.json();
-    expect(body.runId).toBe(run.runId);
 
-    res = await fetch(hookUrl, {
-      method: 'POST',
-      headers: getProtectionBypassHeaders(),
-      body: JSON.stringify({ token, data: { message: 'three', done: true } }),
+    // Resume with third (final) payload
+    hook = await getHookByToken(token);
+    expect(hook.runId).toBe(run.runId);
+    await resumeHook(hook, {
+      message: 'three',
+      done: true,
+      customData: (hook.metadata as any)?.customData,
     });
-    expect(res.status).toBe(200);
-    body = await res.json();
-    expect(body.runId).toBe(run.runId);
 
     const returnValue = await run.returnValue;
     expect(returnValue).toBeInstanceOf(Array);
@@ -961,19 +954,12 @@ describe('e2e', () => {
       await new Promise((resolve) => setTimeout(resolve, 5_000));
 
       // Send payload to first workflow
-      const hookUrl = new URL('/api/hook', deploymentUrl);
-      let res = await fetch(hookUrl, {
-        method: 'POST',
-        headers: getProtectionBypassHeaders(),
-        body: JSON.stringify({
-          token,
-          data: { message: 'test-message-1', customData },
-        }),
+      let hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run1.runId);
+      await resumeHook(hook, {
+        message: 'test-message-1',
+        customData: (hook.metadata as any)?.customData,
       });
-
-      expect(res.status).toBe(200);
-      let body = await res.json();
-      expect(body.runId).toBe(run1.runId);
 
       // Get first workflow result
       const run1Result = await run1.returnValue;
@@ -993,18 +979,12 @@ describe('e2e', () => {
       await new Promise((resolve) => setTimeout(resolve, 5_000));
 
       // Send payload to second workflow using same token
-      res = await fetch(hookUrl, {
-        method: 'POST',
-        headers: getProtectionBypassHeaders(),
-        body: JSON.stringify({
-          token,
-          data: { message: 'test-message-2', customData },
-        }),
+      hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run2.runId);
+      await resumeHook(hook, {
+        message: 'test-message-2',
+        customData: (hook.metadata as any)?.customData,
       });
-
-      expect(res.status).toBe(200);
-      body = await res.json();
-      expect(body.runId).toBe(run2.runId);
 
       // Get second workflow result
       const run2Result = await run2.returnValue;
@@ -1059,16 +1039,11 @@ describe('e2e', () => {
       expect(run2Data.status).toBe('failed');
 
       // Now send a payload to complete workflow 1
-      const hookUrl = new URL('/api/hook', deploymentUrl);
-      const res = await fetch(hookUrl, {
-        method: 'POST',
-        headers: getProtectionBypassHeaders(),
-        body: JSON.stringify({
-          token,
-          data: { message: 'test-concurrent', customData },
-        }),
+      const hook = await getHookByToken(token);
+      await resumeHook(hook, {
+        message: 'test-concurrent',
+        customData: (hook.metadata as any)?.customData,
       });
-      expect(res.status).toBe(200);
 
       // Verify workflow 1 completed successfully
       const run1Result = await run1.returnValue;
@@ -1250,35 +1225,19 @@ describe('e2e', () => {
     'health check (queue-based) - workflow and step endpoints respond to health check messages',
     { timeout: 60_000 },
     async () => {
-      // NOTE: This tests the queue-based health check using healthCheck() function.
-      // This approach bypasses Vercel Deployment Protection by sending messages
+      // Tests the queue-based health check using healthCheck() directly.
+      // This bypasses Vercel Deployment Protection by sending messages
       // through the Queue infrastructure rather than direct HTTP.
-      const url = new URL('/api/test-health-check', deploymentUrl);
+      const world = getWorld();
 
       // Test workflow endpoint health check
-      const workflowRes = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getProtectionBypassHeaders(),
-        },
-        body: JSON.stringify({ endpoint: 'workflow', timeout: 30000 }),
+      const workflowResult = await healthCheck(world, 'workflow', {
+        timeout: 30000,
       });
-      expect(workflowRes.status).toBe(200);
-      const workflowResult = await workflowRes.json();
       expect(workflowResult.healthy).toBe(true);
 
       // Test step endpoint health check
-      const stepRes = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getProtectionBypassHeaders(),
-        },
-        body: JSON.stringify({ endpoint: 'step', timeout: 30000 }),
-      });
-      expect(stepRes.status).toBe(200);
-      const stepResult = await stepRes.json();
+      const stepResult = await healthCheck(world, 'step', { timeout: 30000 });
       expect(stepResult.healthy).toBe(true);
     }
   );
