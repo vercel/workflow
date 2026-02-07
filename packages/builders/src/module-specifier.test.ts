@@ -108,6 +108,60 @@ describe('getImportPath', () => {
     });
   });
 
+  it('uses package root import when package module points to file', () => {
+    const projectRoot = join(testRoot, 'apps/chat');
+    const workspacePkgDir = join(testRoot, 'packages/agent');
+    const filePath = join(workspacePkgDir, 'src/index.mjs');
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'chat',
+      dependencies: { '@internal/agent': 'workspace:*' },
+    });
+
+    writeJson(join(workspacePkgDir, 'package.json'), {
+      name: '@internal/agent',
+      version: '1.0.0',
+      module: './src/index.mjs',
+      main: './dist/index.cjs',
+    });
+
+    writeFile(filePath, `'use workflow';\n`);
+
+    expect(getImportPath(filePath, projectRoot)).toEqual({
+      importPath: '@internal/agent',
+      isPackage: true,
+    });
+  });
+
+  it('uses package root import for conditional root exports', () => {
+    const projectRoot = join(testRoot, 'apps/chat');
+    const workspacePkgDir = join(testRoot, 'packages/agent');
+    const filePath = join(workspacePkgDir, 'src/index.js');
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'chat',
+      dependencies: { '@internal/agent': 'workspace:*' },
+    });
+
+    writeJson(join(workspacePkgDir, 'package.json'), {
+      name: '@internal/agent',
+      version: '1.0.0',
+      exports: {
+        '.': {
+          import: './src/index.mjs',
+          default: './src/index.js',
+        },
+      },
+    });
+
+    writeFile(filePath, `'use workflow';\n`);
+
+    expect(getImportPath(filePath, projectRoot)).toEqual({
+      importPath: '@internal/agent',
+      isPackage: true,
+    });
+  });
+
   it('falls back to relative import for deep files in packages without exports', () => {
     const projectRoot = join(testRoot, 'apps/chat');
     const workspacePkgDir = join(testRoot, 'packages/agent');

@@ -514,6 +514,9 @@ export function getImportPath(
       // Prefer a package subpath import when this file maps to an export.
       // This preserves the exact module being bundled while still respecting
       // package export conditions.
+      // Note: resolveExportSubpath returns "" for both root "." matches and
+      // no match; root entrypoints are intentionally handled below via
+      // isRootEntrypointFile().
       const subpath = resolveExportSubpath(filePath, pkg);
       if (subpath) {
         return {
