@@ -50,7 +50,7 @@ export async function recreateRunFromExisting(
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
     const workflowArgs = normalizeWorkflowArgs(
-      hydrateWorkflowArguments(run.input, globalThis)
+      await hydrateWorkflowArguments(run.input, globalThis)
     );
     const specVersion =
       options.specVersion ?? run.specVersion ?? SPEC_VERSION_LEGACY;

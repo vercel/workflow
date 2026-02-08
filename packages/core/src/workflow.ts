@@ -635,7 +635,10 @@ export async function runWorkflow(
       );
     }
 
-    const args = hydrateWorkflowArguments(workflowRun.input, vmGlobalThis);
+    const args = await hydrateWorkflowArguments(
+      workflowRun.input,
+      vmGlobalThis
+    );
 
     span?.setAttributes({
       ...Attribute.WorkflowArgumentsCount(args.length),
@@ -647,7 +650,7 @@ export async function runWorkflow(
       workflowDiscontinuation.promise,
     ]);
 
-    const dehydrated = dehydrateWorkflowReturnValue(result, vmGlobalThis);
+    const dehydrated = await dehydrateWorkflowReturnValue(result, vmGlobalThis);
 
     span?.setAttributes({
       ...Attribute.WorkflowResultType(typeof result),

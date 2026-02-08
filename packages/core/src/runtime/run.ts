@@ -5,8 +5,8 @@ import {
 } from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
-  type World,
   type WorkflowRunStatus,
+  type World,
 } from '@workflow/world';
 import {
   getExternalRevivers,
@@ -153,7 +153,7 @@ export class Run<TResult> {
         const run = await this.world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          return hydrateWorkflowReturnValue(run.output, [], this.runId);
+          return await hydrateWorkflowReturnValue(run.output, [], this.runId);
         }
 
         if (run.status === 'cancelled') {

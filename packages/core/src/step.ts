@@ -142,13 +142,19 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.invocationsQueue.delete(event.correlationId);
 
           // Step has completed, so resolve the Promise with the cached result
-          const hydratedResult = hydrateStepReturnValue(
-            event.eventData.result,
-            ctx.globalThis
-          );
-          setTimeout(() => {
-            resolve(hydratedResult);
-          }, 0);
+          // Preserve macrotask timing semantics (setTimeout) to match
+          // the original synchronous code path's scheduling behavior
+          hydrateStepReturnValue(event.eventData.result, ctx.globalThis)
+            .then((hydratedResult) => {
+              setTimeout(() => {
+                resolve(hydratedResult);
+              }, 0);
+            })
+            .catch((error) => {
+              setTimeout(() => {
+                reject(error);
+              }, 0);
+            });
           return EventConsumerResult.Finished;
         }
 

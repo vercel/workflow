@@ -298,7 +298,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               {},
               async (hydrateSpan) => {
                 const startTime = Date.now();
-                const result = hydrateStepArguments(
+                const result = await hydrateStepArguments(
                   step.input,
                   ops,
                   workflowRunId
@@ -354,7 +354,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               {},
               async (dehydrateSpan) => {
                 const startTime = Date.now();
-                const dehydrated = dehydrateStepReturnValue(
+                const dehydrated = await dehydrateStepReturnValue(
                   result,
                   ops,
                   workflowRunId

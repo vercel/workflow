@@ -119,7 +119,7 @@ export async function start<TArgs extends unknown[], TResult>(
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
-      const workflowArguments = dehydrateWorkflowArguments(
+      const workflowArguments = await dehydrateWorkflowArguments(
         args,
         ops,
         runId,

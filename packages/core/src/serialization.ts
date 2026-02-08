@@ -1375,13 +1375,13 @@ function getStepRevivers(
  * @param runId
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
-export function dehydrateWorkflowArguments(
+export async function dehydrateWorkflowArguments(
   value: unknown,
   ops: Promise<void>[],
   runId: string,
   global: Record<string, any> = globalThis,
   v1Compat = false
-): Uint8Array | unknown {
+): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getExternalReducers(global, ops, runId));
     if (v1Compat) {
@@ -1406,7 +1406,7 @@ export function dehydrateWorkflowArguments(
  * @param extraRevivers
  * @returns The hydrated value
  */
-export function hydrateWorkflowArguments(
+export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
@@ -1440,11 +1440,11 @@ export function hydrateWorkflowArguments(
  * @param global
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
-export function dehydrateWorkflowReturnValue(
+export async function dehydrateWorkflowReturnValue(
   value: unknown,
   global: Record<string, any> = globalThis,
   v1Compat = false
-): Uint8Array | unknown {
+): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getWorkflowReducers(global));
     if (v1Compat) {
@@ -1472,7 +1472,7 @@ export function dehydrateWorkflowReturnValue(
  * @param runId
  * @returns The hydrated return value, ready to be consumed by the client
  */
-export function hydrateWorkflowReturnValue(
+export async function hydrateWorkflowReturnValue(
   value: Uint8Array | unknown,
   ops: Promise<void>[],
   runId: string,
@@ -1509,11 +1509,11 @@ export function hydrateWorkflowReturnValue(
  * @param global
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
-export function dehydrateStepArguments(
+export async function dehydrateStepArguments(
   value: unknown,
   global: Record<string, any>,
   v1Compat = false
-): Uint8Array | unknown {
+): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getWorkflowReducers(global));
     if (v1Compat) {
@@ -1540,7 +1540,7 @@ export function dehydrateStepArguments(
  * @param runId
  * @returns The hydrated value, ready to be consumed by the step user-code function
  */
-export function hydrateStepArguments(
+export async function hydrateStepArguments(
   value: Uint8Array | unknown,
   ops: Promise<any>[],
   runId: string,
@@ -1579,13 +1579,13 @@ export function hydrateStepArguments(
  * @param runId
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
-export function dehydrateStepReturnValue(
+export async function dehydrateStepReturnValue(
   value: unknown,
   ops: Promise<any>[],
   runId: string,
   global: Record<string, any> = globalThis,
   v1Compat = false
-): Uint8Array | unknown {
+): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId));
     if (v1Compat) {
@@ -1610,7 +1610,7 @@ export function dehydrateStepReturnValue(
  * @param extraRevivers
  * @returns The hydrated return value of a step, ready to be consumed by the workflow handler
  */
-export function hydrateStepReturnValue(
+export async function hydrateStepReturnValue(
   value: Uint8Array | unknown,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
