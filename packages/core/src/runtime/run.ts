@@ -153,7 +153,14 @@ export class Run<TResult> {
         const run = await this.world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          return await hydrateWorkflowReturnValue(run.output, [], this.runId);
+          const encryptionKey = await this.world.getEncryptionKeyForRun?.(
+            this.runId
+          );
+          return await hydrateWorkflowReturnValue(
+            run.output,
+            this.runId,
+            encryptionKey
+          );
         }
 
         if (run.status === 'cancelled') {

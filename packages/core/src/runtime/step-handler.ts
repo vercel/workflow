@@ -298,10 +298,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               {},
               async (hydrateSpan) => {
                 const startTime = Date.now();
+                const encryptionKey =
+                  await world.getEncryptionKeyForRun?.(workflowRunId);
                 const result = await hydrateStepArguments(
                   step.input,
-                  ops,
-                  workflowRunId
+                  workflowRunId,
+                  encryptionKey,
+                  ops
                 );
                 const durationMs = Date.now() - startTime;
                 hydrateSpan?.setAttributes({
@@ -354,10 +357,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               {},
               async (dehydrateSpan) => {
                 const startTime = Date.now();
+                const stepEncryptionKey =
+                  await world.getEncryptionKeyForRun?.(workflowRunId);
                 const dehydrated = await dehydrateStepReturnValue(
                   result,
-                  ops,
-                  workflowRunId
+                  workflowRunId,
+                  stepEncryptionKey,
+                  ops
                 );
                 const durationMs = Date.now() - startTime;
                 dehydrateSpan?.setAttributes({

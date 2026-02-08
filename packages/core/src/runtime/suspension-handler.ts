@@ -77,6 +77,9 @@ export async function handleSuspension({
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
   );
 
+  // Resolve encryption key for this run
+  const encryptionKey = await world.getEncryptionKeyForRun?.(runId);
+
   // Build hook_created events (World will atomically create hook entities)
   const hookEvents: CreateEventRequest[] = await Promise.all(
     hookItems.map(async (queueItem) => {
@@ -85,6 +88,8 @@ export async function handleSuspension({
           ? undefined
           : ((await dehydrateStepArguments(
               queueItem.metadata,
+              runId,
+              encryptionKey,
               suspension.globalThis
             )) as SerializedData);
       return {
@@ -161,6 +166,8 @@ export async function handleSuspension({
               closureVars: queueItem.closureVars,
               thisVal: queueItem.thisVal,
             },
+            runId,
+            encryptionKey,
             suspension.globalThis
           );
           const stepEvent: CreateEventRequest = {

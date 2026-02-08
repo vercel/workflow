@@ -10,6 +10,9 @@ import {
 } from './serialization.js';
 import { runWorkflow } from './workflow.js';
 
+// No encryption key = encryption disabled
+const noEncryptionKey = undefined;
+
 describe('runWorkflow', () => {
   const getWorkflowTransformCode = (workflowName?: string) =>
     `;globalThis.__private_workflows = new Map();
@@ -31,7 +34,12 @@ describe('runWorkflow', () => {
         runId: 'wrun_123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -40,9 +48,19 @@ describe('runWorkflow', () => {
 
       const events: Event[] = [];
 
-      const result = await runWorkflow(workflowCode, workflowRun, events);
+      const result = await runWorkflow(
+        workflowCode,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual('success');
     });
 
@@ -54,7 +72,12 @@ describe('runWorkflow', () => {
         runId: 'wrun_123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([1, 2], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [1, 2],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -63,9 +86,19 @@ describe('runWorkflow', () => {
 
       const events: Event[] = [];
 
-      const result = await runWorkflow(workflowCode, workflowRun, events);
+      const result = await runWorkflow(
+        workflowCode,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual(3);
     });
 
@@ -83,7 +116,12 @@ describe('runWorkflow', () => {
         runId: 'wrun_123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -93,9 +131,15 @@ describe('runWorkflow', () => {
       const events: Event[] = [];
 
       const result = await hydrateWorkflowReturnValue(
-        (await runWorkflow(workflowCode, workflowRun, events)) as any,
-        ops,
-        'wrun_test'
+        (await runWorkflow(
+          workflowCode,
+          workflowRun,
+          events,
+          noEncryptionKey
+        )) as any,
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       assert(types.isNativeError(result));
       expect(result.name).toEqual('TypeError');
@@ -110,7 +154,12 @@ describe('runWorkflow', () => {
       runId: workflowRunId,
       workflowName: 'workflow',
       status: 'running',
-      input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_test',
+        noEncryptionKey,
+        ops
+      ),
       createdAt: new Date('2024-01-01T00:00:00.000Z'),
       updatedAt: new Date('2024-01-01T00:00:00.000Z'),
       startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -131,7 +180,12 @@ describe('runWorkflow', () => {
         eventType: 'step_completed',
         correlationId: 'step_01HK153X00Y11PCQTCHQRK34HF',
         eventData: {
-          result: await dehydrateStepReturnValue(3, ops, 'wrun_test'),
+          result: await dehydrateStepReturnValue(
+            3,
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
         },
         createdAt: new Date(),
       },
@@ -145,10 +199,16 @@ describe('runWorkflow', () => {
             return a;
           }${getWorkflowTransformCode('workflow')}`,
       workflowRun,
-      events
+      events,
+      noEncryptionKey
     );
     expect(
-      await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+      await hydrateWorkflowReturnValue(
+        result as any,
+        'wrun_test',
+        noEncryptionKey,
+        ops
+      )
     ).toEqual(3);
   });
 
@@ -160,7 +220,12 @@ describe('runWorkflow', () => {
       runId: workflowRunId,
       workflowName: 'workflow',
       status: 'running',
-      input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_test',
+        noEncryptionKey,
+        ops
+      ),
       createdAt: new Date('2024-01-01T00:00:00.000Z'),
       updatedAt: new Date('2024-01-01T00:00:00.000Z'),
       startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -201,7 +266,12 @@ describe('runWorkflow', () => {
         eventType: 'step_completed',
         correlationId: 'step_01HK153X00Y11PCQTCHQRK34HF',
         eventData: {
-          result: await dehydrateStepReturnValue(3, ops, 'wrun_test'),
+          result: await dehydrateStepReturnValue(
+            3,
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
         },
         createdAt: new Date('2024-01-01T00:00:02.000Z'),
       },
@@ -225,7 +295,12 @@ describe('runWorkflow', () => {
         eventType: 'step_completed',
         correlationId: 'step_01HK153X00Y11PCQTCHQRK34HG',
         eventData: {
-          result: await dehydrateStepReturnValue(3, ops, 'wrun_test'),
+          result: await dehydrateStepReturnValue(
+            3,
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
         },
         createdAt: new Date('2024-01-01T00:00:04.000Z'),
       },
@@ -249,7 +324,12 @@ describe('runWorkflow', () => {
         eventType: 'step_completed',
         correlationId: 'step_01HK153X00Y11PCQTCHQRK34HH',
         eventData: {
-          result: await dehydrateStepReturnValue(3, ops, 'wrun_test'),
+          result: await dehydrateStepReturnValue(
+            3,
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
         },
         createdAt: new Date('2024-01-01T00:00:06.000Z'),
       },
@@ -269,7 +349,8 @@ describe('runWorkflow', () => {
             return timestamps;
           }${getWorkflowTransformCode('workflow')}`,
       workflowRun,
-      events
+      events,
+      noEncryptionKey
     );
     // Timestamps:
     // - Initial: 0s (from startedAt)
@@ -277,7 +358,12 @@ describe('runWorkflow', () => {
     // - After step 2 completes (at 4s), timestamp advances to step3_created (4.5s)
     // - After step 3 completes: 6s
     expect(
-      await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+      await hydrateWorkflowReturnValue(
+        result as any,
+        'wrun_test',
+        noEncryptionKey,
+        ops
+      )
     ).toEqual([
       new Date('2024-01-01T00:00:00.000Z'),
       1704067202500, // 2.5s (step2_created timestamp)
@@ -296,7 +382,12 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -341,30 +432,42 @@ describe('runWorkflow', () => {
       }${getWorkflowTransformCode('workflow')}`;
 
       // Execute the workflow with only sleep(1) resolved
-      const result1 = await runWorkflow(workflowCode, workflowRun, events);
+      const result1 = await runWorkflow(
+        workflowCode,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
 
       // Execute again with both sleeps resolved this time
-      const result2 = await runWorkflow(workflowCode, workflowRun, [
-        ...events,
-        {
-          eventId: 'event-3',
-          runId: workflowRunId,
-          eventType: 'wait_completed',
-          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
-          createdAt: new Date('2024-01-01T00:00:04.000Z'),
-        },
-      ]);
+      const result2 = await runWorkflow(
+        workflowCode,
+        workflowRun,
+        [
+          ...events,
+          {
+            eventId: 'event-3',
+            runId: workflowRunId,
+            eventType: 'wait_completed',
+            correlationId: 'wait_01HK153X008RT6YEW43G8QX6JY',
+            createdAt: new Date('2024-01-01T00:00:04.000Z'),
+          },
+        ],
+        noEncryptionKey
+      );
 
       // The date should be the same
       const date1 = await hydrateWorkflowReturnValue(
         result1 as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       const date2 = await hydrateWorkflowReturnValue(
         result2 as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(date1).toEqual(date2);
     }
@@ -378,7 +481,12 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -406,7 +514,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
           eventData: {
-            result: await dehydrateStepReturnValue(3, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              3,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date(),
         },
@@ -416,7 +529,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
           eventData: {
-            result: await dehydrateStepReturnValue(7, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              7,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date(),
         },
@@ -429,10 +547,16 @@ describe('runWorkflow', () => {
             return a;
           }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual([3, 7]);
     });
 
@@ -443,7 +567,12 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -471,7 +600,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
           eventData: {
-            result: await dehydrateStepReturnValue(3, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              3,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date(),
         },
@@ -481,7 +615,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
           eventData: {
-            result: await dehydrateStepReturnValue(7, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              7,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date(),
         },
@@ -494,10 +633,16 @@ describe('runWorkflow', () => {
             return a;
           }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual(3);
     });
 
@@ -508,7 +653,12 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -536,7 +686,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
           eventData: {
-            result: await dehydrateStepReturnValue(7, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              7,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date(),
         },
@@ -546,7 +701,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
           eventData: {
-            result: await dehydrateStepReturnValue(3, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              3,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date(),
         },
@@ -559,10 +719,16 @@ describe('runWorkflow', () => {
             return a;
           }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual(7);
     });
 
@@ -572,7 +738,12 @@ describe('runWorkflow', () => {
         runId: 'wrun_01K75533W56DAE35VY3082DN3P',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -619,7 +790,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X00DKMJB5AQEJZ3FQGH',
           eventData: {
-            result: await dehydrateStepReturnValue(4, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              4,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K7553EABWCK00JQ9R8P1FTK7',
@@ -629,7 +805,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X00DKMJB5AQEJZ3FQGG',
           eventData: {
-            result: await dehydrateStepReturnValue(3, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              3,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K7553F31YS6C94NG23WGEEMV',
@@ -639,7 +820,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X00DKMJB5AQEJZ3FQGF',
           eventData: {
-            result: await dehydrateStepReturnValue(2, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              2,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K7553G0XEE4R440QS5SV89YE',
@@ -649,7 +835,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X00DKMJB5AQEJZ3FQGE',
           eventData: {
-            result: await dehydrateStepReturnValue(1, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              1,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K7553HS9R1XJQKVVW0ZRCMNP',
@@ -659,7 +850,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X00DKMJB5AQEJZ3FQGD',
           eventData: {
-            result: await dehydrateStepReturnValue(0, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              0,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           runId: 'wrun_01K75533W56DAE35VY3082DN3P',
           eventId: 'evnt_01K7553K67FQG02YCFE9QDKJ90',
@@ -687,10 +883,16 @@ describe('runWorkflow', () => {
     return done;
 }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual([4, 3, 2, 1, 0]);
     });
   });
@@ -704,7 +906,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'value',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -716,7 +923,8 @@ describe('runWorkflow', () => {
         await runWorkflow(
           `const value = "test"${getWorkflowTransformCode()}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -736,7 +944,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -748,7 +961,8 @@ describe('runWorkflow', () => {
         await runWorkflow(
           `function workflow() { throw new Error("test"); }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -766,7 +980,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'testWorkflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -778,7 +997,8 @@ describe('runWorkflow', () => {
         await runWorkflow(
           `function testWorkflow() { throw new Error("test error"); }${getWorkflowTransformCode('testWorkflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -799,7 +1019,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-nested',
           workflowName: 'nestedWorkflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -821,7 +1046,7 @@ describe('runWorkflow', () => {
           }
         ${getWorkflowTransformCode('nestedWorkflow')}`;
 
-        await runWorkflow(workflowCode, workflowRun, events);
+        await runWorkflow(workflowCode, workflowRun, events, noEncryptionKey);
       } catch (err) {
         error = err as Error;
       }
@@ -844,7 +1069,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -861,7 +1091,8 @@ describe('runWorkflow', () => {
             return a;
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -887,7 +1118,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -912,7 +1148,8 @@ describe('runWorkflow', () => {
             return a;
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -932,7 +1169,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -948,7 +1190,8 @@ describe('runWorkflow', () => {
             return a;
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -980,7 +1223,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1001,7 +1249,8 @@ describe('runWorkflow', () => {
             }
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -1019,7 +1268,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1035,7 +1289,8 @@ describe('runWorkflow', () => {
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow(
         'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
@@ -1048,7 +1303,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1064,7 +1324,8 @@ describe('runWorkflow', () => {
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow(
         'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
@@ -1077,7 +1338,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1093,7 +1359,8 @@ describe('runWorkflow', () => {
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow(
         'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
@@ -1106,7 +1373,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1122,7 +1394,8 @@ describe('runWorkflow', () => {
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow(
         'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
@@ -1135,7 +1408,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1151,7 +1429,8 @@ describe('runWorkflow', () => {
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow(
         'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
@@ -1164,7 +1443,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1180,7 +1464,8 @@ describe('runWorkflow', () => {
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow(
         'Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions'
@@ -1195,7 +1480,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1210,7 +1500,8 @@ describe('runWorkflow', () => {
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -1234,7 +1525,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1251,7 +1547,8 @@ describe('runWorkflow', () => {
             return payload.message;
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -1269,7 +1566,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1285,8 +1587,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { message: 'Hello from hook' },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date(),
@@ -1301,10 +1604,16 @@ describe('runWorkflow', () => {
         return payload.message;
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual('Hello from hook');
     });
 
@@ -1314,7 +1623,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1330,8 +1644,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { message: 'First payload' },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date(),
@@ -1344,8 +1659,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { message: 'Second payload' },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date(),
@@ -1361,10 +1677,16 @@ describe('runWorkflow', () => {
         return [payload1.message, payload2.message];
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual(['First payload', 'Second payload']);
     });
 
@@ -1374,7 +1696,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1390,8 +1717,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { count: 1, status: 'active' },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date(),
@@ -1404,8 +1732,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { count: 2, status: 'complete' },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date(),
@@ -1426,10 +1755,16 @@ describe('runWorkflow', () => {
         return payloads;
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual([
         { count: 1, status: 'active' },
         { count: 2, status: 'complete' },
@@ -1442,7 +1777,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1458,8 +1798,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { value: 100 },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date(),
@@ -1472,8 +1813,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { value: 200 },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date(),
@@ -1488,10 +1830,16 @@ describe('runWorkflow', () => {
         return payload.value;
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual(100);
     });
 
@@ -1501,7 +1849,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1517,8 +1870,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { data: 'first' },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
@@ -1531,8 +1885,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { data: 'second' },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date('2024-01-01T00:00:02.000Z'),
@@ -1550,7 +1905,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
           eventData: {
-            result: await dehydrateStepReturnValue(42, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              42,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date('2024-01-01T00:00:04.000Z'),
         },
@@ -1571,10 +1931,16 @@ describe('runWorkflow', () => {
         };
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual({
         data1: 'first',
         stepResult: 42,
@@ -1588,7 +1954,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1604,8 +1975,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { iteration: 1 },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
@@ -1623,7 +1995,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
           eventData: {
-            result: await dehydrateStepReturnValue(10, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              10,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date('2024-01-01T00:00:03.000Z'),
         },
@@ -1641,7 +2018,8 @@ describe('runWorkflow', () => {
         }
       }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -1659,7 +2037,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1675,8 +2058,9 @@ describe('runWorkflow', () => {
           eventData: {
             payload: await dehydrateStepReturnValue(
               { result: 'success' },
-              ops,
-              'wrun_test'
+              'wrun_test',
+              noEncryptionKey,
+              ops
             ),
           },
           createdAt: new Date(),
@@ -1691,10 +2075,16 @@ describe('runWorkflow', () => {
         return { token: hook.token, result: payload.result };
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual({
         token: 'my-custom-token',
         result: 'success',
@@ -1707,7 +2097,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1737,7 +2132,8 @@ describe('runWorkflow', () => {
           return payload;
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -1754,7 +2150,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1788,7 +2189,8 @@ describe('runWorkflow', () => {
           return results;
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -1806,7 +2208,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1820,12 +2227,14 @@ describe('runWorkflow', () => {
         return new Response('Hello, world!', { status: 201 });
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const res = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(res).toBeInstanceOf(Response);
       expect(res.status).toEqual(201);
@@ -1842,7 +2251,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1856,12 +2270,14 @@ describe('runWorkflow', () => {
         return Response.json({ message: 'success', count: 42 }, { status: 201 });
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const res = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(res).toBeInstanceOf(Response);
       expect(res.status).toEqual(201);
@@ -1878,7 +2294,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1895,12 +2316,14 @@ describe('runWorkflow', () => {
         });
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const res = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(res).toBeInstanceOf(Response);
       expect(res.status).toEqual(202);
@@ -1914,7 +2337,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1928,12 +2356,14 @@ describe('runWorkflow', () => {
         return new Response(null, { status: 204 });
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const res = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(res).toBeInstanceOf(Response);
       expect(res.status).toEqual(204);
@@ -1946,7 +2376,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1961,12 +2396,14 @@ describe('runWorkflow', () => {
         return new Response(data, { status: 200 });
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const res = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(res).toBeInstanceOf(Response);
       expect(res.status).toEqual(200);
@@ -1983,7 +2420,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1998,7 +2440,8 @@ describe('runWorkflow', () => {
           return new Response('hello', { status: 204 });
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow(
         'Response constructor: Invalid response status code 204'
@@ -2012,7 +2455,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2026,12 +2474,14 @@ describe('runWorkflow', () => {
           return Response.redirect('https://example.com/redirect');
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
         const res = await hydrateWorkflowReturnValue(
           result as any,
-          ops,
-          'wrun_test'
+          'wrun_test',
+          noEncryptionKey,
+          ops
         );
         expect(res).toBeInstanceOf(Response);
         expect(res.status).toEqual(302);
@@ -2047,7 +2497,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2061,12 +2516,14 @@ describe('runWorkflow', () => {
           return Response.redirect('https://example.com/moved', 301);
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
         const res = await hydrateWorkflowReturnValue(
           result as any,
-          ops,
-          'wrun_test'
+          'wrun_test',
+          noEncryptionKey,
+          ops
         );
         expect(res).toBeInstanceOf(Response);
         expect(res.status).toEqual(301);
@@ -2081,7 +2538,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2097,12 +2559,14 @@ describe('runWorkflow', () => {
           );
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
         const statuses = await hydrateWorkflowReturnValue(
           result as any,
-          ops,
-          'wrun_test'
+          'wrun_test',
+          noEncryptionKey,
+          ops
         );
         expect(statuses).toEqual([301, 302, 303, 307, 308]);
       });
@@ -2113,7 +2577,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2128,7 +2597,8 @@ describe('runWorkflow', () => {
             return Response.redirect('https://example.com', 200);
           }${getWorkflowTransformCode('workflow')}`,
             workflowRun,
-            events
+            events,
+            noEncryptionKey
           )
         ).rejects.toThrow(
           'Invalid redirect status code: 200. Must be one of: 301, 302, 303, 307, 308'
@@ -2144,7 +2614,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2158,12 +2633,14 @@ describe('runWorkflow', () => {
         return new Request('https://example.com/api');
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const req = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(req).toBeInstanceOf(Request);
       expect(req.method).toEqual('GET');
@@ -2177,7 +2654,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2194,12 +2676,14 @@ describe('runWorkflow', () => {
         });
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const req = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(req).toBeInstanceOf(Request);
       expect(req.method).toEqual('POST');
@@ -2217,7 +2701,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2238,12 +2727,14 @@ describe('runWorkflow', () => {
         });
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const req = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(req).toBeInstanceOf(Request);
       expect(req.headers.get('Content-Type')).toEqual('application/json');
@@ -2256,7 +2747,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2274,12 +2770,14 @@ describe('runWorkflow', () => {
         });
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       const req = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
       expect(req).toBeInstanceOf(Request);
       expect(req.method).toEqual('PUT');
@@ -2296,7 +2794,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2314,7 +2817,8 @@ describe('runWorkflow', () => {
           });
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow('Request with GET/HEAD method cannot have body.');
     });
@@ -2325,7 +2829,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2343,7 +2852,8 @@ describe('runWorkflow', () => {
           });
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow('Request with GET/HEAD method cannot have body.');
     });
@@ -2354,7 +2864,12 @@ describe('runWorkflow', () => {
         runId: 'test-run-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2369,7 +2884,8 @@ describe('runWorkflow', () => {
           return new Request('/');
         }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         )
       ).rejects.toThrow('Failed to parse URL from /');
     });
@@ -2380,7 +2896,12 @@ describe('runWorkflow', () => {
         runId: 'test-clone-bug-123',
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2413,13 +2934,15 @@ describe('runWorkflow', () => {
         };
       }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
 
       const result_obj = await hydrateWorkflowReturnValue(
         result as any,
-        ops,
-        'wrun_test'
+        'wrun_test',
+        noEncryptionKey,
+        ops
       );
 
       // According to MDN, the req1 properties should be inherited
@@ -2441,7 +2964,12 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2476,10 +3004,16 @@ describe('runWorkflow', () => {
           return 'sleep completed';
         }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual('sleep completed');
     });
 
@@ -2492,7 +3026,12 @@ describe('runWorkflow', () => {
           runId: workflowRunId,
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2508,7 +3047,8 @@ describe('runWorkflow', () => {
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -2527,7 +3067,12 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2578,10 +3123,16 @@ describe('runWorkflow', () => {
           return 'all sleeps completed';
         }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual('all sleeps completed');
     });
 
@@ -2594,7 +3145,12 @@ describe('runWorkflow', () => {
           runId: workflowRunId,
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2638,7 +3194,8 @@ describe('runWorkflow', () => {
             return 'all sleeps completed';
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -2656,7 +3213,12 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2677,7 +3239,12 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
           eventData: {
-            result: await dehydrateStepReturnValue(42, ops, 'wrun_test'),
+            result: await dehydrateStepReturnValue(
+              42,
+              'wrun_test',
+              noEncryptionKey,
+              ops
+            ),
           },
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -2709,10 +3276,16 @@ describe('runWorkflow', () => {
           return { step: stepResult, slept: true };
         }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual({
         step: 42,
         slept: true,
@@ -2727,7 +3300,12 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        ),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2762,10 +3340,16 @@ describe('runWorkflow', () => {
           return 'sleep with date completed';
         }${getWorkflowTransformCode('workflow')}`,
         workflowRun,
-        events
+        events,
+        noEncryptionKey
       );
       expect(
-        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_test',
+          noEncryptionKey,
+          ops
+        )
       ).toEqual('sleep with date completed');
     });
 
@@ -3040,7 +3624,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -3059,7 +3648,8 @@ describe('runWorkflow', () => {
             return result;
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;
@@ -3087,7 +3677,12 @@ describe('runWorkflow', () => {
           runId: 'test-run-123',
           workflowName: 'workflow',
           status: 'running',
-          input: await dehydrateWorkflowArguments([], ops, 'wrun_test'),
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_test',
+            noEncryptionKey,
+            ops
+          ),
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
           updatedAt: new Date('2024-01-01T00:00:00.000Z'),
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -3103,7 +3698,8 @@ describe('runWorkflow', () => {
             return result;
           }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
-          events
+          events,
+          noEncryptionKey
         );
       } catch (err) {
         error = err as Error;

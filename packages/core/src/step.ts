@@ -151,9 +151,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             try {
               const hydratedResult = await hydrateStepReturnValue(
                 event.eventData.result,
+                ctx.runId,
+                ctx.encryptionKey,
                 ctx.globalThis
               );
-              resolve(hydratedResult);
+              resolve(hydratedResult as Result);
             } catch (error) {
               reject(error);
             }

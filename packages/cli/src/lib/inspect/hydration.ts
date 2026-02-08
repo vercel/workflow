@@ -130,7 +130,13 @@ function getRevivers(): Revivers {
 
 /**
  * Hydrate the serialized data fields of a resource for CLI display.
+ *
+ * The optional `_encryptorResolver` parameter is accepted for forward
+ * compatibility with encryption support but is not yet used.
  */
-export function hydrateResourceIO<T>(resource: T): T {
+export function hydrateResourceIO<T>(
+  resource: T,
+  _encryptorResolver?: unknown
+): T {
   return hydrateResourceIOGeneric(resource as any, getRevivers()) as T;
 }

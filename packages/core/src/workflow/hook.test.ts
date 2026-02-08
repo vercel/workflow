@@ -19,6 +19,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
+    runId: 'wrun_test',
+    encryptionKey: undefined,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
@@ -44,8 +46,9 @@ describe('createCreateHook', () => {
         eventData: {
           payload: await dehydrateStepReturnValue(
             { message: 'hello' },
-            ops,
-            'wrun_test'
+            'wrun_test',
+            undefined,
+            ops
           ),
         },
         createdAt: new Date(),
@@ -133,8 +136,9 @@ describe('createCreateHook', () => {
         eventData: {
           payload: await dehydrateStepReturnValue(
             { data: 'test' },
-            ops,
-            'wrun_test'
+            'wrun_test',
+            undefined,
+            ops
           ),
         },
         createdAt: new Date(),
@@ -201,8 +205,9 @@ describe('createCreateHook', () => {
         eventData: {
           payload: await dehydrateStepReturnValue(
             { message: 'first' },
-            ops,
-            'wrun_test'
+            'wrun_test',
+            undefined,
+            ops
           ),
         },
         createdAt: new Date(),
@@ -215,8 +220,9 @@ describe('createCreateHook', () => {
         eventData: {
           payload: await dehydrateStepReturnValue(
             { message: 'second' },
-            ops,
-            'wrun_test'
+            'wrun_test',
+            undefined,
+            ops
           ),
         },
         createdAt: new Date(),

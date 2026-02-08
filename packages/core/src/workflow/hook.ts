@@ -94,7 +94,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           const next = promises.shift();
           if (next) {
             // Reconstruct the payload from the event data
-            hydrateStepReturnValue(event.eventData.payload, ctx.globalThis)
+            hydrateStepReturnValue(
+              event.eventData.payload,
+              ctx.runId,
+              ctx.encryptionKey,
+              ctx.globalThis
+            )
               .then((payload) => {
                 next.resolve(payload);
               })
@@ -140,7 +145,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (payloadsQueue.length > 0) {
         const nextPayload = payloadsQueue.shift();
         if (nextPayload) {
-          hydrateStepReturnValue(nextPayload.eventData.payload, ctx.globalThis)
+          hydrateStepReturnValue(
+            nextPayload.eventData.payload,
+            ctx.runId,
+            ctx.encryptionKey,
+            ctx.globalThis
+          )
             .then((payload) => {
               resolvers.resolve(payload);
             })

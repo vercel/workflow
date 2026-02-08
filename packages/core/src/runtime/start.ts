@@ -117,12 +117,18 @@ export async function start<TArgs extends unknown[], TResult>(
       const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
       const v1Compat = isLegacySpecVersion(specVersion);
 
+      // Resolve encryption key for the new run. Since start() always runs on the
+      // current deployment, we can use a placeholder runId — the implementation
+      // will resolve to the local deployment's key regardless.
+      const encryptionKey = await world.getEncryptionKeyForRun?.(runId);
+
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
-        ops,
         runId,
+        encryptionKey,
+        ops,
         globalThis,
         v1Compat
       );

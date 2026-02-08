@@ -49,8 +49,14 @@ export async function recreateRunFromExisting(
 ): Promise<string> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
+    const encryptionKey = await world.getEncryptionKeyForRun?.(runId);
     const workflowArgs = normalizeWorkflowArgs(
-      await hydrateWorkflowArguments(run.input, globalThis)
+      await hydrateWorkflowArguments(
+        run.input,
+        runId,
+        encryptionKey,
+        globalThis
+      )
     );
     const specVersion =
       options.specVersion ?? run.specVersion ?? SPEC_VERSION_LEGACY;

@@ -249,10 +249,14 @@ export function workflowEntrypoint(
                         replaySpan?.setAttributes({
                           ...Attribute.WorkflowEventsCount(events.length),
                         });
+                        // Resolve the encryption key for this run's deployment
+                        const encryptionKey =
+                          await world.getEncryptionKeyForRun?.(runId);
                         return await runWorkflow(
                           workflowCode,
                           workflowRun,
-                          events
+                          events,
+                          encryptionKey
                         );
                       }
                     );
