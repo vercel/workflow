@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
 import { join } from 'pathe';
 
@@ -23,10 +23,20 @@ export interface NestBuilderOptions {
    * @default false
    */
   watch?: boolean;
+  /**
+   * SWC module compilation type.
+   * Set to 'commonjs' if your NestJS project compiles to CJS via SWC.
+   * When 'commonjs', the builder rewrites externalized imports in the
+   * steps bundle to use require() via createRequire, avoiding ESM/CJS
+   * named-export interop issues with SWC's _export() wrapper pattern.
+   * @default 'es6'
+   */
+  moduleType?: 'es6' | 'commonjs';
 }
 
 export class NestLocalBuilder extends BaseBuilder {
   #outDir: string;
+  #moduleType: 'es6' | 'commonjs';
 
   constructor(options: NestBuilderOptions = {}) {
     const workingDir = options.workingDir ?? process.cwd();
@@ -44,6 +54,7 @@ export class NestLocalBuilder extends BaseBuilder {
       webhookBundlePath: join(outDir, 'webhook.mjs'),
     });
     this.#outDir = outDir;
+    this.#moduleType = options.moduleType ?? 'es6';
   }
 
   get outDir(): string {
@@ -67,6 +78,31 @@ export class NestLocalBuilder extends BaseBuilder {
       format: 'esm',
       inputFiles,
     });
+
+    // When the NestJS project compiles to CJS via SWC, the ESM steps bundle
+    // can't import named exports from CJS files because cjs-module-lexer
+    // doesn't recognize SWC's _export() wrapper pattern.
+    // Rewrite externalized .ts imports to use require() via createRequire.
+    if (this.#moduleType === 'commonjs') {
+      const stepsPath = join(this.#outDir, 'steps.mjs');
+      const stepsContent = await readFile(stepsPath, 'utf-8');
+      const hasExternalized = /\.\.\/\.\.\/src\/.*?\.ts/.test(stepsContent);
+      if (hasExternalized) {
+        const requireShim = [
+          `import { createRequire as __bundled_createRequire } from 'node:module';`,
+          `const require = __bundled_createRequire(import.meta.url);`,
+          ``,
+        ].join('\n');
+        const rewritten = stepsContent.replace(
+          /import\s*\{([^}]+)\}\s*from\s*["']\.\.\/\.\.\/src\/([^"']+)\.ts["']\s*;?/g,
+          (_match, imports, path) => {
+            const cjsImports = imports.replace(/\s+as\s+/g, ': ');
+            return `const {${cjsImports}} = require("../../dist/${path}.js");`;
+          }
+        );
+        await writeFile(stepsPath, requireShim + rewritten);
+      }
+    }
 
     await this.createWebhookBundle({
       outfile: join(this.#outDir, 'webhook.mjs'),
