@@ -420,8 +420,8 @@ export async function withThrottleRetry(
       const retryAfterSeconds = Math.max(
         // If we don't have a retry-after value, 30s seems a reasonable default
         // to avoid re-trying during the unknown rate-limiting period.
-        30,
-        typeof err.retryAfter === 'number' ? err.retryAfter : 1
+        1,
+        typeof err.retryAfter === 'number' ? err.retryAfter : 30
       );
 
       if (retryAfterSeconds < 10) {
