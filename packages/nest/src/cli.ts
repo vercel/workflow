@@ -85,14 +85,19 @@ function hasWorkflowPlugin(swcrcContent: string): boolean {
   }
 }
 
+import { parseModuleType as parseModuleTypeRaw } from './parse-module-type.js';
+
 function parseModuleType(args: string[]): 'es6' | 'commonjs' {
-  const idx = args.indexOf('--module');
-  if (idx === -1 || idx + 1 >= args.length) return 'es6';
-  const value = args[idx + 1];
-  if (value === 'commonjs') return 'commonjs';
-  if (value === 'es6') return 'es6';
-  console.error(`Invalid module type: ${value}. Must be 'es6' or 'commonjs'.`);
-  process.exit(1);
+  const result = parseModuleTypeRaw(args);
+  if (result === null) {
+    const idx = args.indexOf('--module');
+    const value = idx >= 0 && idx + 1 < args.length ? args[idx + 1] : '';
+    console.error(
+      `Invalid module type: ${value}. Must be 'es6' or 'commonjs'.`
+    );
+    process.exit(1);
+  }
+  return result;
 }
 
 function handleInit(args: string[]): void {
