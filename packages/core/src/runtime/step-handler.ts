@@ -31,7 +31,6 @@ import {
   parseHealthCheckPayload,
   queueMessage,
   withHealthCheck,
-  withThrottleRetry,
 } from './helpers.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
