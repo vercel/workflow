@@ -4,10 +4,12 @@ export async function stepWithThis() {
     // `this` is allowed in step functions
     return this.value;
 }
+stepWithThis.stepId = "step//./input//stepWithThis";
 export async function stepWithArguments() {
     // `arguments` is allowed in step functions
     return arguments[0];
 }
+stepWithArguments.stepId = "step//./input//stepWithArguments";
 class TestClass extends BaseClass {
     async stepMethod() {
         // `super` is allowed in step functions

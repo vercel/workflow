@@ -1,8 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import Fastify from 'fastify';
-import { getHookByToken, resumeHook } from 'workflow/api';
-import { getWorld, healthCheck } from 'workflow/runtime';
 // Side-effect import to keep _workflows in Nitro's dependency graph for HMR
 import '../_workflows.js';
 
@@ -48,52 +46,6 @@ server.addContentTypeParser(
 server.get('/', async (req, reply) => {
   const html = await readFile(resolve('./index.html'), 'utf-8');
   return reply.type('text/html').send(html);
-});
-
-server.post('/api/hook', async (req: any, reply) => {
-  const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
-  const { token, data } = body;
-
-  let hook: Awaited<ReturnType<typeof getHookByToken>>;
-  try {
-    hook = await getHookByToken(token);
-    console.log('hook', hook);
-  } catch (error) {
-    console.log('error during getHookByToken', error);
-    return reply.code(422).send(null);
-  }
-
-  await resumeHook(hook.token, {
-    ...data,
-    // @ts-expect-error metadata is not typed
-    customData: hook.metadata?.customData,
-  });
-
-  return hook;
-});
-
-server.post('/api/test-health-check', async (req: any, reply) => {
-  // This route tests the queue-based health check functionality
-  try {
-    const { endpoint = 'workflow', timeout = 30000 } = req.body;
-
-    console.log(
-      `Testing queue-based health check for endpoint: ${endpoint}, timeout: ${timeout}ms`
-    );
-
-    const world = getWorld();
-    const result = await healthCheck(world, endpoint, { timeout });
-
-    console.log(`Health check result:`, result);
-
-    return reply.send(result);
-  } catch (error) {
-    console.error('Health check test failed:', error);
-    return reply.code(500).send({
-      healthy: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
 });
 
 server.post('/api/test-direct-step-call', async (req: any, reply) => {

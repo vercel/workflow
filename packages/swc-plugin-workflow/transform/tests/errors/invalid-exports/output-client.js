@@ -12,3 +12,4 @@ export * from './other';
 export async function validStep() {
     return 'allowed';
 }
+validStep.stepId = "step//./input//validStep";

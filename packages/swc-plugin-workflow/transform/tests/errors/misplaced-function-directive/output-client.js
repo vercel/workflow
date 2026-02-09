@@ -5,6 +5,7 @@ export async function badStep() {
     'use step';
     return x;
 }
+badStep.stepId = "step//./input//badStep";
 export const badWorkflow = async ()=>{
     console.log('hello');
     // Error: directive must be at the top of function

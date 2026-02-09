@@ -8,6 +8,7 @@ export async function processData(data) {
     localFunction();
     return defaultExport(transformed);
 }
+processData.stepId = "step//./input//processData";
 export function normalFunction() {
     // since this function is exported we can't remove it
     useful.doSomething();

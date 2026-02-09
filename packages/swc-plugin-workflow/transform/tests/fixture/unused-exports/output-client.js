@@ -13,6 +13,7 @@ export function formatData(data) {
 export async function processData(input) {
     return helper(input);
 }
+processData.stepId = "step//./input//processData";
 // This is used internally
 function internalHelper(value) {
     return value * 2;

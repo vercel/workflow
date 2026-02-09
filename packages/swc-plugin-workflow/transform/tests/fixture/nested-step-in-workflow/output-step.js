@@ -7,7 +7,7 @@ async function example$step(a, b) {
 var example$arrowStep = async (x, y)=>x * y;
 var example$letArrowStep = async (x, y)=>x - y;
 var example$varArrowStep = async (x, y)=>x / y;
-var example$helpers$objectStep = async (x, y)=>{
+var example$helpers$objectStep = async function(x, y) {
     return x + y + 10;
 };
 export async function example(a, b) {

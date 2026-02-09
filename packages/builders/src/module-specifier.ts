@@ -22,6 +22,8 @@ interface PackageInfo {
   version: string;
   dir: string;
   exports?: Record<string, unknown>;
+  main?: string;
+  module?: string;
 }
 
 /**
@@ -65,6 +67,8 @@ function findPackageJson(filePath: string): PackageInfo | null {
             version: parsed.version,
             dir,
             exports: parsed.exports,
+            main: parsed.main,
+            module: parsed.module,
           };
           // Cache the result for this directory and all visited directories
           packageJsonCache.set(dir, result);
@@ -334,6 +338,126 @@ export function clearModuleSpecifierCache(): void {
 }
 
 /**
+ * Convert a file path to a relative import path from project root.
+ */
+function toRelativeImportPath(filePath: string, projectRoot: string): string {
+  const normalizedProjectRoot = projectRoot.replace(/\\/g, '/');
+  const normalizedFilePath = filePath.replace(/\\/g, '/');
+
+  let relativePath: string;
+  if (normalizedFilePath.startsWith(normalizedProjectRoot + '/')) {
+    relativePath = normalizedFilePath.substring(
+      normalizedProjectRoot.length + 1
+    );
+  } else {
+    // File is outside project root, use the full path segments after common ancestor
+    relativePath = relative(projectRoot, filePath).replace(/\\/g, '/');
+  }
+
+  // Ensure relative paths start with ./
+  if (!relativePath.startsWith('.')) {
+    relativePath = `./${relativePath}`;
+  }
+
+  return relativePath;
+}
+
+/**
+ * Returns true when package exports include a root entry (".").
+ * String/array/conditional object exports are all considered root exports.
+ */
+function hasRootExport(exportsField: unknown): boolean {
+  if (typeof exportsField === 'string' || Array.isArray(exportsField)) {
+    return true;
+  }
+
+  if (!exportsField || typeof exportsField !== 'object') {
+    return false;
+  }
+
+  const keys = Object.keys(exportsField as Record<string, unknown>);
+  // Conditional exports object (e.g. { "import": "...", "default": "..." })
+  // represents the root export.
+  if (keys.length > 0 && keys.every((key) => !key.startsWith('.'))) {
+    return true;
+  }
+
+  return '.' in (exportsField as Record<string, unknown>);
+}
+
+/**
+ * Normalize a package target path to a comparable package-relative path.
+ * Returns null for invalid/unsupported paths.
+ */
+function normalizePackageTargetPath(path: string): string | null {
+  const normalized = path.replace(/\\/g, '/');
+  if (normalized.startsWith('./')) {
+    return normalized.substring(2);
+  }
+  if (normalized.startsWith('/')) {
+    return normalized.substring(1);
+  }
+  return normalized;
+}
+
+/**
+ * Returns true if filePath is the package root entrypoint.
+ * This checks root exports first, then main/module/index fallbacks when exports are absent.
+ */
+function isRootEntrypointFile(filePath: string, pkg: PackageInfo): boolean {
+  const normalizedFilePath = filePath.replace(/\\/g, '/');
+  const normalizedPkgDir = pkg.dir.replace(/\\/g, '/');
+
+  if (!normalizedFilePath.startsWith(normalizedPkgDir + '/')) {
+    return false;
+  }
+
+  const relativeFilePath = normalizedFilePath.substring(
+    normalizedPkgDir.length + 1
+  );
+
+  if (pkg.exports) {
+    let rootTarget: unknown;
+
+    if (
+      typeof pkg.exports === 'object' &&
+      !Array.isArray(pkg.exports) &&
+      '.' in pkg.exports
+    ) {
+      rootTarget = (pkg.exports as Record<string, unknown>)['.'];
+    } else if (hasRootExport(pkg.exports)) {
+      rootTarget = pkg.exports;
+    } else {
+      return false;
+    }
+
+    const resolvedTarget = resolveExportTarget(rootTarget);
+    if (!resolvedTarget) {
+      return false;
+    }
+
+    const normalizedTarget = normalizePackageTargetPath(resolvedTarget);
+    return normalizedTarget === relativeFilePath;
+  }
+
+  const rootCandidates = [
+    pkg.module,
+    pkg.main,
+    'index.js',
+    'index.mjs',
+    'index.cjs',
+    'index.ts',
+    'index.mts',
+    'index.cts',
+  ]
+    .filter((candidate): candidate is string => typeof candidate === 'string')
+    .map((candidate) => normalizePackageTargetPath(candidate))
+    .filter((candidate): candidate is string => candidate !== null);
+
+  return rootCandidates.includes(relativeFilePath);
+}
+
+/**
  * Result of resolving an import path for a file.
  */
 export interface ImportPathResult {
@@ -387,6 +511,30 @@ export function getImportPath(
     // Find the package.json for this file
     const pkg = findPackageJson(filePath);
     if (pkg) {
+      // Prefer a package subpath import when this file maps to an export.
+      // This preserves the exact module being bundled while still respecting
+      // package export conditions.
+      // Note: resolveExportSubpath returns "" for both root "." matches and
+      // no match; root entrypoints are intentionally handled below via
+      // isRootEntrypointFile().
+      const subpath = resolveExportSubpath(filePath, pkg);
+      if (subpath) {
+        return {
+          importPath: `${pkg.name}${subpath}`,
+          isPackage: true,
+        };
+      }
+
+      // Only import package root when this file is the root entrypoint.
+      // For deep/internal files, fall back to direct relative imports so we
+      // don't accidentally import a non-existent or different module.
+      if (!isRootEntrypointFile(filePath, pkg)) {
+        return {
+          importPath: toRelativeImportPath(filePath, projectRoot),
+          isPackage: false,
+        };
+      }
+
       return {
         importPath: pkg.name,
         isPackage: true,
@@ -395,26 +543,8 @@ export function getImportPath(
   }
 
   // Local app file - use relative path
-  const normalizedProjectRoot = projectRoot.replace(/\\/g, '/');
-  const normalizedFilePath = filePath.replace(/\\/g, '/');
-
-  let relativePath: string;
-  if (normalizedFilePath.startsWith(normalizedProjectRoot + '/')) {
-    relativePath = normalizedFilePath.substring(
-      normalizedProjectRoot.length + 1
-    );
-  } else {
-    // File is outside project root, use the full path segments after common ancestor
-    relativePath = relative(projectRoot, filePath).replace(/\\/g, '/');
-  }
-
-  // Ensure relative paths start with ./
-  if (!relativePath.startsWith('.')) {
-    relativePath = `./${relativePath}`;
-  }
-
   return {
-    importPath: relativePath,
+    importPath: toRelativeImportPath(filePath, projectRoot),
     isPackage: false,
   };
 }

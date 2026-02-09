@@ -2,6 +2,8 @@
 export async function step(input) {
     return input.foo;
 }
+step.stepId = "step//./input//step";
 export const stepArrow = async (input)=>{
     return input.bar;
 };
+stepArrow.stepId = "step//./input//stepArrow";

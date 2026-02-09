@@ -1,5 +1,13 @@
 # @workflow/swc-plugin
 
+## 4.1.0-beta.17
+
+### Patch Changes
+
+- [#923](https://github.com/vercel/workflow/pull/923) [`ef23b0b`](https://github.com/vercel/workflow/commit/ef23b0be770bbb5ccca015fb2564953fe6a761d7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix step functions nested multiple levels deep in an object
+
+- [#924](https://github.com/vercel/workflow/pull/924) [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Set `stepId` property on step functions in "client" mode for serialization support
+
 ## 4.1.0-beta.16
 
 ### Patch Changes

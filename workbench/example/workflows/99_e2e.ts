@@ -1228,3 +1228,50 @@ export async function instanceMethodStepWorkflow(initialValue: number) {
     added2, // 100 + 50 = 150
   };
 }
+
+//////////////////////////////////////////////////////////
+// Step Function Reference as start() Argument E2E Test
+//////////////////////////////////////////////////////////
+
+/**
+ * A step function that invokes a step function reference passed to it.
+ * This is called from within the workflow to execute the passed step function.
+ */
+async function invokeStepFn(
+  stepFn: (a: number, b: number) => Promise<number>,
+  x: number,
+  y: number
+): Promise<number> {
+  'use step';
+  // Call the step function reference that was passed in
+  return await stepFn(x, y);
+}
+
+/**
+ * Workflow that receives a step function reference as an argument from start().
+ * This tests that:
+ * 1. Step function references can be serialized in the client bundle (via stepId property)
+ * 2. The serialized step function can be deserialized in the workflow bundle
+ * 3. The deserialized step function can be invoked DIRECTLY from workflow code
+ * 4. The deserialized step function can also be invoked from within another step
+ */
+export async function stepFunctionAsStartArgWorkflow(
+  stepFn: (a: number, b: number) => Promise<number>,
+  x: number,
+  y: number
+): Promise<{ directResult: number; viaStepResult: number; doubled: number }> {
+  'use workflow';
+
+  // CRITICAL TEST: Call the passed step function DIRECTLY from workflow code
+  // This tests that the deserialized step function has the useStep wrapper,
+  // allowing it to be scheduled as a proper step (not executed inline)
+  const directResult = await stepFn(x, y);
+
+  // Also test invoking via another step (this already worked before)
+  const viaStepResult = await invokeStepFn(stepFn, x, y);
+
+  // Do another operation to verify the workflow continues normally
+  const doubled = await stepFn(directResult, directResult);
+
+  return { directResult, viaStepResult, doubled };
+}

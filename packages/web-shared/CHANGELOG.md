@@ -1,5 +1,15 @@
 # @workflow/web-shared
 
+## 4.1.0-beta.49
+
+### Patch Changes
+
+- [#951](https://github.com/vercel/workflow/pull/951) [`f7fd88e`](https://github.com/vercel/workflow/commit/f7fd88ea963e127e62c8d527dcfdb895ba646fc2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Tidy health check latency calculation
+
+- Updated dependencies [[`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c), [`d9e9859`](https://github.com/vercel/workflow/commit/d9e98590fae17fd090e0be4f0b54bbaa80c7be69), [`f7fd88e`](https://github.com/vercel/workflow/commit/f7fd88ea963e127e62c8d527dcfdb895ba646fc2)]:
+  - @workflow/core@4.1.0-beta.54
+  - @workflow/world@4.1.0-beta.3
+
 ## 4.1.0-beta.48
 
 ### Patch Changes

@@ -81,8 +81,10 @@ describe('start', () => {
     let mockQueue: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
-      mockEventsCreate = vi.fn().mockResolvedValue({
-        run: { runId: 'wrun_test123', status: 'pending' },
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
       });
       mockQueue = vi.fn().mockResolvedValue(undefined);
 
@@ -105,7 +107,7 @@ describe('start', () => {
       await start(validWorkflow, []);
 
       expect(mockEventsCreate).toHaveBeenCalledWith(
-        null,
+        expect.stringMatching(/^wrun_/),
         expect.objectContaining({
           eventType: 'run_created',
           specVersion: SPEC_VERSION_CURRENT,
@@ -124,7 +126,7 @@ describe('start', () => {
       await start(validWorkflow, [], { specVersion: SPEC_VERSION_LEGACY });
 
       expect(mockEventsCreate).toHaveBeenCalledWith(
-        null,
+        expect.stringMatching(/^wrun_/),
         expect.objectContaining({
           eventType: 'run_created',
           specVersion: SPEC_VERSION_LEGACY,
@@ -143,7 +145,7 @@ describe('start', () => {
       await start(validWorkflow, [], { specVersion: 1 });
 
       expect(mockEventsCreate).toHaveBeenCalledWith(
-        null,
+        expect.stringMatching(/^wrun_/),
         expect.objectContaining({
           eventType: 'run_created',
           specVersion: 1,

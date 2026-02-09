@@ -13,6 +13,7 @@ export const syncWorkflow = ()=>{
 export async function validStep() {
     return 42;
 }
+validStep.stepId = "step//./input//validStep";
 export const validWorkflow = async ()=>{
     throw new Error("You attempted to execute workflow validWorkflow function directly. To start a workflow, use start(validWorkflow) from workflow/api");
 };

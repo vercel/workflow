@@ -41,7 +41,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       const eventId = `evnt_${monotonicUlid()}`;
       const now = new Date();
 
-      // For run_created events, generate runId server-side if null or empty
+      // For run_created events, use client-provided runId or generate one server-side
       let effectiveRunId: string;
       if (data.eventType === 'run_created' && (!runId || runId === '')) {
         effectiveRunId = `wrun_${monotonicUlid()}`;

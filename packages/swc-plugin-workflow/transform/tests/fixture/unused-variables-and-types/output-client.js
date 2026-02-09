@@ -12,6 +12,7 @@ export const sendRecipientEmail = async ({ recipientEmail, cardImage, cardText, 
         html
     });
 };
+sendRecipientEmail.stepId = "step//./input//sendRecipientEmail";
 export function normalFunction() {
     return 'this stays because it is exported';
 }

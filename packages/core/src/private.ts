@@ -11,15 +11,18 @@ export type StepFunction<
   Result extends Serializable | unknown = unknown,
 > = ((...args: Args) => Promise<Result>) & {
   maxRetries?: number;
+  stepId?: string;
 };
 
 const registeredSteps = new Map<string, StepFunction>();
 
 /**
- * Register a step function to be served in the server bundle
+ * Register a step function to be served in the server bundle.
+ * Also sets the stepId property on the function for serialization support.
  */
 export function registerStepFunction(stepId: string, stepFn: StepFunction) {
   registeredSteps.set(stepId, stepFn);
+  stepFn.stepId = stepId;
 }
 
 /**

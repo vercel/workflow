@@ -184,6 +184,120 @@ example.workflowId = "workflow//./input//example";
 registerStepFunction("step//./input//example/innerStep", example$innerStep);
 ```
 
+### Steps in Nested Object Properties
+
+Step functions can be defined inside deeply nested object properties, including function call arguments. The plugin recursively processes nested objects to find step functions, generating compound paths for the step IDs.
+
+Input:
+```javascript
+import { agent } from "experimental-agent";
+
+export const vade = agent({
+  tools: {
+    VercelRequest: {
+      execute: async (input, ctx) => {
+        "use step";
+        return 1 + 1;
+      },
+    },
+  },
+});
+```
+
+Output (Step Mode):
+```javascript
+import { registerStepFunction } from "workflow/internal/private";
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+var vade$tools$VercelRequest$execute = async function(input, ctx) {
+    return 1 + 1;
+};
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: vade$tools$VercelRequest$execute
+        }
+    }
+});
+registerStepFunction("step//./input//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
+```
+
+Note: Step functions are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. This applies even when the original step function was defined as an arrow function.
+
+Output (Workflow Mode):
+```javascript
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//vade/tools/VercelRequest/execute")
+        }
+    }
+});
+```
+
+Output (Client Mode):
+```javascript
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+var vade$tools$VercelRequest$execute = async function(input, ctx) {
+    return 1 + 1;
+};
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: vade$tools$VercelRequest$execute
+        }
+    }
+});
+vade$tools$VercelRequest$execute.stepId = "step//./input//vade/tools/VercelRequest/execute";
+```
+
+Note: In client mode, nested object property step functions are hoisted and have `stepId` set directly (no `registerStepFunction` call). The original call site is replaced with a reference to the hoisted variable, same as step mode.
+
+Note: The step ID includes the full path through nested objects (`vade/tools/VercelRequest/execute`), while the hoisted variable name uses `$` as the separator (`vade$tools$VercelRequest$execute`) to create a valid JavaScript identifier.
+
+#### Shorthand Method Syntax
+
+Shorthand method syntax (non-arrow functions) is also supported in nested object properties:
+
+Input:
+```javascript
+import { agent } from "experimental-agent";
+
+export const vade = agent({
+  tools: {
+    VercelRequest: {
+      async execute(input, { experimental_context }) {
+        "use step";
+        return 1 + 1;
+      },
+    },
+  },
+});
+```
+
+Output (Step Mode):
+```javascript
+import { registerStepFunction } from "workflow/internal/private";
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+var vade$tools$VercelRequest$execute = async function(input, { experimental_context }) {
+    return 1 + 1;
+};
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: vade$tools$VercelRequest$execute
+        }
+    }
+});
+registerStepFunction("step//./input//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
+```
+
+Note: Shorthand methods are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. Closure variables are handled the same way as other step functions.
+
 ### Closure Variables
 
 When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`:
@@ -373,7 +487,11 @@ globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 
 ## Client Mode
 
-In client mode, step function bodies are preserved as-is (allowing local testing/execution). Workflow functions throw an error and have `workflowId` attached for use with `start()`.
+In client mode, step function bodies are preserved as-is (allowing local testing/execution), and step functions have their `stepId` property set so they can be properly serialized when passed across boundaries (e.g., as arguments to `start()` or returned from other step functions). Workflow functions throw an error and have `workflowId` attached for use with `start()`.
+
+Unlike step mode, client mode does **not** import `registerStepFunction` from `workflow/internal/private` because that module contains server-side dependencies. Instead, the `stepId` property is set directly on the function, similar to how `workflowId` is set on workflow functions.
+
+Note: Step functions nested inside other functions (whether workflow functions or regular functions) do NOT get `stepId` assignments in client mode because they are not accessible at module level.
 
 ### Step Functions
 
@@ -391,6 +509,7 @@ Output:
 export async function add(a, b) {
     return a + b;
 }
+add.stepId = "step//./input//add";
 ```
 
 ### Workflow Functions
@@ -701,6 +820,7 @@ The plugin supports various function declaration styles:
 - `var name = async () => { "use step"; }` - Arrow function with var
 - `const name = async function() { "use step"; }` - Function expression
 - `{ async method() { "use step"; } }` - Object method
+- `{ nested: { execute: async () => { "use step"; } } }` - Nested object property
 - `static async method() { "use step"; }` - Static class method
 - `async method() { "use step"; }` - Instance class method (requires custom serialization)
 

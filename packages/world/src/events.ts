@@ -282,7 +282,7 @@ export type AnyEventRequest = z.infer<typeof CreateEventSchema>;
 
 /**
  * Event request for creating a new workflow run.
- * Must be used with runId: null since the server generates the runId.
+ * Can be used with a client-generated runId or null for server-generated.
  */
 export type RunCreatedEventRequest = z.infer<typeof RunCreatedEventSchema>;
 

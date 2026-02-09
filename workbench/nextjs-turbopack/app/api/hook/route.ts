@@ -1,1 +1,0 @@
-../../../../example/api/hook.ts
