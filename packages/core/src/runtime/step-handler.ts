@@ -96,6 +96,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             );
           }
 
+          // Note that step failures would already be re-tried on the workflow layer,
+          // but we special-case 429 errors to get a more accurate retry-after value.
           return await withThrottleRetry(async () => {
             const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
 
