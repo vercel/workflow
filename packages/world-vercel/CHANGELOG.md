@@ -1,5 +1,15 @@
 # @workflow/world-vercel
 
+## 4.1.0-beta.31
+
+### Patch Changes
+
+- [#985](https://github.com/vercel/workflow/pull/985) [`aa448c2`](https://github.com/vercel/workflow/commit/aa448c29b4c3853985eaa1bcbbf2029165edade3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow overwriting backend URL via env variable
+
+- Updated dependencies [[`d9e9859`](https://github.com/vercel/workflow/commit/d9e98590fae17fd090e0be4f0b54bbaa80c7be69)]:
+  - @workflow/world@4.1.0-beta.3
+  - @workflow/errors@4.1.0-beta.14
+
 ## 4.1.0-beta.30
 
 ### Patch Changes
