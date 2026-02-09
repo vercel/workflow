@@ -443,7 +443,7 @@ export async function withThrottleRetry(
               1,
               typeof retryErr.retryAfter === 'number' ? retryErr.retryAfter : 1
             );
-            runtimeLogger.warn('throttled again on retry, deferring to queue', {
+            runtimeLogger.warn('Throttled again on retry, deferring to queue', {
               retryAfterSeconds: retryRetryAfter,
             });
             return { timeoutSeconds: retryRetryAfter };
