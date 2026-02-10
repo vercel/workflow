@@ -742,6 +742,41 @@ jobs:
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
+  # Final required check: passes only when all E2E jobs succeed
+  e2e-required-check:
+    name: E2E Required Check
+    runs-on: ubuntu-latest
+    needs: [e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows, e2e-community]
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate E2E job statuses
+        env:
+          VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
+          LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
+          LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
+          POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
+          WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
+          COMMUNITY_STATUS: ${{ needs.e2e-community.result }}
+        run: |
+          FAILED_JOBS=()
+
+          [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+          [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
+          [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
+          [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
+          [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
+          [[ "$COMMUNITY_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-community ($COMMUNITY_STATUS)")
+
+          if [[ ${#FAILED_JOBS[@]} -gt 0 ]]; then
+            echo "The following E2E jobs did not succeed:"
+            printf '%s\n' "${FAILED_JOBS[@]}"
+            exit 1
+          fi
+
+          echo "All E2E jobs succeeded."
+
   # Publish E2E results to GitHub Pages (main branch only)
   publish-results:
     name: Publish E2E Results
