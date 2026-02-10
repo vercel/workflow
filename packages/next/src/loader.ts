@@ -2,6 +2,10 @@ import { connect, type Socket } from 'node:net';
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import { type SocketMessage, serializeMessage } from './socket-server.js';
+import {
+  isDeferredStepCopyFilePath,
+  parseDeferredStepSourceMetadata,
+} from './step-copy-utils.js';
 
 type DecoratorOptions = import('@workflow/builders').DecoratorOptions;
 type WorkflowPatternMatch = import('@workflow/builders').WorkflowPatternMatch;
@@ -231,55 +235,10 @@ async function resolveWorkflowAliasPath(
   return resolveWorkflowAliasRelativePath(filePath, workingDir);
 }
 
-// This loader applies the "use workflow"/"use step"
-// client transformation
-export default async function workflowLoader(
-  this: {
-    resourcePath: string;
-  },
-  source: string | Buffer,
-  sourceMap: any
+async function getRelativeFilenameForSwc(
+  filename: string,
+  workingDir: string
 ): Promise<string> {
-  const filename = this.resourcePath;
-  const normalizedSource = source.toString();
-
-  // Skip generated workflow route files to avoid re-processing them
-  if (await checkGeneratedFile(filename)) {
-    return normalizedSource;
-  }
-
-  // Detect workflow patterns in the source code
-  const patterns = await detectPatterns(normalizedSource);
-  // Always notify discovery tracking, even for `false/false`, so files that
-  // previously had workflow/step usage are removed from the tracked sets.
-  await notifySocketServer(
-    filename,
-    patterns.hasUseWorkflow,
-    patterns.hasUseStep,
-    patterns.hasSerde
-  );
-
-  // For @workflow SDK packages, only transform files with actual directives,
-  // not files that just match serde patterns (which are internal SDK implementation files)
-  const isSdkFile = await checkSdkFile(filename);
-  if (isSdkFile && !patterns.hasDirective) {
-    return normalizedSource;
-  }
-
-  // Check if file needs transformation based on patterns and path
-  if (!(await checkShouldTransform(filename, patterns))) {
-    return normalizedSource;
-  }
-
-  const isTypeScript =
-    filename.endsWith('.ts') ||
-    filename.endsWith('.tsx') ||
-    filename.endsWith('.mts') ||
-    filename.endsWith('.cts');
-
-  // Calculate relative filename for SWC plugin
-  // The SWC plugin uses filename to generate workflowId, so it must be relative
-  const workingDir = process.cwd();
   const normalizedWorkingDir = workingDir
     .replace(/\\/g, '/')
     .replace(/\/$/, '');
@@ -290,7 +249,7 @@ export default async function workflowLoader(
   const lowerPath = normalizedFilepath.toLowerCase();
 
   let relativeFilename: string;
-  if (lowerPath.startsWith(lowerWd + '/')) {
+  if (lowerPath.startsWith(`${lowerWd}/`)) {
     // File is under working directory - manually calculate relative path
     relativeFilename = normalizedFilepath.substring(
       normalizedWorkingDir.length + 1
@@ -324,11 +283,77 @@ export default async function workflowLoader(
     relativeFilename = normalizedFilepath.split('/').pop() || 'unknown.ts';
   }
 
+  return relativeFilename;
+}
+
+// This loader applies the "use workflow"/"use step" transform.
+// Deferred step-copy files are transformed in step mode; all other files use client mode.
+export default async function workflowLoader(
+  this: {
+    resourcePath: string;
+  },
+  source: string | Buffer,
+  sourceMap: any
+): Promise<string> {
+  const filename = this.resourcePath;
+  const normalizedSource = source.toString();
+  const isDeferredStepCopyFile = isDeferredStepCopyFilePath(filename);
+  const deferredStepSourceMetadata = isDeferredStepCopyFile
+    ? parseDeferredStepSourceMetadata(normalizedSource)
+    : null;
+
+  // Skip generated workflow route files to avoid re-processing them
+  if ((await checkGeneratedFile(filename)) && !isDeferredStepCopyFile) {
+    return normalizedSource;
+  }
+
+  // Detect workflow patterns in the source code
+  const patterns = await detectPatterns(normalizedSource);
+  // Always notify discovery tracking, even for `false/false`, so files that
+  // previously had workflow/step usage are removed from the tracked sets.
+  if (!isDeferredStepCopyFile) {
+    await notifySocketServer(
+      filename,
+      patterns.hasUseWorkflow,
+      patterns.hasUseStep,
+      patterns.hasSerde
+    );
+
+    // For @workflow SDK packages, only transform files with actual directives,
+    // not files that just match serde patterns (which are internal SDK implementation files)
+    const isSdkFile = await checkSdkFile(filename);
+    if (isSdkFile && !patterns.hasDirective) {
+      return normalizedSource;
+    }
+
+    // Check if file needs transformation based on patterns and path
+    if (!(await checkShouldTransform(filename, patterns))) {
+      return normalizedSource;
+    }
+  }
+
+  const isTypeScript =
+    filename.endsWith('.ts') ||
+    filename.endsWith('.tsx') ||
+    filename.endsWith('.mts') ||
+    filename.endsWith('.cts');
+
+  // Calculate relative filename for SWC plugin
+  // The SWC plugin uses filename to generate workflowId, so it must be relative
+  const workingDir = process.cwd();
+  const relativeFilename =
+    deferredStepSourceMetadata?.relativeFilename ||
+    (await getRelativeFilenameForSwc(filename, workingDir));
+
   // Get decorator options from tsconfig (cached per working directory)
   const decoratorOptions = await getDecoratorOptions(workingDir);
 
   // Resolve module specifier for packages (node_modules or workspace packages)
-  const moduleSpecifier = await getModuleSpecifier(filename, workingDir);
+  const moduleSpecifier = await getModuleSpecifier(
+    deferredStepSourceMetadata?.absolutePath || filename,
+    workingDir
+  );
+  const mode = isDeferredStepCopyFile ? 'step' : 'client';
 
   // Transform with SWC
   const result = await transform(normalizedSource, {
@@ -350,10 +375,7 @@ export default async function workflowLoader(
       target: 'es2022',
       experimental: {
         plugins: [
-          [
-            require.resolve('@workflow/swc-plugin'),
-            { mode: 'client', moduleSpecifier },
-          ],
+          [require.resolve('@workflow/swc-plugin'), { mode, moduleSpecifier }],
         ],
       },
       transform: {
