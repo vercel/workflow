@@ -29,7 +29,7 @@ import {
   withTraceContext,
   withWorkflowBaggage,
 } from './telemetry.js';
-import { getErrorName, getErrorStack } from './types.js';
+import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import { runWorkflow } from './workflow.js';
 
@@ -324,10 +324,12 @@ export function workflowEntrypoint(
                         span?.recordException?.(err);
                       }
 
-                      const errorName = getErrorName(err);
-                      const errorMessage =
-                        err instanceof Error ? err.message : String(err);
-                      let errorStack = getErrorStack(err);
+                      const normalizedError = await normalizeUnknownError(err);
+                      const errorName =
+                        normalizedError.name || getErrorName(err);
+                      const errorMessage = normalizedError.message;
+                      let errorStack =
+                        normalizedError.stack || getErrorStack(err);
 
                       // Remap error stack using source maps to show original source locations
                       if (errorStack) {
@@ -362,7 +364,7 @@ export function workflowEntrypoint(
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('failed'),
                         ...Attribute.WorkflowErrorName(errorName),
-                        ...Attribute.WorkflowErrorMessage(String(err)),
+                        ...Attribute.WorkflowErrorMessage(errorMessage),
                         ...Attribute.ErrorType(errorName),
                       });
                     }

@@ -23,7 +23,11 @@ import {
   trace,
   withTraceContext,
 } from '../telemetry.js';
-import { getErrorName, getErrorStack } from '../types.js';
+import {
+  getErrorName,
+  getErrorStack,
+  normalizeUnknownError,
+} from '../types.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -404,6 +408,10 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             });
             return;
           } catch (err: unknown) {
+            const normalizedError = await normalizeUnknownError(err);
+            const normalizedStack =
+              normalizedError.stack || getErrorStack(err) || '';
+
             // Record exception for OTEL error tracking
             if (err instanceof Error) {
               span?.recordException?.(err);
@@ -420,7 +428,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
             span?.setAttributes({
               ...Attribute.StepErrorName(getErrorName(err)),
-              ...Attribute.StepErrorMessage(String(err)),
+              ...Attribute.StepErrorMessage(normalizedError.message),
               ...Attribute.ErrorType(getErrorName(err)),
               ...Attribute.ErrorCategory(errorCategory),
               ...Attribute.ErrorRetryable(!isFatal),
@@ -442,13 +450,12 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             }
 
             if (isFatal) {
-              const errorStack = getErrorStack(err);
               stepLogger.error(
                 'Encountered FatalError while executing step, bubbling up to parent workflow',
                 {
                   workflowRunId,
                   stepName,
-                  errorStack,
+                  errorStack: normalizedStack,
                 }
               );
               // Fail the step via event (event-sourced architecture)
@@ -457,8 +464,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: stepId,
                 eventData: {
-                  error: String(err),
-                  stack: errorStack,
+                  error: normalizedError.message,
+                  stack: normalizedStack,
                 },
               });
 
@@ -479,7 +486,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               // Note: maxRetries is the number of RETRIES after the first attempt, so total attempts = maxRetries + 1
               if (currentAttempt >= maxRetries + 1) {
                 // Max retries reached
-                const errorStack = getErrorStack(err);
                 const retryCount = step.attempt - 1;
                 stepLogger.error(
                   'Max retries reached, bubbling error to parent workflow',
@@ -488,10 +494,10 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     stepName,
                     attempt: step.attempt,
                     retryCount,
-                    errorStack,
+                    errorStack: normalizedStack,
                   }
                 );
-                const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${String(err)}`;
+                const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
                 // Fail the step via event (event-sourced architecture)
                 await world.events.create(workflowRunId, {
                   eventType: 'step_failed',
@@ -499,7 +505,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   correlationId: stepId,
                   eventData: {
                     error: errorMessage,
-                    stack: errorStack,
+                    stack: normalizedStack,
                   },
                 });
 
@@ -520,24 +526,22 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     }
                   );
                 } else {
-                  const errorStack = getErrorStack(err);
                   stepLogger.warn('Encountered Error, step will be retried', {
                     workflowRunId,
                     stepName,
                     attempt: currentAttempt,
-                    errorStack,
+                    errorStack: normalizedStack,
                   });
                 }
                 // Set step to pending for retry via event (event-sourced architecture)
                 // step_retrying records the error and sets status to pending
-                const errorStack = getErrorStack(err);
                 await world.events.create(workflowRunId, {
                   eventType: 'step_retrying',
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
-                    error: String(err),
-                    stack: errorStack,
+                    error: normalizedError.message,
+                    stack: normalizedStack,
                     ...(RetryableError.is(err) && {
                       retryAfter: err.retryAfter,
                     }),
