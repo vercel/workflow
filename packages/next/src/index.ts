@@ -131,6 +131,8 @@ export function withWorkflow(
       nextConfig.experimental = {
         ...existingExperimental,
 
+        // biome-ignore lint/suspicious/noTsIgnore: expect-error is wrong as it will work on valid version
+        // @ts-ignore this is only available in canary Next.js
         deferredEntries: [
           ...new Set([
             ...existingDeferredEntries,
