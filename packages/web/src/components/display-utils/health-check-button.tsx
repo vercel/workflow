@@ -3,18 +3,17 @@
 import { Activity, Loader2 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import type {
+  HealthCheckEndpoint,
+  HealthCheckResult,
+} from '@workflow/core/runtime/helpers';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import {
-  type EnvMap,
-  type HealthCheckEndpoint,
-  type HealthCheckResult,
-  runHealthCheck,
-} from '@/server/workflow-server-actions';
+import { type EnvMap, runHealthCheck } from '@/server/workflow-server-actions';
 
 interface EndpointResult {
   endpoint: HealthCheckEndpoint;

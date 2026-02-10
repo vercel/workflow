@@ -1075,8 +1075,6 @@ export async function fetchWorkflowsManifest(
   });
 }
 
-export type { HealthCheckEndpoint, HealthCheckResult };
-
 /**
  * Run a queue-based health check on a workflow endpoint.
  *
