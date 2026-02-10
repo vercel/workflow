@@ -56,19 +56,6 @@
       "requiresDeployment": true
     },
     {
-      "id": "starter",
-      "type": "community",
-      "package": "@workflow-worlds/starter",
-      "name": "Starter",
-      "description": "Starter template for building Workflow DevKit Worlds",
-      "repository": "https://github.com/mizzle-dev/workflow-worlds",
-      "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/starter",
-      "env": {
-        "WORKFLOW_TARGET_WORLD": "@workflow-worlds/starter"
-      },
-      "services": []
-    },
-    {
       "id": "turso",
       "type": "community",
       "package": "@workflow-worlds/turso",
