@@ -69,6 +69,8 @@ export function withWorkflow(
     const nextVersion = require('next/package.json').version;
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
     const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
+    // Deferred builder discovers files via loader socket notifications, so
+    // turbopack content conditions are only needed with the eager builder.
     const shouldApplyTurboCondition =
       supportsTurboCondition && !useDeferredBuilder;
     const shouldWatch = process.env.NODE_ENV === 'development';

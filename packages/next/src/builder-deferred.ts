@@ -471,47 +471,37 @@ export async function getNextBuilderDeferred() {
           hasSerde: boolean
         ) => {
           const normalizedFilePath = this.normalizeDiscoveredFilePath(filePath);
-          let hasTrackingChange = false;
           let hasCacheTrackingChange = false;
 
           if (hasWorkflow) {
             if (!this.discoveredWorkflowFiles.has(normalizedFilePath)) {
               this.discoveredWorkflowFiles.add(normalizedFilePath);
-              hasTrackingChange = true;
               hasCacheTrackingChange = true;
             }
           } else {
             const wasDeleted =
               this.discoveredWorkflowFiles.delete(normalizedFilePath);
-            hasTrackingChange = wasDeleted || hasTrackingChange;
             hasCacheTrackingChange = wasDeleted || hasCacheTrackingChange;
           }
 
           if (hasStep) {
             if (!this.discoveredStepFiles.has(normalizedFilePath)) {
               this.discoveredStepFiles.add(normalizedFilePath);
-              hasTrackingChange = true;
               hasCacheTrackingChange = true;
             }
           } else {
             const wasDeleted =
               this.discoveredStepFiles.delete(normalizedFilePath);
-            hasTrackingChange = wasDeleted || hasTrackingChange;
             hasCacheTrackingChange = wasDeleted || hasCacheTrackingChange;
           }
 
           if (hasSerde) {
-            if (!this.discoveredSerdeFiles.has(normalizedFilePath)) {
-              this.discoveredSerdeFiles.add(normalizedFilePath);
-              hasTrackingChange = true;
-            }
+            this.discoveredSerdeFiles.add(normalizedFilePath);
           } else {
-            hasTrackingChange =
-              this.discoveredSerdeFiles.delete(normalizedFilePath) ||
-              hasTrackingChange;
+            this.discoveredSerdeFiles.delete(normalizedFilePath);
           }
 
-          if (hasTrackingChange && hasCacheTrackingChange) {
+          if (hasCacheTrackingChange) {
             this.scheduleWorkflowsCacheWrite();
           }
         },

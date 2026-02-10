@@ -19,6 +19,31 @@ let cachedBuildersModule: typeof import('@workflow/builders') | null = null;
 
 // Cache socket connection to avoid reconnecting on every file.
 let socketClientPromise: Promise<Socket | null> | null = null;
+let socketClient: Socket | null = null;
+
+function resetSocketClient(cachedSocket?: Socket): void {
+  if (cachedSocket && socketClient && socketClient !== cachedSocket) {
+    return;
+  }
+
+  socketClientPromise = null;
+  socketClient = null;
+}
+
+async function writeSocketMessage(
+  socket: Socket,
+  message: string
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    socket.write(message, (error?: Error | null) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
 
 async function resolveWorkflowAliasRelativePath(
   absoluteFilePath: string,
@@ -84,44 +109,68 @@ async function getSocketClient(): Promise<Socket | null> {
     return null;
   }
 
+  if (socketClient?.destroyed) {
+    resetSocketClient(socketClient);
+  }
+
   if (!socketClientPromise) {
     socketClientPromise = (async () => {
-      const socketPort = process.env.WORKFLOW_SOCKET_PORT;
-      if (!socketPort) {
-        throw new Error(
-          'Invariant: no socket port provided for workflow loader'
-        );
-      }
+      try {
+        const socketPort = process.env.WORKFLOW_SOCKET_PORT;
+        if (!socketPort) {
+          throw new Error(
+            'Invariant: no socket port provided for workflow loader'
+          );
+        }
 
-      const port = Number.parseInt(socketPort, 10);
-      if (Number.isNaN(port)) {
-        throw new Error(
-          `Invariant: invalid socket port provided: ${socketPort}`
-        );
-      }
+        const port = Number.parseInt(socketPort, 10);
+        if (Number.isNaN(port)) {
+          throw new Error(
+            `Invariant: invalid socket port provided: ${socketPort}`
+          );
+        }
 
-      const socket = connect({ port, host: '127.0.0.1' });
+        const socket = connect({ port, host: '127.0.0.1' });
 
-      // Wait for connection
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          socket.destroy();
-          reject(new Error('Socket connection timeout'));
-        }, 1000);
+        // Wait for connection
+        await new Promise<void>((resolve, reject) => {
+          const onConnect = () => {
+            socket.setNoDelay(true);
+            cleanup();
+            resolve();
+          };
+          const onError = (error: Error) => {
+            cleanup();
+            reject(error);
+          };
+          const timeout = setTimeout(() => {
+            cleanup();
+            socket.destroy();
+            reject(new Error('Socket connection timeout'));
+          }, 1000);
+          const cleanup = () => {
+            clearTimeout(timeout);
+            socket.off('connect', onConnect);
+            socket.off('error', onError);
+          };
 
-        socket.on('connect', () => {
-          socket.setNoDelay(true);
-          clearTimeout(timeout);
-          resolve();
+          socket.on('connect', onConnect);
+          socket.on('error', onError);
         });
 
-        socket.on('error', (err: Error) => {
-          clearTimeout(timeout);
-          reject(err);
+        socket.on('close', () => {
+          resetSocketClient(socket);
         });
-      });
+        socket.on('error', () => {
+          resetSocketClient(socket);
+        });
 
-      return socket;
+        socketClient = socket;
+        return socket;
+      } catch (error) {
+        resetSocketClient();
+        throw error;
+      }
     })();
   }
 
@@ -157,7 +206,18 @@ async function notifySocketServer(
     hasStep,
     hasSerde,
   };
-  socket.write(serializeMessage(message, authToken));
+  const serializedMessage = serializeMessage(message, authToken);
+
+  try {
+    await writeSocketMessage(socket, serializedMessage);
+  } catch (error) {
+    resetSocketClient(socket);
+    const reconnectedSocket = await getSocketClient();
+    if (!reconnectedSocket) {
+      throw error;
+    }
+    await writeSocketMessage(reconnectedSocket, serializedMessage);
+  }
 }
 
 async function getBuildersModule(): Promise<
