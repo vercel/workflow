@@ -18,7 +18,7 @@ var Bash = class _Bash {
     }
 };
 // Also test anonymous class expression (no internal name)
-var Shell = class {
+var Shell = class Shell {
     constructor(cmd){
         this.cmd = cmd;
     }
