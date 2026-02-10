@@ -1,5 +1,7 @@
-import { exec as execOriginal } from 'child_process';
-import { promisify } from 'util';
+import { exec as execOriginal } from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { describe, expect, test } from 'vitest';
 import { getWorkbenchAppPath } from './utils';
 
@@ -29,5 +31,13 @@ describe.each([
     });
 
     expect(result.stderr).not.toContain('Error:');
+
+    if (project === 'nextjs-webpack' || project === 'nextjs-turbopack') {
+      const diagnosticsManifestPath = path.join(
+        getWorkbenchAppPath(project),
+        '.next/diagnostics/workflows/manifest.json'
+      );
+      await fs.access(diagnosticsManifestPath);
+    }
   });
 });
