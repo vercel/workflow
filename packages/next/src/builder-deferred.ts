@@ -13,6 +13,7 @@ import os from 'node:os';
 import {
   basename,
   dirname,
+  extname,
   isAbsolute,
   join,
   relative,
@@ -24,6 +25,7 @@ import {
   type SocketServerConfig,
 } from './socket-server.js';
 import {
+  createDeferredStepCopyInlineSourceMapComment,
   createDeferredStepSourceMetadataComment,
   DEFERRED_STEP_COPY_DIR_NAME,
 } from './step-copy-utils.js';
@@ -1048,7 +1050,8 @@ export async function getNextBuilderDeferred() {
     private getStepCopyFileName(filePath: string): string {
       const normalizedPath = filePath.replace(/\\/g, '/');
       const hash = createHash('sha256').update(normalizedPath).digest('hex');
-      return `${hash.slice(0, 16)}-${basename(normalizedPath)}`;
+      const extension = extname(normalizedPath);
+      return `${hash.slice(0, 16)}${extension || '.js'}`;
     }
 
     private rewriteCopiedStepImportSpecifier(
@@ -1238,7 +1241,12 @@ export async function getNextBuilderDeferred() {
             await this.getRelativeFilenameForSwc(normalizedStepFile),
           absolutePath: normalizedStepFile.replace(/\\/g, '/'),
         });
-        const copiedSource = `${metadataComment}\n${rewrittenSource}`;
+        const sourceMapComment = createDeferredStepCopyInlineSourceMapComment({
+          sourcePath: normalizedStepFile,
+          sourceContent: source,
+          generatedContent: rewrittenSource,
+        });
+        const copiedSource = `${metadataComment}\n${rewrittenSource}\n${sourceMapComment}`;
 
         await this.writeFileIfChanged(copiedFilePath, copiedSource);
       }
