@@ -735,8 +735,8 @@ importers:
         specifier: workspace:*
         version: link:../tsconfig
       next:
-        specifier: 16.1.6
-        version: 16.1.6(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        specifier: 16.2.0-canary.33
+        version: 16.2.0-canary.33(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
 
   packages/nitro:
     dependencies:
@@ -789,7 +789,7 @@ importers:
     devDependencies:
       '@nuxt/module-builder':
         specifier: 1.0.2
-        version: 1.0.2(@nuxt/cli@3.29.3(magicast@0.3.5))(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(typescript@5.9.3)(vue@3.5.22(typescript@5.9.3))
+        version: 1.0.2(@nuxt/cli@3.29.3(magicast@0.3.5))(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(typescript@5.9.3)(vue@3.5.22(typescript@5.9.3))
       '@nuxt/schema':
         specifier: 4.2.0
         version: 4.2.0
@@ -1639,8 +1639,8 @@ importers:
         specifier: 0.0.4
         version: 0.0.4
       next:
-        specifier: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app
-        version: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        specifier: 16.2.0-canary.33
+        version: 16.2.0-canary.33(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       openai:
         specifier: 6.9.1
         version: 6.9.1(ws@8.18.3)(zod@4.1.11)
@@ -1727,8 +1727,8 @@ importers:
         specifier: 0.0.4
         version: 0.0.4
       next:
-        specifier: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app
-        version: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        specifier: 16.2.0-canary.33
+        version: 16.2.0-canary.33(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       openai:
         specifier: 6.9.1
         version: 6.9.1(ws@8.18.3)(zod@4.1.11)
@@ -2063,7 +2063,7 @@ importers:
         version: 1.15.3
       '@vercel/analytics':
         specifier: latest
-        version: 1.6.1(@sveltejs/kit@2.48.4(@opentelemetry/api@1.9.0)(@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(next@https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(svelte@5.43.3)(vue-router@4.6.3(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))
+        version: 1.6.1(@sveltejs/kit@2.48.4(@opentelemetry/api@1.9.0)(@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(next@16.2.0-canary.33(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(svelte@5.43.3)(vue-router@4.6.3(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../../packages/swc-plugin-workflow
@@ -2095,8 +2095,8 @@ importers:
         specifier: latest
         version: 0.55.1
       next:
-        specifier: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app
-        version: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        specifier: 16.2.0-canary.33
+        version: 16.2.0-canary.33(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       next-themes:
         specifier: latest
         version: 0.4.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -4284,8 +4284,8 @@ packages:
   '@next/env@16.1.6':
     resolution: {integrity: sha512-N1ySLuZjnAtN3kFnwhAwPvZah8RJxKasD7x1f8shFqhncnWZn4JMfg37diLNuoHsLAlrDfM3g4mawVdtAG8XLQ==}
 
-  '@next/env@16.2.0-canary.30':
-    resolution: {integrity: sha512-Td9XIwucEQ/zQ7iEAZzSKJPhvuKRzrKA7o5yMKXofgfcPGQ8Ncxr8vbAG3KfMA0s5z1YsTyGYjEAxX1lfHBCWg==}
+  '@next/env@16.2.0-canary.33':
+    resolution: {integrity: sha512-NOE5k4VESV+VRlbGn84iltTsGv8TqbC3oaV3o40bKTZkTaemo/U76dIzID2B08vXb2ePauwm9zyLUf/HobfznA==}
 
   '@next/swc-darwin-arm64@16.0.10':
     resolution: {integrity: sha512-4XgdKtdVsaflErz+B5XeG0T5PeXKDdruDf3CRpnhN+8UebNa5N2H58+3GDgpn/9GBurrQ1uWW768FfscwYkJRg==}
@@ -4299,8 +4299,8 @@ packages:
     cpu: [arm64]
     os: [darwin]
 
-  '@next/swc-darwin-arm64@16.2.0-canary.30':
-    resolution: {integrity: sha512-hBlBhmkxBzf2FByQy9EMsVG793TQBuTug9BuQQr+aS37K2yq+DMCrbRG6UOwhJj+5244K6huT5kst040/ifn6g==}
+  '@next/swc-darwin-arm64@16.2.0-canary.33':
+    resolution: {integrity: sha512-RSiilvi0PU2UvY8U9UW0JTifmOqGtoptK+d5H2HbOz6pCgcXj8e4G/0VJluaWpUckknWuwExcOkNtVUpq48Cgg==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [darwin]
@@ -4317,8 +4317,8 @@ packages:
     cpu: [x64]
     os: [darwin]
 
-  '@next/swc-darwin-x64@16.2.0-canary.30':
-    resolution: {integrity: sha512-Sr60OQY1tDca0B5raDUMoKWtEY8h1WeM7Hu2lt5cnbPXbb91zsvaQvWpcwXJKAW4tcStSvu8h0Fe6e4kXF7/AA==}
+  '@next/swc-darwin-x64@16.2.0-canary.33':
+    resolution: {integrity: sha512-KnOY6BpUJjMnlp44DNx3ggFy0cLdTrsZjWR04/C1qD41HYoc+S6k468oEnQUKWdruR6Yfv0RJcTk00l5+gVBpA==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [darwin]
@@ -4335,8 +4335,8 @@ packages:
     cpu: [arm64]
     os: [linux]
 
-  '@next/swc-linux-arm64-gnu@16.2.0-canary.30':
-    resolution: {integrity: sha512-6NHaEm4osBsPtB8MN26sJ3UujGrXfRlGOm8SrZWyPU+omB0kPXXq72rvFutydtiwy4hZmDtZGrcR6su9bNp5dw==}
+  '@next/swc-linux-arm64-gnu@16.2.0-canary.33':
+    resolution: {integrity: sha512-PjPEqFlz/puvpWTYnuI9MLOuWgnoFcJjH7j3MsY6UkNR/M6ddTziztk/6cmprndY3vDV9nV4UnjtC1GPrnnOjQ==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
@@ -4353,8 +4353,8 @@ packages:
     cpu: [arm64]
     os: [linux]
 
-  '@next/swc-linux-arm64-musl@16.2.0-canary.30':
-    resolution: {integrity: sha512-sWX4NIRJBHdruIPqruXviaUjT3KqbMssofKAVSuj3GIvPk/j0WPciC9xeVmrbDr7lePqjYm3DVk6eUMZzwqxlw==}
+  '@next/swc-linux-arm64-musl@16.2.0-canary.33':
+    resolution: {integrity: sha512-V071RXn+axHCVZFZQewZ9BjbARKHpG0MNyfULPIPC+/woseyY85Z72N/cMx5K8PIX+4UFR7PnUjQ95DwQZJ42g==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
@@ -4371,8 +4371,8 @@ packages:
     cpu: [x64]
     os: [linux]
 
-  '@next/swc-linux-x64-gnu@16.2.0-canary.30':
-    resolution: {integrity: sha512-/uOHbqxiggg4xgZsyzFWDxigt1P8GFFQeL/00luJdUGsZMDEl7wfzogKjfvbZBTBlfW7/SILaeUtIgjnvbynuw==}
+  '@next/swc-linux-x64-gnu@16.2.0-canary.33':
+    resolution: {integrity: sha512-0e3NL85FQE7Czvf6h3utIDj0ob/LLNWFdhGcglXuZdOMaz40mYFw2E+V6LGtuyxOa7zsX5vlba6h/tVGfbnu8A==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
@@ -4389,8 +4389,8 @@ packages:
     cpu: [x64]
     os: [linux]
 
-  '@next/swc-linux-x64-musl@16.2.0-canary.30':
-    resolution: {integrity: sha512-xzTrIJMARfT/+QJz31INqIiJWgIkzc1+FIwE/wZucQQmZ3GoT5iKz8mWHUm3mpqCWz48dzsoMfwIwMEKGFavow==}
+  '@next/swc-linux-x64-musl@16.2.0-canary.33':
+    resolution: {integrity: sha512-vPw58+y9zKqGI4eQA/9EG9NHmQZgrIcTrUsVwNJj2brw7HuHIaBPGx6KTs22ZBIznI/x2+JC/heS3Y0rhIZYRg==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
@@ -4407,8 +4407,8 @@ packages:
     cpu: [arm64]
     os: [win32]
 
-  '@next/swc-win32-arm64-msvc@16.2.0-canary.30':
-    resolution: {integrity: sha512-gXNs/9R3qtbr2p2iyaIgcW5F65owX2Qx3n5oxyAQCS4mzP3QpDJNRSYA4YB2EsLwcfJO/A8nb1r3Ykx1AmcHWQ==}
+  '@next/swc-win32-arm64-msvc@16.2.0-canary.33':
+    resolution: {integrity: sha512-b7KCkPOGOM30QB85K4xXlzAPSBsexAF8ddK5oGJq+PGC1S+G49Zk+WmUCx8geIMzzYk/JViu3Uwi56LEkTmyLg==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [win32]
@@ -4425,8 +4425,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@next/swc-win32-x64-msvc@16.2.0-canary.30':
-    resolution: {integrity: sha512-XgWojiSaCrsfuQydXoIOZLDjrx2B++/i3tO98hHfS84l40z6Ie9mIuPYe0lQHeVX95cT435GjxxGdjlFDtOAJQ==}
+  '@next/swc-win32-x64-msvc@16.2.0-canary.33':
+    resolution: {integrity: sha512-B6RuL6jqp2TJL9W3O8gjoZQWEv52pkibbtGEx/zvSQHyqRxcm3XOyd80kaksCdj4zUmWDEl54WZ7IgD+eBfSaQ==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [win32]
@@ -10765,11 +10765,13 @@ packages:
 
   glob@10.5.0:
     resolution: {integrity: sha512-DfXN8DfhJ7NH3Oe7cFmu3NCu1wKbkReJ8TorzSAFbSKrlNaQSKfIzqYqVY8zlbs2NLBbWpRiU52GX2PbaBVNkg==}
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
 
   glob@11.1.0:
     resolution: {integrity: sha512-vuNwKSaKiqm7g0THUBu2x7ckSs3XJLXE+2ssL7/MfTGPLLcrJQ/4Uq1CjPTtO5cCIiRxqvN6Twy1qOwhL0Xjcw==}
     engines: {node: 20 || >=22}
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
 
   glob@13.0.0:
@@ -12336,9 +12338,8 @@ packages:
       sass:
         optional: true
 
-  next@https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app:
-    resolution: {tarball: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app/}
-    version: 16.2.0-canary.30
+  next@16.2.0-canary.33:
+    resolution: {integrity: sha512-0gl/248RC1+VF+n6gTQdycJUEp4wWY4sSkaVEUxLrqDQMe+Yzto3rokfrAqW+KlT+evCVjgGQCSA3ZgzGdokKw==}
     engines: {node: '>=20.9.0'}
     hasBin: true
     peerDependencies:
@@ -17987,9 +17988,10 @@ snapshots:
 
   '@next/env@16.0.10': {}
 
-  '@next/env@16.1.6': {}
+  '@next/env@16.1.6':
+    optional: true
 
-  '@next/env@16.2.0-canary.30': {}
+  '@next/env@16.2.0-canary.33': {}
 
   '@next/swc-darwin-arm64@16.0.10':
     optional: true
@@ -17997,7 +17999,7 @@ snapshots:
   '@next/swc-darwin-arm64@16.1.6':
     optional: true
 
-  '@next/swc-darwin-arm64@16.2.0-canary.30':
+  '@next/swc-darwin-arm64@16.2.0-canary.33':
     optional: true
 
   '@next/swc-darwin-x64@16.0.10':
@@ -18006,7 +18008,7 @@ snapshots:
   '@next/swc-darwin-x64@16.1.6':
     optional: true
 
-  '@next/swc-darwin-x64@16.2.0-canary.30':
+  '@next/swc-darwin-x64@16.2.0-canary.33':
     optional: true
 
   '@next/swc-linux-arm64-gnu@16.0.10':
@@ -18015,7 +18017,7 @@ snapshots:
   '@next/swc-linux-arm64-gnu@16.1.6':
     optional: true
 
-  '@next/swc-linux-arm64-gnu@16.2.0-canary.30':
+  '@next/swc-linux-arm64-gnu@16.2.0-canary.33':
     optional: true
 
   '@next/swc-linux-arm64-musl@16.0.10':
@@ -18024,7 +18026,7 @@ snapshots:
   '@next/swc-linux-arm64-musl@16.1.6':
     optional: true
 
-  '@next/swc-linux-arm64-musl@16.2.0-canary.30':
+  '@next/swc-linux-arm64-musl@16.2.0-canary.33':
     optional: true
 
   '@next/swc-linux-x64-gnu@16.0.10':
@@ -18033,7 +18035,7 @@ snapshots:
   '@next/swc-linux-x64-gnu@16.1.6':
     optional: true
 
-  '@next/swc-linux-x64-gnu@16.2.0-canary.30':
+  '@next/swc-linux-x64-gnu@16.2.0-canary.33':
     optional: true
 
   '@next/swc-linux-x64-musl@16.0.10':
@@ -18042,7 +18044,7 @@ snapshots:
   '@next/swc-linux-x64-musl@16.1.6':
     optional: true
 
-  '@next/swc-linux-x64-musl@16.2.0-canary.30':
+  '@next/swc-linux-x64-musl@16.2.0-canary.33':
     optional: true
 
   '@next/swc-win32-arm64-msvc@16.0.10':
@@ -18051,7 +18053,7 @@ snapshots:
   '@next/swc-win32-arm64-msvc@16.1.6':
     optional: true
 
-  '@next/swc-win32-arm64-msvc@16.2.0-canary.30':
+  '@next/swc-win32-arm64-msvc@16.2.0-canary.33':
     optional: true
 
   '@next/swc-win32-x64-msvc@16.0.10':
@@ -18060,7 +18062,7 @@ snapshots:
   '@next/swc-win32-x64-msvc@16.1.6':
     optional: true
 
-  '@next/swc-win32-x64-msvc@16.2.0-canary.30':
+  '@next/swc-win32-x64-msvc@16.2.0-canary.33':
     optional: true
 
   '@node-rs/xxhash-android-arm-eabi@1.7.6':
@@ -18336,7 +18338,7 @@ snapshots:
     transitivePeerDependencies:
       - magicast
 
-  '@nuxt/module-builder@1.0.2(@nuxt/cli@3.29.3(magicast@0.3.5))(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(typescript@5.9.3)(vue@3.5.22(typescript@5.9.3))':
+  '@nuxt/module-builder@1.0.2(@nuxt/cli@3.29.3(magicast@0.3.5))(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(typescript@5.9.3)(vue@3.5.22(typescript@5.9.3))':
     dependencies:
       '@nuxt/cli': 3.29.3(magicast@0.3.5)
       citty: 0.1.6
@@ -18344,14 +18346,14 @@ snapshots:
       defu: 6.1.4
       jiti: 2.6.1
       magic-regexp: 0.10.0
-      mkdist: 2.4.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))
+      mkdist: 2.4.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))
       mlly: 1.8.0
       pathe: 2.0.3
       pkg-types: 2.3.0
       tsconfck: 3.1.6(typescript@5.9.3)
       typescript: 5.9.3
-      unbuild: 3.6.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))
-      vue-sfc-transformer: 0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(vue@3.5.22(typescript@5.9.3))
+      unbuild: 3.6.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))
+      vue-sfc-transformer: 0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(vue@3.5.22(typescript@5.9.3))
     transitivePeerDependencies:
       - '@vue/compiler-core'
       - esbuild
@@ -22699,10 +22701,10 @@ snapshots:
       vue: 3.5.22(typescript@5.9.3)
       vue-router: 4.6.3(vue@3.5.22(typescript@5.9.3))
 
-  '@vercel/analytics@1.6.1(@sveltejs/kit@2.48.4(@opentelemetry/api@1.9.0)(@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(next@https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(svelte@5.43.3)(vue-router@4.6.3(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))':
+  '@vercel/analytics@1.6.1(@sveltejs/kit@2.48.4(@opentelemetry/api@1.9.0)(@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(next@16.2.0-canary.33(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(svelte@5.43.3)(vue-router@4.6.3(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))':
     optionalDependencies:
       '@sveltejs/kit': 2.48.4(@opentelemetry/api@1.9.0)(@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
-      next: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      next: 16.2.0-canary.33(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       react: 19.2.4
       svelte: 5.43.3
       vue: 3.5.22(typescript@5.9.3)
@@ -27688,7 +27690,7 @@ snapshots:
 
   mkdirp@3.0.1: {}
 
-  mkdist@2.4.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3)):
+  mkdist@2.4.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3)):
     dependencies:
       autoprefixer: 10.4.21(postcss@8.5.6)
       citty: 0.1.6
@@ -27706,7 +27708,7 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
       vue: 3.5.22(typescript@5.9.3)
-      vue-sfc-transformer: 0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(vue@3.5.22(typescript@5.9.3))
+      vue-sfc-transformer: 0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(vue@3.5.22(typescript@5.9.3))
 
   mlly@1.8.0:
     dependencies:
@@ -27900,10 +27902,11 @@ snapshots:
     transitivePeerDependencies:
       - '@babel/core'
       - babel-plugin-macros
+    optional: true
 
-  next@https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+  next@16.2.0-canary.33(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     dependencies:
-      '@next/env': 16.2.0-canary.30
+      '@next/env': 16.2.0-canary.33
       '@swc/helpers': 0.5.15
       baseline-browser-mapping: 2.9.19
       caniuse-lite: 1.0.30001766
@@ -27912,14 +27915,14 @@ snapshots:
       react-dom: 19.2.4(react@19.2.4)
       styled-jsx: 5.1.6(react@19.2.4)
     optionalDependencies:
-      '@next/swc-darwin-arm64': 16.2.0-canary.30
-      '@next/swc-darwin-x64': 16.2.0-canary.30
-      '@next/swc-linux-arm64-gnu': 16.2.0-canary.30
-      '@next/swc-linux-arm64-musl': 16.2.0-canary.30
-      '@next/swc-linux-x64-gnu': 16.2.0-canary.30
-      '@next/swc-linux-x64-musl': 16.2.0-canary.30
-      '@next/swc-win32-arm64-msvc': 16.2.0-canary.30
-      '@next/swc-win32-x64-msvc': 16.2.0-canary.30
+      '@next/swc-darwin-arm64': 16.2.0-canary.33
+      '@next/swc-darwin-x64': 16.2.0-canary.33
+      '@next/swc-linux-arm64-gnu': 16.2.0-canary.33
+      '@next/swc-linux-arm64-musl': 16.2.0-canary.33
+      '@next/swc-linux-x64-gnu': 16.2.0-canary.33
+      '@next/swc-linux-x64-musl': 16.2.0-canary.33
+      '@next/swc-win32-arm64-msvc': 16.2.0-canary.33
+      '@next/swc-win32-x64-msvc': 16.2.0-canary.33
       '@opentelemetry/api': 1.9.0
       sharp: 0.34.5
     transitivePeerDependencies:
@@ -31225,7 +31228,7 @@ snapshots:
 
   ultrahtml@1.6.0: {}
 
-  unbuild@3.6.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3)):
+  unbuild@3.6.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3)):
     dependencies:
       '@rollup/plugin-alias': 5.1.1(rollup@4.53.2)
       '@rollup/plugin-commonjs': 28.0.9(rollup@4.53.2)
@@ -31241,7 +31244,7 @@ snapshots:
       hookable: 5.5.3
       jiti: 2.6.1
       magic-string: 0.30.21
-      mkdist: 2.4.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))
+      mkdist: 2.4.1(typescript@5.9.3)(vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(vue@3.5.22(typescript@5.9.3)))(vue@3.5.22(typescript@5.9.3))
       mlly: 1.8.0
       pathe: 2.0.3
       pkg-types: 2.3.0
@@ -32006,11 +32009,11 @@ snapshots:
       '@vue/devtools-api': 6.6.4
       vue: 3.5.22(typescript@5.9.3)
 
-  vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.27.2)(vue@3.5.22(typescript@5.9.3)):
+  vue-sfc-transformer@0.1.17(@vue/compiler-core@3.5.22)(esbuild@0.25.12)(vue@3.5.22(typescript@5.9.3)):
     dependencies:
       '@babel/parser': 7.28.5
       '@vue/compiler-core': 3.5.22
-      esbuild: 0.27.2
+      esbuild: 0.25.12
       vue: 3.5.22(typescript@5.9.3)
 
   vue@3.5.22(typescript@5.9.3):
