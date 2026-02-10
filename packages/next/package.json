@@ -41,11 +41,11 @@
     "watchpack": "2.4.4"
   },
   "devDependencies": {
-    "@workflow/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "@types/semver": "7.7.1",
     "@types/watchpack": "2.4.4",
-    "next": "16.1.6"
+    "@workflow/tsconfig": "workspace:*",
+    "next": "16.2.0-canary.34"
   },
   "peerDependencies": {
     "next": ">13"

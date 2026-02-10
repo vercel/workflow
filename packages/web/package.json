@@ -27,7 +27,7 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "next": "16.0.10"
+    "next": "16.2.0-canary.34"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
