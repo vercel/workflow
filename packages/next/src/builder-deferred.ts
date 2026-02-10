@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import {
   access,
   mkdir,
@@ -1043,14 +1043,53 @@ export async function getNextBuilderDeferred() {
       const importPath = specifierMatch?.[1] ?? specifier;
       const suffix = specifierMatch?.[2] ?? '';
       const absoluteTargetPath = resolve(dirname(sourceFilePath), importPath);
+      const resolvedTargetPath =
+        this.resolveCopiedStepImportTargetPath(absoluteTargetPath);
       let rewrittenPath = relative(
         dirname(copiedFilePath),
-        absoluteTargetPath
+        resolvedTargetPath
       ).replace(/\\/g, '/');
       if (!rewrittenPath.startsWith('.')) {
         rewrittenPath = `./${rewrittenPath}`;
       }
       return `${rewrittenPath}${suffix}`;
+    }
+
+    private resolveCopiedStepImportTargetPath(targetPath: string): string {
+      if (existsSync(targetPath)) {
+        return targetPath;
+      }
+
+      const extensionMatch = targetPath.match(/(\.[^./\\]+)$/);
+      const extension = extensionMatch?.[1]?.toLowerCase();
+      if (!extension) {
+        return targetPath;
+      }
+
+      const extensionFallbacks =
+        extension === '.js'
+          ? ['.ts', '.tsx', '.mts', '.cts']
+          : extension === '.mjs'
+            ? ['.mts']
+            : extension === '.cjs'
+              ? ['.cts']
+              : extension === '.jsx'
+                ? ['.tsx']
+                : [];
+
+      if (extensionFallbacks.length === 0) {
+        return targetPath;
+      }
+
+      const targetWithoutExtension = targetPath.slice(0, -extension.length);
+      for (const fallbackExtension of extensionFallbacks) {
+        const fallbackPath = `${targetWithoutExtension}${fallbackExtension}`;
+        if (existsSync(fallbackPath)) {
+          return fallbackPath;
+        }
+      }
+
+      return targetPath;
     }
 
     private rewriteRelativeImportsForCopiedStep(
