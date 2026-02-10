@@ -170,7 +170,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   'step.name': stepName,
                   'step.id': stepId,
                 });
-                await queueMessage(world, `__wkf_workflow_${workflowName}`, {
+                await queueMessage(world, getWorkflowQueueName(workflowName), {
                   runId: workflowRunId,
                   traceCarrier: await serializeTraceCarrier(),
                   requestedAt: new Date(),
@@ -397,7 +397,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             });
 
             // Queue the workflow continuation with the concurrently-resolved trace carrier
-            await queueMessage(world, `__wkf_workflow_${workflowName}`, {
+            await queueMessage(world, getWorkflowQueueName(workflowName), {
               runId: workflowRunId,
               traceCarrier,
               requestedAt: new Date(),

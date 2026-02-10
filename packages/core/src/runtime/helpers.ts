@@ -17,9 +17,10 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 
 /**
  * Pattern for safe workflow names. Only allows alphanumeric characters,
- * underscores, hyphens, dots, and forward slashes (for namespaced workflows).
+ * underscores, hyphens, dots, forward slashes (for namespaced workflows),
+ * and at signs (for scoped packages).
  */
-const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./]+$/;
+const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
 
 /**
  * Validates a workflow name and returns the corresponding queue name.
@@ -29,7 +30,7 @@ const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./]+$/;
 export function getWorkflowQueueName(workflowName: string): ValidQueueName {
   if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
     throw new Error(
-      `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, or forward slashes`
+      `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
     );
   }
   return `__wkf_workflow_${workflowName}` as ValidQueueName;
