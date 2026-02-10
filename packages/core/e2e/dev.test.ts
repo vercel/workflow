@@ -125,11 +125,35 @@ export async function myNewStep() {
 `
       );
       restoreFiles.push({ path: stepFile, content });
+      const copiedStepDir = path.join(
+        path.dirname(generatedStep),
+        '__workflow_step_files__'
+      );
 
       while (true) {
         try {
-          const workflowContent = await fs.readFile(generatedStep, 'utf8');
-          expect(workflowContent).toContain('myNewStep');
+          const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
+          if (stepRouteContent.includes('myNewStep')) {
+            break;
+          }
+
+          const copiedStepFileNames = await fs.readdir(copiedStepDir);
+          const copiedStepContents = await Promise.all(
+            copiedStepFileNames.map(async (copiedStepFileName) => {
+              const copiedStepFilePath = path.join(
+                copiedStepDir,
+                copiedStepFileName
+              );
+              const copiedStepStats = await fs.stat(copiedStepFilePath);
+              if (!copiedStepStats.isFile()) {
+                return '';
+              }
+              return await fs.readFile(copiedStepFilePath, 'utf8');
+            })
+          );
+          expect(
+            copiedStepContents.some((content) => content.includes('myNewStep'))
+          ).toBe(true);
           break;
         } catch (_) {
           await new Promise((res) => setTimeout(res, 1_000));

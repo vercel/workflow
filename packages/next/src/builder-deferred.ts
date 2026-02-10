@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants, existsSync } from 'node:fs';
+import { constants, existsSync, realpathSync } from 'node:fs';
 import {
   access,
   mkdir,
@@ -382,15 +382,36 @@ export async function getNextBuilderDeferred() {
       await mkdir(cacheDir, { recursive: true });
       const manifestBuildDir = join(cacheDir, 'workflow-generated-manifest');
       const tempRouteFileName = 'route.js.temp';
+      const staticallyDiscoveredEntries = await this.discoverEntries(
+        inputFiles,
+        workflowGeneratedDir
+      );
       const discoveredStepFiles = Array.from(
-        new Set([...this.discoveredStepFiles, ...implicitStepFiles])
+        new Set([
+          ...this.discoveredStepFiles,
+          ...staticallyDiscoveredEntries.discoveredSteps.map((filePath) =>
+            this.normalizeDiscoveredFilePath(filePath)
+          ),
+          ...implicitStepFiles,
+        ])
       ).sort();
       const discoveredWorkflowFiles = Array.from(
-        this.discoveredWorkflowFiles
+        new Set([
+          ...this.discoveredWorkflowFiles,
+          ...staticallyDiscoveredEntries.discoveredWorkflows.map((filePath) =>
+            this.normalizeDiscoveredFilePath(filePath)
+          ),
+        ])
       ).sort();
       const trackedSerdeFiles = await this.collectTrackedSerdeFiles();
       const discoveredSerdeFiles = Array.from(
-        new Set([...this.discoveredSerdeFiles, ...trackedSerdeFiles])
+        new Set([
+          ...this.discoveredSerdeFiles,
+          ...staticallyDiscoveredEntries.discoveredSerdeFiles.map((filePath) =>
+            this.normalizeDiscoveredFilePath(filePath)
+          ),
+          ...trackedSerdeFiles,
+        ])
       ).sort();
       const discoveredEntries = {
         discoveredSteps: discoveredStepFiles,
@@ -1033,7 +1054,8 @@ export async function getNextBuilderDeferred() {
     private rewriteCopiedStepImportSpecifier(
       specifier: string,
       sourceFilePath: string,
-      copiedFilePath: string
+      copiedFilePath: string,
+      copiedStepFileBySourcePath: Map<string, string>
     ): string {
       if (!specifier.startsWith('.')) {
         return specifier;
@@ -1045,9 +1067,23 @@ export async function getNextBuilderDeferred() {
       const absoluteTargetPath = resolve(dirname(sourceFilePath), importPath);
       const resolvedTargetPath =
         this.resolveCopiedStepImportTargetPath(absoluteTargetPath);
+      const normalizedTargetPath = resolvedTargetPath.replace(/\\/g, '/');
+      const copiedTargetPath =
+        copiedStepFileBySourcePath.get(normalizedTargetPath) ||
+        (() => {
+          try {
+            const realTargetPath = realpathSync(resolvedTargetPath).replace(
+              /\\/g,
+              '/'
+            );
+            return copiedStepFileBySourcePath.get(realTargetPath);
+          } catch {
+            return undefined;
+          }
+        })();
       let rewrittenPath = relative(
         dirname(copiedFilePath),
-        resolvedTargetPath
+        copiedTargetPath || resolvedTargetPath
       ).replace(/\\/g, '/');
       if (!rewrittenPath.startsWith('.')) {
         rewrittenPath = `./${rewrittenPath}`;
@@ -1095,13 +1131,15 @@ export async function getNextBuilderDeferred() {
     private rewriteRelativeImportsForCopiedStep(
       source: string,
       sourceFilePath: string,
-      copiedFilePath: string
+      copiedFilePath: string,
+      copiedStepFileBySourcePath: Map<string, string>
     ): string {
       const rewriteSpecifier = (specifier: string) =>
         this.rewriteCopiedStepImportSpecifier(
           specifier,
           sourceFilePath,
-          copiedFilePath
+          copiedFilePath,
+          copiedStepFileBySourcePath
         );
       const rewritePattern = (currentSource: string, pattern: RegExp): string =>
         currentSource.replace(
@@ -1152,18 +1190,48 @@ export async function getNextBuilderDeferred() {
       const copiedStepsDir = join(stepsRouteDir, DEFERRED_STEP_COPY_DIR_NAME);
       await mkdir(copiedStepsDir, { recursive: true });
 
+      const normalizedStepFiles = Array.from(
+        new Set(
+          stepFiles.map((stepFile) =>
+            this.normalizeDiscoveredFilePath(stepFile)
+          )
+        )
+      ).sort();
+      const copiedStepFileBySourcePath = new Map<string, string>();
       const expectedFileNames = new Set<string>();
       const copiedStepFiles: string[] = [];
 
-      for (const stepFile of stepFiles) {
-        const normalizedStepFile = this.normalizeDiscoveredFilePath(stepFile);
+      for (const normalizedStepFile of normalizedStepFiles) {
         const copiedFileName = this.getStepCopyFileName(normalizedStepFile);
         const copiedFilePath = join(copiedStepsDir, copiedFileName);
+        const normalizedPathKey = normalizedStepFile.replace(/\\/g, '/');
+        copiedStepFileBySourcePath.set(normalizedPathKey, copiedFilePath);
+        try {
+          const realPathKey = realpathSync(normalizedStepFile).replace(
+            /\\/g,
+            '/'
+          );
+          copiedStepFileBySourcePath.set(realPathKey, copiedFilePath);
+        } catch {
+          // Keep best-effort mapping when source cannot be realpath-resolved.
+        }
+        expectedFileNames.add(copiedFileName);
+        copiedStepFiles.push(copiedFilePath);
+      }
+
+      for (const normalizedStepFile of normalizedStepFiles) {
         const source = await readFile(normalizedStepFile, 'utf-8');
+        const copiedFilePath = copiedStepFileBySourcePath.get(
+          normalizedStepFile.replace(/\\/g, '/')
+        );
+        if (!copiedFilePath) {
+          continue;
+        }
         const rewrittenSource = this.rewriteRelativeImportsForCopiedStep(
           source,
           normalizedStepFile,
-          copiedFilePath
+          copiedFilePath,
+          copiedStepFileBySourcePath
         );
         const metadataComment = createDeferredStepSourceMetadataComment({
           relativeFilename:
@@ -1172,8 +1240,6 @@ export async function getNextBuilderDeferred() {
         });
         const copiedSource = `${metadataComment}\n${rewrittenSource}`;
 
-        expectedFileNames.add(copiedFileName);
-        copiedStepFiles.push(copiedFilePath);
         await this.writeFileIfChanged(copiedFilePath, copiedSource);
       }
 
