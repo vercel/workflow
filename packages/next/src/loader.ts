@@ -1,6 +1,5 @@
-import { access, realpath } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
-import { basename, relative, resolve } from 'node:path';
+import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import { type SocketMessage, serializeMessage } from './socket-server.js';
 
@@ -9,11 +8,6 @@ type WorkflowPatternMatch = import('@workflow/builders').WorkflowPatternMatch;
 
 // Cache decorator options per working directory to avoid reading tsconfig for every file
 const decoratorOptionsCache = new Map<string, Promise<DecoratorOptions>>();
-const workflowAliasResolutionCache = new Map<
-  string,
-  Promise<string | undefined>
->();
-
 // Cache for shared utilities from @workflow/builders (ESM module loaded dynamically in CommonJS context)
 let cachedBuildersModule: typeof import('@workflow/builders') | null = null;
 
@@ -43,59 +37,6 @@ async function writeSocketMessage(
       resolve();
     });
   });
-}
-
-async function resolveWorkflowAliasRelativePath(
-  absoluteFilePath: string,
-  workingDir: string
-): Promise<string | undefined> {
-  const normalizedAbsolutePath = absoluteFilePath.replace(/\\/g, '/');
-  // Only workflow source files can map to app-level `workflows/*` aliases.
-  if (!normalizedAbsolutePath.includes('/workflows/')) {
-    return undefined;
-  }
-
-  const cacheKey = `${workingDir}::${normalizedAbsolutePath}`;
-  const cached = workflowAliasResolutionCache.get(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
-  const resolutionPromise = (async () => {
-    const fileName = basename(absoluteFilePath);
-    const aliasDirs = ['workflows', 'src/workflows'];
-    const resolvedFilePath = await realpath(absoluteFilePath).catch(
-      () => undefined
-    );
-    if (!resolvedFilePath) {
-      return undefined;
-    }
-
-    const aliases = await Promise.all(
-      aliasDirs.map(async (aliasDir) => {
-        const candidatePath = resolve(workingDir, aliasDir, fileName);
-        try {
-          await access(candidatePath);
-        } catch {
-          return undefined;
-        }
-        const resolvedCandidatePath = await realpath(candidatePath).catch(
-          () => undefined
-        );
-        if (!resolvedCandidatePath) {
-          return undefined;
-        }
-        return resolvedCandidatePath === resolvedFilePath
-          ? `${aliasDir}/${fileName}`
-          : undefined;
-      })
-    );
-
-    return aliases.find((aliasPath): aliasPath is string => Boolean(aliasPath));
-  })();
-
-  workflowAliasResolutionCache.set(cacheKey, resolutionPromise);
-  return resolutionPromise;
 }
 
 function shouldUseSocketDiscovery(): boolean {
@@ -282,6 +223,14 @@ async function getModuleSpecifier(
   return resolveModuleSpecifier(filePath, projectRoot).moduleSpecifier;
 }
 
+async function resolveWorkflowAliasPath(
+  filePath: string,
+  workingDir: string
+): Promise<string | undefined> {
+  const { resolveWorkflowAliasRelativePath } = await getBuildersModule();
+  return resolveWorkflowAliasRelativePath(filePath, workingDir);
+}
+
 // This loader applies the "use workflow"/"use step"
 // client transformation
 export default async function workflowLoader(
@@ -354,7 +303,7 @@ export default async function workflowLoader(
     relativeFilename = relative(workingDir, filename).replace(/\\/g, '/');
 
     if (relativeFilename.startsWith('../')) {
-      const aliasedRelativePath = await resolveWorkflowAliasRelativePath(
+      const aliasedRelativePath = await resolveWorkflowAliasPath(
         filename,
         workingDir
       );

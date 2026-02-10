@@ -38,6 +38,7 @@ export {
   workflowSerdeImportPattern,
   workflowSerdeSymbolPattern,
 } from './transform-utils.js';
+export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 export type {
   AstroConfig,
   BuildTarget,
