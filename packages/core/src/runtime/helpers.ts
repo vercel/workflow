@@ -10,7 +10,7 @@ import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
-import { getWorld } from './world.js';
+import { ensureWorldStarted, getWorld } from './world.js';
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
@@ -214,6 +214,8 @@ export async function healthCheck(
   const startTime = Date.now();
 
   try {
+    await ensureWorldStarted(world);
+
     await world.queue(queueName, {
       __healthCheck: true,
       correlationId,
@@ -364,6 +366,7 @@ export async function queueMessage(
   ...args: Parameters<typeof world.queue>
 ) {
   const queueName = args[0];
+  await ensureWorldStarted(world);
   await trace(
     'queue.publish',
     {

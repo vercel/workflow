@@ -2,7 +2,7 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, SPEC_VERSION_LEGACY } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { start } from './start.js';
-import { getWorld } from './world.js';
+import { ensureWorldStarted, getWorld } from './world.js';
 
 // Mock @vercel/functions
 vi.mock('@vercel/functions', () => ({
@@ -15,12 +15,17 @@ vi.mock('./world.js', () => ({
   getWorldHandlers: vi.fn(() => ({
     createQueueHandler: vi.fn(() => vi.fn()),
   })),
+  ensureWorldStarted: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock telemetry
 vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),
-  trace: vi.fn((_name, fn) => fn(undefined)),
+  trace: vi.fn((...args: any[]) => {
+    const fn = args[args.length - 1];
+    return fn(undefined);
+  }),
+  getSpanKind: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('start', () => {
@@ -86,7 +91,7 @@ describe('start', () => {
           run: { runId: runId ?? 'wrun_test123', status: 'pending' },
         });
       });
-      mockQueue = vi.fn().mockResolvedValue(undefined);
+      mockQueue = vi.fn().mockResolvedValue({ messageId: 'msg_test123' });
 
       vi.mocked(getWorld).mockReturnValue({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
@@ -154,6 +159,18 @@ describe('start', () => {
           v1Compat: true,
         })
       );
+    });
+
+    it('should ensure the world is started before queueing', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      await start(validWorkflow, []);
+      await start(validWorkflow, []);
+
+      expect(vi.mocked(ensureWorldStarted)).toHaveBeenCalledTimes(2);
+      expect(mockQueue).toHaveBeenCalledTimes(2);
     });
   });
 });

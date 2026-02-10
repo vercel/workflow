@@ -14,6 +14,8 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCache]?: World;
 } = globalThis;
 
+const worldStartPromises = new WeakMap<World, Promise<void>>();
+
 function defaultWorld(): 'vercel' | 'local' {
   if (process.env.VERCEL_DEPLOYMENT_ID) {
     return 'vercel';
@@ -87,6 +89,23 @@ export const getWorld = (): World => {
   }
   globalSymbols[WorldCache] = createWorld();
   return globalSymbols[WorldCache];
+};
+
+/**
+ * Ensure a world that exposes `start()` is started exactly once per process.
+ */
+export const ensureWorldStarted = async (world: World): Promise<void> => {
+  if (typeof world.start !== 'function') {
+    return;
+  }
+
+  let startPromise = worldStartPromises.get(world);
+  if (!startPromise) {
+    startPromise = Promise.resolve().then(() => world.start?.());
+    worldStartPromises.set(world, startPromise);
+  }
+
+  await startPromise;
 };
 
 /**

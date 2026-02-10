@@ -5,7 +5,7 @@ import {
   SPEC_VERSION_LEGACY,
   type World,
 } from '@workflow/world';
-import { getWorkflowQueueName } from './helpers.js';
+import { getWorkflowQueueName, queueMessage } from './helpers.js';
 import { start } from './start.js';
 
 export interface RecreateRunOptions {
@@ -100,7 +100,8 @@ export async function cancelRun(world: World, runId: string): Promise<void> {
 export async function reenqueueRun(world: World, runId: string): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
-    await world.queue(
+    await queueMessage(
+      world,
       getWorkflowQueueName(run.workflowName),
       {
         runId,
@@ -188,7 +189,8 @@ export async function wakeUpRun(
     }
 
     if (stoppedCount > 0) {
-      await world.queue(
+      await queueMessage(
+        world,
         getWorkflowQueueName(run.workflowName),
         {
           runId,

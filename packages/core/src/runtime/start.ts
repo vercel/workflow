@@ -9,7 +9,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
 import { version as workflowCoreVersion } from '../version.js';
-import { getWorkflowQueueName } from './helpers.js';
+import { getWorkflowQueueName, queueMessage } from './helpers.js';
 import { Run } from './run.js';
 import { getWorld } from './world.js';
 
@@ -170,7 +170,8 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.DeploymentId(deploymentId),
       });
 
-      await world.queue(
+      await queueMessage(
+        world,
         getWorkflowQueueName(workflowName),
         {
           runId,

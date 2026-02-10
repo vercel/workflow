@@ -14,7 +14,7 @@ import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
-import { getWorkflowQueueName } from './helpers.js';
+import { getWorkflowQueueName, queueMessage } from './helpers.js';
 import { getWorld } from './world.js';
 
 /**
@@ -130,7 +130,8 @@ export async function resumeHook<T = any>(
 
         // Re-trigger the workflow against the deployment ID associated
         // with the workflow run that the hook belongs to
-        await world.queue(
+        await queueMessage(
+          world,
           getWorkflowQueueName(workflowRun.workflowName),
           {
             runId: hook.runId,
