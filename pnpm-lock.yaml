@@ -735,8 +735,8 @@ importers:
         specifier: workspace:*
         version: link:../tsconfig
       next:
-        specifier: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app
-        version: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        specifier: 16.1.6
+        version: 16.1.6(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
 
   packages/nitro:
     dependencies:
@@ -12337,7 +12337,7 @@ packages:
         optional: true
 
   next@https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app:
-    resolution: {tarball: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app}
+    resolution: {tarball: https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app/}
     version: 16.2.0-canary.30
     engines: {node: '>=20.9.0'}
     hasBin: true
@@ -17987,8 +17987,7 @@ snapshots:
 
   '@next/env@16.0.10': {}
 
-  '@next/env@16.1.6':
-    optional: true
+  '@next/env@16.1.6': {}
 
   '@next/env@16.2.0-canary.30': {}
 
@@ -27901,7 +27900,6 @@ snapshots:
     transitivePeerDependencies:
       - '@babel/core'
       - babel-plugin-macros
-    optional: true
 
   next@https://files-r8fgftscl-vtest314-ijjk-testing.vercel.app(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
     dependencies:
