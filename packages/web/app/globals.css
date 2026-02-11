@@ -4,13 +4,14 @@
 @source "../../web-shared/src";
 @source "./components";
 
-/* Self-hosted Geist fonts (extracted from the "geist" npm package) */
+/* Geist fonts — referenced directly from the "geist" npm package. */
+/* Vite resolves these at build time and bundles them into the output. */
 @font-face {
   font-family: "Geist Sans";
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url("./assets/fonts/GeistSans-Variable.woff2") format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
 }
 
 @font-face {
@@ -18,7 +19,7 @@
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
-  src: url("./assets/fonts/GeistMono-Variable.woff2") format("woff2");
+  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
 }
 
 :root {
