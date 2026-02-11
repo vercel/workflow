@@ -13,12 +13,11 @@ export const getHostUrl = (webPort: number) => `http://localhost:${webPort}`;
 let httpServer: Server | null = null;
 
 /**
- * Get the path to the @workflow/web package
- * Since it's now a direct dependency, we can resolve it from node_modules
+ * Resolve the filesystem path to the @workflow/web package.
  *
- * We resolve relative to this file's location to handle cases where the CLI
- * is installed as a dependency of another project:
- *   test-project/node_modules/@workflow/cli/node_modules/@workflow/web
+ * Uses `createRequire` relative to this file so that nested
+ * install layouts are handled correctly, e.g.:
+ *   project/node_modules/@workflow/cli/node_modules/@workflow/web
  */
 function getWebPackagePath(): string {
   try {
@@ -51,12 +50,11 @@ async function isServerRunning(hostUrl: string): Promise<boolean> {
 }
 
 /**
- * Start the web server in-process using @workflow/web's exported startServer.
+ * Start the @workflow/web server in the current process.
  *
- * Instead of spawning `next start` as a child process, we dynamically import
- * the web package's server entry and start the Express server directly in the
- * CLI's Node.js process. This eliminates the `next` dependency requirement at
- * runtime and avoids child process management complexity.
+ * Dynamically imports the web package's server entry and starts an
+ * Express server on the requested port. The server is considered
+ * ready as soon as the `listen` callback fires.
  */
 async function startWebServer(webPort: number): Promise<boolean> {
   if (await isServerRunning(getHostUrl(webPort))) {
