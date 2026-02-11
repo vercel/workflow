@@ -36,7 +36,7 @@ describe.each([
     if (usesVercelWorld()) {
       const diagnosticsManifestPath = path.join(
         getWorkbenchAppPath(project),
-        '.vercel/output/diagnostics/manifest.json'
+        '.vercel/output/diagnostics/workflows/manifest.json'
       );
       await fs.access(diagnosticsManifestPath);
     }

@@ -1108,7 +1108,7 @@ export const OPTIONS = handler;`;
       await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
       if (this.shouldEmitVercelDiagnostics) {
         const diagnosticsManifestPath = this.resolvePath(
-          '.vercel/output/diagnostics/manifest.json'
+          '.vercel/output/diagnostics/workflows/manifest.json'
         );
         await this.ensureDirectory(diagnosticsManifestPath);
         await writeFile(diagnosticsManifestPath, manifestJson);
