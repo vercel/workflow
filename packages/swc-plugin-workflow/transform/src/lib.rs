@@ -6828,7 +6828,7 @@ impl VisitMut for StepTransform {
         let binding_name = self.current_class_binding_name.take();
 
         // Get the internal class name (used for current_class_name tracking)
-        let internal_class_name = class_expr
+        let mut internal_class_name = class_expr
             .ident
             .as_ref()
             .map(|i| i.sym.to_string())
@@ -6857,8 +6857,8 @@ impl VisitMut for StepTransform {
         // serialization class registration. Without a name, the class `.name`
         // property is empty and lookups can fail at runtime. Re-insert the
         // binding name so the output becomes `var Foo = class Foo { ... }` —
-        // semantically identical but preserves the identifier through subsequent
-        // bundling passes.
+        // behaviorally equivalent for typical class usage and preserves the
+        // identifier through subsequent bundling passes.
         if has_serde && class_expr.ident.is_none() {
             if let Some(ref name) = binding_name {
                 class_expr.ident = Some(Ident::new(
@@ -6866,6 +6866,12 @@ impl VisitMut for StepTransform {
                     DUMMY_SP,
                     SyntaxContext::empty(),
                 ));
+                // Recompute internal_class_name and update current_class_name so
+                // that subsequent logic (e.g. step/workflow method naming and
+                // method-stripping filters) uses the actual class name rather
+                // than "AnonymousClass".
+                internal_class_name = name.clone();
+                self.current_class_name = Some(name.clone());
             }
         }
 

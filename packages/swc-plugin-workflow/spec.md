@@ -782,7 +782,7 @@ registerSerializationClass("class//./input//Shell", Shell);
 
 Note that:
 - The class expression `class { ... }` becomes `class Shell { ... }` — the binding name is inserted
-- This is semantically identical but preserves the `.name` property through subsequent bundling
+- For typical usage, behavior is preserved while ensuring the `.name` property survives subsequent bundling (an inner class name binding is introduced, which can differ in edge cases that depend on assigning to or shadowing that name inside the class body)
 - Classes that already have an internal name (e.g., `class _Bash { ... }`) are not modified
 - Only classes with serialization methods (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`) are affected
 
