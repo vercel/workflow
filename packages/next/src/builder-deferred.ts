@@ -404,12 +404,16 @@ export async function getNextBuilderDeferred() {
           ...trackedDiscoveredEntries.discoveredWorkflows,
         ])
       ).sort();
-      const discoveredSerdeFiles = Array.from(
+      const discoveredSerdeFileCandidates = Array.from(
         new Set([
           ...this.discoveredSerdeFiles,
           ...trackedDiscoveredEntries.discoveredSerdeFiles,
         ])
       ).sort();
+      const discoveredSerdeFiles = await this.collectTransitiveSerdeFiles({
+        entryFiles: [...discoveredStepFiles, ...discoveredWorkflowFiles],
+        serdeFiles: discoveredSerdeFileCandidates,
+      });
       const discoveredEntries = {
         discoveredSteps: discoveredStepFiles,
         discoveredWorkflows: discoveredWorkflowFiles,
@@ -1357,6 +1361,106 @@ export async function getNextBuilderDeferred() {
       }
 
       return Array.from(discoveredStepFiles).sort();
+    }
+
+    private async collectTransitiveSerdeFiles({
+      entryFiles,
+      serdeFiles,
+    }: {
+      entryFiles: string[];
+      serdeFiles: string[];
+    }): Promise<string[]> {
+      const normalizedEntryFiles = Array.from(
+        new Set(
+          entryFiles.map((entryFile) =>
+            this.normalizeDiscoveredFilePath(entryFile)
+          )
+        )
+      ).sort();
+      const discoveredSerdeFiles = new Set(
+        serdeFiles.map((serdeFile) =>
+          this.normalizeDiscoveredFilePath(serdeFile)
+        )
+      );
+      const queuedFiles = Array.from(
+        new Set([...normalizedEntryFiles, ...discoveredSerdeFiles])
+      );
+      const visitedFiles = new Set<string>();
+      const sourceCache = new Map<string, string | null>();
+      const patternCache = new Map<
+        string,
+        ReturnType<typeof detectWorkflowPatterns> | null
+      >();
+
+      const getSource = async (filePath: string): Promise<string | null> => {
+        if (sourceCache.has(filePath)) {
+          return sourceCache.get(filePath) ?? null;
+        }
+        try {
+          const source = await readFile(filePath, 'utf-8');
+          sourceCache.set(filePath, source);
+          return source;
+        } catch {
+          sourceCache.set(filePath, null);
+          return null;
+        }
+      };
+
+      const getPatterns = async (
+        filePath: string
+      ): Promise<ReturnType<typeof detectWorkflowPatterns> | null> => {
+        if (patternCache.has(filePath)) {
+          return patternCache.get(filePath) ?? null;
+        }
+        const source = await getSource(filePath);
+        if (source === null) {
+          patternCache.set(filePath, null);
+          return null;
+        }
+        const patterns = detectWorkflowPatterns(source);
+        patternCache.set(filePath, patterns);
+        return patterns;
+      };
+
+      while (queuedFiles.length > 0) {
+        const currentFile = queuedFiles.pop();
+        if (!currentFile || visitedFiles.has(currentFile)) {
+          continue;
+        }
+        visitedFiles.add(currentFile);
+
+        const currentSource = await getSource(currentFile);
+        if (currentSource === null) {
+          continue;
+        }
+
+        const relativeImportSpecifiers =
+          this.extractRelativeImportSpecifiers(currentSource);
+        for (const specifier of relativeImportSpecifiers) {
+          const resolvedImportPath =
+            await this.resolveTransitiveStepImportTargetPath(
+              currentFile,
+              specifier
+            );
+          if (!resolvedImportPath) {
+            continue;
+          }
+
+          if (!visitedFiles.has(resolvedImportPath)) {
+            queuedFiles.push(resolvedImportPath);
+          }
+
+          const importPatterns = await getPatterns(resolvedImportPath);
+          if (
+            importPatterns?.hasSerde &&
+            !isWorkflowSdkFile(resolvedImportPath)
+          ) {
+            discoveredSerdeFiles.add(resolvedImportPath);
+          }
+        }
+      }
+
+      return Array.from(discoveredSerdeFiles).sort();
     }
 
     private resolveBuiltInStepFilePath(): string | null {
