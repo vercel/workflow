@@ -7,6 +7,16 @@ import { getWorkbenchAppPath } from './utils';
 
 const exec = promisify(execOriginal);
 
+function usesVercelWorld(): boolean {
+  const configuredWorld = process.env.WORKFLOW_TARGET_WORLD;
+  const resolvedWorld =
+    configuredWorld || (process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local');
+
+  return (
+    resolvedWorld === 'vercel' || resolvedWorld === '@workflow/world-vercel'
+  );
+}
+
 describe.each([
   'nextjs-webpack',
   'nextjs-turbopack',
@@ -32,10 +42,10 @@ describe.each([
 
     expect(result.stderr).not.toContain('Error:');
 
-    if (project === 'nextjs-webpack' || project === 'nextjs-turbopack') {
+    if (usesVercelWorld()) {
       const diagnosticsManifestPath = path.join(
         getWorkbenchAppPath(project),
-        '.next/diagnostics/workflows/manifest.json'
+        '.vercel/output/diagnostics/manifest.json'
       );
       await fs.access(diagnosticsManifestPath);
     }

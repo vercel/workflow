@@ -412,7 +412,6 @@ export async function getNextBuilderDeferred() {
 
       const manifestFilePath = join(workflowGeneratedDir, 'manifest.json');
       const manifestBuildPath = join(manifestBuildDir, 'manifest.json');
-      const diagnosticsManifestPath = this.getDiagnosticsManifestPath();
       const workflowBundlePath = join(
         workflowGeneratedDir,
         `flow/${tempRouteFileName}`
@@ -424,7 +423,6 @@ export async function getNextBuilderDeferred() {
       });
       await this.rewriteJsonFileWithStableKeyOrder(manifestBuildPath);
       await this.copyFileIfChanged(manifestBuildPath, manifestFilePath);
-      await this.copyFileIfChanged(manifestBuildPath, diagnosticsManifestPath);
 
       await this.writeFunctionsConfig(outputDir);
 
@@ -526,16 +524,6 @@ export async function getNextBuilderDeferred() {
 
     private getDistDir(): string {
       return (this.config as { distDir?: string }).distDir || '.next';
-    }
-
-    private getDiagnosticsManifestPath(): string {
-      return join(
-        this.config.workingDir,
-        this.getDistDir(),
-        'diagnostics',
-        'workflows',
-        'manifest.json'
-      );
     }
 
     private getWorkflowsCacheFilePath(): string {

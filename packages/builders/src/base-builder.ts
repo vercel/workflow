@@ -1064,6 +1064,23 @@ export const OPTIONS = handler;`;
   }
 
   /**
+   * Whether diagnostics artifacts should be emitted to Vercel output.
+   * This is enabled when the resolved world target is Vercel.
+   */
+  protected get shouldEmitVercelDiagnostics(): boolean {
+    const configuredWorld = process.env.WORKFLOW_TARGET_WORLD;
+    const resolvedWorld =
+      configuredWorld ||
+      (process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local');
+
+    return (
+      resolvedWorld === 'vercel' ||
+      resolvedWorld === '@workflow/world-vercel' ||
+      this.config.buildTarget === 'vercel-build-output-api'
+    );
+  }
+
+  /**
    * Creates a manifest JSON file containing step/workflow/class metadata
    * and graph data for visualization.
    *
@@ -1096,6 +1113,13 @@ export const OPTIONS = handler;`;
 
       await mkdir(manifestDir, { recursive: true });
       await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
+      if (this.shouldEmitVercelDiagnostics) {
+        const diagnosticsManifestPath = this.resolvePath(
+          '.vercel/output/diagnostics/manifest.json'
+        );
+        await this.ensureDirectory(diagnosticsManifestPath);
+        await writeFile(diagnosticsManifestPath, manifestJson);
+      }
 
       const stepCount = Object.values(steps).reduce(
         (acc, s) => acc + Object.keys(s).length,

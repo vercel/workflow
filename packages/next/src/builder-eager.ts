@@ -67,9 +67,6 @@ export async function getNextBuilderEager() {
         manifestDir: workflowGeneratedDir,
         manifest,
       });
-      if (manifestJson) {
-        await this.writeDiagnosticsManifest(manifestJson);
-      }
 
       // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
       // Next.js serves files from public/ at the root URL.
@@ -431,26 +428,6 @@ export async function getNextBuilderEager() {
       await writeFile(
         join(outputDir, '.well-known/workflow/v1/config.json'),
         JSON.stringify(generatedConfig, null, 2)
-      );
-    }
-
-    private getDistDir(): string {
-      return (this.config as { distDir?: string }).distDir || '.next';
-    }
-
-    private async writeDiagnosticsManifest(
-      manifestJson: string
-    ): Promise<void> {
-      const diagnosticsManifestDir = join(
-        this.config.workingDir,
-        this.getDistDir(),
-        'diagnostics',
-        'workflows'
-      );
-      await mkdir(diagnosticsManifestDir, { recursive: true });
-      await writeFile(
-        join(diagnosticsManifestDir, 'manifest.json'),
-        manifestJson
       );
     }
 
