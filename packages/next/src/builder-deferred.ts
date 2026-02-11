@@ -384,15 +384,26 @@ export async function getNextBuilderDeferred() {
       await mkdir(cacheDir, { recursive: true });
       const manifestBuildDir = join(cacheDir, 'workflow-generated-manifest');
       const tempRouteFileName = 'route.js.temp';
+      const trackedDiscoveredEntries =
+        await this.collectTrackedDiscoveredEntries();
       const discoveredStepFiles = Array.from(
-        new Set([...this.discoveredStepFiles, ...implicitStepFiles])
+        new Set([
+          ...this.discoveredStepFiles,
+          ...trackedDiscoveredEntries.discoveredSteps,
+          ...implicitStepFiles,
+        ])
       ).sort();
       const discoveredWorkflowFiles = Array.from(
-        new Set([...this.discoveredWorkflowFiles])
+        new Set([
+          ...this.discoveredWorkflowFiles,
+          ...trackedDiscoveredEntries.discoveredWorkflows,
+        ])
       ).sort();
-      const trackedSerdeFiles = await this.collectTrackedSerdeFiles();
       const discoveredSerdeFiles = Array.from(
-        new Set([...this.discoveredSerdeFiles, ...trackedSerdeFiles])
+        new Set([
+          ...this.discoveredSerdeFiles,
+          ...trackedDiscoveredEntries.discoveredSerdeFiles,
+        ])
       ).sort();
       const discoveredEntries = {
         discoveredSteps: discoveredStepFiles,
@@ -606,19 +617,32 @@ export async function getNextBuilderDeferred() {
       return signatureHash.digest('hex');
     }
 
-    private async collectTrackedSerdeFiles(): Promise<string[]> {
+    private async collectTrackedDiscoveredEntries(): Promise<{
+      discoveredSteps: string[];
+      discoveredWorkflows: string[];
+      discoveredSerdeFiles: string[];
+    }> {
       if (this.trackedDependencyFiles.size === 0) {
-        return [];
+        return {
+          discoveredSteps: [],
+          discoveredWorkflows: [],
+          discoveredSerdeFiles: [],
+        };
       }
 
-      const { serdeFiles } = await this.reconcileDiscoveredEntries({
-        workflowCandidates: [],
-        stepCandidates: [],
-        serdeCandidates: this.trackedDependencyFiles,
-        validatePatterns: true,
-      });
+      const { workflowFiles, stepFiles, serdeFiles } =
+        await this.reconcileDiscoveredEntries({
+          workflowCandidates: this.trackedDependencyFiles,
+          stepCandidates: this.trackedDependencyFiles,
+          serdeCandidates: this.trackedDependencyFiles,
+          validatePatterns: true,
+        });
 
-      return Array.from(serdeFiles);
+      return {
+        discoveredSteps: Array.from(stepFiles).sort(),
+        discoveredWorkflows: Array.from(workflowFiles).sort(),
+        discoveredSerdeFiles: Array.from(serdeFiles).sort(),
+      };
     }
 
     private async refreshTrackedDependencyFiles(
