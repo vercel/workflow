@@ -893,6 +893,7 @@ export const WorkflowTraceViewer = ({
   onLoadMoreSpans,
   hasMoreSpans = false,
   isLoadingMoreSpans = false,
+  onDecrypt,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -929,6 +930,8 @@ export const WorkflowTraceViewer = ({
   hasMoreSpans?: boolean;
   /** Whether trace pagination is currently fetching another page. */
   isLoadingMoreSpans?: boolean;
+  /** Callback to decrypt encrypted data (triggers audit-logged key retrieval) */
+  onDecrypt?: () => void;
 }) => {
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
     null
@@ -1252,6 +1255,7 @@ export const WorkflowTraceViewer = ({
                 onWakeUpSleep={onWakeUpSleep}
                 onLoadEventData={onLoadEventData}
                 onResolveHook={onResolveHook}
+                onDecrypt={onDecrypt}
                 selectedSpan={selectedSpan}
               />
             </ErrorBoundary>

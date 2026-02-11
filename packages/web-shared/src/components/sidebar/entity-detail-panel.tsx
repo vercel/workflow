@@ -62,6 +62,7 @@ export function EntityDetailPanel({
   onWakeUpSleep,
   onLoadEventData,
   onResolveHook,
+  onDecrypt,
   selectedSpan,
 }: {
   run: WorkflowRun;
@@ -93,6 +94,8 @@ export function EntityDetailPanel({
     payload: unknown,
     hook?: Hook
   ) => Promise<void>;
+  /** Callback to decrypt encrypted data */
+  onDecrypt?: () => void;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
 }): React.JSX.Element | null {
@@ -470,6 +473,20 @@ export function EntityDetailPanel({
         onSubmit={handleResolveHook}
         isSubmitting={resolvingHook}
       />
+
+      {/* Content display */}
+      <AttributePanel
+        data={displayData}
+        moduleSpecifier={moduleSpecifier}
+        expiredAt={run.expiredAt}
+        isLoading={loading}
+        error={error ?? undefined}
+        onStreamClick={onStreamClick}
+        onDecrypt={onDecrypt}
+      />
+      {resource !== 'run' && rawEvents && (
+        <EventsList events={rawEvents} onLoadEventData={onLoadEventData} />
+      )}
     </div>
   );
 }

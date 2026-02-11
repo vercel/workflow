@@ -19,13 +19,17 @@ import type {
 } from '@workflow/world';
 import chalk from 'chalk';
 
-/** A function that resolves an encryption key for a given runId. */
+/** A function that resolves an encryption key for a given runId, or null to skip decryption. */
 export type EncryptionKeyResolver =
   | ((runId: string) => Promise<Uint8Array | undefined>)
   | null;
 
-/** Create an EncryptionKeyResolver from a World instance */
-function createResolver(world: World): EncryptionKeyResolver {
+/**
+ * Create an EncryptionKeyResolver from a World instance.
+ * Returns null if decrypt is false — encrypted data will show as a placeholder.
+ */
+function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
+  if (!decrypt) return null;
   if (!world.getEncryptionKeyForRun) return null;
   return (runId: string) => world.getEncryptionKeyForRun!(runId);
 }
@@ -521,7 +525,8 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
 };
 
 export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
-  const resolveKey = createResolver(world);
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.stepId || opts.runId) {
     logger.warn(
       'Filtering by step-id or run-id is not supported in list calls, ignoring filter.'
@@ -601,7 +606,8 @@ export const getRecentRun = async (
   world: World,
   opts: InspectCLIOptions = {}
 ) => {
-  const resolveKey = createResolver(world);
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   logger.warn(`No runId provided, fetching data for latest run instead.`);
   try {
     const runs = await world.runs.list({
@@ -625,7 +631,8 @@ export const showRun = async (
   runId: string,
   opts: InspectCLIOptions = {}
 ) => {
-  const resolveKey = createResolver(world);
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
@@ -657,7 +664,8 @@ export const listSteps = async (
     runId: undefined,
   }
 ) => {
-  const resolveKey = createResolver(world);
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.stepId) {
     logger.warn(
       'Filtering by step-id is not supported in list calls, ignoring filter.'
@@ -749,7 +757,8 @@ export const showStep = async (
   stepId: string,
   opts: InspectCLIOptions = {}
 ) => {
-  const resolveKey = createResolver(world);
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
@@ -962,7 +971,8 @@ export const listEvents = async (
 };
 
 export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
-  const resolveKey = createResolver(world);
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.workflowName) {
     logger.warn(
       'Filtering by workflow-name is not supported for hooks, ignoring filter.'
@@ -1054,7 +1064,8 @@ export const showHook = async (
   hookId: string,
   opts: InspectCLIOptions = {}
 ) => {
-  const resolveKey = createResolver(world);
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
