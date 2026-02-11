@@ -19,9 +19,9 @@ export const Navbar = () => (
           <Logo />
         </DynamicLink>
       </div>
-      <DesktopMenu className="hidden md:flex" items={nav} />
+      <DesktopMenu className="hidden xl:flex" items={nav} />
       <div className="ml-auto flex flex-1 items-center justify-end gap-2">
-        <SearchButton className="hidden md:flex" />
+        <SearchButton className="hidden xl:flex" />
         <Chat basePath={basePath} suggestions={suggestions} />
         <MobileMenu />
       </div>

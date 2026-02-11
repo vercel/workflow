@@ -4,8 +4,6 @@ import type { NextConfig } from 'next';
 const withMDX = createMDX();
 
 const config: NextConfig = {
-  reactStrictMode: true,
-
   experimental: {
     turbopackFileSystemCacheForDev: true,
   },
@@ -13,6 +11,7 @@ const config: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+
   outputFileTracingIncludes: {
     '/og/\\[\\.\\.\\.slug\\]': ['./lib/og/assets/**/*'],
     '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
