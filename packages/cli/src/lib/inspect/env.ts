@@ -40,6 +40,7 @@ export const getEnvVars = (): Record<string, string> => {
     WORKFLOW_VERCEL_ENV: env.WORKFLOW_VERCEL_ENV || '',
     WORKFLOW_VERCEL_AUTH_TOKEN: env.WORKFLOW_VERCEL_AUTH_TOKEN || '',
     WORKFLOW_VERCEL_PROJECT: env.WORKFLOW_VERCEL_PROJECT || '',
+    WORKFLOW_VERCEL_PROJECT_NAME: env.WORKFLOW_VERCEL_PROJECT_NAME || '',
     WORKFLOW_VERCEL_TEAM: env.WORKFLOW_VERCEL_TEAM || '',
     WORKFLOW_LOCAL_UI: env.WORKFLOW_LOCAL_UI || '',
     PORT: env.PORT || '',
@@ -189,7 +190,10 @@ export const inferVercelEnvVars = async () => {
     const inferredProject = await inferVercelProjectAndTeam();
     if (inferredProject) {
       const { projectId, projectName, teamId } = inferredProject;
-      envVars.WORKFLOW_VERCEL_PROJECT = projectName || projectId;
+      // WORKFLOW_VERCEL_PROJECT is the real project ID (e.g., prj_xxx)
+      envVars.WORKFLOW_VERCEL_PROJECT = projectId;
+      // WORKFLOW_VERCEL_PROJECT_NAME is the project slug (e.g., my-app)
+      envVars.WORKFLOW_VERCEL_PROJECT_NAME = projectName || projectId;
       envVars.WORKFLOW_VERCEL_TEAM = teamId;
       writeEnvVars(envVars);
     } else {

@@ -36,6 +36,7 @@ export const createWorld = (): World => {
       projectConfig: {
         environment: process.env.WORKFLOW_VERCEL_ENV,
         projectId: process.env.WORKFLOW_VERCEL_PROJECT,
+        projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME,
         teamId: process.env.WORKFLOW_VERCEL_TEAM,
       },
     });

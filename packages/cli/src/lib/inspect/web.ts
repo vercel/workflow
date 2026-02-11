@@ -98,7 +98,8 @@ export async function launchWebUI(
     envVars.WORKFLOW_TARGET_WORLD
   );
   const teamSlug = envVars.WORKFLOW_VERCEL_TEAM;
-  const projectName = envVars.WORKFLOW_VERCEL_PROJECT;
+  const projectName =
+    envVars.WORKFLOW_VERCEL_PROJECT_NAME || envVars.WORKFLOW_VERCEL_PROJECT;
 
   // Check if user wants local UI via flag or environment variable
   const useLocalUi = flags.localUi;
