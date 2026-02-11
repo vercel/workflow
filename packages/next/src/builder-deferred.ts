@@ -79,6 +79,7 @@ export async function getNextBuilderDeferred() {
       const outputDir = await this.findAppDirectory();
 
       await this.initializeDiscoveryState();
+      await this.cleanupGeneratedArtifactsOnBoot(outputDir);
 
       await this.writeStubFiles(outputDir);
       await this.createDiscoverySocketServer();
@@ -482,8 +483,13 @@ export async function getNextBuilderDeferred() {
         manifestDir: manifestBuildDir,
         manifest,
       });
-      await this.rewriteJsonFileWithStableKeyOrder(manifestBuildPath);
-      await this.copyFileIfChanged(manifestBuildPath, manifestFilePath);
+      if (manifestJson) {
+        await this.rewriteJsonFileWithStableKeyOrder(manifestBuildPath);
+        await this.copyFileIfChanged(manifestBuildPath, manifestFilePath);
+      } else {
+        await rm(manifestBuildPath, { force: true });
+        await rm(manifestFilePath, { force: true });
+      }
 
       await this.writeFunctionsConfig(outputDir);
 
@@ -516,6 +522,61 @@ export async function getNextBuilderDeferred() {
 
       // Notify deferred entry loaders waiting on route.js stubs.
       this.socketIO?.emit('build-complete');
+    }
+
+    private async cleanupGeneratedArtifactsOnBoot(
+      outputDir: string
+    ): Promise<void> {
+      const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');
+      const flowRouteDir = join(workflowGeneratedDir, 'flow');
+      const stepRouteDir = join(workflowGeneratedDir, 'step');
+      const webhookRouteDir = join(workflowGeneratedDir, 'webhook/[token]');
+
+      const staleArtifactPaths = [
+        join(flowRouteDir, 'route.js.temp'),
+        join(flowRouteDir, 'route.js.temp.debug.json'),
+        join(flowRouteDir, 'route.js.debug.json'),
+        join(stepRouteDir, 'route.js.temp'),
+        join(stepRouteDir, 'route.js.temp.debug.json'),
+        join(stepRouteDir, 'route.js.debug.json'),
+        join(stepRouteDir, DEFERRED_STEP_COPY_DIR_NAME),
+        join(webhookRouteDir, 'route.js.temp'),
+        join(workflowGeneratedDir, 'manifest.json'),
+      ];
+
+      await Promise.all(
+        staleArtifactPaths.map((stalePath) =>
+          rm(stalePath, { recursive: true, force: true })
+        )
+      );
+
+      await Promise.all([
+        this.removeStaleDeferredTempFiles(flowRouteDir),
+        this.removeStaleDeferredTempFiles(stepRouteDir),
+        this.removeStaleDeferredTempFiles(webhookRouteDir),
+      ]);
+    }
+
+    private async removeStaleDeferredTempFiles(
+      routeDir: string
+    ): Promise<void> {
+      const routeEntries = await readdir(routeDir, {
+        withFileTypes: true,
+      }).catch(() => []);
+      await Promise.all(
+        routeEntries
+          .filter(
+            (entry) =>
+              entry.isFile() &&
+              entry.name.startsWith('route.js.') &&
+              entry.name.endsWith('.tmp')
+          )
+          .map((entry) =>
+            rm(join(routeDir, entry.name), {
+              force: true,
+            })
+          )
+      );
     }
 
     private async createDiscoverySocketServer(): Promise<void> {
