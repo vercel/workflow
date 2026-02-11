@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 4.1.0-beta.12
+
+### Patch Changes
+
+- [#998](https://github.com/vercel/workflow/pull/998) [`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee) Thanks [@ijjk](https://github.com/ijjk)! - Expose workflows manifest under diagnostics folder
+
 ## 4.1.0-beta.11
 
 ### Minor Changes

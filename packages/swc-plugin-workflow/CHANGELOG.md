@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.1.0-beta.18
+
+### Patch Changes
+
+- [#991](https://github.com/vercel/workflow/pull/991) [`054e40c`](https://github.com/vercel/workflow/commit/054e40c91be615809c71d3ad29573c78c4491825) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix anonymous class expression names for serialization classes
+
 ## 4.1.0-beta.17
 
 ### Patch Changes

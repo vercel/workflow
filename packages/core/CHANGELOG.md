@@ -1,5 +1,24 @@
 # @workflow/core
 
+## 4.1.0-beta.55
+
+### Patch Changes
+
+- [#998](https://github.com/vercel/workflow/pull/998) [`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee) Thanks [@ijjk](https://github.com/ijjk)! - Expose workflows manifest under diagnostics folder
+
+- [#976](https://github.com/vercel/workflow/pull/976) [`a5935ab`](https://github.com/vercel/workflow/commit/a5935abec7c7e57b2a89c629203d567cd7ac76a7) Thanks [@ijjk](https://github.com/ijjk)! - Add lazy workflow/step discovery via deferredEntries in next
+
+- [#989](https://github.com/vercel/workflow/pull/989) [`fc4cad6`](https://github.com/vercel/workflow/commit/fc4cad68088b0f4fa4e5eeb828e2af29e05d4fe1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Normalize errors cleanly so objects get destructured
+
+- [#966](https://github.com/vercel/workflow/pull/966) [`56f2221`](https://github.com/vercel/workflow/commit/56f22219b338a5a2c29466798a5ad36a6a450498) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add 429 throttle retry handling and 500 server error retry with exponential backoff to the workflow and step runtimes
+
+- Updated dependencies [[`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee), [`56f2221`](https://github.com/vercel/workflow/commit/56f22219b338a5a2c29466798a5ad36a6a450498)]:
+  - @workflow/utils@4.1.0-beta.12
+  - @workflow/errors@4.1.0-beta.15
+  - @workflow/world@4.1.0-beta.4
+  - @workflow/world-vercel@4.1.0-beta.32
+  - @workflow/world-local@4.1.0-beta.31
+
 ## 4.1.0-beta.54
 
 ### Patch Changes

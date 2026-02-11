@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.1.0-beta.4
+
+### Patch Changes
+
+- [#966](https://github.com/vercel/workflow/pull/966) [`56f2221`](https://github.com/vercel/workflow/commit/56f22219b338a5a2c29466798a5ad36a6a450498) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add 429 throttle retry handling and 500 server error retry with exponential backoff to the workflow and step runtimes
+
 ## 4.1.0-beta.3
 
 ### Patch Changes
