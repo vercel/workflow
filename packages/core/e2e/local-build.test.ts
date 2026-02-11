@@ -3,19 +3,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, test } from 'vitest';
+import { usesVercelWorld } from '../../utils/src/world-target';
 import { getWorkbenchAppPath } from './utils';
 
 const exec = promisify(execOriginal);
-
-function usesVercelWorld(): boolean {
-  const configuredWorld = process.env.WORKFLOW_TARGET_WORLD;
-  const resolvedWorld =
-    configuredWorld || (process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local');
-
-  return (
-    resolvedWorld === 'vercel' || resolvedWorld === '@workflow/world-vercel'
-  );
-}
 
 describe.each([
   'nextjs-webpack',

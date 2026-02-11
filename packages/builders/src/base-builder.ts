@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { pluralize } from '@workflow/utils';
+import { pluralize, usesVercelWorld } from '@workflow/utils';
 import chalk from 'chalk';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
@@ -1068,15 +1068,8 @@ export const OPTIONS = handler;`;
    * This is enabled when the resolved world target is Vercel.
    */
   protected get shouldEmitVercelDiagnostics(): boolean {
-    const configuredWorld = process.env.WORKFLOW_TARGET_WORLD;
-    const resolvedWorld =
-      configuredWorld ||
-      (process.env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local');
-
     return (
-      resolvedWorld === 'vercel' ||
-      resolvedWorld === '@workflow/world-vercel' ||
-      this.config.buildTarget === 'vercel-build-output-api'
+      usesVercelWorld() || this.config.buildTarget === 'vercel-build-output-api'
     );
   }
 
