@@ -89,16 +89,8 @@ export async function getNextBuilderDeferred() {
       await this.validateDiscoveredEntryFiles();
       const implicitStepFiles = await this.resolveImplicitStepFiles();
 
-      const inputFiles = Array.from(
-        new Set([
-          ...this.discoveredWorkflowFiles,
-          ...this.discoveredStepFiles,
-          ...this.discoveredSerdeFiles,
-          ...implicitStepFiles,
-        ])
-      ).sort();
       const pendingBuild = this.deferredBuildQueue.then(() =>
-        this.buildDeferredEntriesUntilStable(inputFiles, implicitStepFiles)
+        this.buildDeferredEntriesUntilStable(implicitStepFiles)
       );
 
       // Keep the queue chain alive even when the current build fails so future
@@ -111,8 +103,18 @@ export async function getNextBuilderDeferred() {
       await pendingBuild;
     }
 
+    private getCurrentInputFiles(implicitStepFiles: string[]): string[] {
+      return Array.from(
+        new Set([
+          ...this.discoveredWorkflowFiles,
+          ...this.discoveredStepFiles,
+          ...this.discoveredSerdeFiles,
+          ...implicitStepFiles,
+        ])
+      ).sort();
+    }
+
     private async buildDeferredEntriesUntilStable(
-      inputFiles: string[],
       implicitStepFiles: string[]
     ): Promise<void> {
       // A successful build can discover additional transitive dependency files
@@ -121,6 +123,7 @@ export async function getNextBuilderDeferred() {
       const maxBuildPasses = 3;
 
       for (let buildPass = 0; buildPass < maxBuildPasses; buildPass++) {
+        const inputFiles = this.getCurrentInputFiles(implicitStepFiles);
         const buildSignature =
           await this.createDeferredBuildSignature(inputFiles);
         if (buildSignature === this.lastDeferredBuildSignature) {
@@ -150,8 +153,10 @@ export async function getNextBuilderDeferred() {
           return;
         }
 
+        const postBuildInputFiles =
+          this.getCurrentInputFiles(implicitStepFiles);
         const postBuildSignature =
-          await this.createDeferredBuildSignature(inputFiles);
+          await this.createDeferredBuildSignature(postBuildInputFiles);
         if (postBuildSignature === buildSignature) {
           return;
         }
@@ -410,6 +415,14 @@ export async function getNextBuilderDeferred() {
         discoveredWorkflows: discoveredWorkflowFiles,
         discoveredSerdeFiles,
       };
+      const buildInputFiles = Array.from(
+        new Set([
+          ...inputFiles,
+          ...discoveredStepFiles,
+          ...discoveredWorkflowFiles,
+          ...discoveredSerdeFiles,
+        ])
+      ).sort();
 
       // Ensure output directories exist
       await mkdir(workflowGeneratedDir, { recursive: true });
@@ -422,7 +435,7 @@ export async function getNextBuilderDeferred() {
       const tsconfigPath = await this.findTsConfigPath();
 
       const options = {
-        inputFiles,
+        inputFiles: buildInputFiles,
         workflowGeneratedDir,
         tsconfigPath,
         routeFileName: tempRouteFileName,
@@ -1174,6 +1187,178 @@ export async function getNextBuilderDeferred() {
       return rewrittenSource;
     }
 
+    private extractRelativeImportSpecifiers(source: string): string[] {
+      const relativeSpecifiers = new Set<string>();
+      const importPatterns = [
+        /from\s+['"]([^'"]+)['"]/g,
+        /import\s+['"]([^'"]+)['"]/g,
+        /import\(\s*['"]([^'"]+)['"]\s*\)/g,
+        /require\(\s*['"]([^'"]+)['"]\s*\)/g,
+      ];
+
+      for (const importPattern of importPatterns) {
+        for (const match of source.matchAll(importPattern)) {
+          const specifier = match[1];
+          if (specifier?.startsWith('.')) {
+            relativeSpecifiers.add(specifier);
+          }
+        }
+      }
+
+      return Array.from(relativeSpecifiers);
+    }
+
+    private shouldSkipTransitiveStepFile(filePath: string): boolean {
+      const normalizedPath = filePath.replace(/\\/g, '/');
+      return (
+        normalizedPath.includes('/.well-known/workflow/') ||
+        normalizedPath.includes('/.next/') ||
+        normalizedPath.includes('/node_modules/') ||
+        normalizedPath.includes('/.pnpm/')
+      );
+    }
+
+    private async resolveTransitiveStepImportTargetPath(
+      sourceFilePath: string,
+      specifier: string
+    ): Promise<string | null> {
+      const specifierMatch = specifier.match(/^([^?#]+)(.*)$/);
+      const importPath = specifierMatch?.[1] ?? specifier;
+      const absoluteTargetPath = resolve(dirname(sourceFilePath), importPath);
+
+      const candidatePaths = new Set<string>([
+        this.resolveCopiedStepImportTargetPath(absoluteTargetPath),
+      ]);
+
+      if (!extname(absoluteTargetPath)) {
+        const extensionCandidates = [
+          '.ts',
+          '.tsx',
+          '.mts',
+          '.cts',
+          '.js',
+          '.jsx',
+          '.mjs',
+          '.cjs',
+        ];
+        for (const extensionCandidate of extensionCandidates) {
+          candidatePaths.add(`${absoluteTargetPath}${extensionCandidate}`);
+          candidatePaths.add(
+            join(absoluteTargetPath, `index${extensionCandidate}`)
+          );
+        }
+      }
+
+      for (const candidatePath of candidatePaths) {
+        const resolvedPath =
+          this.resolveCopiedStepImportTargetPath(candidatePath);
+        const normalizedResolvedPath =
+          this.normalizeDiscoveredFilePath(resolvedPath);
+
+        if (this.shouldSkipTransitiveStepFile(normalizedResolvedPath)) {
+          continue;
+        }
+
+        try {
+          const fileStats = await stat(normalizedResolvedPath);
+          if (fileStats.isFile()) {
+            return normalizedResolvedPath;
+          }
+        } catch {
+          // Try the next candidate path.
+        }
+      }
+
+      return null;
+    }
+
+    private async collectTransitiveStepFiles(
+      stepFiles: string[]
+    ): Promise<string[]> {
+      const normalizedStepFiles = Array.from(
+        new Set(
+          stepFiles.map((stepFile) =>
+            this.normalizeDiscoveredFilePath(stepFile)
+          )
+        )
+      ).sort();
+      const discoveredStepFiles = new Set(normalizedStepFiles);
+      const queuedFiles = [...normalizedStepFiles];
+      const visitedFiles = new Set<string>();
+      const sourceCache = new Map<string, string | null>();
+      const patternCache = new Map<
+        string,
+        ReturnType<typeof detectWorkflowPatterns> | null
+      >();
+
+      const getSource = async (filePath: string): Promise<string | null> => {
+        if (sourceCache.has(filePath)) {
+          return sourceCache.get(filePath) ?? null;
+        }
+        try {
+          const source = await readFile(filePath, 'utf-8');
+          sourceCache.set(filePath, source);
+          return source;
+        } catch {
+          sourceCache.set(filePath, null);
+          return null;
+        }
+      };
+
+      const getPatterns = async (
+        filePath: string
+      ): Promise<ReturnType<typeof detectWorkflowPatterns> | null> => {
+        if (patternCache.has(filePath)) {
+          return patternCache.get(filePath) ?? null;
+        }
+        const source = await getSource(filePath);
+        if (source === null) {
+          patternCache.set(filePath, null);
+          return null;
+        }
+        const patterns = detectWorkflowPatterns(source);
+        patternCache.set(filePath, patterns);
+        return patterns;
+      };
+
+      while (queuedFiles.length > 0) {
+        const currentFile = queuedFiles.pop();
+        if (!currentFile || visitedFiles.has(currentFile)) {
+          continue;
+        }
+        visitedFiles.add(currentFile);
+
+        const currentSource = await getSource(currentFile);
+        if (currentSource === null) {
+          continue;
+        }
+
+        const relativeImportSpecifiers =
+          this.extractRelativeImportSpecifiers(currentSource);
+        for (const specifier of relativeImportSpecifiers) {
+          const resolvedImportPath =
+            await this.resolveTransitiveStepImportTargetPath(
+              currentFile,
+              specifier
+            );
+          if (!resolvedImportPath) {
+            continue;
+          }
+
+          if (!visitedFiles.has(resolvedImportPath)) {
+            queuedFiles.push(resolvedImportPath);
+          }
+
+          const importPatterns = await getPatterns(resolvedImportPath);
+          if (importPatterns?.hasUseStep) {
+            discoveredStepFiles.add(resolvedImportPath);
+          }
+        }
+      }
+
+      return Array.from(discoveredStepFiles).sort();
+    }
+
     private resolveBuiltInStepFilePath(): string | null {
       try {
         return this.normalizeDiscoveredFilePath(
@@ -1344,7 +1529,9 @@ export async function getNextBuilderDeferred() {
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
       await mkdir(stepsRouteDir, { recursive: true });
       const discovered = discoveredEntries;
-      const stepFiles = [...discovered.discoveredSteps].sort();
+      const stepFiles = await this.collectTransitiveStepFiles(
+        [...discovered.discoveredSteps].sort()
+      );
       const workflowFiles = [...discovered.discoveredWorkflows].sort();
       const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
       const stepFileSet = new Set(stepFiles);
