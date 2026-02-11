@@ -68,9 +68,7 @@ export function createStreamer(
 
   const STREAM_TOPIC = 'workflow_event_chunk';
   const listenSubscription = postgres.listen(STREAM_TOPIC, async (msg) => {
-    const parsed = await Promise.resolve(msg)
-      .then(JSON.parse)
-      .then(StreamPublishMessage.parse);
+    const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
     const key = `strm:${parsed.streamId}` as const;
     if (!events.listenerCount(key)) {
