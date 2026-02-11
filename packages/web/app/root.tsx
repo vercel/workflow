@@ -29,6 +29,21 @@ export async function loader() {
   return { serverConfig };
 }
 
+// Catch-all action: handles stray POST requests (e.g. from Radix UI dialogs
+// that render internal <form method="dialog"> elements).
+export async function action({ request }: { request: Request }) {
+  const url = new URL(request.url);
+  const contentType = request.headers.get('content-type') || '(none)';
+  const body = await request.text().catch(() => '(unreadable)');
+  console.warn(
+    `[root action] Unexpected POST to ${url.pathname}`,
+    `\n  Content-Type: ${contentType}`,
+    `\n  Referer: ${request.headers.get('referer') || '(none)'}`,
+    `\n  Body: ${body.slice(0, 500) || '(empty)'}`
+  );
+  return null;
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>

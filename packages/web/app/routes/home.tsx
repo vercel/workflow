@@ -1,18 +1,10 @@
 import { ErrorBoundary as ErrorBoundaryComponent } from '@workflow/web-shared';
-import { redirect, useNavigate, useSearchParams } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import { HooksTable } from '~/components/hooks-table';
 import { RunsTable } from '~/components/runs-table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import { WorkflowsList } from '~/components/workflows-list';
 import { useServerConfig } from '~/lib/world-config-context';
-
-/**
- * Action handler for POST requests to /.
- * Mutations go through /api/rpc; redirect stray POSTs back to GET.
- */
-export async function action() {
-  return redirect('/');
-}
 
 export default function Home() {
   const navigate = useNavigate();
