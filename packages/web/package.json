@@ -7,10 +7,14 @@
   "files": [
     "build",
     "server.js",
+    "server.d.ts",
     "package.json"
   ],
   "exports": {
-    "./server": "./server.js",
+    "./server": {
+      "types": "./server.d.ts",
+      "default": "./server.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

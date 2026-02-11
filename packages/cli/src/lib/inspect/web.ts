@@ -1,48 +1,20 @@
 import type { Server } from 'node:http';
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
 import chalk from 'chalk';
 import open from 'open';
 import { logger } from '../config/log.js';
 import { getEnvVars } from './env.js';
 import { getVercelDashboardUrl } from './vercel-api.js';
 
-export const WEB_PACKAGE_NAME = '@workflow/web';
 export const getHostUrl = (webPort: number) => `http://localhost:${webPort}`;
 
 let httpServer: Server | null = null;
 
 /**
- * Resolve the filesystem path to the @workflow/web package.
- *
- * Uses `createRequire` relative to this file so that nested
- * install layouts are handled correctly, e.g.:
- *   project/node_modules/@workflow/cli/node_modules/@workflow/web
- */
-function getWebPackagePath(): string {
-  try {
-    const requireFromHere = createRequire(import.meta.url);
-    const packageJsonPath = requireFromHere.resolve(
-      `${WEB_PACKAGE_NAME}/package.json`
-    );
-    logger.debug(`Resolved web package: ${packageJsonPath}`);
-    return dirname(packageJsonPath);
-  } catch (error) {
-    throw new Error(
-      `Failed to resolve ${WEB_PACKAGE_NAME} package. ` +
-        `This should be installed as a dependency of the CLI. Error: ${error}`
-    );
-  }
-}
-
-/**
- * Check if server is already running on the port
+ * Check if a server is already listening on the given URL.
  */
 async function isServerRunning(hostUrl: string): Promise<boolean> {
   try {
-    const response = await fetch(hostUrl, {
-      method: 'HEAD',
-    });
+    const response = await fetch(hostUrl, { method: 'HEAD' });
     return response.ok;
   } catch {
     return false;
@@ -51,10 +23,6 @@ async function isServerRunning(hostUrl: string): Promise<boolean> {
 
 /**
  * Start the @workflow/web server in the current process.
- *
- * Dynamically imports the web package's server entry and starts an
- * Express server on the requested port. The server is considered
- * ready as soon as the `listen` callback fires.
  */
 async function startWebServer(webPort: number): Promise<boolean> {
   if (await isServerRunning(getHostUrl(webPort))) {
@@ -62,18 +30,10 @@ async function startWebServer(webPort: number): Promise<boolean> {
     return true;
   }
 
-  const packagePath = getWebPackagePath();
-  logger.debug(`Using web package at: ${packagePath}`);
-
   try {
     logger.info('Starting web UI server...');
-
-    // Import the server entry from @workflow/web
-    const serverModule = await import(join(packagePath, 'server.js'));
-
-    // Start the server in-process
-    httpServer = await serverModule.startServer(webPort);
-
+    const { startServer } = await import('@workflow/web/server');
+    httpServer = await startServer(webPort);
     logger.success(chalk.green(`Web UI server started on port ${webPort}`));
     return true;
   } catch (error) {
