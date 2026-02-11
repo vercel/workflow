@@ -116,6 +116,7 @@ jobs:
   unit:
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     strategy:
       fail-fast: false
       matrix:
@@ -142,6 +143,7 @@ jobs:
   build-error-messages:
     name: Node.js Module Build Errors Test
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -277,6 +279,7 @@ jobs:
   getTestMatrix:
     name: Get Test Matrix
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
 
@@ -298,6 +301,7 @@ jobs:
   e2e-local-dev:
     name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -364,6 +368,7 @@ jobs:
   e2e-local-prod:
     name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -433,6 +438,7 @@ jobs:
   e2e-local-postgres:
     name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -522,6 +528,7 @@ jobs:
   e2e-windows:
     name: E2E Windows Tests
     runs-on: windows-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -613,6 +620,7 @@ jobs:
   getCommunityWorldsMatrix:
     name: Get Community Worlds Matrix
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
@@ -631,6 +639,7 @@ jobs:
 
   e2e-community:
     name: E2E Community World (${{ matrix.world.name }})
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getCommunityWorldsMatrix
     strategy:
       fail-fast: false
@@ -760,16 +769,33 @@ jobs:
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
           COMMUNITY_STATUS: ${{ needs.e2e-community.result }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
         run: |
           FAILED_JOBS=()
 
-          [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
-          [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
-          [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
-          [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
-          [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
-          [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
-          [[ "$COMMUNITY_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-community ($COMMUNITY_STATUS)")
+          # When workflow-server-test label is present, only check vercel-prod (others should be skipped)
+          # Otherwise, all jobs must succeed
+          if [[ "$HAS_LABEL" == "true" ]]; then
+            echo "workflow-server-test label detected - only checking required jobs"
+            [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+
+            # Verify other jobs were actually skipped
+            [[ "$UNIT_STATUS" == "skipped" ]] || echo "Warning: unit was not skipped ($UNIT_STATUS)"
+            [[ "$LOCAL_DEV_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dev was not skipped ($LOCAL_DEV_STATUS)"
+            [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
+            [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
+            [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
+            [[ "$COMMUNITY_STATUS" == "skipped" ]] || echo "Warning: e2e-community was not skipped ($COMMUNITY_STATUS)"
+          else
+            echo "Standard PR - checking all jobs"
+            [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
+            [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
+            [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
+            [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
+            [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
+            [[ "$COMMUNITY_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-community ($COMMUNITY_STATUS)")
+          fi
 
           if [[ ${#FAILED_JOBS[@]} -gt 0 ]]; then
             echo "The following E2E jobs did not succeed:"
@@ -777,7 +803,7 @@ jobs:
             exit 1
           fi
 
-          echo "All E2E jobs succeeded."
+          echo "All required E2E jobs succeeded."
 
   # Publish E2E results to GitHub Pages (main branch only)
   publish-results:
