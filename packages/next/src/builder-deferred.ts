@@ -384,36 +384,15 @@ export async function getNextBuilderDeferred() {
       await mkdir(cacheDir, { recursive: true });
       const manifestBuildDir = join(cacheDir, 'workflow-generated-manifest');
       const tempRouteFileName = 'route.js.temp';
-      const staticallyDiscoveredEntries = await this.discoverEntries(
-        inputFiles,
-        workflowGeneratedDir
-      );
       const discoveredStepFiles = Array.from(
-        new Set([
-          ...this.discoveredStepFiles,
-          ...staticallyDiscoveredEntries.discoveredSteps.map((filePath) =>
-            this.normalizeDiscoveredFilePath(filePath)
-          ),
-          ...implicitStepFiles,
-        ])
+        new Set([...this.discoveredStepFiles, ...implicitStepFiles])
       ).sort();
       const discoveredWorkflowFiles = Array.from(
-        new Set([
-          ...this.discoveredWorkflowFiles,
-          ...staticallyDiscoveredEntries.discoveredWorkflows.map((filePath) =>
-            this.normalizeDiscoveredFilePath(filePath)
-          ),
-        ])
+        new Set([...this.discoveredWorkflowFiles])
       ).sort();
       const trackedSerdeFiles = await this.collectTrackedSerdeFiles();
       const discoveredSerdeFiles = Array.from(
-        new Set([
-          ...this.discoveredSerdeFiles,
-          ...staticallyDiscoveredEntries.discoveredSerdeFiles.map((filePath) =>
-            this.normalizeDiscoveredFilePath(filePath)
-          ),
-          ...trackedSerdeFiles,
-        ])
+        new Set([...this.discoveredSerdeFiles, ...trackedSerdeFiles])
       ).sort();
       const discoveredEntries = {
         discoveredSteps: discoveredStepFiles,
@@ -1330,21 +1309,17 @@ export async function getNextBuilderDeferred() {
     }
 
     private async buildStepsFunction({
-      inputFiles,
       workflowGeneratedDir,
       routeFileName = 'route.js',
       discoveredEntries,
     }: {
-      inputFiles: string[];
       workflowGeneratedDir: string;
       routeFileName?: string;
-      discoveredEntries?: DeferredDiscoveredEntries;
+      discoveredEntries: DeferredDiscoveredEntries;
     }) {
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
       await mkdir(stepsRouteDir, { recursive: true });
-      const discovered =
-        discoveredEntries ??
-        (await this.discoverEntries(inputFiles, stepsRouteDir));
+      const discovered = discoveredEntries;
       const stepFiles = [...discovered.discoveredSteps].sort();
       const workflowFiles = [...discovered.discoveredWorkflows].sort();
       const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
@@ -1431,7 +1406,7 @@ export async function getNextBuilderDeferred() {
       workflowGeneratedDir: string;
       tsconfigPath?: string;
       routeFileName?: string;
-      discoveredEntries?: DeferredDiscoveredEntries;
+      discoveredEntries: DeferredDiscoveredEntries;
     }) {
       const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
       await mkdir(workflowsRouteDir, { recursive: true });

@@ -90,6 +90,10 @@ export function withWorkflow(
             workflowsBundlePath: '', // not used in base
             stepsBundlePath: '', // not used in base
             webhookBundlePath: '', // node used in base
+            suppressCreateWorkflowsBundleLogs: useDeferredBuilder,
+            suppressCreateWorkflowsBundleWarnings: useDeferredBuilder,
+            suppressCreateWebhookBundleLogs: useDeferredBuilder,
+            suppressCreateManifestLogs: useDeferredBuilder,
             externalPackages: [
               // server-only and client-only are pseudo-packages handled by Next.js
               // during its build process. We mark them as external to prevent esbuild

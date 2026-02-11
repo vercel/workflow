@@ -45,6 +45,38 @@ export abstract class BaseBuilder {
   }
 
   /**
+   * Whether informational BaseBuilder logs should be printed.
+   * Subclasses can override this to silence progress logs while keeping warnings/errors.
+   */
+  protected get shouldLogBaseBuilderInfo(): boolean {
+    return true;
+  }
+
+  protected logBaseBuilderInfo(...args: unknown[]): void {
+    if (this.shouldLogBaseBuilderInfo) {
+      console.log(...args);
+    }
+  }
+
+  private logCreateWorkflowsBundleInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateWorkflowsBundleLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
+  }
+
+  private logCreateWebhookBundleInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateWebhookBundleLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
+  }
+
+  private logCreateManifestInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateManifestLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
+  }
+
+  /**
    * Performs the complete build process for workflows.
    * Subclasses must implement this to define their specific build steps.
    */
@@ -140,7 +172,7 @@ export abstract class BaseBuilder {
       });
     } catch (_) {}
 
-    console.log(
+    this.logBaseBuilderInfo(
       `Discovering workflow directives`,
       `${Date.now() - discoverStart}ms`
     );
@@ -204,7 +236,10 @@ export abstract class BaseBuilder {
   private logEsbuildMessages(
     result: { errors?: any[]; warnings?: any[] },
     phase: string,
-    throwOnError = true
+    throwOnError = true,
+    options?: {
+      suppressWarnings?: boolean;
+    }
   ): void {
     if (result.errors && result.errors.length > 0) {
       console.error(`❌ esbuild errors in ${phase}:`);
@@ -226,7 +261,11 @@ export abstract class BaseBuilder {
       }
     }
 
-    if (result.warnings && result.warnings.length > 0) {
+    if (
+      !options?.suppressWarnings &&
+      result.warnings &&
+      result.warnings.length > 0
+    ) {
       console.warn(`!  esbuild warnings in ${phase}:`);
       for (const warning of result.warnings) {
         console.warn(`  ${warning.text}`);
@@ -457,7 +496,10 @@ export abstract class BaseBuilder {
     const stepsResult = await esbuildCtx.rebuild();
 
     this.logEsbuildMessages(stepsResult, 'steps bundle creation');
-    console.log('Created steps bundle', `${Date.now() - stepsBundleStart}ms`);
+    this.logBaseBuilderInfo(
+      'Created steps bundle',
+      `${Date.now() - stepsBundleStart}ms`
+    );
 
     // Handle workflow-only files that may have been tree-shaken from the bundle.
     // These files have no steps, so esbuild removes them, but we still need their
@@ -489,7 +531,7 @@ export abstract class BaseBuilder {
           }
         } catch (error) {
           // Log warning but continue - don't fail build for workflow-only file issues
-          console.log(
+          console.warn(
             `Warning: Failed to extract workflow metadata from ${workflowFile}:`,
             error instanceof Error ? error.message : String(error)
           );
@@ -659,8 +701,15 @@ export abstract class BaseBuilder {
     });
     const interimBundle = await interimBundleCtx.rebuild();
 
-    this.logEsbuildMessages(interimBundle, 'intermediate workflow bundle');
-    console.log(
+    this.logEsbuildMessages(
+      interimBundle,
+      'intermediate workflow bundle',
+      true,
+      {
+        suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
+      }
+    );
+    this.logCreateWorkflowsBundleInfo(
       'Created intermediate workflow bundle',
       `${Date.now() - bundleStartTime}ms`
     );
@@ -752,8 +801,15 @@ export const POST = workflowEntrypoint(workflowCode);`;
         external: ['@aws-sdk/credential-provider-web-identity'],
       });
 
-      this.logEsbuildMessages(finalWorkflowResult, 'final workflow bundle');
-      console.log(
+      this.logEsbuildMessages(
+        finalWorkflowResult,
+        'final workflow bundle',
+        true,
+        {
+          suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
+        }
+      );
+      this.logCreateWorkflowsBundleInfo(
         'Created final workflow bundle',
         `${Date.now() - bundleStartTime}ms`
       );
@@ -782,8 +838,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
       return;
     }
 
-    console.log('Generating a client library at', this.config.clientBundlePath);
-    console.log(
+    this.logBaseBuilderInfo(
+      'Generating a client library at',
+      this.config.clientBundlePath
+    );
+    this.logBaseBuilderInfo(
       'NOTE: The recommended way to use workflow with a framework like NextJS is using the loader/plugin with webpack/turbobpack/rollup'
     );
 
@@ -885,7 +944,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     outfile: string;
     bundle?: boolean;
   }): Promise<void> {
-    console.log('Creating webhook route');
+    this.logCreateWebhookBundleInfo('Creating webhook route');
     await mkdir(dirname(outfile), { recursive: true });
 
     // Create a static route that calls resumeWebhook
@@ -968,7 +1027,7 @@ export const OPTIONS = handler;`;
     });
 
     this.logEsbuildMessages(result, 'webhook bundle creation');
-    console.log(
+    this.logCreateWebhookBundleInfo(
       'Created webhook bundle',
       `${Date.now() - webhookBundleStart}ms`
     );
@@ -1079,7 +1138,7 @@ export const OPTIONS = handler;`;
     manifest: WorkflowManifest;
   }): Promise<string | undefined> {
     const buildStart = Date.now();
-    console.log('Creating manifest...');
+    this.logCreateManifestInfo('Creating manifest...');
 
     try {
       const workflowGraphs = await extractWorkflowGraphs(workflowBundlePath);
@@ -1110,7 +1169,7 @@ export const OPTIONS = handler;`;
         0
       );
 
-      console.log(
+      this.logCreateManifestInfo(
         `Created manifest with ${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, and ${classCount} ${pluralize('class', 'classes', classCount)}`,
         `${Date.now() - buildStart}ms`
       );

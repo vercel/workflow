@@ -26,7 +26,6 @@ export function maybeInvalidateCacheOnSwcChange(distDir: string): void {
   }
 
   if (shouldInvalidateCache) {
-    console.log('workflow transform upgraded, invalidating Next.js cache');
     // Delete cache directories
     const cacheDirs = [cacheDir, devCacheDir];
     for (const dir of cacheDirs) {
