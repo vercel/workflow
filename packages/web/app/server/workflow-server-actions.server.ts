@@ -473,12 +473,16 @@ function createServerActionError<T>(
   requestParams?: Record<string, any>
 ): ServerActionResult<T> {
   const err = error instanceof Error ? error : new Error(String(error));
-  console.error(`[web-api] ${operation} error:`, err);
   let errorResponse: ServerActionError;
 
   if (WorkflowAPIError.is(error)) {
-    // If the World threw the error on fetch/fs.read, we add that data
-    // to the error object
+    // API-level errors (4xx/5xx from the world backend).
+    // 4xx errors are client-recoverable and shouldn't spam logs.
+    const status = error.status ?? 500;
+    const isClientError = status >= 400 && status < 500;
+    if (!isClientError) {
+      console.error(`[web-api] ${operation} error:`, err);
+    }
     errorResponse = {
       message: getUserFacingErrorMessage(err, error.status),
       layer: 'API',
@@ -492,7 +496,7 @@ function createServerActionError<T>(
       },
     };
   } else if (WorkflowRunNotFoundError.is(error)) {
-    // The World might repackage the error as a WorkflowRunNotFoundError
+    // Run not found — expected during polling for recently created runs.
     errorResponse = {
       message: getUserFacingErrorMessage(error, 404),
       layer: 'API',
@@ -500,6 +504,8 @@ function createServerActionError<T>(
       request: { operation, status: 404, params: requestParams ?? {} },
     };
   } else {
+    // Unrecognized errors (e.g., world backends throwing plain Error for 4xx).
+    // The error is returned to the caller — no server-side logging needed.
     errorResponse = {
       message: getUserFacingErrorMessage(err),
       layer: 'server',
