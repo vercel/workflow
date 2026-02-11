@@ -1,6 +1,19 @@
 import { ErrorBoundary as ErrorBoundaryComponent } from '@workflow/web-shared';
-import { useParams, useSearchParams } from 'react-router';
+import { redirect, useParams, useSearchParams } from 'react-router';
 import { RunDetailView } from '~/components/run-detail-view';
+import type { Route } from './+types/run-detail';
+
+/**
+ * Action handler for POST requests to /run/:runId.
+ *
+ * This route doesn't use form-based mutations (mutations go through
+ * the /api/rpc resource route instead), but React Router requires an
+ * action export if POST requests can reach this route. Redirect back
+ * to the same URL as a GET.
+ */
+export async function action({ params }: Route.ActionArgs) {
+  return redirect(`/run/${params.runId}`);
+}
 
 export default function RunDetailPage() {
   const params = useParams();
