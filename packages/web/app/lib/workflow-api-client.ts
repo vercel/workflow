@@ -92,7 +92,6 @@ export async function unwrapServerActionResult<T>(
     };
   }
   if (!result.success) {
-    console.error('[web-api-client] error', result.error);
     if (!result.error) {
       return {
         error: new WorkflowWebAPIError('Unknown error occurred', {

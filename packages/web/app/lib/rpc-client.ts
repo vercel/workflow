@@ -1,8 +1,9 @@
 /**
  * RPC client for calling server functions via the /api/rpc resource route.
  *
- * This replaces direct Next.js server action calls. Each function sends a
- * POST request to /api/rpc with the method name and parameters.
+ * Uses CBOR encoding for both requests and responses to preserve
+ * Uint8Array values (binary serialized data) across the wire.
+ * Client-side code is responsible for hydrating/deserializing the data.
  */
 
 import type {
@@ -12,6 +13,7 @@ import type {
   WorkflowRun,
   WorkflowRunStatus,
 } from '@workflow/world';
+import { decode, encode } from 'cbor-x';
 import type {
   EnvMap,
   HealthCheckEndpoint,
@@ -28,15 +30,19 @@ import type {
 async function rpc<T>(method: string, params?: any): Promise<T> {
   const res = await fetch('/api/rpc', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method, params: params ?? {} }),
+    headers: {
+      'Content-Type': 'application/cbor',
+      Accept: 'application/cbor',
+    },
+    body: new Uint8Array(encode({ method, params: params ?? {} })),
   });
   if (!res.ok) {
     throw new Error(
       `RPC call ${method} failed: ${res.status} ${res.statusText}`
     );
   }
-  return res.json();
+  const buffer = await res.arrayBuffer();
+  return decode(new Uint8Array(buffer));
 }
 
 // --- Data fetching functions (same signatures as the old server actions) ---
@@ -187,5 +193,5 @@ export async function runHealthCheck(
   return rpc('runHealthCheck', { worldEnv, endpoint, options });
 }
 
-// Note: readStreamServerAction returns a ReadableStream which can't go through JSON RPC.
-// Stream reading will need a dedicated resource route.
+// Note: readStreamServerAction returns a ReadableStream which can't go through CBOR RPC.
+// Stream reading uses a dedicated resource route at /api/stream/:streamId.

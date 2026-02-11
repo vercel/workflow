@@ -1,10 +1,12 @@
 /**
  * Resource route that exposes server functions as an RPC-style API.
  *
- * Client code calls these via fetch POST to /api/rpc with a JSON body
- * containing { method, params }. This replaces Next.js server actions.
+ * Client code calls these via fetch POST to /api/rpc with a CBOR-encoded
+ * body containing { method, params }. Responses are CBOR-encoded, which
+ * preserves Uint8Array values for client-side hydration/deserialization.
  */
 
+import { decode, encode } from 'cbor-x';
 import {
   cancelRun,
   fetchEvents,
@@ -58,33 +60,50 @@ const handlers = {
   getPublicServerConfig: () => getPublicServerConfig(),
 } as const;
 
+function cborResponse(data: unknown, status = 200): Response {
+  const encoded = encode(data);
+  return new Response(new Uint8Array(encoded), {
+    status,
+    headers: { 'Content-Type': 'application/cbor' },
+  });
+}
+
 export async function action({ request }: Route.ActionArgs) {
-  const body = await request.json();
-  const { method, params } = body as { method: string; params: any };
+  // Decode request body — accept both CBOR and JSON
+  let body: { method: string; params: any };
+  const contentType = request.headers.get('content-type') || '';
+  if (contentType.includes('application/cbor')) {
+    const buffer = await request.arrayBuffer();
+    body = decode(new Uint8Array(buffer));
+  } else {
+    body = await request.json();
+  }
+
+  const { method, params } = body;
 
   if (!method || !(method in handlers)) {
-    return Response.json(
+    return cborResponse(
       {
         success: false,
         error: { message: `Unknown method: ${method}`, layer: 'server' },
       },
-      { status: 400 }
+      400
     );
   }
 
   try {
     const result = await handlers[method as RpcMethod](params ?? {});
-    return Response.json(result);
+    return cborResponse(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return Response.json(
+    return cborResponse(
       { success: false, error: { message, layer: 'server' } },
-      { status: 500 }
+      500
     );
   }
 }
 
-// Also support GET for read operations
+// Also support GET for read operations (JSON — no binary data needed)
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const method = url.searchParams.get('method');

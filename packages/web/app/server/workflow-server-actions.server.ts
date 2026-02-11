@@ -549,28 +549,26 @@ function getUserFacingErrorMessage(error: Error, status?: number): string {
   return error.message || 'An unexpected error occurred';
 }
 
-const toJSONCompatible = <T>(data: T): T => {
-  if (data && typeof data === 'object') {
-    return JSON.parse(JSON.stringify(data)) as T;
-  }
-  return data;
-};
-
+/**
+ * Hydrate serialized data (input/output/eventData/metadata) from the
+ * world backend into plain JS values. Runs server-side before CBOR
+ * encoding the response.
+ */
 const hydrate = <T>(data: T): T => {
   try {
     return hydrateResourceIO(data as any) as T;
-  } catch (error) {
-    throw new Error('Failed to hydrate data', { cause: error });
+  } catch {
+    // If hydration fails, return the data as-is rather than crashing.
+    // The client will see raw (un-hydrated) data.
+    return data;
   }
 };
 
 /**
- * Helper to create successful responses
- * @param data - The data to return on success
- * @returns ServerActionResult with success=true and the data
+ * Helper to create successful responses.
+ * CBOR transport handles serialization — no JSON round-trip needed.
  */
 function createResponse<T>(data: T): ServerActionResult<T> {
-  data = toJSONCompatible(data);
   return {
     success: true,
     data,
@@ -630,8 +628,7 @@ export async function fetchRun(
   try {
     const world = await getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData });
-    const hydratedRun = hydrate(run as WorkflowRun);
-    return createResponse(hydratedRun);
+    return createResponse(hydrate(run as WorkflowRun));
   } catch (error) {
     return createServerActionError<WorkflowRun>(error, 'world.runs.get', {
       runId,
@@ -690,8 +687,7 @@ export async function fetchStep(
   try {
     const world = await getWorldFromEnv(worldEnv);
     const step = await world.steps.get(runId, stepId, { resolveData });
-    const hydratedStep = hydrate(step as Step);
-    return createResponse(hydratedStep);
+    return createResponse(hydrate(step as Step));
   } catch (error) {
     return createServerActionError<Step>(error, 'world.steps.get', {
       runId,
@@ -760,7 +756,7 @@ export async function fetchEventsByCorrelationId(
       resolveData: withData ? 'all' : 'none',
     });
     return createResponse({
-      data: result.data.map(hydrate),
+      data: (result.data as Event[]).map(hydrate),
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
     });

@@ -8,8 +8,6 @@ export default defineConfig(({ isSsrBuild }) => ({
   },
   plugins: [tailwindcss(), reactRouter()],
   resolve: {
-    alias: {
-      '~': '/app',
-    },
+    alias: [{ find: '~', replacement: '/app' }],
   },
 }));

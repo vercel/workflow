@@ -45,6 +45,8 @@ import {
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
+import { fetchEventsByCorrelationId } from '~/lib/rpc-client';
+import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
   recreateRun,
@@ -56,8 +58,6 @@ import {
   wakeUpRun,
 } from '~/lib/workflow-api-client';
 import { useServerConfig } from '~/lib/world-config-context';
-import type { EnvMap } from '~/lib/types';
-import { fetchEventsByCorrelationId } from '~/lib/rpc-client';
 
 import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
