@@ -101,6 +101,11 @@ export const generateMetadata = async ({
     openGraph: {
       images: getPageImage(page).url,
     },
+    alternates: {
+      types: {
+        'text/markdown': slug ? `/docs/${slug.join('/')}.md` : '/docs.md',
+      },
+    },
   };
 
   return metadata;
