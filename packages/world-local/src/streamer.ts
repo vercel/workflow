@@ -307,9 +307,17 @@ export function createStreamer(basedir: string): Streamer {
           streamEmitter.on(`chunk:${name}` as const, chunkListener);
           streamEmitter.on(`close:${name}` as const, closeListener);
 
-          // Now load existing chunks from disk
-          const files = await listFilesByExtension(chunksDir, '.bin');
-          const chunkFiles = files
+          // Now load existing chunks from disk.
+          // List both .bin (current) and .json (legacy) chunk files for
+          // backwards compatibility with streams written before this change.
+          const [binFiles, jsonFiles] = await Promise.all([
+            listFilesByExtension(chunksDir, '.bin'),
+            listFilesByExtension(chunksDir, '.json'),
+          ]);
+          const fileExtMap = new Map<string, string>();
+          for (const f of jsonFiles) fileExtMap.set(f, '.json');
+          for (const f of binFiles) fileExtMap.set(f, '.bin'); // .bin takes precedence
+          const chunkFiles = [...fileExtMap.keys()]
             .filter((file) => file.startsWith(`${name}-`))
             .sort(); // ULID lexicographic sort = chronological order
 
@@ -325,8 +333,9 @@ export function createStreamer(basedir: string): Streamer {
               continue;
             }
 
+            const ext = fileExtMap.get(file) ?? '.bin';
             const chunk = deserializeChunk(
-              await readBuffer(path.join(chunksDir, `${file}.bin`))
+              await readBuffer(path.join(chunksDir, `${file}${ext}`))
             );
             if (chunk?.eof === true) {
               isComplete = true;
