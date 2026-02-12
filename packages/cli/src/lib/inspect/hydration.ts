@@ -57,45 +57,38 @@ class CLIClassInstanceRef extends ClassInstanceRef {
 // CLI revivers (Node.js, uses Buffer)
 // ---------------------------------------------------------------------------
 
-export function getCLIRevivers(
-  global: Record<string, any> = globalThis
-): Revivers {
+export function getCLIRevivers(): Revivers {
   function reviveArrayBuffer(value: string): ArrayBuffer {
     const base64 = value === '.' ? '' : value;
     const buffer = Buffer.from(base64, 'base64');
-    const arrayBuffer = new global.ArrayBuffer(buffer.length);
-    const uint8Array = new global.Uint8Array(arrayBuffer);
+    const arrayBuffer = new ArrayBuffer(buffer.length);
+    const uint8Array = new Uint8Array(arrayBuffer);
     uint8Array.set(buffer);
     return arrayBuffer;
   }
 
   return {
     ArrayBuffer: reviveArrayBuffer,
-    BigInt: (value: string) => global.BigInt(value),
+    BigInt: (value: string) => BigInt(value),
     BigInt64Array: (value: string) =>
-      new global.BigInt64Array(reviveArrayBuffer(value)),
+      new BigInt64Array(reviveArrayBuffer(value)),
     BigUint64Array: (value: string) =>
-      new global.BigUint64Array(reviveArrayBuffer(value)),
-    Date: (value) => new global.Date(value),
+      new BigUint64Array(reviveArrayBuffer(value)),
+    Date: (value) => new Date(value),
     Error: (value) => {
-      const error = new global.Error(value.message);
+      const error = new Error(value.message);
       error.name = value.name;
       error.stack = value.stack;
       return error;
     },
-    Float32Array: (value: string) =>
-      new global.Float32Array(reviveArrayBuffer(value)),
-    Float64Array: (value: string) =>
-      new global.Float64Array(reviveArrayBuffer(value)),
-    Headers: (value) => new global.Headers(value),
-    Int8Array: (value: string) =>
-      new global.Int8Array(reviveArrayBuffer(value)),
-    Int16Array: (value: string) =>
-      new global.Int16Array(reviveArrayBuffer(value)),
-    Int32Array: (value: string) =>
-      new global.Int32Array(reviveArrayBuffer(value)),
-    Map: (value) => new global.Map(value),
-    RegExp: (value) => new global.RegExp(value.source, value.flags),
+    Float32Array: (value: string) => new Float32Array(reviveArrayBuffer(value)),
+    Float64Array: (value: string) => new Float64Array(reviveArrayBuffer(value)),
+    Headers: (value) => new Headers(value),
+    Int8Array: (value: string) => new Int8Array(reviveArrayBuffer(value)),
+    Int16Array: (value: string) => new Int16Array(reviveArrayBuffer(value)),
+    Int32Array: (value: string) => new Int32Array(reviveArrayBuffer(value)),
+    Map: (value) => new Map(value),
+    RegExp: (value) => new RegExp(value.source, value.flags),
     // O11y-specific revivers (streams, step functions → display objects).
     // Spread FIRST so CLI-specific overrides below take precedence.
     ...observabilityRevivers,
@@ -107,18 +100,14 @@ export function getCLIRevivers(
         value.classId,
         value.data
       ),
-    Set: (value) => new global.Set(value),
-    URL: (value) => new global.URL(value),
-    URLSearchParams: (value) =>
-      new global.URLSearchParams(value === '.' ? '' : value),
-    Uint8Array: (value: string) =>
-      new global.Uint8Array(reviveArrayBuffer(value)),
+    Set: (value) => new Set(value),
+    URL: (value) => new URL(value),
+    URLSearchParams: (value) => new URLSearchParams(value === '.' ? '' : value),
+    Uint8Array: (value: string) => new Uint8Array(reviveArrayBuffer(value)),
     Uint8ClampedArray: (value: string) =>
-      new global.Uint8ClampedArray(reviveArrayBuffer(value)),
-    Uint16Array: (value: string) =>
-      new global.Uint16Array(reviveArrayBuffer(value)),
-    Uint32Array: (value: string) =>
-      new global.Uint32Array(reviveArrayBuffer(value)),
+      new Uint8ClampedArray(reviveArrayBuffer(value)),
+    Uint16Array: (value: string) => new Uint16Array(reviveArrayBuffer(value)),
+    Uint32Array: (value: string) => new Uint32Array(reviveArrayBuffer(value)),
   };
 }
 
