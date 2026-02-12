@@ -1,4 +1,11 @@
-import { Client, DuplicateMessageError } from '@vercel/queue';
+import {
+  Client,
+  ConsumerDiscoveryError,
+  ConsumerRegistryNotConfiguredError,
+  DuplicateMessageError,
+  InternalServerError,
+} from '@vercel/queue';
+import { WorkflowAPIError } from '@workflow/errors';
 import {
   MessageId,
   type Queue,
@@ -131,6 +138,25 @@ export function createQueue(config?: APIConfig): Queue {
             `msg_duplicate_${error.idempotencyKey ?? opts?.idempotencyKey ?? 'unknown'}`
           ),
         };
+      }
+      // Wrap VQS server errors as WorkflowAPIError so withServerErrorRetry can catch them
+      if (error instanceof InternalServerError) {
+        throw new WorkflowAPIError(error.message, {
+          status: 500,
+          cause: error,
+        });
+      }
+      if (error instanceof ConsumerDiscoveryError) {
+        throw new WorkflowAPIError(error.message, {
+          status: 502,
+          cause: error,
+        });
+      }
+      if (error instanceof ConsumerRegistryNotConfiguredError) {
+        throw new WorkflowAPIError(error.message, {
+          status: 503,
+          cause: error,
+        });
       }
       throw error;
     }
