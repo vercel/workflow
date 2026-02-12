@@ -250,27 +250,25 @@ export const WorkflowTraceViewer = ({
     }
   }, [error, isLoading]);
 
-  const DetailPanel = () => {
-    const handleSpanSelect = useCallback(
-      (info: SpanSelectionInfo) => {
-        onSpanSelect?.(info);
-      },
-      [onSpanSelect]
-    );
+  const handleSpanSelect = useCallback(
+    (info: SpanSelectionInfo) => {
+      onSpanSelect?.(info);
+    },
+    [onSpanSelect]
+  );
 
-    return (
-      <EntityDetailPanel
-        run={run}
-        onStreamClick={onStreamClick}
-        spanDetailData={spanDetailData ?? null}
-        spanDetailError={spanDetailError}
-        spanDetailLoading={spanDetailLoading}
-        onSpanSelect={handleSpanSelect}
-        onWakeUpSleep={onWakeUpSleep}
-        onResolveHook={onResolveHook}
-      />
-    );
-  };
+  const detailPanel = (
+    <EntityDetailPanel
+      run={run}
+      onStreamClick={onStreamClick}
+      spanDetailData={spanDetailData ?? null}
+      spanDetailError={spanDetailError}
+      spanDetailLoading={spanDetailLoading}
+      onSpanSelect={handleSpanSelect}
+      onWakeUpSleep={onWakeUpSleep}
+      onResolveHook={onResolveHook}
+    />
+  );
 
   if (isLoading || !trace) {
     return (
@@ -295,7 +293,7 @@ export const WorkflowTraceViewer = ({
         customSpanEventClassNameFunc={getCustomSpanEventClassName}
         customPanelComponent={
           <ErrorBoundary title="Failed to load entity details">
-            <DetailPanel />
+            {detailPanel}
           </ErrorBoundary>
         }
       >

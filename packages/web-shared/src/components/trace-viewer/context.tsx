@@ -214,6 +214,10 @@ export type TraceViewerAction =
       withPanel: boolean;
     }
   | {
+      type: 'setCustomPanelComponent';
+      customPanelComponent: ReactNode | null;
+    }
+  | {
       type: 'forceRender';
     };
 
@@ -556,6 +560,12 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
         withPanel: action.withPanel,
       };
     }
+    case 'setCustomPanelComponent': {
+      return {
+        ...state,
+        customPanelComponent: action.customPanelComponent,
+      };
+    }
     case 'forceRender':
       state.memoCacheRef.current.set('', {});
       return {
@@ -615,6 +625,15 @@ export function TraceViewerContextProvider({
         withPanel,
       }),
     [withPanel]
+  );
+
+  useEffect(
+    () =>
+      dispatch({
+        type: 'setCustomPanelComponent',
+        customPanelComponent,
+      }),
+    [customPanelComponent]
   );
 
   const value: TraceViewerContextProps = useMemo(

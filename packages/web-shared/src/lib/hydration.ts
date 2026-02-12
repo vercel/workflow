@@ -51,9 +51,13 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 /**
  * Get the web-specific revivers for hydrating serialized data.
  *
- * These use `atob()` for base64 decoding and produce `ClassInstanceRef`
- * objects for custom class instances (rendered as UI components rather
- * than using `util.inspect.custom`).
+ * Uses `atob()` for base64 decoding (no Node.js Buffer dependency).
+ * Most types are revived as real instances (Date, Map, Set, Error, etc.)
+ * since they are structurally cloneable and work with React rendering.
+ *
+ * Types that are NOT structurally cloneable (URLSearchParams, Headers)
+ * are converted to plain object equivalents, since the trace viewer's
+ * web worker uses postMessage which requires structured cloneability.
  */
 export function getWebRevivers(
   global: Record<string, any> = globalThis
@@ -63,17 +67,13 @@ export function getWebRevivers(
   }
 
   return {
-    // Common type revivers (browser-safe base64)
+    // Binary types
     ArrayBuffer: reviveArrayBuffer,
     BigInt: (value: string) => global.BigInt(value),
-    BigInt64Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.BigInt64Array(ab);
-    },
-    BigUint64Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.BigUint64Array(ab);
-    },
+    BigInt64Array: (value: string) =>
+      new global.BigInt64Array(reviveArrayBuffer(value)),
+    BigUint64Array: (value: string) =>
+      new global.BigUint64Array(reviveArrayBuffer(value)),
     Date: (value) => new global.Date(value),
     Error: (value) => {
       const error = new global.Error(value.message);
@@ -81,49 +81,40 @@ export function getWebRevivers(
       error.stack = value.stack;
       return error;
     },
-    Float32Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Float32Array(ab);
-    },
-    Float64Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Float64Array(ab);
-    },
-    Headers: (value) => new global.Headers(value),
-    Int8Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Int8Array(ab);
-    },
-    Int16Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Int16Array(ab);
-    },
-    Int32Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Int32Array(ab);
-    },
+    Float32Array: (value: string) =>
+      new global.Float32Array(reviveArrayBuffer(value)),
+    Float64Array: (value: string) =>
+      new global.Float64Array(reviveArrayBuffer(value)),
+    Int8Array: (value: string) =>
+      new global.Int8Array(reviveArrayBuffer(value)),
+    Int16Array: (value: string) =>
+      new global.Int16Array(reviveArrayBuffer(value)),
+    Int32Array: (value: string) =>
+      new global.Int32Array(reviveArrayBuffer(value)),
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
     Set: (value) => new global.Set(value),
-    URL: (value) => new global.URL(value),
-    URLSearchParams: (value) =>
-      new global.URLSearchParams(value === '.' ? '' : value),
-    Uint8Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Uint8Array(ab);
+    Uint8Array: (value: string) =>
+      new global.Uint8Array(reviveArrayBuffer(value)),
+    Uint8ClampedArray: (value: string) =>
+      new global.Uint8ClampedArray(reviveArrayBuffer(value)),
+    Uint16Array: (value: string) =>
+      new global.Uint16Array(reviveArrayBuffer(value)),
+    Uint32Array: (value: string) =>
+      new global.Uint32Array(reviveArrayBuffer(value)),
+
+    // Non-cloneable types — convert to plain equivalents so they survive
+    // the trace viewer's postMessage to the web worker.
+    Headers: (value) =>
+      Object.fromEntries(
+        typeof value === 'object' && value !== null ? Object.entries(value) : []
+      ),
+    URL: (value) => String(value),
+    URLSearchParams: (value) => {
+      if (value === '.' || value === '') return {};
+      return Object.fromEntries(new global.URLSearchParams(value));
     },
-    Uint8ClampedArray: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Uint8ClampedArray(ab);
-    },
-    Uint16Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Uint16Array(ab);
-    },
-    Uint32Array: (value: string) => {
-      const ab = reviveArrayBuffer(value);
-      return new global.Uint32Array(ab);
-    },
+
     // Class/Instance: use display-friendly ClassInstanceRef
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) =>

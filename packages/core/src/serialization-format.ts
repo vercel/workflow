@@ -344,7 +344,6 @@ function hydrateEventData<T extends { eventId?: string; eventData?: any }>(
   if (!resource.eventData) return resource;
 
   const eventData = { ...resource.eventData };
-  // Only eventData.result is devalue-serialized
   if ('result' in eventData && eventData.result != null) {
     try {
       eventData.result = hydrateData(eventData.result, revivers);
