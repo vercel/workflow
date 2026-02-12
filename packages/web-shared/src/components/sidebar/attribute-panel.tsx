@@ -5,9 +5,10 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import type { ReactNode } from 'react';
 import { createContext, useContext, useMemo, useState } from 'react';
-import { ErrorCard } from '../ui/error-card';
+import { ObjectInspector } from 'react-inspector';
 import { useDarkMode } from '../../hooks/use-dark-mode';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import { ErrorCard } from '../ui/error-card';
 import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
 
@@ -334,145 +335,105 @@ const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
 };
 
 /**
- * Recursively transforms a value for JSON display, replacing StreamRef and
- * ClassInstanceRef objects with placeholder strings that can be identified
- * and replaced with React elements.
+ * Renders a value using react-inspector's ObjectInspector for proper
+ * display of Map, Set, URLSearchParams, Date, Error, RegExp, typed
+ * arrays, and other non-plain-object types.
+ *
+ * StreamRef and ClassInstanceRef objects are rendered inline as
+ * custom components (clickable stream links and class cards).
  */
-const transformValueForDisplay = (
-  value: unknown
-): {
-  json: string;
-  streamRefs: Map<string, StreamRef>;
-  classInstanceRefs: Map<string, ClassInstanceRef>;
-} => {
-  const streamRefs = new Map<string, StreamRef>();
-  const classInstanceRefs = new Map<string, ClassInstanceRef>();
-  let counter = 0;
-
-  const transform = (v: unknown): unknown => {
-    if (isStreamRef(v)) {
-      const placeholder = `__STREAM_REF_${counter++}__`;
-      streamRefs.set(placeholder, v);
-      return placeholder;
-    }
-    if (isClassInstanceRef(v)) {
-      const placeholder = `__CLASS_INSTANCE_REF_${counter++}__`;
-      classInstanceRefs.set(placeholder, v);
-      return placeholder;
-    }
-    if (Array.isArray(v)) {
-      return v.map(transform);
-    }
-    if (v !== null && typeof v === 'object') {
-      const result: Record<string, unknown> = {};
-      for (const [key, val] of Object.entries(v)) {
-        result[key] = transform(val);
-      }
-      return result;
-    }
-    return v;
-  };
-
-  const transformed = transform(value);
-  return {
-    json: JSON.stringify(transformed, null, 2),
-    streamRefs,
-    classInstanceRefs,
-  };
+const JsonBlock = (value: unknown) => {
+  return <DataInspector data={value} />;
 };
 
-const JsonBlock = (value: unknown) => {
-  const { json, streamRefs, classInstanceRefs } =
-    transformValueForDisplay(value);
+/**
+ * Custom theme for react-inspector with transparent background.
+ * react-inspector accepts theme objects at runtime despite the
+ * TypeScript types only declaring `string`.
+ */
+const inspectorThemeLight = {
+  BASE_FONT_SIZE: '11px',
+  BASE_LINE_HEIGHT: 1.4,
+  BASE_BACKGROUND_COLOR: 'transparent',
+  BASE_COLOR: 'var(--ds-gray-1000)',
+  OBJECT_PREVIEW_ARRAY_MAX_PROPERTIES: 10,
+  OBJECT_PREVIEW_OBJECT_MAX_PROPERTIES: 5,
+  OBJECT_NAME_COLOR: 'rgb(136, 19, 145)',
+  OBJECT_VALUE_NULL_COLOR: 'rgb(128, 128, 128)',
+  OBJECT_VALUE_UNDEFINED_COLOR: 'rgb(128, 128, 128)',
+  OBJECT_VALUE_REGEXP_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_STRING_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_SYMBOL_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_NUMBER_COLOR: 'rgb(28, 0, 207)',
+  OBJECT_VALUE_BOOLEAN_COLOR: 'rgb(28, 0, 207)',
+  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'rgb(13, 34, 170)',
+  HTML_TAG_COLOR: 'rgb(168, 148, 166)',
+  HTML_TAGNAME_COLOR: 'rgb(136, 18, 128)',
+  HTML_TAGNAME_TEXT_TRANSFORM: 'lowercase',
+  HTML_ATTRIBUTE_NAME_COLOR: 'rgb(153, 69, 0)',
+  HTML_ATTRIBUTE_VALUE_COLOR: 'rgb(26, 26, 166)',
+  HTML_COMMENT_COLOR: 'rgb(35, 110, 37)',
+  HTML_DOCTYPE_COLOR: 'rgb(192, 192, 192)',
+  ARROW_COLOR: 'var(--ds-gray-600)',
+  ARROW_MARGIN_RIGHT: 3,
+  ARROW_FONT_SIZE: 12,
+  TREENODE_FONT_FAMILY: 'var(--font-mono)',
+  TREENODE_FONT_SIZE: '11px',
+  TREENODE_LINE_HEIGHT: 1.4,
+  TREENODE_PADDING_LEFT: 12,
+  TABLE_BORDER_COLOR: 'var(--ds-gray-300)',
+  TABLE_TH_BACKGROUND_COLOR: 'var(--ds-gray-100)',
+  TABLE_TH_HOVER_COLOR: 'var(--ds-gray-200)',
+  TABLE_SORT_ICON_COLOR: 'var(--ds-gray-500)',
+  TABLE_DATA_BACKGROUND_IMAGE: 'none',
+  TABLE_DATA_BACKGROUND_SIZE: '0',
+};
 
-  // If no special refs, just render plain JSON
-  if (streamRefs.size === 0 && classInstanceRefs.size === 0) {
-    return (
-      <pre
-        className="text-[11px] overflow-x-auto rounded-md border p-3"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-1000)',
-        }}
-      >
-        <code>{json}</code>
-      </pre>
-    );
+const inspectorThemeDark = {
+  ...inspectorThemeLight,
+  BASE_COLOR: 'var(--ds-gray-1000)',
+  OBJECT_NAME_COLOR: 'rgb(227, 110, 236)',
+  OBJECT_VALUE_NULL_COLOR: 'rgb(127, 127, 127)',
+  OBJECT_VALUE_UNDEFINED_COLOR: 'rgb(127, 127, 127)',
+  OBJECT_VALUE_REGEXP_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_STRING_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_SYMBOL_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_NUMBER_COLOR: 'hsl(252, 100%, 75%)',
+  OBJECT_VALUE_BOOLEAN_COLOR: 'hsl(252, 100%, 75%)',
+  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'rgb(85, 106, 242)',
+  HTML_TAG_COLOR: 'rgb(93, 176, 215)',
+  HTML_TAGNAME_COLOR: 'rgb(93, 176, 215)',
+  HTML_ATTRIBUTE_NAME_COLOR: 'rgb(155, 187, 220)',
+  HTML_ATTRIBUTE_VALUE_COLOR: 'rgb(242, 151, 102)',
+  HTML_COMMENT_COLOR: 'rgb(137, 137, 137)',
+  HTML_DOCTYPE_COLOR: 'rgb(192, 192, 192)',
+};
+
+function DataInspector({ data }: { data: unknown }) {
+  const isDark = useDarkMode();
+
+  // Check for StreamRef/ClassInstanceRef at top level
+  if (isStreamRef(data)) {
+    return <StreamRefDisplay streamRef={data} />;
   }
-
-  // Build a combined map of all placeholders to their React elements
-  const placeholderComponents = new Map<string, ReactNode>();
-  let keyIndex = 0;
-
-  for (const [placeholder, streamRef] of streamRefs) {
-    placeholderComponents.set(
-      placeholder,
-      <StreamRefDisplay key={keyIndex++} streamRef={streamRef} />
-    );
-  }
-
-  for (const [placeholder, classInstanceRef] of classInstanceRefs) {
-    placeholderComponents.set(
-      placeholder,
-      <ClassInstanceRefDisplay
-        key={keyIndex++}
-        classInstanceRef={classInstanceRef}
-      />
-    );
-  }
-
-  // Split the JSON by all placeholders and render with React elements
-  const parts: ReactNode[] = [];
-  let remaining = json;
-
-  // Process placeholders in order of their appearance in the string
-  while (remaining.length > 0) {
-    let earliestIndex = -1;
-    let earliestPlaceholder = '';
-    let earliestComponent: ReactNode = null;
-
-    // Find the earliest placeholder in the remaining string
-    for (const [placeholder, component] of placeholderComponents) {
-      const index = remaining.indexOf(`"${placeholder}"`);
-      if (index !== -1 && (earliestIndex === -1 || index < earliestIndex)) {
-        earliestIndex = index;
-        earliestPlaceholder = placeholder;
-        earliestComponent = component;
-      }
-    }
-
-    if (earliestIndex === -1) {
-      // No more placeholders found, add the rest
-      parts.push(remaining);
-      break;
-    }
-
-    // Add text before the placeholder
-    if (earliestIndex > 0) {
-      parts.push(remaining.slice(0, earliestIndex));
-    }
-
-    // Add the component
-    parts.push(earliestComponent);
-
-    // Move past the placeholder
-    remaining = remaining.slice(earliestIndex + earliestPlaceholder.length + 2); // +2 for quotes
+  if (isClassInstanceRef(data)) {
+    return <ClassInstanceRefDisplay classInstanceRef={data} />;
   }
 
   return (
-    <pre
-      className="text-[11px] overflow-x-auto rounded-md border p-3"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-1000)',
-      }}
+    <div
+      className="overflow-x-auto rounded-md border p-3"
+      style={{ borderColor: 'var(--ds-gray-300)' }}
     >
-      <code>{parts}</code>
-    </pre>
+      <ObjectInspector
+        data={data}
+        // @ts-expect-error react-inspector accepts theme objects at runtime
+        theme={isDark ? inspectorThemeDark : inspectorThemeLight}
+        expandLevel={2}
+      />
+    </div>
   );
-};
+}
 
 type AttributeKey =
   | keyof Step

@@ -55,6 +55,7 @@
     "lucide-react": "0.469.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "react-inspector": "9.0.0",
     "shiki": "3.13.0",
     "sonner": "2.0.7",
     "streamdown": "1.6.11",
