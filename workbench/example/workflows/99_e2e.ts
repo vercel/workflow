@@ -962,6 +962,115 @@ export class ChainableService {
 // E2E test for `this` serialization with .call() and .apply()
 //////////////////////////////////////////////////////////
 
+// ============================================================
+// 5XX SERVER ERROR RETRY E2E TEST
+// ============================================================
+// Tests that withServerErrorRetry in the step handler correctly
+// retries transient 5xx errors from workflow-server without
+// consuming step attempts.
+// ============================================================
+
+const FAULT_MAP_SYMBOL = Symbol.for('__test_5xx_fault_map');
+
+type FaultState = {
+  skipCount: number;
+  remaining: number;
+  triggered: number;
+};
+
+/**
+ * Step that installs a fault injection patch on world.events.create,
+ * scoped to the current runId. Only intercepts step_completed events
+ * for the target run; all other runs pass through unmodified.
+ */
+async function installServerErrorFaultInjection(failCount: number) {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const world = (globalThis as any)[Symbol.for('@workflow/world//cache')];
+  const original = world.events.create.bind(world.events);
+
+  // Process-level map for run-scoped fault state
+  (globalThis as any)[FAULT_MAP_SYMBOL] ??= new Map<string, FaultState>();
+  const faultMap = (globalThis as any)[FAULT_MAP_SYMBOL] as Map<
+    string,
+    FaultState
+  >;
+  // skipCount: 1 to skip this install step's own step_completed event
+  faultMap.set(workflowRunId, {
+    skipCount: 1,
+    remaining: failCount,
+    triggered: 0,
+  });
+
+  world.events.create = async (
+    rid: string,
+    data: any,
+    ...rest: any[]
+  ): Promise<any> => {
+    const state = faultMap.get(rid);
+    if (state && data.eventType === 'step_completed') {
+      if (state.skipCount > 0) {
+        state.skipCount--;
+        return original(rid, data, ...rest);
+      }
+      if (state.remaining > 0) {
+        state.remaining--;
+        state.triggered++;
+        // Create an error that matches WorkflowAPIError.is() check:
+        // isError(value) && value.name === 'WorkflowAPIError'
+        const err: any = new Error('Injected 5xx');
+        err.name = 'WorkflowAPIError';
+        err.status = 500;
+        throw err;
+      }
+    }
+    return original(rid, data, ...rest);
+  };
+}
+
+/**
+ * Simple step that does computation (input * 2).
+ * Its step_completed event will be intercepted by the fault injection.
+ */
+async function doWork(input: number) {
+  'use step';
+  return input * 2;
+}
+
+/**
+ * Cleanup step that reads and clears the fault injection state for this run.
+ * Returns how many times the fault was triggered.
+ */
+async function cleanupFaultInjection() {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const faultMap = (globalThis as any)[FAULT_MAP_SYMBOL] as
+    | Map<string, FaultState>
+    | undefined;
+  const state = faultMap?.get(workflowRunId);
+  const triggered = state?.triggered ?? 0;
+  faultMap?.delete(workflowRunId);
+  return triggered;
+}
+
+/**
+ * Workflow that exercises the 5xx retry codepath in the step handler.
+ * 1. Installs fault injection (scoped to this run's step_completed events)
+ * 2. Runs a computation step (its step_completed will fail with 5xx twice)
+ * 3. Cleans up and returns result + retry count for assertions
+ */
+export async function serverError5xxRetryWorkflow(input: number) {
+  'use workflow';
+  await installServerErrorFaultInjection(2);
+  const result = await doWork(input);
+  const retryCount = await cleanupFaultInjection();
+  return { result, retryCount };
+}
+
+//////////////////////////////////////////////////////////
+// E2E test for `this` serialization with .call() and .apply()
+//////////////////////////////////////////////////////////
+
 /**
  * A step function that uses `this` to access properties.
  */
