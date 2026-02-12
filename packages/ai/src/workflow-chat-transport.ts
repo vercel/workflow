@@ -179,7 +179,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
       ? await this.prepareSendMessagesRequest({
           id: chatId,
           messages,
-          requestMetadata: undefined,
+          requestMetadata: options.metadata,
           body: undefined,
           credentials: undefined,
           headers: undefined,
@@ -281,7 +281,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     const requestConfig = this.prepareReconnectToStreamRequest
       ? await this.prepareReconnectToStreamRequest({
           id: options.chatId,
-          requestMetadata: undefined,
+          requestMetadata: options.metadata,
           body: undefined,
           credentials: undefined,
           headers: undefined,
