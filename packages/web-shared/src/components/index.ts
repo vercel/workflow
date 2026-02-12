@@ -19,6 +19,6 @@ export type {
   SelectedSpanInfo,
   SpanSelectionInfo,
 } from './sidebar/entity-detail-panel';
-export { StreamViewer } from './stream-viewer';
+export { type StreamChunk, StreamViewer } from './stream-viewer';
 export type { Span, SpanEvent } from './trace-viewer/types';
 export { WorkflowTraceViewer } from './workflow-trace-view';

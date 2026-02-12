@@ -1,23 +1,64 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ObjectInspector } from 'react-inspector';
+import { useDarkMode } from '../hooks/use-dark-mode';
+
+export interface StreamChunk {
+  id: number;
+  /** The raw hydrated value from the stream */
+  data: unknown;
+}
 
 interface StreamViewerProps {
   streamId: string;
-  chunks: Chunk[];
+  chunks: StreamChunk[];
   isLive: boolean;
   error?: string | null;
 }
 
-interface Chunk {
-  id: number;
-  text: string;
-}
+// Import the theme objects from attribute-panel would create a circular dep,
+// so define minimal inspector themes inline here.
+const inspectorThemeLight = {
+  BASE_FONT_SIZE: '11px',
+  BASE_LINE_HEIGHT: 1.4,
+  BASE_BACKGROUND_COLOR: 'transparent',
+  BASE_COLOR: 'var(--ds-gray-1000)',
+  OBJECT_NAME_COLOR: 'rgb(136, 19, 145)',
+  OBJECT_VALUE_NULL_COLOR: 'rgb(128, 128, 128)',
+  OBJECT_VALUE_UNDEFINED_COLOR: 'rgb(128, 128, 128)',
+  OBJECT_VALUE_REGEXP_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_STRING_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_SYMBOL_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_NUMBER_COLOR: 'rgb(28, 0, 207)',
+  OBJECT_VALUE_BOOLEAN_COLOR: 'rgb(28, 0, 207)',
+  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'rgb(13, 34, 170)',
+  ARROW_COLOR: 'var(--ds-gray-600)',
+  ARROW_MARGIN_RIGHT: 3,
+  ARROW_FONT_SIZE: 12,
+  TREENODE_FONT_FAMILY: 'var(--font-mono)',
+  TREENODE_FONT_SIZE: '11px',
+  TREENODE_LINE_HEIGHT: 1.4,
+  TREENODE_PADDING_LEFT: 12,
+};
+
+const inspectorThemeDark = {
+  ...inspectorThemeLight,
+  OBJECT_NAME_COLOR: 'rgb(227, 110, 236)',
+  OBJECT_VALUE_NULL_COLOR: 'rgb(127, 127, 127)',
+  OBJECT_VALUE_UNDEFINED_COLOR: 'rgb(127, 127, 127)',
+  OBJECT_VALUE_REGEXP_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_STRING_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_SYMBOL_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_NUMBER_COLOR: 'hsl(252, 100%, 75%)',
+  OBJECT_VALUE_BOOLEAN_COLOR: 'hsl(252, 100%, 75%)',
+  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'rgb(85, 106, 242)',
+};
 
 /**
  * StreamViewer component that displays real-time stream data.
- * It connects to a stream and displays chunks as they arrive,
- * with auto-scroll functionality.
+ * Each chunk is rendered with ObjectInspector for proper display
+ * of complex types (Map, Set, Date, custom classes, etc.).
  */
 export function StreamViewer({
   streamId,
@@ -25,7 +66,7 @@ export function StreamViewer({
   isLive,
   error,
 }: StreamViewerProps) {
-  // TODO: Handle 410 error specifically (stream expired)
+  const isDark = useDarkMode();
   const [hasMoreBelow, setHasMoreBelow] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -39,13 +80,13 @@ export function StreamViewer({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: chunks.length triggers scroll on new chunks
   useEffect(() => {
-    // Auto-scroll to bottom when new content arrives
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-    // Check scroll position after content changes
     checkScrollPosition();
   }, [chunks.length, checkScrollPosition]);
+
+  const theme = isDark ? inspectorThemeDark : inspectorThemeLight;
 
   return (
     <div className="flex flex-col h-full pb-4">
@@ -106,25 +147,36 @@ export function StreamViewer({
             </div>
           ) : (
             chunks.map((chunk, index) => (
-              <pre
+              <div
                 key={`${streamId}-chunk-${chunk.id}`}
-                className="text-[11px] rounded-md border p-3 m-0 whitespace-pre-wrap break-words"
+                className="rounded-md border p-3"
                 style={{
                   borderColor: 'var(--ds-gray-300)',
-                  backgroundColor: 'var(--ds-gray-100)',
-                  color: 'var(--ds-gray-1000)',
                 }}
               >
-                <code>
+                <span
+                  className="select-none mr-2 text-[11px] font-mono"
+                  style={{ color: 'var(--ds-gray-500)' }}
+                >
+                  [{index}]
+                </span>
+                {typeof chunk.data === 'string' ? (
                   <span
-                    className="select-none mr-2"
-                    style={{ color: 'var(--ds-gray-500)' }}
+                    className="text-[11px] font-mono"
+                    style={{ color: 'var(--ds-gray-1000)' }}
                   >
-                    [{index}]
+                    {chunk.data}
                   </span>
-                  {chunk.text}
-                </code>
-              </pre>
+                ) : (
+                  <ObjectInspector
+                    data={chunk.data}
+                    // @ts-expect-error react-inspector accepts theme objects at runtime despite
+                    // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
+                    theme={theme}
+                    expandLevel={1}
+                  />
+                )}
+              </div>
             ))
           )}
         </div>

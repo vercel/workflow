@@ -1,17 +1,18 @@
 import { hydrateData } from '@workflow/core/serialization-format';
-import { getWebRevivers, hydrateResourceIO } from '@workflow/web-shared';
+import { getWebRevivers } from '@workflow/web-shared';
 import { decode } from 'cbor-x';
 import { useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
 import { readStream } from '~/lib/workflow-api-client';
 
-interface Chunk {
+export interface StreamChunk {
   id: number;
-  text: string;
+  /** The raw hydrated value from the stream */
+  data: unknown;
 }
 
 export function useStreamReader(env: EnvMap, streamId: string | null) {
-  const [chunks, setChunks] = useState<Chunk[]>([]);
+  const [chunks, setChunks] = useState<StreamChunk[]>([]);
   const [isLive, setIsLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -57,11 +58,7 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
         } catch {
           hydrated = value;
         }
-        const text =
-          typeof hydrated === 'string'
-            ? hydrated
-            : JSON.stringify(hydrated, null, 2);
-        setChunks((prev) => [...prev, { id: chunkId, text }]);
+        setChunks((prev) => [...prev, { id: chunkId, data: hydrated }]);
       }
     };
 
