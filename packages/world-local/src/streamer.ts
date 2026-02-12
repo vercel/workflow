@@ -3,7 +3,13 @@ import path from 'node:path';
 import type { Streamer } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
-import { listJSONFiles, readBuffer, readJSON, write, writeJSON } from './fs.js';
+import {
+  listFilesByExtension,
+  readBuffer,
+  readJSON,
+  write,
+  writeJSON,
+} from './fs.js';
 
 // Create a monotonic ULID factory that ensures ULIDs are always increasing
 // even when generated within the same millisecond
@@ -127,7 +133,7 @@ export function createStreamer(basedir: string): Streamer {
         basedir,
         'streams',
         'chunks',
-        `${name}-${chunkId}.json`
+        `${name}-${chunkId}.bin`
       );
 
       await write(chunkPath, serialized);
@@ -175,7 +181,7 @@ export function createStreamer(basedir: string): Streamer {
           basedir,
           'streams',
           'chunks',
-          `${name}-${chunkId}.json`
+          `${name}-${chunkId}.bin`
         );
 
         await write(chunkPath, serialized);
@@ -213,7 +219,7 @@ export function createStreamer(basedir: string): Streamer {
         basedir,
         'streams',
         'chunks',
-        `${name}-${chunkId}.json`
+        `${name}-${chunkId}.bin`
       );
 
       await write(
@@ -302,7 +308,7 @@ export function createStreamer(basedir: string): Streamer {
           streamEmitter.on(`close:${name}` as const, closeListener);
 
           // Now load existing chunks from disk
-          const files = await listJSONFiles(chunksDir);
+          const files = await listFilesByExtension(chunksDir, '.bin');
           const chunkFiles = files
             .filter((file) => file.startsWith(`${name}-`))
             .sort(); // ULID lexicographic sort = chronological order
@@ -320,7 +326,7 @@ export function createStreamer(basedir: string): Streamer {
             }
 
             const chunk = deserializeChunk(
-              await readBuffer(path.join(chunksDir, `${file}.json`))
+              await readBuffer(path.join(chunksDir, `${file}.bin`))
             );
             if (chunk?.eof === true) {
               isComplete = true;

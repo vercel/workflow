@@ -191,7 +191,13 @@ export function getSerializeStream(
     transform(chunk, controller) {
       try {
         const serialized = stringify(chunk, reducers);
-        controller.enqueue(encoder.encode(`${serialized}\n`));
+        const payload = encoder.encode(serialized);
+        controller.enqueue(
+          encodeWithFormatPrefix(
+            SerializationFormat.DEVALUE_V1,
+            payload
+          ) as Uint8Array
+        );
       } catch (error) {
         controller.error(
           new WorkflowRuntimeError(
@@ -209,29 +215,29 @@ export function getDeserializeStream(
   revivers: Revivers
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
-  let buffer = '';
   const stream = new TransformStream<Uint8Array, any>({
     transform(chunk, controller) {
-      // Append new chunk to buffer
-      buffer += decoder.decode(chunk, { stream: true });
-
-      // Process all complete lines
-      while (true) {
-        const newlineIndex = buffer.indexOf('\n');
-        if (newlineIndex === -1) break;
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        if (line.length > 0) {
-          const obj = parse(line, revivers);
-          controller.enqueue(obj);
+      // Each chunk is an independent serialized value.
+      // Try format-prefixed first (current), fall back to
+      // newline-delimited legacy text for backwards compatibility.
+      try {
+        const { format, payload } = decodeFormatPrefix(chunk);
+        if (format === SerializationFormat.DEVALUE_V1) {
+          const text = decoder.decode(payload);
+          controller.enqueue(parse(text, revivers));
+          return;
         }
+      } catch {
+        // Not format-prefixed — fall back to legacy newline-delimited text
       }
-    },
-    flush(controller) {
-      // Process any remaining data in the buffer at the end of the stream
-      if (buffer && buffer.length > 0) {
-        const obj = parse(buffer, revivers);
-        controller.enqueue(obj);
+
+      // Legacy format: newline-delimited devalue text
+      const text = decoder.decode(chunk);
+      const lines = text.split('\n');
+      for (const line of lines) {
+        if (line.length > 0) {
+          controller.enqueue(parse(line, revivers));
+        }
       }
     },
   });

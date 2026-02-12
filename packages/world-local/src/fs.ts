@@ -34,8 +34,7 @@ async function withWindowsRetry<T>(
         attempt < maxRetries && retryableErrors.includes(error.code);
       if (!isRetryable) throw error;
       // Exponential backoff with jitter
-      const delay =
-        baseDelayMs * Math.pow(2, attempt) + Math.random() * baseDelayMs;
+      const delay = baseDelayMs * 2 ** attempt + Math.random() * baseDelayMs;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
@@ -198,11 +197,18 @@ export async function deleteJSON(filePath: string): Promise<void> {
 }
 
 export async function listJSONFiles(dirPath: string): Promise<string[]> {
+  return listFilesByExtension(dirPath, '.json');
+}
+
+export async function listFilesByExtension(
+  dirPath: string,
+  extension: string
+): Promise<string[]> {
   try {
     const files = await fs.readdir(dirPath);
     return files
-      .filter((f) => f.endsWith('.json'))
-      .map((f) => f.replace('.json', ''));
+      .filter((f) => f.endsWith(extension))
+      .map((f) => f.slice(0, -extension.length));
   } catch (error) {
     if ((error as any).code === 'ENOENT') return [];
     throw error;
