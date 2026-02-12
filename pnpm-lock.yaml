@@ -9,15 +9,39 @@ catalogs:
     '@biomejs/biome':
       specifier: ^2.2.7
       version: 2.3.3
+    '@swc/core':
+      specifier: 1.15.3
+      version: 1.15.3
     '@types/node':
       specifier: 22.19.0
       version: 22.19.0
+    '@vercel/functions':
+      specifier: ^3.1.4
+      version: 3.1.4
+    '@vercel/oidc':
+      specifier: 3.0.5
+      version: 3.0.5
+    '@vercel/queue':
+      specifier: 0.0.0-alpha.36
+      version: 0.0.0-alpha.36
+    '@vitest/coverage-v8':
+      specifier: ^3.2.4
+      version: 3.2.4
     ai:
       specifier: 5.0.104
       version: 5.0.104
+    esbuild:
+      specifier: ^0.25.11
+      version: 0.25.12
+    nitro:
+      specifier: 3.0.1-alpha.1
+      version: 3.0.1-alpha.1
     typescript:
       specifier: ^5.9.3
       version: 5.9.3
+    vitest:
+      specifier: ^3.2.4
+      version: 3.2.4
     zod:
       specifier: 4.1.11
       version: 4.1.11
@@ -91,12 +115,6 @@ importers:
         specifier: 1.0.2
         version: 1.0.2(@types/mdast@4.0.4)(micromark-util-types@2.0.2)(micromark@4.0.2)(react@19.2.3)(unified@11.0.5)
       '@streamdown/code':
-        specifier: 1.0.2
-        version: 1.0.2(react@19.2.3)
-      '@streamdown/math':
-        specifier: 1.0.2
-        version: 1.0.2(react@19.2.3)
-      '@streamdown/mermaid':
         specifier: 1.0.2
         version: 1.0.2(react@19.2.3)
       '@tailwindcss/postcss':
@@ -7440,16 +7458,6 @@ packages:
 
   '@streamdown/code@1.0.2':
     resolution: {integrity: sha512-QKLS3sC8no5y0YvhGLA+ZjtNhznWU09IvFcjRKgSA35ulckMLw3b5T1ha+o1DaW8BS8l0zceLPFZa3/X9+agWQ==}
-    peerDependencies:
-      react: ^18.0.0 || ^19.0.0
-
-  '@streamdown/math@1.0.2':
-    resolution: {integrity: sha512-r8Ur9/lBuFnzZAFdEWrLUF2s/gRwRRRwruqltdZibyjbCBnuW7SJbFm26nXqvpJPW/gzpBUMrBVBzd88z05D5g==}
-    peerDependencies:
-      react: ^18.0.0 || ^19.0.0
-
-  '@streamdown/mermaid@1.0.2':
-    resolution: {integrity: sha512-Fr/4sBWnAeSnxM3PcrV/+DiZe5oPMq9gOkUIAH7ZauJeuwrZ/DVzD4g0zlav6AH0axh2m/sOfrfLtY5aLT7niw==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
@@ -16198,7 +16206,7 @@ snapshots:
       '@babel/types': 7.28.5
       '@jridgewell/remapping': 2.3.5
       convert-source-map: 2.0.0
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       gensync: 1.0.0-beta.2
       json5: 2.2.3
       semver: 6.3.1
@@ -16337,7 +16345,7 @@ snapshots:
       '@babel/parser': 7.28.5
       '@babel/template': 7.27.2
       '@babel/types': 7.28.5
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -17120,7 +17128,7 @@ snapshots:
       '@antfu/install-pkg': 1.1.0
       '@antfu/utils': 9.3.0
       '@iconify/types': 2.0.0
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       globals: 15.15.0
       kolorist: 1.8.0
       local-pkg: 1.1.2
@@ -21824,22 +21832,6 @@ snapshots:
       react: 19.2.3
       shiki: 3.21.0
 
-  '@streamdown/math@1.0.2(react@19.2.3)':
-    dependencies:
-      katex: 0.16.28
-      react: 19.2.3
-      rehype-katex: 7.0.1
-      remark-math: 6.0.0
-    transitivePeerDependencies:
-      - supports-color
-
-  '@streamdown/mermaid@1.0.2(react@19.2.3)':
-    dependencies:
-      mermaid: 11.12.2
-      react: 19.2.3
-    transitivePeerDependencies:
-      - supports-color
-
   '@sveltejs/acorn-typescript@1.0.6(acorn@8.15.0)':
     dependencies:
       acorn: 8.15.0
@@ -21940,7 +21932,7 @@ snapshots:
   '@sveltejs/vite-plugin-svelte-inspector@5.0.1(@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))':
     dependencies:
       '@sveltejs/vite-plugin-svelte': 6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       svelte: 5.43.3
       vite: 7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
     transitivePeerDependencies:
@@ -21972,7 +21964,7 @@ snapshots:
   '@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))':
     dependencies:
       '@sveltejs/vite-plugin-svelte-inspector': 5.0.1(@sveltejs/vite-plugin-svelte@6.2.1(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)))(svelte@5.43.3)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       deepmerge: 4.3.1
       magic-string: 0.30.21
       svelte: 5.43.3
@@ -24588,10 +24580,6 @@ snapshots:
     optionalDependencies:
       better-sqlite3: 11.10.0
       drizzle-orm: 0.44.7(@opentelemetry/api@1.9.0)(better-sqlite3@11.10.0)(pg@8.16.3)(postgres@3.4.7)
-
-  debug@4.4.3:
-    dependencies:
-      ms: 2.1.3
 
   debug@4.4.3(supports-color@8.1.1):
     dependencies:
@@ -27489,7 +27477,7 @@ snapshots:
   micromark@4.0.2:
     dependencies:
       '@types/debug': 4.1.12
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@8.1.1)
       decode-named-character-reference: 1.2.0
       devlop: 1.1.0
       micromark-core-commonmark: 2.0.3
