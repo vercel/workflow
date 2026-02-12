@@ -1390,6 +1390,9 @@ importers:
       cbor-x:
         specifier: 1.6.0
         version: 1.6.0
+      undici:
+        specifier: ^6.21.0
+        version: 6.22.0
       zod:
         specifier: 'catalog:'
         version: 4.1.11

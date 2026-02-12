@@ -35,6 +35,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
     "cbor-x": "1.6.0",
+    "undici": "^6.21.0",
     "zod": "catalog:"
   },
   "peerDependencies": {

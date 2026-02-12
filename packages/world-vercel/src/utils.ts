@@ -4,6 +4,7 @@ import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
+import { Agent } from 'undici';
 import type { z } from 'zod';
 import {
   ErrorType,
@@ -20,6 +21,8 @@ import {
   WorldParseFormat,
 } from './telemetry.js';
 import { version } from './version.js';
+
+export const dispatcher = new Agent({ allowH2: true, pipelining: 10 });
 
 /**
  * Hard-coded workflow-server URL override for testing.
@@ -268,12 +271,12 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
-      const request = new Request(url, {
+      const response = await fetch(url, {
         ...options,
         body,
         headers,
+        dispatcher,
       });
-      const response = await fetch(request);
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
@@ -289,7 +292,7 @@ export async function makeRequest<T>({
             .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
             .join(' ');
           console.error(
-            `Failed to fetch, reproduce with:\ncurl -X ${request.method} ${stringifiedHeaders} "${url}"`
+            `Failed to fetch, reproduce with:\ncurl -X ${method} ${stringifiedHeaders} "${url}"`
           );
         }
 
@@ -307,7 +310,7 @@ export async function makeRequest<T>({
 
         const error = new WorkflowAPIError(
           errorData.message ||
-            `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`,
+            `${method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`,
           { url, status: response.status, code: errorData.code, retryAfter }
         );
         // Record error attributes per OTEL conventions
@@ -334,7 +337,7 @@ export async function makeRequest<T>({
       } catch (error) {
         const contentType = response.headers.get('Content-Type') || 'unknown';
         throw new WorkflowAPIError(
-          `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
+          `Failed to parse response body for ${method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
           { url, cause: error }
         );
       }
@@ -344,7 +347,7 @@ export async function makeRequest<T>({
         const validationResult = schema.safeParse(parseResult.data);
         if (!validationResult.success) {
           throw new WorkflowAPIError(
-            `Schema validation failed for ${request.method} ${endpoint}:\n\n${validationResult.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
+            `Schema validation failed for ${method} ${endpoint}:\n\n${validationResult.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
             { url, cause: validationResult.error }
           );
         }

@@ -1,5 +1,10 @@
 import type { Streamer } from '@workflow/world';
-import { type APIConfig, getHttpConfig, type HttpConfig } from './utils.js';
+import {
+  type APIConfig,
+  dispatcher,
+  getHttpConfig,
+  type HttpConfig,
+} from './utils.js';
 
 function getStreamUrl(
   name: string,
@@ -67,6 +72,7 @@ export function createStreamer(config?: APIConfig): Streamer {
         body: chunk,
         headers: httpConfig.headers,
         duplex: 'half',
+        dispatcher,
       });
     },
 
@@ -91,6 +97,7 @@ export function createStreamer(config?: APIConfig): Streamer {
         body,
         headers: httpConfig.headers,
         duplex: 'half',
+        dispatcher,
       });
     },
 
@@ -103,6 +110,7 @@ export function createStreamer(config?: APIConfig): Streamer {
       await fetch(getStreamUrl(name, resolvedRunId, httpConfig), {
         method: 'PUT',
         headers: httpConfig.headers,
+        dispatcher,
       });
     },
 
@@ -112,7 +120,7 @@ export function createStreamer(config?: APIConfig): Streamer {
       if (typeof startIndex === 'number') {
         url.searchParams.set('startIndex', String(startIndex));
       }
-      const res = await fetch(url, { headers: httpConfig.headers });
+      const res = await fetch(url, { headers: httpConfig.headers, dispatcher });
       if (!res.ok) throw new Error(`Failed to fetch stream: ${res.status}`);
       return res.body as ReadableStream<Uint8Array>;
     },
@@ -120,7 +128,7 @@ export function createStreamer(config?: APIConfig): Streamer {
     async listStreamsByRunId(runId: string) {
       const httpConfig = await getHttpConfig(config);
       const url = new URL(`${httpConfig.baseUrl}/v2/runs/${runId}/streams`);
-      const res = await fetch(url, { headers: httpConfig.headers });
+      const res = await fetch(url, { headers: httpConfig.headers, dispatcher });
       if (!res.ok) throw new Error(`Failed to list streams: ${res.status}`);
       return (await res.json()) as string[];
     },
