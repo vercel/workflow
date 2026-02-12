@@ -183,6 +183,16 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
   } catch {}
 }
 
+/**
+ * Frame format for stream chunks:
+ *   [4-byte big-endian length][format-prefixed payload]
+ *
+ * Each chunk is independently framed so the deserializer can find
+ * chunk boundaries even when multiple chunks are concatenated or
+ * split across transport reads.
+ */
+const FRAME_HEADER_SIZE = 4;
+
 export function getSerializeStream(
   reducers: Reducers
 ): TransformStream<any, Uint8Array> {
@@ -192,12 +202,16 @@ export function getSerializeStream(
       try {
         const serialized = stringify(chunk, reducers);
         const payload = encoder.encode(serialized);
-        controller.enqueue(
-          encodeWithFormatPrefix(
-            SerializationFormat.DEVALUE_V1,
-            payload
-          ) as Uint8Array
-        );
+        const prefixed = encodeWithFormatPrefix(
+          SerializationFormat.DEVALUE_V1,
+          payload
+        ) as Uint8Array;
+
+        // Write length-prefixed frame: [4-byte length][prefixed data]
+        const frame = new Uint8Array(FRAME_HEADER_SIZE + prefixed.length);
+        new DataView(frame.buffer).setUint32(0, prefixed.length, false);
+        frame.set(prefixed, FRAME_HEADER_SIZE);
+        controller.enqueue(frame);
       } catch (error) {
         controller.error(
           new WorkflowRuntimeError(
@@ -215,29 +229,81 @@ export function getDeserializeStream(
   revivers: Revivers
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
-  const stream = new TransformStream<Uint8Array, any>({
-    transform(chunk, controller) {
-      // Each chunk is an independent serialized value.
-      // Try format-prefixed first (current), fall back to
-      // newline-delimited legacy text for backwards compatibility.
-      try {
-        const { format, payload } = decodeFormatPrefix(chunk);
-        if (format === SerializationFormat.DEVALUE_V1) {
-          const text = decoder.decode(payload);
-          controller.enqueue(parse(text, revivers));
-          return;
-        }
-      } catch {
-        // Not format-prefixed — fall back to legacy newline-delimited text
+  let buffer = new Uint8Array(0);
+
+  function appendToBuffer(data: Uint8Array) {
+    const newBuffer = new Uint8Array(buffer.length + data.length);
+    newBuffer.set(buffer, 0);
+    newBuffer.set(data, buffer.length);
+    buffer = newBuffer;
+  }
+
+  function processFrames(controller: TransformStreamDefaultController<any>) {
+    // Try to extract complete length-prefixed frames
+    while (buffer.length >= FRAME_HEADER_SIZE) {
+      const frameLength = new DataView(
+        buffer.buffer,
+        buffer.byteOffset,
+        buffer.byteLength
+      ).getUint32(0, false);
+
+      if (buffer.length < FRAME_HEADER_SIZE + frameLength) {
+        break; // Incomplete frame, wait for more data
       }
 
-      // Legacy format: newline-delimited devalue text
+      const frameData = buffer.slice(
+        FRAME_HEADER_SIZE,
+        FRAME_HEADER_SIZE + frameLength
+      );
+      buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
+
+      const { format, payload } = decodeFormatPrefix(frameData);
+      if (format === SerializationFormat.DEVALUE_V1) {
+        const text = decoder.decode(payload);
+        controller.enqueue(parse(text, revivers));
+      }
+    }
+  }
+
+  const stream = new TransformStream<Uint8Array, any>({
+    transform(chunk, controller) {
+      // First, try to detect if this is length-prefixed framed data
+      // by checking if the first 4 bytes form a plausible length.
+      if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
+        const possibleLength = new DataView(
+          chunk.buffer,
+          chunk.byteOffset,
+          chunk.byteLength
+        ).getUint32(0, false);
+        if (
+          possibleLength > 0 &&
+          possibleLength < 100_000_000 // sanity check: < 100MB
+        ) {
+          // Looks like framed data
+          appendToBuffer(chunk);
+          processFrames(controller);
+          return;
+        }
+      } else if (buffer.length > 0) {
+        // Already in framed mode (have buffered data)
+        appendToBuffer(chunk);
+        processFrames(controller);
+        return;
+      }
+
+      // Legacy format: newline-delimited devalue text (no framing)
       const text = decoder.decode(chunk);
       const lines = text.split('\n');
       for (const line of lines) {
         if (line.length > 0) {
           controller.enqueue(parse(line, revivers));
         }
+      }
+    },
+    flush(controller) {
+      // Process any remaining framed data
+      if (buffer.length > 0) {
+        processFrames(controller);
       }
     },
   });

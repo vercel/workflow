@@ -11,6 +11,8 @@ import {
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
   getCommonRevivers,
+  getDeserializeStream,
+  getSerializeStream,
   getStreamType,
   getWorkflowReducers,
   hydrateStepArguments,
@@ -2580,5 +2582,197 @@ describe('decodeFormatPrefix legacy compatibility', () => {
 
     const decoded = new TextDecoder().decode(result.payload);
     expect(decoded).toBe('["test"]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSerializeStream / getDeserializeStream
+// ---------------------------------------------------------------------------
+
+describe('getSerializeStream', () => {
+  // Empty reducers work for plain JSON-compatible values
+  const reducers = {} as any;
+
+  /** Write values and collect output concurrently (avoids backpressure deadlock) */
+  async function serializeValues(values: unknown[]): Promise<Uint8Array[]> {
+    const serialize = getSerializeStream(reducers);
+    const results: Uint8Array[] = [];
+
+    // Start reading before writing to avoid backpressure deadlock
+    const readPromise = (async () => {
+      const reader = serialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+
+    const writer = serialize.writable.getWriter();
+    for (const value of values) {
+      await writer.write(value);
+    }
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  /** Feed Uint8Array chunks into a deserialize stream and collect results */
+  async function deserializeChunks(
+    chunks: Uint8Array[],
+    revivers: any
+  ): Promise<unknown[]> {
+    const deserialize = getDeserializeStream(revivers);
+    const results: unknown[] = [];
+
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+
+    const writer = deserialize.writable.getWriter();
+    for (const chunk of chunks) {
+      await writer.write(chunk);
+    }
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  it('should serialize each chunk with format prefix and length framing', async () => {
+    const chunks = await serializeValues([{ hello: 'world' }, 42]);
+    expect(chunks).toHaveLength(2);
+
+    for (const chunk of chunks) {
+      expect(chunk).toBeInstanceOf(Uint8Array);
+      // Each chunk should be: [4-byte length][devl...payload...]
+      expect(chunk.length).toBeGreaterThan(8); // 4 header + 4 prefix + payload
+
+      // Read the length header
+      const view = new DataView(
+        chunk.buffer,
+        chunk.byteOffset,
+        chunk.byteLength
+      );
+      const frameLength = view.getUint32(0, false);
+      expect(frameLength).toBe(chunk.length - 4);
+
+      // Read the format prefix
+      const prefix = new TextDecoder().decode(chunk.subarray(4, 8));
+      expect(prefix).toBe('devl');
+    }
+  });
+
+  it('should produce chunks that getDeserializeStream can parse', async () => {
+    const revivers = getCommonRevivers(globalThis) as any;
+    const original = [
+      { message: 'hello', count: 42 },
+      [1, 2, 3],
+      'plain string',
+      null,
+    ];
+
+    const serialized = await serializeValues(original);
+    const results = await deserializeChunks(serialized, revivers);
+
+    expect(results).toHaveLength(4);
+    expect(results[0]).toEqual({ message: 'hello', count: 42 });
+    expect(results[1]).toEqual([1, 2, 3]);
+    expect(results[2]).toBe('plain string');
+    expect(results[3]).toBe(null);
+  });
+
+  it('should handle deserializing when chunks are concatenated', async () => {
+    const revivers = getCommonRevivers(globalThis) as any;
+    const serialized = await serializeValues([{ a: 1 }, { b: 2 }, { c: 3 }]);
+
+    // Concatenate all chunks into a single Uint8Array (simulates
+    // transport coalescing multiple chunks into one read)
+    const totalLength = serialized.reduce((sum, c) => sum + c.length, 0);
+    const concatenated = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of serialized) {
+      concatenated.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const results = await deserializeChunks([concatenated], revivers);
+    expect(results).toHaveLength(3);
+    expect(results[0]).toEqual({ a: 1 });
+    expect(results[1]).toEqual({ b: 2 });
+    expect(results[2]).toEqual({ c: 3 });
+  });
+
+  it('should handle deserializing when chunks are split arbitrarily', async () => {
+    const revivers = getCommonRevivers(globalThis) as any;
+    const serialized = await serializeValues([{ key: 'value' }]);
+    const fullData = serialized[0];
+
+    // Split the chunk at an arbitrary point (in the middle of the frame)
+    const splitPoint = Math.floor(fullData.length / 2);
+    const part1 = fullData.slice(0, splitPoint);
+    const part2 = fullData.slice(splitPoint);
+
+    const results = await deserializeChunks([part1, part2], revivers);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual({ key: 'value' });
+  });
+});
+
+describe('getDeserializeStream legacy fallback', () => {
+  const revivers = getCommonRevivers(globalThis) as any;
+
+  /** Feed Uint8Array chunks into a deserialize stream and collect results */
+  async function deserializeChunks(chunks: Uint8Array[]): Promise<unknown[]> {
+    const deserialize = getDeserializeStream(revivers);
+    const results: unknown[] = [];
+
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+
+    const writer = deserialize.writable.getWriter();
+    for (const chunk of chunks) {
+      await writer.write(chunk);
+    }
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  it('should parse legacy newline-delimited devalue text', async () => {
+    const { stringify } = await import('devalue');
+    const encoder = new TextEncoder();
+
+    const line1 = stringify({ hello: 'world' }) + '\n';
+    const line2 = stringify(42) + '\n';
+    const legacyData = encoder.encode(line1 + line2);
+
+    const results = await deserializeChunks([legacyData]);
+    expect(results).toHaveLength(2);
+    expect(results[0]).toEqual({ hello: 'world' });
+    expect(results[1]).toBe(42);
+  });
+
+  it('should parse legacy single-line chunks', async () => {
+    const { stringify } = await import('devalue');
+    const encoder = new TextEncoder();
+
+    const chunk1 = encoder.encode(stringify('hello') + '\n');
+    const chunk2 = encoder.encode(stringify('world') + '\n');
+
+    const results = await deserializeChunks([chunk1, chunk2]);
+    expect(results).toHaveLength(2);
+    expect(results[0]).toBe('hello');
+    expect(results[1]).toBe('world');
   });
 });
