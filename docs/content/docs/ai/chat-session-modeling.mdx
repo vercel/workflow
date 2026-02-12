@@ -1,6 +1,17 @@
 ---
 title: Chat Session Modeling
 description: Model chat sessions at different architectural layers to control state ownership and handle interruptions.
+type: guide
+summary: Choose between single-turn and multi-turn workflow patterns for managing chat session state.
+prerequisites:
+  - /docs/ai
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/ai/message-queueing
+  - /docs/ai/resumable-streams
+  - /docs/foundations/hooks
+  - /docs/api-reference/workflow-ai/durable-agent
+  - /docs/api-reference/workflow/define-hook
 ---
 
 Chat sessions in AI agents can be modeled at different layers of your architecture. The choice affects state ownership and how you handle interruptions and reconnections.

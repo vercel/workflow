@@ -1,6 +1,12 @@
 ---
 title: Serialization
 description: Understand how workflow data is serialized and persisted across suspensions and resumptions.
+type: conceptual
+summary: Learn which types can be passed between workflow and step functions.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/errors/serialization-failed
 ---
 
 All function arguments and return values passed between workflow and step functions must be serializable. Workflow DevKit uses a custom serialization system built on top of [devalue](https://github.com/sveltejs/devalue). This system supports standard JSON types, as well as a few additional popular Web API types.
