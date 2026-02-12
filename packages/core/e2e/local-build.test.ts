@@ -30,6 +30,7 @@ describe.each([
     const result = await exec('pnpm build', {
       cwd: getWorkbenchAppPath(project),
     });
+    console.log(result.stdout, result.stderr);
 
     expect(result.stderr).not.toContain('Error:');
 
