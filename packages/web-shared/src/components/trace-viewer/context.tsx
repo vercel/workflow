@@ -118,8 +118,9 @@ export interface TraceViewerState {
    */
   isMobile: boolean;
   /**
-   * Panel to render instead of the default span detail panel. The panel
-   * should use the context to get the selected span and other state.
+   * @deprecated Panel rendering has been moved outside the context.
+   * This field is kept for backwards compatibility but is no longer
+   * used by the workflow trace viewer.
    */
   customPanelComponent: ReactNode | null;
   /**
@@ -212,10 +213,6 @@ export type TraceViewerAction =
   | {
       type: 'setWithPanel';
       withPanel: boolean;
-    }
-  | {
-      type: 'setCustomPanelComponent';
-      customPanelComponent: ReactNode | null;
     }
   | {
       type: 'forceRender';
@@ -560,12 +557,6 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
         withPanel: action.withPanel,
       };
     }
-    case 'setCustomPanelComponent': {
-      return {
-        ...state,
-        customPanelComponent: action.customPanelComponent,
-      };
-    }
     case 'forceRender':
       state.memoCacheRef.current.set('', {});
       return {
@@ -625,15 +616,6 @@ export function TraceViewerContextProvider({
         withPanel,
       }),
     [withPanel]
-  );
-
-  useEffect(
-    () =>
-      dispatch({
-        type: 'setCustomPanelComponent',
-        customPanelComponent,
-      }),
-    [customPanelComponent]
   );
 
   const value: TraceViewerContextProps = useMemo(
