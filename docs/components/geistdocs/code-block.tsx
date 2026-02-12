@@ -5,6 +5,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useCallback,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -36,6 +37,36 @@ export const CodeBlock = ({
   const ref = useRef<HTMLPreElement>(null);
   const [isCopied, setIsCopied] = useState(false);
   const { 'data-line-numbers': lineNumbers } = rest;
+
+  // Filter out lines marked with `// @setup` using useLayoutEffect
+  // useLayoutEffect runs synchronously after DOM mutations but before paint,
+  // which minimizes the flash of @setup content
+  useLayoutEffect(() => {
+    if (!ref.current) return;
+
+    const lines = Array.from(ref.current.querySelectorAll('.line'));
+
+    // First pass: hide @setup lines
+    for (const line of lines) {
+      if (line.textContent?.includes('// @setup')) {
+        (line as HTMLElement).style.display = 'none';
+      }
+    }
+
+    // Second pass: hide leading empty lines (after @setup lines are hidden)
+    for (const line of lines) {
+      const htmlLine = line as HTMLElement;
+      // Skip already hidden lines
+      if (htmlLine.style.display === 'none') continue;
+      // If this line is empty (no text content), hide it
+      if (!line.textContent?.trim()) {
+        htmlLine.style.display = 'none';
+      } else {
+        // Stop at first non-empty visible line
+        break;
+      }
+    }
+  }, [children]);
 
   const copyToClipboard = useCallback(async () => {
     if (typeof window === 'undefined' || !navigator?.clipboard?.writeText) {
