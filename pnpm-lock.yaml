@@ -958,6 +958,9 @@ importers:
       express:
         specifier: ^4.21.0
         version: 4.22.1
+      isbot:
+        specifier: ^5
+        version: 5.1.35
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
@@ -1052,9 +1055,6 @@ importers:
       geist:
         specifier: ^1.7.0
         version: 1.7.0(next@16.1.6(@babel/core@7.28.4)(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0))
-      isbot:
-        specifier: ^5
-        version: 5.1.35
       lucide-react:
         specifier: 0.469.0
         version: 0.469.0(react@19.1.0)
