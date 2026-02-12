@@ -412,7 +412,7 @@ const inspectorThemeDark = {
 function DataInspector({ data }: { data: unknown }) {
   const isDark = useDarkMode();
 
-  // Check for StreamRef/ClassInstanceRef at top level
+  // Render top-level StreamRef/ClassInstanceRef as full custom components
   if (isStreamRef(data)) {
     return <StreamRefDisplay streamRef={data} />;
   }
@@ -427,7 +427,8 @@ function DataInspector({ data }: { data: unknown }) {
     >
       <ObjectInspector
         data={data}
-        // @ts-expect-error react-inspector accepts theme objects at runtime
+        // @ts-expect-error react-inspector accepts theme objects at runtime despite
+        // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
         theme={isDark ? inspectorThemeDark : inspectorThemeLight}
         expandLevel={2}
       />
