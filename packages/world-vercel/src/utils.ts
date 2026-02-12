@@ -271,12 +271,12 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
-      const response = await fetch(url, {
+      const request = new Request(url, {
         ...options,
         body,
         headers,
-        dispatcher,
       });
+      const response = await fetch(request, { dispatcher });
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
