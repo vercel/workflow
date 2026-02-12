@@ -165,7 +165,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   }
 
   private async *sendMessagesIterator(
-    options: SendMessagesOptions<UI_MESSAGE>
+    options: SendMessagesOptions<UI_MESSAGE> & ChatRequestOptions
   ): AsyncGenerator<UIMessageChunk> {
     const { chatId, messages, abortSignal, trigger, messageId } = options;
 
