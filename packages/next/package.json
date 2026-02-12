@@ -45,7 +45,7 @@
     "@types/semver": "7.7.1",
     "@types/watchpack": "2.4.4",
     "@workflow/tsconfig": "workspace:*",
-    "next": "16.2.0-canary.35"
+    "next": "https://vercel-packages.vercel.app/next/commits/f7dd09fd5fe57c5d853f2f09157b43cdafbe00af/next"
   },
   "peerDependencies": {
     "next": ">13"
