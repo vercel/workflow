@@ -86,7 +86,11 @@ const matrix = {
   ],
 };
 
-if (process.env.GITHUB_REF === 'refs/heads/main') {
+const shouldIncludeCanaryMatrix =
+  process.env.GITHUB_REF === 'refs/heads/main' ||
+  process.env.GITHUB_EVENT_NAME === 'pull_request';
+
+if (shouldIncludeCanaryMatrix) {
   const newItems = [];
 
   for (const item of matrix.app) {
