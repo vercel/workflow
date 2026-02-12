@@ -5,7 +5,9 @@ export { createBuildQueue } from './build-queue.js';
 export {
   createBaseBuilderConfig,
   type DecoratorOptions,
+  type DecoratorOptionsWithConfigPath,
   getDecoratorOptionsForDirectory,
+  getDecoratorOptionsForDirectoryWithConfigPath,
 } from './config-helpers.js';
 export { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
