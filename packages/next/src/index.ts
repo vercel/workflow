@@ -170,8 +170,6 @@ export function withWorkflow(
                 // Merge with any existing 'all' conditions from user config
                 all: [
                   ...(existingRules[key]?.condition?.all || []),
-                  // Exclude generated workflow route files from transformation
-                  { not: { path: /[/\\]\.well-known[/\\]workflow[/\\]/ } },
                   // Match files with workflow directives or custom serialization patterns
                   // Uses backreferences (\2, \3) to ensure matching quote types
                   {
