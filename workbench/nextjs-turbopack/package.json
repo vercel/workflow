@@ -8,7 +8,7 @@
     "predev": "pnpm generate:workflows",
     "prebuild": "pnpm generate:workflows",
     "dev": "next dev --turbopack",
-    "build": "next build --turbopack",
+    "build": "next build --turbopack || (mkdir -p .vercel/output/diagnostics && rm -f .vercel/output/diagnostics/next-build.zip .next-build.zip && if [ -d .next ]; then zip -rq .next-build.zip .next && mv .next-build.zip .vercel/output/diagnostics/next-build.zip; fi; exit 1)",
     "clean": "rm -rf .next .swc app/.well-known/workflow _workflows.ts",
     "start": "next start",
     "lint": "next lint"
