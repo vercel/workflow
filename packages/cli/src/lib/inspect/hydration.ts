@@ -96,8 +96,10 @@ export function getCLIRevivers(
       new global.Int32Array(reviveArrayBuffer(value)),
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
-    // In CLI o11y context, classes are not registered for deserialization.
-    // Produce display-friendly representations.
+    // O11y-specific revivers (streams, step functions → display objects).
+    // Spread FIRST so CLI-specific overrides below take precedence.
+    ...observabilityRevivers,
+    // CLI-specific overrides for class instances with inspect.custom
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) =>
       new CLIClassInstanceRef(
@@ -117,8 +119,6 @@ export function getCLIRevivers(
       new global.Uint16Array(reviveArrayBuffer(value)),
     Uint32Array: (value: string) =>
       new global.Uint32Array(reviveArrayBuffer(value)),
-    // O11y-specific revivers (streams, step functions → display objects)
-    ...observabilityRevivers,
   };
 }
 

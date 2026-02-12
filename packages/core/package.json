@@ -64,11 +64,6 @@
       "types": "./dist/serialization-format.d.ts",
       "default": "./dist/serialization-format.js"
     },
-    "./observability": {
-      "types": "./dist/observability.d.ts",
-      "node": "./dist/observability.js",
-      "default": "./dist/observability.js"
-    },
     "./_workflow": "./dist/workflow/index.js"
   },
   "scripts": {

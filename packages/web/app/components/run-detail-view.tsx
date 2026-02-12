@@ -253,9 +253,8 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = result.data
-        .map(hydrateResourceIO)
-        .find((e) => e.eventId === event.eventId);
+      const rawEvent = result.data.find((e) => e.eventId === event.eventId);
+      const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
       if (fullEvent && 'eventData' in fullEvent) {
         return fullEvent.eventData;
       }

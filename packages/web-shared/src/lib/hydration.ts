@@ -67,6 +67,10 @@ export function getWebRevivers(
   }
 
   return {
+    // O11y-specific revivers (streams, step functions → display objects).
+    // Spread FIRST so web-specific overrides below take precedence.
+    ...observabilityRevivers,
+
     // Binary types
     ArrayBuffer: reviveArrayBuffer,
     BigInt: (value: string) => global.BigInt(value),
@@ -103,8 +107,6 @@ export function getWebRevivers(
     Uint32Array: (value: string) =>
       new global.Uint32Array(reviveArrayBuffer(value)),
 
-    // Non-cloneable types — convert to plain equivalents so they survive
-    // the trace viewer's postMessage to the web worker.
     Headers: (value) =>
       Object.fromEntries(
         typeof value === 'object' && value !== null ? Object.entries(value) : []
@@ -115,7 +117,7 @@ export function getWebRevivers(
       return Object.fromEntries(new global.URLSearchParams(value));
     },
 
-    // Class/Instance: use display-friendly ClassInstanceRef
+    // Web-specific overrides for class instances
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) =>
       new ClassInstanceRef(
@@ -123,8 +125,6 @@ export function getWebRevivers(
         value.classId,
         value.data
       ),
-    // O11y-specific revivers (streams, step functions → display objects)
-    ...observabilityRevivers,
   };
 }
 
