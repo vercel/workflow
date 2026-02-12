@@ -107,7 +107,7 @@ export function waitToSpan(
     traceFlags: 1,
     attributes: {
       resource: 'sleep' as const,
-      data: wait,
+      data: wait, // wait is a plain object built from events, no non-cloneable types
     },
     links: [],
     events: spanEvents,
@@ -128,10 +128,13 @@ export function stepToSpan(
   const now = nowTime ?? new Date();
   const parsedName = parseStepName(String(step.stepName));
 
-  // Simplified attributes: only store resource type and full data
+  // Only embed identification fields — not the full object with
+  // input/output/error which may contain non-cloneable types.
+  // The detail panel fetches full data separately via spanDetailData.
+  const { input: _i, output: _o, error: _e, ...stepIdentity } = step;
   const attributes = {
     resource: 'step' as const,
-    data: step,
+    data: stepIdentity,
   };
 
   const resource = 'step';
@@ -262,10 +265,12 @@ export function runToSpan(
 ): Span {
   const now = nowTime ?? new Date();
 
-  // Simplified attributes: only store resource type and full data
+  // Only embed identification fields — not the full object with
+  // input/output/error which may contain non-cloneable types.
+  const { input: _i, output: _o, error: _e, ...runIdentity } = run;
   const attributes = {
     resource: 'run' as const,
-    data: run,
+    data: runIdentity,
   };
 
   // Use createdAt as span start time, with activeStartTime for when execution began
