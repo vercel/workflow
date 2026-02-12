@@ -251,9 +251,11 @@ function PanelResizeHandle({
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault();
-      const startX = e.clientX;
+      let lastX = e.clientX;
       const onPointerMove = (moveEvent: PointerEvent) => {
-        onResize(startX - moveEvent.clientX);
+        const deltaX = lastX - moveEvent.clientX;
+        lastX = moveEvent.clientX;
+        onResize(deltaX);
       };
       const onPointerUp = () => {
         document.removeEventListener('pointermove', onPointerMove);
