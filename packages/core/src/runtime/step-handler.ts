@@ -453,10 +453,15 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 return;
               }
 
-              // Server errors (5xx) from workflow-server should not consume step
-              // attempts. The withServerErrorRetry wrapper already retried a few
-              // times; if we still have a 5xx here it's persistent. Throw so the
-              // queue retries the whole step without burning an attempt.
+              // Server errors (5xx) from workflow-server are treated as persistent
+              // infrastructure issues. The withServerErrorRetry wrapper already
+              // retried the call a few times; if we still have a 5xx here it's
+              // likely persistent. Re-throw so the queue can retry the job and
+              // re-invoke this handler. Note: by the time we reach this point,
+              // step_started has already run and incremented step.attempt, and a
+              // subsequent queue retry may increment attempts again depending on
+              // storage semantics, so these retries are not guaranteed to be
+              // "free" with respect to step attempts.
               if (err.status !== undefined && err.status >= 500) {
                 runtimeLogger.warn(
                   'Persistent server error (5xx) during step, deferring to queue retry',

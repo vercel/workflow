@@ -495,7 +495,7 @@ export async function withServerErrorRetry<T>(
           {
             status: err.status,
             attempt: attempt + 1,
-            maxAttempts: delays.length,
+            maxRetries: delays.length,
             nextDelayMs: delays[attempt],
             url: err.url,
           }
