@@ -592,11 +592,6 @@ export async function runWorkflow(
       }
     }
     vmGlobalThis.TransformStream = TransformStream;
-
-    // Eventually we'll probably want to provide our own `console` object,
-    // but for now we'll just expose the global one.
-    vmGlobalThis.console = globalThis.console;
-
     // HACK: propagate symbol needed for AI gateway usage
     const SYMBOL_FOR_REQ_CONTEXT = Symbol.for('@vercel/request-context');
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work

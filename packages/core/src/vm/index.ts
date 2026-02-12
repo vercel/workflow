@@ -19,8 +19,16 @@ export function createContext(options: CreateContextOptions) {
   let { fixedTimestamp } = options;
   const { seed } = options;
   const rng = seedrandom(seed);
-  const context = vmCreateContext();
-
+  const context = vmCreateContext(undefined, {
+    // Hardening: block dynamic code generation inside the VM realm via:
+    // - eval("..."), new Function("..."), etc.
+    // NOTE: `node:vm` is not a security sandbox. This reduces common escape primitives
+    // when executed code is attacker-controlled.
+    codeGeneration: {
+      strings: false,
+      wasm: false,
+    },
+  });
   const g: typeof globalThis = runInContext('globalThis', context);
 
   // Deterministic `Math.random()`
@@ -93,7 +101,19 @@ export function createContext(options: CreateContextOptions) {
   g.Headers = globalThis.Headers;
   g.TextEncoder = globalThis.TextEncoder;
   g.TextDecoder = globalThis.TextDecoder;
-  g.console = globalThis.console;
+  // Do NOT leak the host console object into the VM realm by reference.
+  // Provide a minimal VM-local console stub instead.
+  const vmConsole = runInContext(
+    `({
+    log(){},
+    info(){},
+    warn(){},
+    error(){},
+    debug(){},
+  })`,
+    context
+  );
+  (g as any).console = vmConsole;
   g.URL = globalThis.URL;
   g.URLSearchParams = globalThis.URLSearchParams;
   g.structuredClone = globalThis.structuredClone;
