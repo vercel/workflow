@@ -20,6 +20,19 @@ export {
   isTerminalStatus,
   shouldShowReenqueueButton,
 } from './lib/event-analysis';
+export type { Revivers, StreamRef } from './lib/hydration';
+export {
+  CLASS_INSTANCE_REF_TYPE,
+  ClassInstanceRef,
+  extractStreamIds,
+  getWebRevivers,
+  hydrateResourceIO,
+  isClassInstanceRef,
+  isStreamId,
+  isStreamRef,
+  STREAM_REF_TYPE,
+  truncateId,
+} from './lib/hydration';
 export type { StreamStep } from './lib/utils';
 export {
   extractConversation,

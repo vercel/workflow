@@ -60,6 +60,10 @@
       "types": "./dist/serialization.d.ts",
       "default": "./dist/serialization.js"
     },
+    "./serialization-format": {
+      "types": "./dist/serialization-format.d.ts",
+      "default": "./dist/serialization-format.js"
+    },
     "./observability": {
       "types": "./dist/observability.d.ts",
       "node": "./dist/observability.js",

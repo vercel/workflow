@@ -1,5 +1,8 @@
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
-import { waitEventsToWaitEntity } from '@workflow/web-shared';
+import {
+  hydrateResourceIO,
+  waitEventsToWaitEntity,
+} from '@workflow/web-shared';
 import type {
   Event,
   Hook,
@@ -743,20 +746,20 @@ export function useWorkflowTraceViewerData(
             setError(error);
             return;
           }
-          setRun(result);
+          setRun(hydrateResourceIO(result));
           return result;
         }
       ),
       fetchAllSteps(env, runId).then((result) => {
-        setSteps(result.data);
+        setSteps(result.data.map(hydrateResourceIO));
         setStepsCursor(result.cursor);
       }),
       fetchAllHooks(env, runId).then((result) => {
-        setHooks(result.data);
+        setHooks(result.data.map(hydrateResourceIO));
         setHooksCursor(result.cursor);
       }),
       fetchAllEvents(env, runId).then((result) => {
-        setEvents(result.data);
+        setEvents(result.data.map(hydrateResourceIO));
         setEventsCursor(result.cursor);
       }),
     ];
@@ -810,7 +813,7 @@ export function useWorkflowTraceViewerData(
       setError(error);
       return false;
     }
-    setRun(result);
+    setRun(hydrateResourceIO(result));
     return true;
   }, [env, runId, run?.completedAt]);
 
@@ -829,7 +832,7 @@ export function useWorkflowTraceViewerData(
     }
 
     if (result.data.length > 0) {
-      setSteps((prev) => mergeSteps(prev, result.data));
+      setSteps((prev) => mergeSteps(prev, result.data.map(hydrateResourceIO)));
       // We intentionally leave the cursor where it is, unless we're at the end of the page
       // in which case we roll over. This is so that we re-fetch existing steps, to ensure
       // their status gets updated.
@@ -856,7 +859,7 @@ export function useWorkflowTraceViewerData(
       return false;
     }
     if (result.data.length > 0) {
-      setHooks((prev) => mergeHooks(prev, result.data));
+      setHooks((prev) => mergeHooks(prev, result.data.map(hydrateResourceIO)));
       if (result.cursor) {
         setHooksCursor(result.cursor);
       }
@@ -880,7 +883,9 @@ export function useWorkflowTraceViewerData(
       return false;
     }
     if (result.data.length > 0) {
-      setEvents((prev) => mergeEvents(prev, result.data));
+      setEvents((prev) =>
+        mergeEvents(prev, result.data.map(hydrateResourceIO))
+      );
       if (result.cursor) {
         setEventsCursor(result.cursor);
       }
@@ -1009,6 +1014,7 @@ async function fetchResourceWithCorrelationId(
     });
   }
 
+  resourceData = hydrateResourceIO(resourceData);
   return { data: resourceData, correlationId };
 }
 
@@ -1051,7 +1057,7 @@ export function useWorkflowResourceData(
         setError(error);
         return;
       }
-      setData(result);
+      setData(hydrateResourceIO(result));
       return;
     }
     if (resource === 'sleep') {
@@ -1066,7 +1072,7 @@ export function useWorkflowResourceData(
         setError(error);
         return;
       }
-      const events = result.data as unknown as Event[];
+      const events = (result.data as unknown as Event[]).map(hydrateResourceIO);
       const data = waitEventsToWaitEntity(events);
       if (data === null) {
         setError(

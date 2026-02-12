@@ -7,7 +7,6 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { hydrateResourceIO } from '@workflow/core/observability';
 import * as workflowRunHelpers from '@workflow/core/runtime';
 import { createWorld } from '@workflow/core/runtime';
 import {
@@ -550,23 +549,9 @@ function getUserFacingErrorMessage(error: Error, status?: number): string {
 }
 
 /**
- * Hydrate serialized data (input/output/eventData/metadata) from the
- * world backend into plain JS values. Runs server-side before CBOR
- * encoding the response.
- */
-const hydrate = <T>(data: T): T => {
-  try {
-    return hydrateResourceIO(data as any) as T;
-  } catch {
-    // If hydration fails, return the data as-is rather than crashing.
-    // The client will see raw (un-hydrated) data.
-    return data;
-  }
-};
-
-/**
  * Helper to create successful responses.
- * CBOR transport handles serialization — no JSON round-trip needed.
+ * Data is passed through as-is — CBOR transport preserves Uint8Array
+ * and other types. Hydration happens client-side.
  */
 function createResponse<T>(data: T): ServerActionResult<T> {
   return {
@@ -604,7 +589,7 @@ export async function fetchRuns(
       resolveData: 'none',
     });
     return createResponse({
-      data: (result.data as unknown as WorkflowRun[]).map(hydrate),
+      data: result.data as unknown as WorkflowRun[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
     });
@@ -628,7 +613,7 @@ export async function fetchRun(
   try {
     const world = await getWorldFromEnv(worldEnv);
     const run = await world.runs.get(runId, { resolveData });
-    return createResponse(hydrate(run as WorkflowRun));
+    return createResponse(run as WorkflowRun);
   } catch (error) {
     return createServerActionError<WorkflowRun>(error, 'world.runs.get', {
       runId,
@@ -659,7 +644,7 @@ export async function fetchSteps(
     });
     return createResponse({
       // StepWithoutData has undefined input/output, but after hydration the structure is compatible
-      data: (result.data as unknown as Step[]).map(hydrate),
+      data: result.data as unknown as Step[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
     });
@@ -687,7 +672,7 @@ export async function fetchStep(
   try {
     const world = await getWorldFromEnv(worldEnv);
     const step = await world.steps.get(runId, stepId, { resolveData });
-    return createResponse(hydrate(step as Step));
+    return createResponse(step as Step);
   } catch (error) {
     return createServerActionError<Step>(error, 'world.steps.get', {
       runId,
@@ -756,7 +741,7 @@ export async function fetchEventsByCorrelationId(
       resolveData: withData ? 'all' : 'none',
     });
     return createResponse({
-      data: (result.data as Event[]).map(hydrate),
+      data: result.data as Event[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
     });
@@ -793,7 +778,7 @@ export async function fetchHooks(
       resolveData: 'none',
     });
     return createResponse({
-      data: (result.data as Hook[]).map(hydrate),
+      data: result.data as Hook[],
       cursor: result.cursor ?? undefined,
       hasMore: result.hasMore,
     });
@@ -817,7 +802,7 @@ export async function fetchHook(
   try {
     const world = await getWorldFromEnv(worldEnv);
     const hook = await world.hooks.get(hookId, { resolveData });
-    return createResponse(hydrate(hook as Hook));
+    return createResponse(hook as Hook);
   } catch (error) {
     return createServerActionError<Hook>(error, 'world.hooks.get', {
       hookId,
