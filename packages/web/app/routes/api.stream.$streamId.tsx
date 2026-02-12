@@ -8,15 +8,29 @@ import type { Route } from './+types/api.stream.$streamId';
 
 export async function loader({ params, request }: Route.LoaderArgs) {
   const { streamId } = params;
+
+  // Validate streamId format (alphanumeric with underscores/hyphens)
+  if (!streamId || !/^[\w-]+$/.test(streamId)) {
+    return Response.json(
+      { message: 'Invalid stream ID', layer: 'server' },
+      { status: 400 }
+    );
+  }
+
   const url = new URL(request.url);
-  const startIndex = url.searchParams.get('startIndex');
+  const startIndexParam = url.searchParams.get('startIndex');
+  const startIndex =
+    startIndexParam != null ? Number.parseInt(startIndexParam, 10) : undefined;
+
+  if (startIndex !== undefined && Number.isNaN(startIndex)) {
+    return Response.json(
+      { message: 'Invalid startIndex parameter', layer: 'server' },
+      { status: 400 }
+    );
+  }
 
   try {
-    const stream = await readStreamServerAction(
-      {},
-      streamId,
-      startIndex ? parseInt(startIndex, 10) : undefined
-    );
+    const stream = await readStreamServerAction({}, streamId, startIndex);
 
     if (!stream || !(stream instanceof ReadableStream)) {
       // It's a ServerActionError

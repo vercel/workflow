@@ -27,7 +27,7 @@
     "directory": "packages/web"
   },
   "scripts": {
-    "dev": "cross-env NODE_ENV=development node server.js",
+    "dev": "react-router dev",
     "build": "react-router build",
     "clean": "rm -rf build .react-router",
     "start": "node server.js",

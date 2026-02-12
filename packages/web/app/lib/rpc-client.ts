@@ -37,6 +37,21 @@ async function rpc<T>(method: string, params?: any): Promise<T> {
     body: new Uint8Array(encode({ method, params: params ?? {} })),
   });
   if (!res.ok) {
+    // Try to extract structured error from CBOR response body
+    try {
+      const buffer = await res.arrayBuffer();
+      const errorBody = decode(new Uint8Array(buffer));
+      if (errorBody?.error?.message) {
+        throw new Error(errorBody.error.message);
+      }
+    } catch (decodeErr) {
+      if (
+        decodeErr instanceof Error &&
+        decodeErr.message !== `RPC call ${method} failed`
+      ) {
+        throw decodeErr;
+      }
+    }
     throw new Error(
       `RPC call ${method} failed: ${res.status} ${res.statusText}`
     );

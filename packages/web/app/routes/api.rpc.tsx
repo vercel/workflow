@@ -20,7 +20,6 @@ import {
   fetchStreams,
   fetchWorkflowsManifest,
   getPublicServerConfig,
-  readStreamServerAction,
   recreateRun,
   reenqueueRun,
   resumeHook,
@@ -72,11 +71,21 @@ export async function action({ request }: Route.ActionArgs) {
   // Decode request body — accept both CBOR and JSON
   let body: { method: string; params: any };
   const contentType = request.headers.get('content-type') || '';
-  if (contentType.includes('application/cbor')) {
-    const buffer = await request.arrayBuffer();
-    body = decode(new Uint8Array(buffer));
-  } else {
-    body = await request.json();
+  try {
+    if (contentType.includes('application/cbor')) {
+      const buffer = await request.arrayBuffer();
+      body = decode(new Uint8Array(buffer));
+    } else {
+      body = await request.json();
+    }
+  } catch {
+    return cborResponse(
+      {
+        success: false,
+        error: { message: 'Malformed request body', layer: 'server' },
+      },
+      400
+    );
   }
 
   const { method, params } = body;
