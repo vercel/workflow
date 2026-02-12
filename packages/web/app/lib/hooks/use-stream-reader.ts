@@ -1,6 +1,9 @@
+import { hydrateData } from '@workflow/core/serialization-format';
+import { getWebRevivers, hydrateResourceIO } from '@workflow/web-shared';
+import { decode } from 'cbor-x';
 import { useEffect, useRef, useState } from 'react';
-import { readStream } from '~/lib/workflow-api-client';
 import type { EnvMap } from '~/lib/types';
+import { readStream } from '~/lib/workflow-api-client';
 
 interface Chunk {
   id: number;
@@ -28,6 +31,8 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
     abortControllerRef.current = new AbortController();
     setIsLive(true);
 
+    const revivers = getWebRevivers();
+
     const handleStreamEnd = () => {
       if (mounted) {
         setIsLive(false);
@@ -44,36 +49,83 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
     const addChunk = (value: unknown) => {
       if (mounted && value !== undefined && value !== null) {
         const chunkId = chunkIdRef.current++;
+        // Hydrate the chunk — it may be a format-prefixed Uint8Array
+        // (same serialization as step inputs/outputs)
+        let hydrated: unknown;
+        try {
+          hydrated = hydrateData(value, revivers);
+        } catch {
+          hydrated = value;
+        }
         const text =
-          typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+          typeof hydrated === 'string'
+            ? hydrated
+            : JSON.stringify(hydrated, null, 2);
         setChunks((prev) => [...prev, { id: chunkId, text }]);
       }
     };
 
-    const processStreamChunks = async (
-      reader: ReadableStreamDefaultReader<unknown>
+    /**
+     * Read length-prefixed CBOR chunks from the stream.
+     * Each frame: [4-byte big-endian length][CBOR-encoded chunk]
+     */
+    const processFramedStream = async (
+      reader: ReadableStreamDefaultReader<Uint8Array>
     ) => {
+      let buffer = new Uint8Array(0);
+
+      const appendToBuffer = (data: Uint8Array) => {
+        const newBuffer = new Uint8Array(buffer.length + data.length);
+        newBuffer.set(buffer, 0);
+        newBuffer.set(data, buffer.length);
+        buffer = newBuffer;
+      };
+
       for (;;) {
-        if (abortControllerRef.current?.signal.aborted) {
-          break;
-        }
+        if (abortControllerRef.current?.signal.aborted) break;
 
         const { value, done } = await reader.read();
-
         if (done) {
           handleStreamEnd();
           break;
         }
 
-        addChunk(value);
+        appendToBuffer(value);
+
+        // Process complete frames from the buffer
+        while (buffer.length >= 4) {
+          const view = new DataView(
+            buffer.buffer,
+            buffer.byteOffset,
+            buffer.byteLength
+          );
+          const frameLength = view.getUint32(0, false);
+
+          if (buffer.length < 4 + frameLength) {
+            // Not enough data yet for the full frame
+            break;
+          }
+
+          // Extract the CBOR-encoded chunk
+          const frameData = buffer.slice(4, 4 + frameLength);
+          buffer = buffer.slice(4 + frameLength);
+
+          // Decode CBOR → raw chunk (may be Uint8Array with format prefix)
+          try {
+            const rawChunk = decode(frameData);
+            addChunk(rawChunk);
+          } catch (err) {
+            console.error('Failed to decode stream chunk:', err);
+          }
+        }
       }
     };
 
     const readStreamData = async () => {
       try {
         const stream = await readStream(env, streamId);
-        const reader = stream.getReader();
-        await processStreamChunks(reader);
+        const reader = (stream as ReadableStream<Uint8Array>).getReader();
+        await processFramedStream(reader);
       } catch (err) {
         handleStreamError(err);
       }
