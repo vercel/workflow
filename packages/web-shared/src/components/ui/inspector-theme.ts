@@ -1,0 +1,64 @@
+/**
+ * Shared theme configuration for react-inspector's ObjectInspector.
+ *
+ * Used by AttributePanel, EventListView, StreamViewer, and any other
+ * component that renders data with ObjectInspector.
+ */
+
+export const inspectorThemeLight = {
+  BASE_FONT_SIZE: '11px',
+  BASE_LINE_HEIGHT: 1.4,
+  BASE_BACKGROUND_COLOR: 'transparent',
+  BASE_COLOR: 'var(--ds-gray-1000)',
+  OBJECT_PREVIEW_ARRAY_MAX_PROPERTIES: 10,
+  OBJECT_PREVIEW_OBJECT_MAX_PROPERTIES: 5,
+  OBJECT_NAME_COLOR: 'rgb(136, 19, 145)',
+  OBJECT_VALUE_NULL_COLOR: 'rgb(128, 128, 128)',
+  OBJECT_VALUE_UNDEFINED_COLOR: 'rgb(128, 128, 128)',
+  OBJECT_VALUE_REGEXP_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_STRING_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_SYMBOL_COLOR: 'rgb(196, 26, 22)',
+  OBJECT_VALUE_NUMBER_COLOR: 'rgb(28, 0, 207)',
+  OBJECT_VALUE_BOOLEAN_COLOR: 'rgb(28, 0, 207)',
+  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'rgb(13, 34, 170)',
+  HTML_TAG_COLOR: 'rgb(168, 148, 166)',
+  HTML_TAGNAME_COLOR: 'rgb(136, 18, 128)',
+  HTML_TAGNAME_TEXT_TRANSFORM: 'lowercase',
+  HTML_ATTRIBUTE_NAME_COLOR: 'rgb(153, 69, 0)',
+  HTML_ATTRIBUTE_VALUE_COLOR: 'rgb(26, 26, 166)',
+  HTML_COMMENT_COLOR: 'rgb(35, 110, 37)',
+  HTML_DOCTYPE_COLOR: 'rgb(192, 192, 192)',
+  ARROW_COLOR: 'var(--ds-gray-600)',
+  ARROW_MARGIN_RIGHT: 3,
+  ARROW_FONT_SIZE: 12,
+  TREENODE_FONT_FAMILY: 'var(--font-mono)',
+  TREENODE_FONT_SIZE: '11px',
+  TREENODE_LINE_HEIGHT: 1.4,
+  TREENODE_PADDING_LEFT: 12,
+  TABLE_BORDER_COLOR: 'var(--ds-gray-300)',
+  TABLE_TH_BACKGROUND_COLOR: 'var(--ds-gray-100)',
+  TABLE_TH_HOVER_COLOR: 'var(--ds-gray-200)',
+  TABLE_SORT_ICON_COLOR: 'var(--ds-gray-500)',
+  TABLE_DATA_BACKGROUND_IMAGE: 'none',
+  TABLE_DATA_BACKGROUND_SIZE: '0',
+};
+
+export const inspectorThemeDark = {
+  ...inspectorThemeLight,
+  BASE_COLOR: 'var(--ds-gray-1000)',
+  OBJECT_NAME_COLOR: 'rgb(227, 110, 236)',
+  OBJECT_VALUE_NULL_COLOR: 'rgb(127, 127, 127)',
+  OBJECT_VALUE_UNDEFINED_COLOR: 'rgb(127, 127, 127)',
+  OBJECT_VALUE_REGEXP_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_STRING_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_SYMBOL_COLOR: 'rgb(233, 63, 59)',
+  OBJECT_VALUE_NUMBER_COLOR: 'hsl(252, 100%, 75%)',
+  OBJECT_VALUE_BOOLEAN_COLOR: 'hsl(252, 100%, 75%)',
+  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'rgb(85, 106, 242)',
+  HTML_TAG_COLOR: 'rgb(93, 176, 215)',
+  HTML_TAGNAME_COLOR: 'rgb(93, 176, 215)',
+  HTML_ATTRIBUTE_NAME_COLOR: 'rgb(155, 187, 220)',
+  HTML_ATTRIBUTE_VALUE_COLOR: 'rgb(242, 151, 102)',
+  HTML_COMMENT_COLOR: 'rgb(137, 137, 137)',
+  HTML_DOCTYPE_COLOR: 'rgb(192, 192, 192)',
+};

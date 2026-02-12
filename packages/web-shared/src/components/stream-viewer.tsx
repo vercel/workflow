@@ -17,43 +17,7 @@ interface StreamViewerProps {
   error?: string | null;
 }
 
-// Import the theme objects from attribute-panel would create a circular dep,
-// so define minimal inspector themes inline here.
-const inspectorThemeLight = {
-  BASE_FONT_SIZE: '11px',
-  BASE_LINE_HEIGHT: 1.4,
-  BASE_BACKGROUND_COLOR: 'transparent',
-  BASE_COLOR: 'var(--ds-gray-1000)',
-  OBJECT_NAME_COLOR: 'rgb(136, 19, 145)',
-  OBJECT_VALUE_NULL_COLOR: 'rgb(128, 128, 128)',
-  OBJECT_VALUE_UNDEFINED_COLOR: 'rgb(128, 128, 128)',
-  OBJECT_VALUE_REGEXP_COLOR: 'rgb(196, 26, 22)',
-  OBJECT_VALUE_STRING_COLOR: 'rgb(196, 26, 22)',
-  OBJECT_VALUE_SYMBOL_COLOR: 'rgb(196, 26, 22)',
-  OBJECT_VALUE_NUMBER_COLOR: 'rgb(28, 0, 207)',
-  OBJECT_VALUE_BOOLEAN_COLOR: 'rgb(28, 0, 207)',
-  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'rgb(13, 34, 170)',
-  ARROW_COLOR: 'var(--ds-gray-600)',
-  ARROW_MARGIN_RIGHT: 3,
-  ARROW_FONT_SIZE: 12,
-  TREENODE_FONT_FAMILY: 'var(--font-mono)',
-  TREENODE_FONT_SIZE: '11px',
-  TREENODE_LINE_HEIGHT: 1.4,
-  TREENODE_PADDING_LEFT: 12,
-};
-
-const inspectorThemeDark = {
-  ...inspectorThemeLight,
-  OBJECT_NAME_COLOR: 'rgb(227, 110, 236)',
-  OBJECT_VALUE_NULL_COLOR: 'rgb(127, 127, 127)',
-  OBJECT_VALUE_UNDEFINED_COLOR: 'rgb(127, 127, 127)',
-  OBJECT_VALUE_REGEXP_COLOR: 'rgb(233, 63, 59)',
-  OBJECT_VALUE_STRING_COLOR: 'rgb(233, 63, 59)',
-  OBJECT_VALUE_SYMBOL_COLOR: 'rgb(233, 63, 59)',
-  OBJECT_VALUE_NUMBER_COLOR: 'hsl(252, 100%, 75%)',
-  OBJECT_VALUE_BOOLEAN_COLOR: 'hsl(252, 100%, 75%)',
-  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'rgb(85, 106, 242)',
-};
+import { inspectorThemeDark, inspectorThemeLight } from './ui/inspector-theme';
 
 /**
  * StreamViewer component that displays real-time stream data.

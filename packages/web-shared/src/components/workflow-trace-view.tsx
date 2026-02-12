@@ -211,7 +211,6 @@ function SelectionBridge({
   useEffect(() => {
     if (selected) {
       onSelectionChangeRef.current({
-        events: selected.events?.map((e) => e.event),
         data: selected.span.attributes?.data,
         resource: selected.span.attributes?.resource as string | undefined,
         spanId: selected.span.spanId,
@@ -293,6 +292,7 @@ export const WorkflowTraceViewer = ({
   onResolveHook,
   onStreamClick,
   onSpanSelect,
+  onLoadEventData,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -316,6 +316,11 @@ export const WorkflowTraceViewer = ({
   onStreamClick?: (streamId: string) => void;
   /** Callback when a span is selected. */
   onSpanSelect?: (info: SpanSelectionInfo) => void;
+  /** Callback to load event data for a specific event (lazy loading in sidebar) */
+  onLoadEventData?: (
+    correlationId: string,
+    eventId: string
+  ) => Promise<unknown | null>;
 }) => {
   const [now, setNow] = useState(() => new Date());
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
@@ -357,9 +362,22 @@ export const WorkflowTraceViewer = ({
     [onSpanSelect]
   );
 
-  const handleSelectionChange = useCallback((info: SelectedSpanInfo | null) => {
-    setSelectedSpan(info);
-  }, []);
+  const handleSelectionChange = useCallback(
+    (info: SelectedSpanInfo | null) => {
+      if (info) {
+        // Filter raw events by the selected span's correlationId (stepId/hookId)
+        // This bypasses the trace worker pipeline entirely.
+        const correlationId = info.spanId;
+        const rawEvents = correlationId
+          ? events.filter((e) => e.correlationId === correlationId)
+          : [];
+        setSelectedSpan({ ...info, rawEvents });
+      } else {
+        setSelectedSpan(null);
+      }
+    },
+    [events]
+  );
 
   const handleClose = useCallback(() => {
     setSelectedSpan(null);
@@ -453,6 +471,7 @@ export const WorkflowTraceViewer = ({
                 spanDetailLoading={spanDetailLoading}
                 onSpanSelect={handleSpanSelect}
                 onWakeUpSleep={onWakeUpSleep}
+                onLoadEventData={onLoadEventData}
                 onResolveHook={onResolveHook}
                 selectedSpan={selectedSpan}
               />

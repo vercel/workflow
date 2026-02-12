@@ -5,7 +5,6 @@ import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import type { SpanEvent } from '../trace-viewer/types';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -36,14 +35,14 @@ export type SpanSelectionInfo = {
  * Info about the selected span from the trace viewer.
  */
 export interface SelectedSpanInfo {
-  /** The span events (used for EventsList, canWakeUp, canResolveHook) */
-  events?: SpanEvent[];
   /** The raw data from the span attributes (step/run/hook object from the trace) */
   data?: unknown;
   /** The span resource type (from span attributes) */
   resource?: string;
-  /** The span ID */
+  /** The span ID (correlationId for filtering events) */
   spanId?: string;
+  /** Raw correlated events from the store (NOT from the trace worker pipeline) */
+  rawEvents?: Event[];
 }
 
 /**
@@ -60,6 +59,7 @@ export function EntityDetailPanel({
   spanDetailLoading,
   onSpanSelect,
   onWakeUpSleep,
+  onLoadEventData,
   onResolveHook,
   selectedSpan,
 }: {
@@ -79,6 +79,11 @@ export function EntityDetailPanel({
     runId: string,
     correlationId: string
   ) => Promise<{ stoppedCount: number }>;
+  /** Callback to load event data for a specific event (lazy loading) */
+  onLoadEventData?: (
+    correlationId: string,
+    eventId: string
+  ) => Promise<unknown | null>;
   /** Callback to resolve a hook with a payload. */
   onResolveHook?: (
     hookToken: string,
@@ -93,8 +98,8 @@ export function EntityDetailPanel({
   const [resolvingHook, setResolvingHook] = useState(false);
 
   const data = selectedSpan?.data;
-  const spanEvents = selectedSpan?.events;
-  const spanEventsLength = spanEvents?.length ?? 0;
+  const rawEvents = selectedSpan?.rawEvents;
+  const rawEventsLength = rawEvents?.length ?? 0;
 
   // Determine resource type, ID, and runId from the selected span
   const { resource, resourceId, runId } = useMemo(() => {
@@ -139,34 +144,38 @@ export function EntityDetailPanel({
 
   // Check if this sleep is still pending and can be woken up
   const canWakeUp = useMemo(() => {
-    void spanEventsLength;
-    if (resource !== 'sleep' || !spanEvents) return false;
+    void rawEventsLength;
+    if (resource !== 'sleep' || !rawEvents) return false;
     const terminalStates = ['completed', 'failed', 'cancelled'];
     if (terminalStates.includes(run.status)) return false;
-    const hasWaitCompleted = spanEvents.some(
-      (e) => e.name === 'wait_completed'
+    const hasWaitCompleted = rawEvents.some(
+      (e) => e.eventType === 'wait_completed'
     );
     if (hasWaitCompleted) return false;
-    const waitCreatedEvent = spanEvents.find((e) => e.name === 'wait_created');
-    const eventData = waitCreatedEvent?.attributes?.eventData as
+    const waitCreatedEvent = rawEvents.find(
+      (e) => e.eventType === 'wait_created'
+    );
+    const eventData = (waitCreatedEvent as any)?.eventData as
       | { resumeAt?: string | Date }
       | undefined;
     const resumeAt = eventData?.resumeAt;
     if (!resumeAt) return false;
     const resumeAtDate = new Date(resumeAt);
     return resumeAtDate.getTime() > Date.now();
-  }, [resource, spanEvents, spanEventsLength, run.status]);
+  }, [resource, rawEvents, rawEventsLength, run.status]);
 
   // Check if this hook can be resolved
   const canResolveHook = useMemo(() => {
-    void spanEventsLength;
-    if (resource !== 'hook' || !spanEvents) return false;
+    void rawEventsLength;
+    if (resource !== 'hook' || !rawEvents) return false;
     const terminalStates = ['completed', 'failed', 'cancelled'];
     if (terminalStates.includes(run.status)) return false;
-    const hasHookDisposed = spanEvents.some((e) => e.name === 'hook_disposed');
+    const hasHookDisposed = rawEvents.some(
+      (e) => e.eventType === 'hook_disposed'
+    );
     if (hasHookDisposed) return false;
     return true;
-  }, [resource, spanEvents, spanEventsLength, run.status]);
+  }, [resource, rawEvents, rawEventsLength, run.status]);
 
   const error = spanDetailError ?? undefined;
   const loading = spanDetailLoading ?? false;
@@ -335,7 +344,9 @@ export function EntityDetailPanel({
         error={error ?? undefined}
         onStreamClick={onStreamClick}
       />
-      {resource !== 'run' && spanEvents && <EventsList events={spanEvents} />}
+      {resource !== 'run' && rawEvents && (
+        <EventsList events={rawEvents} onLoadEventData={onLoadEventData} />
+      )}
     </div>
   );
 }

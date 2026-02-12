@@ -3,6 +3,9 @@
 import type { Event } from '@workflow/world';
 import { ChevronRight, Loader2 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
+import { ObjectInspector } from 'react-inspector';
+import { useDarkMode } from '../hooks/use-dark-mode';
+import { inspectorThemeDark, inspectorThemeLight } from './ui/inspector-theme';
 import { getEventColor } from './workflow-traces/event-colors';
 
 /**
@@ -61,6 +64,7 @@ function EventRow({
   event: Event;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
 }) {
+  const isDark = useDarkMode();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(null);
@@ -272,16 +276,18 @@ function EventRow({
 
             {/* Event data display */}
             {!isLoading && !loadError && eventData != null && (
-              <pre
-                className="text-[11px] overflow-x-auto rounded-md border p-3"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                  backgroundColor: 'var(--ds-gray-100)',
-                  color: 'var(--ds-gray-1000)',
-                }}
+              <div
+                className="overflow-x-auto rounded-md border p-3"
+                style={{ borderColor: 'var(--ds-gray-300)' }}
               >
-                <code>{JSON.stringify(eventData, null, 2)}</code>
-              </pre>
+                <ObjectInspector
+                  data={eventData}
+                  // @ts-expect-error react-inspector accepts theme objects at runtime
+                  // see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
+                  theme={isDark ? inspectorThemeDark : inspectorThemeLight}
+                  expandLevel={2}
+                />
+              </div>
             )}
 
             {/* No event data */}

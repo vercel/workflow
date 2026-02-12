@@ -344,9 +344,20 @@ function hydrateEventData<T extends { eventId?: string; eventData?: any }>(
   if (!resource.eventData) return resource;
 
   const eventData = { ...resource.eventData };
+
+  // step_completed events have eventData.result (serialized return value)
   if ('result' in eventData && eventData.result != null) {
     try {
       eventData.result = hydrateData(eventData.result, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
+  // step_created events have eventData.input (serialized step arguments)
+  if ('input' in eventData && eventData.input != null) {
+    try {
+      eventData.input = hydrateData(eventData.input, revivers);
     } catch {
       // Leave un-hydrated
     }
