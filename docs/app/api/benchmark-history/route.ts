@@ -6,6 +6,49 @@ const REPO = 'vercel/workflow';
 const FILE_PATH = 'ci/benchmark-results.json';
 const MAX_ITEMS = 30;
 
+/**
+ * Legacy metric name aliases.
+ * Before beta.53, concurrent step benchmarks had a "stress test: " prefix.
+ * This mapping allows the history API to find old data stored under the
+ * previous names so that charts show continuous history across the rename.
+ */
+const LEGACY_METRIC_ALIASES: Record<string, string[]> = {
+  'Promise.all with 100 concurrent steps': [
+    'stress test: Promise.all with 100 concurrent steps',
+  ],
+  'Promise.all with 500 concurrent steps': [
+    'stress test: Promise.all with 500 concurrent steps',
+  ],
+  'Promise.race with 100 concurrent steps': [
+    'stress test: Promise.race with 100 concurrent steps',
+  ],
+  'Promise.race with 500 concurrent steps': [
+    'stress test: Promise.race with 500 concurrent steps',
+  ],
+};
+
+/**
+ * Look up a metric in a world's data, trying the current name first,
+ * then falling back to any legacy aliases.
+ */
+function findMetric(
+  worldData: CIResultsData['worlds'][string] | undefined,
+  metricName: string
+) {
+  const metric = worldData?.metrics?.[metricName];
+  if (metric) return metric;
+
+  const aliases = LEGACY_METRIC_ALIASES[metricName];
+  if (aliases) {
+    for (const alias of aliases) {
+      const aliasMetric = worldData?.metrics?.[alias];
+      if (aliasMetric) return aliasMetric;
+    }
+  }
+
+  return undefined;
+}
+
 interface BenchmarkHistoryPoint {
   label: string; // commit sha or version number
   commit: string;
@@ -208,7 +251,7 @@ async function fetchCommitsHistory(
     if (!snapshot) continue;
 
     const worldData = snapshot.data.worlds[worldId];
-    const metric = worldData?.metrics?.[metricName];
+    const metric = findMetric(worldData, metricName);
     if (!metric) continue;
 
     historyPoints.push({
@@ -279,7 +322,7 @@ async function fetchReleasesHistory(
     if (!snapshot) continue;
 
     const worldData = snapshot.data.worlds[worldId];
-    const metric = worldData?.metrics?.[metricName];
+    const metric = findMetric(worldData, metricName);
     if (!metric) continue;
 
     // Get timestamp for the tag
