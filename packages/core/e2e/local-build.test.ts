@@ -1,12 +1,68 @@
-import { exec as execOriginal } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { describe, expect, test } from 'vitest';
 import { usesVercelWorld } from '../../utils/src/world-target';
 import { getWorkbenchAppPath } from './utils';
 
-const exec = promisify(execOriginal);
+interface CommandResult {
+  stdout: string;
+  stderr: string;
+  output: string;
+}
+
+async function runCommandWithLiveOutput(
+  command: string,
+  args: string[],
+  cwd: string
+): Promise<CommandResult> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: process.env,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let output = '';
+
+    child.stdout?.on('data', (chunk) => {
+      const text = Buffer.isBuffer(chunk)
+        ? chunk.toString('utf8')
+        : String(chunk);
+      process.stdout.write(chunk);
+      stdout += text;
+      output += text;
+    });
+
+    child.stderr?.on('data', (chunk) => {
+      const text = Buffer.isBuffer(chunk)
+        ? chunk.toString('utf8')
+        : String(chunk);
+      process.stderr.write(chunk);
+      stderr += text;
+      output += text;
+    });
+
+    child.once('error', reject);
+
+    child.once('close', (code, signal) => {
+      if (code !== 0) {
+        const exitInfo = signal
+          ? `signal ${signal}`
+          : `exit code ${String(code)}`;
+        reject(
+          new Error(
+            `Command "${command} ${args.join(' ')}" failed with ${exitInfo}\n${output}`
+          )
+        );
+        return;
+      }
+
+      resolve({ stdout, stderr, output });
+    });
+  });
+}
 
 describe.each([
   'nextjs-webpack',
@@ -27,11 +83,13 @@ describe.each([
       return;
     }
 
-    const result = await exec('pnpm build', {
-      cwd: getWorkbenchAppPath(project),
-    });
+    const result = await runCommandWithLiveOutput(
+      'pnpm',
+      ['build'],
+      getWorkbenchAppPath(project)
+    );
 
-    expect(result.stderr).not.toContain('Error:');
+    expect(result.output).not.toContain('Error:');
 
     if (usesVercelWorld()) {
       const diagnosticsManifestPath = path.join(
