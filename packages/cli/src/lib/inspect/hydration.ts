@@ -8,6 +8,7 @@
 import { inspect } from 'node:util';
 import {
   ClassInstanceRef,
+  ENCRYPTED_PLACEHOLDER,
   extractClassName,
   hydrateResourceIO as hydrateResourceIOGeneric,
   isEncryptedData,
@@ -16,6 +17,7 @@ import {
 } from '@workflow/core/serialization-format';
 import { parseClassName } from '@workflow/utils/parse-name';
 import type { Encryptor } from '@workflow/world';
+import chalk from 'chalk';
 
 /** A function that resolves an Encryptor for a given runId, or null to skip decryption. */
 export type EncryptorResolver = ((runId: string) => Promise<Encryptor>) | null;
@@ -58,6 +60,39 @@ class CLIClassInstanceRef extends ClassInstanceRef {
       : `@${fileName}`;
     return `${this.className}${styledFileName} ${dataStr}`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// CLI encrypted data placeholder with custom inspect
+// ---------------------------------------------------------------------------
+
+/**
+ * Placeholder object for encrypted data fields in CLI output.
+ *
+ * Uses `util.inspect.custom` to render as a styled, unquoted string
+ * (e.g., dim yellow "🔒 Encrypted") instead of a plain quoted string.
+ * Also provides `toJSON()` for `--json` output.
+ */
+class EncryptedDataRef {
+  [inspect.custom](): string {
+    return chalk.dim.yellow('\u{1F512} Encrypted');
+  }
+
+  toJSON(): string {
+    return '\u{1F512} Encrypted';
+  }
+
+  toString(): string {
+    return '\u{1F512} Encrypted';
+  }
+}
+
+/** Singleton encrypted data placeholder for CLI display */
+const ENCRYPTED_REF = new EncryptedDataRef();
+
+/** Check if a value is an EncryptedDataRef (for custom table formatting) */
+export function isEncryptedRef(value: unknown): value is EncryptedDataRef {
+  return value instanceof EncryptedDataRef;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,10 +274,38 @@ async function maybeDecryptFields<
 // ---------------------------------------------------------------------------
 
 /**
+ * Replace ENCRYPTED_PLACEHOLDER strings with EncryptedDataRef objects
+ * in known data fields so they render with custom inspect styling.
+ */
+function replaceEncryptedPlaceholders<T>(resource: T): T {
+  if (!resource || typeof resource !== 'object') return resource;
+  const r = resource as Record<string, unknown>;
+  const result = { ...r };
+
+  for (const key of ['input', 'output', 'metadata']) {
+    if (result[key] === ENCRYPTED_PLACEHOLDER) {
+      result[key] = ENCRYPTED_REF;
+    }
+  }
+
+  if (result.eventData && typeof result.eventData === 'object') {
+    const ed = { ...(result.eventData as Record<string, unknown>) };
+    for (const key of ['result', 'input']) {
+      if (ed[key] === ENCRYPTED_PLACEHOLDER) {
+        ed[key] = ENCRYPTED_REF;
+      }
+    }
+    result.eventData = ed;
+  }
+
+  return result as T;
+}
+
+/**
  * Hydrate the serialized data fields of a resource for CLI display.
  *
  * When `encryptorResolver` is null (default / no --decrypt flag), encrypted
- * fields are shown as "🔒 Encrypted" placeholders.
+ * fields are shown as styled "🔒 Encrypted" placeholders via EncryptedDataRef.
  *
  * When `encryptorResolver` is provided (--decrypt flag), encrypted fields
  * are decrypted before hydration so the actual user data is displayed.
@@ -256,5 +319,7 @@ export async function hydrateResourceIO<T>(
     resource as any,
     encryptorResolver ?? null
   );
-  return hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
+  const hydrated = hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
+  // Post-process: swap string placeholders for CLI-styled objects
+  return replaceEncryptedPlaceholders(hydrated);
 }
