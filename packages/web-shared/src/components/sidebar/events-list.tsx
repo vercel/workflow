@@ -2,9 +2,7 @@
 
 import type { Event } from '@workflow/world';
 import { useCallback, useMemo, useState } from 'react';
-import { ObjectInspector } from 'react-inspector';
-import { useDarkMode } from '../../hooks/use-dark-mode';
-import { inspectorThemeDark, inspectorThemeLight } from '../ui/inspector-theme';
+import { DataInspector } from '../ui/data-inspector';
 import { localMillisecondTime } from './attribute-panel';
 import { DetailCard } from './detail-card';
 
@@ -34,7 +32,6 @@ function EventItem({
     eventId: string
   ) => Promise<unknown | null>;
 }) {
-  const isDark = useDarkMode();
   const [loadedData, setLoadedData] = useState<unknown | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -172,13 +169,7 @@ function EventItem({
           className="mt-2 overflow-x-auto rounded-md border p-3"
           style={{ borderColor: 'var(--ds-gray-300)' }}
         >
-          <ObjectInspector
-            data={displayData}
-            // @ts-expect-error react-inspector accepts theme objects at runtime
-            // see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
-            theme={isDark ? inspectorThemeDark : inspectorThemeLight}
-            expandLevel={2}
-          />
+          <DataInspector data={displayData} />
         </div>
       )}
     </DetailCard>

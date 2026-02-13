@@ -5,11 +5,9 @@ import type { Event, Step, WorkflowRun } from '@workflow/world';
 import { Check, ChevronRight, Copy } from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ObjectInspector } from 'react-inspector';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { useDarkMode } from '../hooks/use-dark-mode';
 import { formatDuration } from '../lib/utils';
-import { inspectorThemeDark, inspectorThemeLight } from './ui/inspector-theme';
+import { DataInspector } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
 
 const BUTTON_RESET_STYLE: React.CSSProperties = {
@@ -452,7 +450,6 @@ function deepParseJson(value: unknown): unknown {
 }
 
 function PayloadBlock({ data }: { data: unknown }): ReactNode {
-  const isDark = useDarkMode();
   const [copied, setCopied] = useState(false);
   const resetCopiedTimeoutRef = useRef<number | null>(null);
   const cleaned = useMemo(() => deepParseJson(data), [data]);
@@ -496,12 +493,7 @@ function PayloadBlock({ data }: { data: unknown }): ReactNode {
         className="overflow-x-auto p-2 text-[11px]"
         style={{ color: 'var(--ds-gray-1000)' }}
       >
-        <ObjectInspector
-          data={cleaned}
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- react-inspector types are incorrect; theme accepts objects
-          theme={(isDark ? inspectorThemeDark : inspectorThemeLight) as any}
-          expandLevel={2}
-        />
+        <DataInspector data={cleaned} expandLevel={2} />
       </div>
       <button
         type="button"

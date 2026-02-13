@@ -1,9 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ObjectInspector } from 'react-inspector';
-import { useDarkMode } from '../hooks/use-dark-mode';
-import { inspectorThemeDark, inspectorThemeLight } from './ui/inspector-theme';
+import { DataInspector } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -57,11 +55,9 @@ interface StreamViewerProps {
 const ChunkRow = React.memo(function ChunkRow({
   chunk,
   index,
-  isDark,
 }: {
   chunk: Chunk;
   index: number;
-  isDark: boolean;
 }) {
   const parsed = parseChunkData(chunk.text);
 
@@ -87,12 +83,7 @@ const ChunkRow = React.memo(function ChunkRow({
           {deserializeChunkText(parsed)}
         </span>
       ) : (
-        <ObjectInspector
-          data={parsed}
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- react-inspector types are incorrect; theme accepts objects
-          theme={(isDark ? inspectorThemeDark : inspectorThemeLight) as any}
-          expandLevel={1}
-        />
+        <DataInspector data={parsed} expandLevel={1} />
       )}
     </div>
   );
@@ -117,6 +108,11 @@ function StreamSkeleton() {
 // Main component
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * StreamViewer component that displays real-time stream data.
+ * Each chunk is rendered with DataInspector for proper display
+ * of complex types (Map, Set, Date, custom classes, etc.).
+ */
 export function StreamViewer({
   streamId,
   chunks,
@@ -124,7 +120,6 @@ export function StreamViewer({
   error,
   isLoading,
 }: StreamViewerProps) {
-  const isDark = useDarkMode();
   const [hasMoreBelow, setHasMoreBelow] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -222,7 +217,6 @@ export function StreamViewer({
                 key={`${streamId}-chunk-${chunk.id}`}
                 chunk={chunk}
                 index={index}
-                isDark={isDark}
               />
             ))
           )}

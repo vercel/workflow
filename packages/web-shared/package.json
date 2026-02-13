@@ -51,7 +51,6 @@
     "@workflow/world": "workspace:*",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "color-hash": "2.0.2",
     "date-fns": "4.1.0",
     "lucide-react": "0.469.0",
     "react": "19.1.0",
@@ -66,7 +65,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
-    "@types/color-hash": "2.0.0",
     "@types/node": "catalog:",
     "@types/react": "19",
     "@types/react-dom": "19",
