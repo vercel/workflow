@@ -117,12 +117,6 @@ importers:
       '@streamdown/code':
         specifier: 1.0.2
         version: 1.0.2(react@19.2.3)
-      '@streamdown/math':
-        specifier: 1.0.2
-        version: 1.0.2(react@19.2.3)
-      '@streamdown/mermaid':
-        specifier: 1.0.2
-        version: 1.0.2(react@19.2.3)
       '@tailwindcss/postcss':
         specifier: ^4.1.13
         version: 4.1.13
@@ -7620,16 +7614,6 @@ packages:
 
   '@streamdown/code@1.0.2':
     resolution: {integrity: sha512-QKLS3sC8no5y0YvhGLA+ZjtNhznWU09IvFcjRKgSA35ulckMLw3b5T1ha+o1DaW8BS8l0zceLPFZa3/X9+agWQ==}
-    peerDependencies:
-      react: ^18.0.0 || ^19.0.0
-
-  '@streamdown/math@1.0.2':
-    resolution: {integrity: sha512-r8Ur9/lBuFnzZAFdEWrLUF2s/gRwRRRwruqltdZibyjbCBnuW7SJbFm26nXqvpJPW/gzpBUMrBVBzd88z05D5g==}
-    peerDependencies:
-      react: ^18.0.0 || ^19.0.0
-
-  '@streamdown/mermaid@1.0.2':
-    resolution: {integrity: sha512-Fr/4sBWnAeSnxM3PcrV/+DiZe5oPMq9gOkUIAH7ZauJeuwrZ/DVzD4g0zlav6AH0axh2m/sOfrfLtY5aLT7niw==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
@@ -22391,22 +22375,6 @@ snapshots:
     dependencies:
       react: 19.2.3
       shiki: 3.21.0
-
-  '@streamdown/math@1.0.2(react@19.2.3)':
-    dependencies:
-      katex: 0.16.28
-      react: 19.2.3
-      rehype-katex: 7.0.1
-      remark-math: 6.0.0
-    transitivePeerDependencies:
-      - supports-color
-
-  '@streamdown/mermaid@1.0.2(react@19.2.3)':
-    dependencies:
-      mermaid: 11.12.2
-      react: 19.2.3
-    transitivePeerDependencies:
-      - supports-color
 
   '@sveltejs/acorn-typescript@1.0.6(acorn@8.15.0)':
     dependencies:
