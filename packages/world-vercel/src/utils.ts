@@ -4,7 +4,7 @@ import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 import type { z } from 'zod';
 import {
   ErrorType,
@@ -271,12 +271,12 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
-      const request = new Request(url, {
+      const response = await undiciFetch(url, {
         ...options,
         body,
         headers,
+        dispatcher,
       });
-      const response = await fetch(request, { dispatcher });
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
