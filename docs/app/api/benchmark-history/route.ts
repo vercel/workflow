@@ -1,5 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
+import { unstable_cache } from 'next/cache';
 
 const GITHUB_API = 'https://api.github.com';
 const REPO = 'vercel/workflow';
@@ -88,12 +89,21 @@ interface GitHubCommit {
   };
 }
 
-interface BenchmarkSnapshot {
-  ghPagesSha: string;
-  mainCommitSha: string;
-  timestamp: string;
-  data: CIResultsData;
+/**
+ * Parse GitHub's Link header to extract the "next" page URL.
+ */
+function getNextPageUrl(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+  return match?.[1] ?? null;
 }
+
+const githubHeaders = () => ({
+  Accept: 'application/vnd.github.v3+json',
+  ...(process.env.GITHUB_TOKEN && {
+    Authorization: `token ${process.env.GITHUB_TOKEN}`,
+  }),
+});
 
 // Fetch and parse a benchmark file from gh-pages
 async function fetchBenchmarkFile(
@@ -102,11 +112,10 @@ async function fetchBenchmarkFile(
   try {
     const fileRes = await fetch(
       `https://raw.githubusercontent.com/${REPO}/${ghPagesSha}/${FILE_PATH}`,
-      { next: { revalidate: 3600 } }
+      { cache: 'force-cache', next: { revalidate: 86400 } }
     );
 
     if (!fileRes.ok) {
-      // 404 is expected for commits without benchmark data
       if (fileRes.status !== 404) {
         console.error(
           `Failed to fetch benchmark file for ${ghPagesSha}: ${fileRes.status}`
@@ -126,26 +135,19 @@ async function fetchBenchmarkFile(
 }
 
 /**
- * Parse GitHub's Link header to extract the "next" page URL.
+ * Build a map of main commit SHA -> benchmark snapshot data by reading
+ * the full gh-pages history. Returns a plain object (for cache serialization).
  */
-function getNextPageUrl(linkHeader: string | null): string | null {
-  if (!linkHeader) return null;
-  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
-  return match?.[1] ?? null;
-}
-
-const githubHeaders = () => ({
-  Accept: 'application/vnd.github.v3+json',
-  ...(process.env.GITHUB_TOKEN && {
-    Authorization: `token ${process.env.GITHUB_TOKEN}`,
-  }),
-});
-
-// Build a map of main commit SHA -> benchmark data by reading gh-pages history
-async function buildBenchmarkSnapshotMap(): Promise<
-  Map<string, BenchmarkSnapshot>
+async function _buildSnapshotMap(): Promise<
+  Record<
+    string,
+    { mainCommitSha: string; timestamp: string; data: CIResultsData }
+  >
 > {
-  const snapshotMap = new Map<string, BenchmarkSnapshot>();
+  const snapshots: Record<
+    string,
+    { mainCommitSha: string; timestamp: string; data: CIResultsData }
+  > = {};
 
   // Paginate through all gh-pages commits that modified the benchmark file
   let ghPagesCommits: GitHubCommit[] = [];
@@ -155,7 +157,8 @@ async function buildBenchmarkSnapshotMap(): Promise<
   while (url) {
     const res = await fetch(url, {
       headers: githubHeaders(),
-      next: { revalidate: 300 },
+      cache: 'force-cache',
+      next: { revalidate: 3600 },
     });
 
     if (!res.ok) {
@@ -182,9 +185,7 @@ async function buildBenchmarkSnapshotMap(): Promise<
       batch.map(async (ghCommit) => {
         const data = await fetchBenchmarkFile(ghCommit.sha);
         if (!data || !data.commit) return null;
-
         return {
-          ghPagesSha: ghCommit.sha,
           mainCommitSha: data.commit,
           timestamp: data.lastUpdated,
           data,
@@ -193,29 +194,76 @@ async function buildBenchmarkSnapshotMap(): Promise<
     );
 
     for (const result of results) {
-      if (result && !snapshotMap.has(result.mainCommitSha)) {
-        // Only keep the first (most recent) benchmark for each main commit
-        snapshotMap.set(result.mainCommitSha, result);
+      if (result && !snapshots[result.mainCommitSha]) {
+        snapshots[result.mainCommitSha] = result;
       }
     }
   }
 
-  return snapshotMap;
+  return snapshots;
 }
+
+/**
+ * Cached snapshot map — the expensive part (200+ GitHub fetches) is computed
+ * once and reused for 1 hour across all parameter combinations.
+ */
+const buildSnapshotMap = unstable_cache(
+  _buildSnapshotMap,
+  ['benchmark-snapshot-map'],
+  {
+    revalidate: 3600,
+  }
+);
+
+/**
+ * Fetch all workflow@ tags from GitHub (paginated).
+ */
+async function _fetchWorkflowTags(): Promise<GitHubTag[]> {
+  let workflowTags: GitHubTag[] = [];
+  let tagsUrl: string | null = `${GITHUB_API}/repos/${REPO}/tags?per_page=100`;
+
+  while (tagsUrl) {
+    const tagsRes = await fetch(tagsUrl, {
+      headers: githubHeaders(),
+      cache: 'force-cache',
+      next: { revalidate: 3600 },
+    });
+
+    if (!tagsRes.ok) {
+      console.error(`Failed to fetch tags: ${tagsRes.status}`);
+      break;
+    }
+
+    const pageTags = (await tagsRes.json()) as GitHubTag[];
+    workflowTags = workflowTags.concat(
+      pageTags.filter((tag) => tag.name.startsWith('workflow@'))
+    );
+
+    tagsUrl = getNextPageUrl(tagsRes.headers.get('Link'));
+  }
+
+  return workflowTags;
+}
+
+const fetchWorkflowTags = unstable_cache(
+  _fetchWorkflowTags,
+  ['benchmark-workflow-tags'],
+  {
+    revalidate: 3600,
+  }
+);
 
 async function fetchCommitsHistory(
   worldId: string,
   metricName: string
 ): Promise<BenchmarkHistoryPoint[]> {
-  // Build the snapshot map (main commit SHA -> benchmark data)
-  const snapshotMap = await buildBenchmarkSnapshotMap();
+  const snapshots = await buildSnapshotMap();
 
-  if (snapshotMap.size === 0) {
+  if (Object.keys(snapshots).length === 0) {
     return [];
   }
 
   // Paginate through main branch commits until we have enough data points.
-  // Not every commit has benchmark data, so we need to look further back.
   const historyPoints: BenchmarkHistoryPoint[] = [];
   let mainUrl: string | null =
     `${GITHUB_API}/repos/${REPO}/commits?sha=main&per_page=100`;
@@ -223,7 +271,8 @@ async function fetchCommitsHistory(
   while (mainUrl && historyPoints.length < MAX_ITEMS) {
     const mainCommitsRes = await fetch(mainUrl, {
       headers: githubHeaders(),
-      next: { revalidate: 300 },
+      cache: 'force-cache',
+      next: { revalidate: 3600 },
     });
 
     if (!mainCommitsRes.ok) {
@@ -236,7 +285,7 @@ async function fetchCommitsHistory(
     for (const mainCommit of mainCommits) {
       if (historyPoints.length >= MAX_ITEMS) break;
 
-      const snapshot = snapshotMap.get(mainCommit.sha);
+      const snapshot = snapshots[mainCommit.sha];
       if (!snapshot) continue;
 
       const worldData = snapshot.data.worlds[worldId];
@@ -269,37 +318,12 @@ async function fetchReleasesHistory(
   worldId: string,
   metricName: string
 ): Promise<BenchmarkHistoryPoint[]> {
-  // Build the snapshot map (main commit SHA -> benchmark data)
-  const snapshotMap = await buildBenchmarkSnapshotMap();
+  const [snapshots, workflowTags] = await Promise.all([
+    buildSnapshotMap(),
+    fetchWorkflowTags(),
+  ]);
 
-  if (snapshotMap.size === 0) {
-    return [];
-  }
-
-  // Paginate through all tags to find workflow@ releases
-  let workflowTags: GitHubTag[] = [];
-  let tagsUrl: string | null = `${GITHUB_API}/repos/${REPO}/tags?per_page=100`;
-
-  while (tagsUrl) {
-    const tagsRes = await fetch(tagsUrl, {
-      headers: githubHeaders(),
-      next: { revalidate: 300 },
-    });
-
-    if (!tagsRes.ok) {
-      console.error(`Failed to fetch tags: ${tagsRes.status}`);
-      break;
-    }
-
-    const pageTags = (await tagsRes.json()) as GitHubTag[];
-    workflowTags = workflowTags.concat(
-      pageTags.filter((tag) => tag.name.startsWith('workflow@'))
-    );
-
-    tagsUrl = getNextPageUrl(tagsRes.headers.get('Link'));
-  }
-
-  if (workflowTags.length === 0) {
+  if (Object.keys(snapshots).length === 0 || workflowTags.length === 0) {
     return [];
   }
 
@@ -309,8 +333,7 @@ async function fetchReleasesHistory(
   for (const tag of workflowTags) {
     if (historyPoints.length >= MAX_ITEMS) break;
 
-    // Check if we have benchmark data for this tag's commit
-    const snapshot = snapshotMap.get(tag.commit.sha);
+    const snapshot = snapshots[tag.commit.sha];
     if (!snapshot) continue;
 
     const worldData = snapshot.data.worlds[worldId];
@@ -322,13 +345,9 @@ async function fetchReleasesHistory(
       const commitRes = await fetch(
         `${GITHUB_API}/repos/${REPO}/commits/${tag.commit.sha}`,
         {
-          headers: {
-            Accept: 'application/vnd.github.v3+json',
-            ...(process.env.GITHUB_TOKEN && {
-              Authorization: `token ${process.env.GITHUB_TOKEN}`,
-            }),
-          },
-          next: { revalidate: 3600 },
+          headers: githubHeaders(),
+          cache: 'force-cache',
+          next: { revalidate: 86400 },
         }
       );
 
@@ -386,7 +405,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(sorted, {
       headers: {
-        'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+        // CDN: cache 1 hour, serve stale up to 24h while revalidating
+        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
       },
     });
   } catch (error) {
