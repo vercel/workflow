@@ -81,7 +81,9 @@ export const useStreamingSpans = (
   useEffect(() => {
     if (!root.startTime) return;
 
-    const worker = new Worker(new URL('../worker', import.meta.url));
+    const worker = new Worker(new URL('../worker', import.meta.url), {
+      type: 'module',
+    });
     let requestId = ++counterRef.current;
     const onMessage = (event: MessageEvent): void => {
       const data = event.data as WorkerResponse;

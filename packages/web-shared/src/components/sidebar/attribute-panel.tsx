@@ -184,12 +184,21 @@ const isClassInstanceRef = (value: unknown): value is ClassInstanceRef => {
   );
 };
 
-import ColorHash from 'color-hash';
+import ColorHashImport from 'color-hash';
 
 /**
  * Color hash instance configured for nice saturation and lightness.
  * Returns HSL values which we can transform for different use cases.
  */
+const ColorHash =
+  typeof ColorHashImport === 'function'
+    ? ColorHashImport
+    : (
+        ColorHashImport as unknown as {
+          default: typeof ColorHashImport;
+        }
+      ).default;
+
 const colorHash = new ColorHash({
   saturation: [0.5, 0.6, 0.7],
   lightness: [0.4, 0.5, 0.6],

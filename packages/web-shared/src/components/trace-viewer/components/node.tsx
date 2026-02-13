@@ -16,6 +16,7 @@ import type {
 import { MARKER_HEIGHT, ROW_HEIGHT, ROW_PADDING } from '../util/constants';
 import { formatDuration } from '../util/timing';
 import { SpanContent } from './span-content';
+import { computeSegments } from './span-segments';
 import {
   type SpanLayout,
   getResourceType,
@@ -159,6 +160,8 @@ export const SpanComponent = memo(function SpanComponent({
   // Workflow span types use colored segments + boundary line markers
   // Generic OTEL spans use diamond event markers
   const isWorkflowSpan = resourceType !== 'default';
+  const hasSegments =
+    isWorkflowSpan && computeSegments(resourceType, node).segments.length > 0;
 
   // Determine if this span is still active (live).
   // A span is only "live" when the overall trace is still growing, i.e. the
@@ -227,7 +230,7 @@ export const SpanComponent = memo(function SpanComponent({
             : getSpanColorClassName(node),
           node.isHighlighted === false && styles.unlit,
           customClassName,
-          isWorkflowSpan && styles.hasSegments
+          hasSegments && styles.hasSegments
         )}
         data-span-id={span.spanId}
         data-start-time={node.startTime - root.startTime}

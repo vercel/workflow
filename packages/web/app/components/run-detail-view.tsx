@@ -93,7 +93,24 @@ function GraphTabContent({
   // Find the workflow graph for this run
   const workflowGraph = useMemo(() => {
     if (!graphManifest || !run.workflowName) return null;
-    return graphManifest.workflows[run.workflowName] ?? null;
+    const runWorkflowName = String(run.workflowName).trim();
+
+    // Primary lookup: manifest key match.
+    const direct = graphManifest.workflows[runWorkflowName];
+    if (direct) return direct;
+
+    const runShortName = parseWorkflowName(runWorkflowName)?.shortName;
+    const workflows = Object.values(graphManifest.workflows);
+
+    // Fallbacks: workflowId/workflowName/shortName match.
+    return (
+      workflows.find((wf) => {
+        if (wf.workflowId === runWorkflowName) return true;
+        if (wf.workflowName === runWorkflowName) return true;
+        if (!runShortName) return false;
+        return parseWorkflowName(wf.workflowName)?.shortName === runShortName;
+      }) ?? null
+    );
   }, [graphManifest, run.workflowName]);
 
   // Map run data to execution overlay
@@ -673,6 +690,8 @@ export function RunDetailView({
                 <div className="h-full">
                   <EventListView
                     events={allEvents}
+                    steps={allSteps}
+                    run={run}
                     onLoadEventData={handleLoadEventData}
                   />
                 </div>

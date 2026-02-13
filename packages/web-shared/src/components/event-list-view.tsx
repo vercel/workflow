@@ -245,6 +245,7 @@ function TreeGutter({
 }) {
   const dotSize = isRun ? 8 : 6;
   const dotLeft = isRun ? 5 : 6;
+  const dotOpacity = hasSelection && !showBranch && !isRun ? 0.3 : 1;
 
   return (
     <div
@@ -263,6 +264,7 @@ function TreeGutter({
           bottom: continuationOnly ? 0 : isLast ? '50%' : 0,
           width: 2,
           backgroundColor: ROOT_LINE_COLOR,
+          zIndex: 0,
         }}
       />
 
@@ -278,10 +280,18 @@ function TreeGutter({
               width: dotSize,
               height: dotSize,
               zIndex: 2,
-              opacity: hasSelection && !showBranch && !isRun ? 0.3 : 1,
-              transition: 'opacity 150ms',
             }}
           >
+            {/* Opaque backdrop ensures gutter lines never visually cut through dots */}
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                borderRadius: '50%',
+                backgroundColor: 'var(--ds-background-100)',
+                zIndex: 0,
+              }}
+            />
             {pulse && (
               <div
                 style={{
@@ -289,17 +299,22 @@ function TreeGutter({
                   inset: 0,
                   borderRadius: '50%',
                   backgroundColor: statusDotColor,
-                  opacity: 0.75,
+                  opacity: 0.75 * dotOpacity,
                   animation: DOT_PULSE_ANIMATION,
+                  zIndex: 1,
                 }}
               />
             )}
             <div
               style={{
+                position: 'relative',
                 width: '100%',
                 height: '100%',
                 borderRadius: '50%',
                 backgroundColor: statusDotColor,
+                opacity: dotOpacity,
+                transition: 'opacity 150ms',
+                zIndex: 2,
               }}
             />
           </div>
@@ -314,6 +329,7 @@ function TreeGutter({
                 width: GUTTER_WIDTH - 9,
                 height: 2,
                 backgroundColor: ROOT_LINE_COLOR,
+                zIndex: 0,
               }}
             />
           )}
@@ -330,6 +346,7 @@ function TreeGutter({
             bottom: continuationOnly ? 0 : isLaneEnd ? '50%' : 0,
             width: 2,
             backgroundColor: ROOT_LINE_COLOR,
+            zIndex: 0,
           }}
         />
       )}
