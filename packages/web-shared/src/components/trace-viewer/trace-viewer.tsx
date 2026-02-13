@@ -155,7 +155,8 @@ export function TraceViewerTimeline({
         }
       }
 
-      // Trigger re-render (scale/markers) without restarting the worker
+      // Trigger re-render (scale/markers) without restarting the worker.
+      // useLiveTick handles continuous scale recalculation for live runs.
       dispatch({ type: 'forceRender' });
       return;
     }

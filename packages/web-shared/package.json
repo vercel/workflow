@@ -21,7 +21,8 @@
     "./components": {
       "types": "./dist/components/index.d.ts",
       "default": "./dist/components/index.js"
-    }
+    },
+    "./styles.css": "./dist/styles.css"
   },
   "typesVersions": {
     "*": {
@@ -36,7 +37,7 @@
     "directory": "packages/web-shared"
   },
   "scripts": {
-    "build": "tsc && cp -r src/components/trace-viewer/*.css dist/components/trace-viewer/",
+    "build": "tsc && cp -r src/components/trace-viewer/*.css dist/components/trace-viewer/ && cp src/styles.css dist/styles.css",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "typecheck": "tsc --noEmit",
@@ -56,6 +57,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-inspector": "9.0.0",
+    "react-virtuoso": "4.12.7",
     "shiki": "3.13.0",
     "sonner": "2.0.7",
     "streamdown": "1.6.11",

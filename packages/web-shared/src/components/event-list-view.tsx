@@ -452,7 +452,8 @@ function PayloadBlock({ data }: { data: unknown }): ReactNode {
       >
         <ObjectInspector
           data={cleaned}
-          theme={isDark ? inspectorThemeDark : inspectorThemeLight}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- react-inspector types are incorrect; theme accepts objects
+          theme={(isDark ? inspectorThemeDark : inspectorThemeLight) as any}
           expandLevel={2}
         />
       </div>
@@ -1057,7 +1058,7 @@ export function EventListView({
           }
           void onLoadMoreEvents?.();
         }}
-        itemContent={(index) => {
+        itemContent={(index: number) => {
           return (
             <EventRow
               event={sortedEvents[index]}

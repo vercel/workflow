@@ -53,6 +53,7 @@ export interface SelectedSpanInfo {
  */
 export function EntityDetailPanel({
   run,
+  hooks,
   onStreamClick,
   spanDetailData,
   spanDetailError,
@@ -64,6 +65,8 @@ export function EntityDetailPanel({
   selectedSpan,
 }: {
   run: WorkflowRun;
+  /** All hooks for the current run (used as fallback for token lookup). */
+  hooks?: Hook[];
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
   /** Pre-fetched span detail data for the selected span. */
@@ -96,6 +99,11 @@ export function EntityDetailPanel({
   const [stoppingSleep, setStoppingSleep] = useState(false);
   const [showResolveHookModal, setShowResolveHookModal] = useState(false);
   const [resolvingHook, setResolvingHook] = useState(false);
+  // Track hooks that were resolved in this session so the button hides
+  // immediately without waiting for the next event poll.
+  const [resolvedHookIds, setResolvedHookIds] = useState<Set<string>>(
+    new Set()
+  );
 
   const data = selectedSpan?.data;
   const rawEvents = selectedSpan?.rawEvents;
@@ -167,7 +175,11 @@ export function EntityDetailPanel({
   // Check if this hook can be resolved
   const canResolveHook = useMemo(() => {
     void rawEventsLength;
-    if (resource !== 'hook' || !rawEvents) return false;
+    if (resource !== 'hook' || !rawEvents || !resourceId) return false;
+
+    // Check if we already resolved this hook in this session
+    if (resolvedHookIds.has(resourceId)) return false;
+
     const terminalStates = ['completed', 'failed', 'cancelled'];
     if (terminalStates.includes(run.status)) return false;
     const hasHookDisposed = rawEvents.some(
@@ -175,17 +187,36 @@ export function EntityDetailPanel({
     );
     if (hasHookDisposed) return false;
     return true;
-  }, [resource, rawEvents, rawEventsLength, run.status]);
+  }, [
+    resource,
+    resourceId,
+    rawEvents,
+    rawEventsLength,
+    run.status,
+    resolvedHookIds,
+  ]);
 
   const error = spanDetailError ?? undefined;
   const loading = spanDetailLoading ?? false;
 
-  // Get the hook token for resolving
+  // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
-    if (resource !== 'hook') return undefined;
-    const candidate = spanDetailData ?? data;
-    return isHook(candidate) ? candidate.token : undefined;
-  }, [resource, spanDetailData, data]);
+    if (resource !== 'hook' || !resourceId) return undefined;
+    // 1. Try the externally-fetched detail data first
+    if (isHook(spanDetailData) && spanDetailData.token) {
+      return spanDetailData.token;
+    }
+    // 2. Try the hooks array (always has tokens)
+    const hookFromArray = hooks?.find((h) => h.hookId === resourceId);
+    if (hookFromArray?.token) {
+      return hookFromArray.token;
+    }
+    // 3. Try the span's inline data (partial hook from events - may lack token)
+    if (isHook(data) && (data as Hook).token) {
+      return (data as Hook).token;
+    }
+    return undefined;
+  }, [resource, resourceId, spanDetailData, data, hooks]);
 
   useEffect(() => {
     if (error && selectedSpan && resource) {
@@ -254,6 +285,10 @@ export function EntityDetailPanel({
           description: 'The payload has been sent and the hook resolved.',
         });
         setShowResolveHookModal(false);
+        // Mark this hook as resolved locally so the button hides immediately
+        if (resourceId) {
+          setResolvedHookIds((prev) => new Set(prev).add(resourceId));
+        }
       } catch (err) {
         console.error('Failed to resolve hook:', err);
         toast.error('Failed to resolve hook', {
@@ -271,34 +306,43 @@ export function EntityDetailPanel({
     return null;
   }
 
-  const displayData = (spanDetailData ?? data) as
-    | WorkflowRun
-    | Step
-    | Hook
-    | Event;
+  // For sleep spans, spanDetailData from the host is typically an events array
+  // (not a single entity), so always prefer the inline wait entity from span
+  // attributes which contains waitId, runId, createdAt, resumeAt, completedAt.
+  const displayData = (
+    resource === 'sleep' ? data : (spanDetailData ?? data)
+  ) as WorkflowRun | Step | Hook | Event;
 
   return (
-    <div className={clsx('flex flex-col px-2')}>
+    <div
+      className={clsx('flex flex-col px-3')}
+      style={{ paddingTop: 12, gap: 16 }}
+    >
       {/* Wake up button for pending sleep calls */}
       {resource === 'sleep' && canWakeUp && (
-        <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
+        <div
+          className="mb-3 pb-3"
+          style={{ borderBottom: '1px solid var(--ds-gray-alpha-400)' }}
+        >
           <button
             type="button"
             onClick={handleWakeUp}
             disabled={stoppingSleep}
             className={clsx(
               'flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md w-full',
-              'bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200',
-              'hover:bg-amber-200 dark:hover:bg-amber-900/50',
               'disabled:opacity-50 disabled:cursor-not-allowed',
               'transition-colors',
               stoppingSleep ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
             )}
+            style={{
+              background: 'var(--ds-amber-200)',
+              color: 'var(--ds-amber-900)',
+            }}
           >
             <Zap className="h-4 w-4" />
             {stoppingSleep ? 'Waking up...' : 'Wake up'}
           </button>
-          <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+          <p className="mt-1.5 text-xs" style={{ color: 'var(--ds-gray-900)' }}>
             Interrupt this sleep call and wake up the run.
           </p>
         </div>
@@ -306,23 +350,29 @@ export function EntityDetailPanel({
 
       {/* Resolve hook button for pending hooks */}
       {resource === 'hook' && canResolveHook && (
-        <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-700">
+        <div
+          className="mb-3 pb-3"
+          style={{ borderBottom: '1px solid var(--ds-gray-alpha-400)' }}
+        >
           <button
             type="button"
             onClick={() => setShowResolveHookModal(true)}
             disabled={resolvingHook}
             className={clsx(
               'flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md w-full',
-              'bg-primary text-primary-foreground hover:bg-primary/90',
               'disabled:opacity-50 disabled:cursor-not-allowed',
               'transition-colors',
               resolvingHook ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
             )}
+            style={{
+              background: 'var(--ds-gray-1000)',
+              color: 'var(--ds-background-100)',
+            }}
           >
             <Send className="h-4 w-4" />
             Resolve Hook
           </button>
-          <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+          <p className="mt-1.5 text-xs" style={{ color: 'var(--ds-gray-900)' }}>
             Send a JSON payload to resolve this hook.
           </p>
         </div>
