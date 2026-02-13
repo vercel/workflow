@@ -370,7 +370,7 @@ export function RunDetailView({
     data: spanDetailData,
     loading: spanDetailLoading,
     error: spanDetailError,
-    refetch: refetchSpanDetail,
+    refresh: refreshSpanDetail,
   } = useWorkflowResourceData(
     env,
     spanSelection?.resource ?? 'run',
@@ -386,8 +386,10 @@ export function RunDetailView({
   );
 
   const handleDecrypt = useCallback(() => {
-    refetchSpanDetail({ decrypt: true });
-  }, [refetchSpanDetail]);
+    // TODO: Implement client-side decryption (fetch deployment key, derive
+    // per-run key, decrypt, re-hydrate). For now, just re-fetch the data.
+    refreshSpanDetail();
+  }, [refreshSpanDetail]);
 
   const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
     setSpanSelection(info);
