@@ -52,8 +52,12 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
  * Get the web-specific revivers for hydrating serialized data.
  *
  * Uses `atob()` for base64 decoding (no Node.js Buffer dependency).
- * All types are revived as real instances (Date, Map, Set, URL,
- * URLSearchParams, Headers, Error, etc.).
+ * Most types are revived as real instances (Date, Map, Set, Error, etc.)
+ * since they are structurally cloneable and work with React rendering.
+ *
+ * Types that are NOT structurally cloneable (URLSearchParams, Headers)
+ * are converted to plain object equivalents, since the trace viewer's
+ * web worker uses postMessage which requires structured cloneability.
  */
 export function getWebRevivers(): Revivers {
   function reviveArrayBuffer(value: string): ArrayBuffer {
@@ -93,9 +97,15 @@ export function getWebRevivers(): Revivers {
     Uint16Array: (value: string) => new Uint16Array(reviveArrayBuffer(value)),
     Uint32Array: (value: string) => new Uint32Array(reviveArrayBuffer(value)),
 
-    Headers: (value) => new Headers(value),
-    URL: (value) => new URL(value),
-    URLSearchParams: (value) => new URLSearchParams(value === '.' ? '' : value),
+    Headers: (value) =>
+      Object.fromEntries(
+        typeof value === 'object' && value !== null ? Object.entries(value) : []
+      ),
+    URL: (value) => String(value),
+    URLSearchParams: (value) => {
+      if (value === '.' || value === '') return {};
+      return Object.fromEntries(new URLSearchParams(value));
+    },
 
     // Web-specific overrides for class instances
     Class: (value) => `<class:${extractClassName(value.classId)}>`,

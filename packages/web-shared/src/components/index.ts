@@ -1,5 +1,6 @@
 export { ErrorBoundary } from './error-boundary';
 export { EventListView } from './event-list-view';
+export { Skeleton } from './ui/skeleton';
 export type {
   HookActionCallbacks,
   HookActionsDropdownItemProps,
@@ -15,10 +16,9 @@ export {
 } from './hook-actions';
 export { RunTraceView } from './run-trace-view';
 export { ConversationView } from './sidebar/conversation-view';
-export type {
-  SelectedSpanInfo,
-  SpanSelectionInfo,
-} from './sidebar/entity-detail-panel';
-export { type StreamChunk, StreamViewer } from './stream-viewer';
+export { StreamViewer } from './stream-viewer';
 export type { Span, SpanEvent } from './trace-viewer/types';
-export { WorkflowTraceViewer } from './workflow-trace-view';
+export {
+  WorkflowTraceViewer,
+  type SpanSelectionInfo,
+} from './workflow-trace-view';

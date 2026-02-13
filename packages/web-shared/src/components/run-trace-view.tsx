@@ -24,6 +24,7 @@ interface RunTraceViewProps {
     payload: unknown,
     hook?: Hook
   ) => Promise<void>;
+  onCancelRun?: (runId: string) => Promise<void>;
   onStreamClick?: (streamId: string) => void;
   onSpanSelect?: (info: SpanSelectionInfo) => void;
 }
@@ -40,6 +41,7 @@ export function RunTraceView({
   spanDetailError,
   onWakeUpSleep,
   onResolveHook,
+  onCancelRun,
   onStreamClick,
   onSpanSelect,
 }: RunTraceViewProps) {
@@ -67,6 +69,7 @@ export function RunTraceView({
         spanDetailError={spanDetailError}
         onWakeUpSleep={onWakeUpSleep}
         onResolveHook={onResolveHook}
+        onCancelRun={onCancelRun}
         onStreamClick={onStreamClick}
         onSpanSelect={onSpanSelect}
       />

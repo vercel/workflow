@@ -63,7 +63,7 @@
     top: -7px;
   }
 
-  &:hover:not(.selected) {
+  &:hover:not([data-selected]) {
     filter: brightness(0.95);
   }
 
@@ -103,7 +103,7 @@
     border-radius: 4px;
   }
 
-  &.selected {
+  &[data-selected] {
     border-width: 2px;
     outline: 2px solid var(--span-border);
     outline-offset: -1px;
@@ -112,6 +112,7 @@
       filter: brightness(0.95);
     }
   }
+
 }
 
 .spanNodeEvent {
@@ -271,11 +272,11 @@
     }
   }
 
-  & .spanNode:hover:not(.selected) {
+  & .spanNode:hover:not([data-selected]) {
     filter: brightness(1.05);
   }
 
-  & .spanNode.selected:hover {
+  & .spanNode[data-selected]:hover {
     filter: brightness(1.05);
   }
 }
@@ -295,11 +296,11 @@
       }
     }
 
-    & .spanNode:hover:not(.selected) {
+    & .spanNode:hover:not([data-selected]) {
       filter: brightness(1.05);
     }
 
-    & .spanNode.selected:hover {
+    & .spanNode[data-selected]:hover {
       filter: brightness(1.05);
     }
   }
@@ -311,6 +312,8 @@
   text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
+  position: relative;
+  z-index: 1;
 }
 
 .spanDuration {
@@ -318,6 +321,8 @@
   padding-right: 6px;
   font-variant-numeric: tabular-nums;
   color: var(--span-secondary, var(--ds-gray-alpha-700));
+  position: relative;
+  z-index: 1;
 }
 
 /* SPAN DETAIL PANEL */
@@ -796,6 +801,16 @@
   bottom: 6px;
   color: var(--ds-gray-900);
   user-select: none;
+  white-space: nowrap;
+}
+
+.markerClockTime {
+  display: block;
+  font-size: 9px;
+  color: var(--ds-gray-alpha-500);
+  margin-top: 1px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .eventMarkersContainer {
@@ -1251,6 +1266,164 @@
   --span-line: var(--ds-gray-400);
   --span-text: var(--ds-gray-1000);
   --span-secondary: var(--ds-gray-900);
+}
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/* Span segments — colored sections overlaid inside span bars              */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+.segmentLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.segmentLabel {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 4px;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--ds-gray-900);
+  opacity: 0.7;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Inline segment tags rendered next to the span name */
+.segmentTag {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+/* Queued: hatched — waiting to start */
+.segQueued {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--ds-gray-alpha-200),
+    var(--ds-gray-alpha-200) 6px,
+    var(--ds-gray-alpha-100) 6px,
+    var(--ds-gray-alpha-100) 12px
+  );
+}
+
+/* Running: soft blue — actively executing */
+.segRunning {
+  background-color: var(--ds-blue-200);
+}
+
+/* Failed: soft red — attempt ended in failure */
+.segFailed {
+  background-color: var(--ds-red-200);
+}
+
+/* Retrying: hatched — waiting between retry attempts */
+.segRetrying {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--ds-gray-alpha-200),
+    var(--ds-gray-alpha-200) 6px,
+    var(--ds-gray-alpha-100) 6px,
+    var(--ds-gray-alpha-100) 12px
+  );
+}
+
+/* Succeeded: soft green — final successful attempt */
+.segSucceeded {
+  background-color: var(--ds-green-200);
+}
+
+/* Waiting: hatched — hook waiting for payload */
+.segWaiting {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--ds-gray-alpha-200),
+    var(--ds-gray-alpha-200) 6px,
+    var(--ds-gray-alpha-100) 6px,
+    var(--ds-gray-alpha-100) 12px
+  );
+}
+
+/* Sleeping: soft amber — sleep in progress */
+.segSleeping {
+  background-color: var(--ds-amber-200);
+}
+
+/* Received: soft blue — hook received payload */
+.segReceived {
+  background-color: var(--ds-blue-200);
+}
+
+/* Boundary markers — workflow events shown as thin vertical lines instead of diamonds */
+.boundaryMarker {
+  & .boundaryLine {
+    position: absolute;
+    left: -0.5px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background-color: transparent;
+    z-index: 0;
+    transition: background-color 0.15s ease;
+  }
+
+  &[data-hovered="true"] .boundaryLine {
+    background-color: var(--ds-gray-alpha-400);
+  }
+
+  /* Tooltip must sit above the boundary line */
+  & .hoverInfo {
+    z-index: 1;
+  }
+}
+
+/* When segments are active, make span background transparent so segments show */
+.spanNode.hasSegments {
+  background-color: transparent;
+
+  &.small:not(.xHover) {
+    background-color: transparent;
+  }
+
+  /* Suppress hover expansion gradient — segments handle the background */
+  &.xHover {
+    background: none;
+    min-width: var(--span-width);
+    max-width: var(--span-width);
+
+    &[data-right-side="true"] {
+      background: none;
+    }
+  }
+
+  /* Remove duration label background bleed — segments provide the visual */
+  & .spanDuration {
+    background-color: transparent;
+    box-shadow: none;
+  }
+
+  /* Let segment tooltips receive pointer events */
+  &::after {
+    pointer-events: none;
+  }
+
+  & .segmentLayer {
+    pointer-events: auto;
+  }
 }
 
 /* Event markers */

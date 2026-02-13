@@ -1238,12 +1238,35 @@ export const OPTIONS = handler;`;
     > = {};
     if (!workflows) return result;
 
+    // Build a normalized lookup for graphs since the graph extractor uses
+    // paths from workflowId (e.g. "./workflows/hello-agent") while the
+    // manifest uses source file paths (e.g. "workflows/hello-agent.ts").
+    // Normalize by stripping leading "./" and file extensions.
+    const normalizedGraphs = new Map<
+      string,
+      Record<string, { graph: { nodes: any[]; edges: any[] } }>
+    >();
+    for (const [graphPath, graphEntries] of Object.entries(graphs)) {
+      const normalized = graphPath
+        .replace(/^\.\//, '')
+        .replace(/\.[^/.]+$/, '');
+      normalizedGraphs.set(normalized, graphEntries);
+    }
+
     for (const [filePath, entries] of Object.entries(workflows)) {
       result[filePath] = {};
+      // Normalize the manifest file path for lookup
+      const normalizedFilePath = filePath
+        .replace(/^\.\//, '')
+        .replace(/\.[^/.]+$/, '');
+
+      const graphEntries =
+        graphs[filePath] || normalizedGraphs.get(normalizedFilePath);
+
       for (const [name, data] of Object.entries(entries)) {
         result[filePath][name] = {
           workflowId: data.workflowId,
-          graph: graphs[filePath]?.[name]?.graph || { nodes: [], edges: [] },
+          graph: graphEntries?.[name]?.graph || { nodes: [], edges: [] },
         };
       }
     }

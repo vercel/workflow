@@ -1,8 +1,6 @@
 'use client';
 
-import { clsx } from 'clsx';
 import { useEffect, useRef, useState } from 'react';
-import { getSpanClassName } from '../components/node';
 import { useTraceViewer } from '../context';
 import type {
   VisibleSpan,
@@ -32,7 +30,8 @@ function emptyArrayInit<T>(): T[] {
 }
 
 export const useStreamingSpans = (
-  highlightedSpans?: string[]
+  highlightedSpans?: string[],
+  eagerRender = false
 ): {
   rows: VisibleSpan[][];
   spans: VisibleSpan[];
@@ -50,7 +49,6 @@ export const useStreamingSpans = (
     scrollSnapshotRef,
     selected,
     memoCacheRef,
-    customSpanClassNameFunc,
   } = state;
   const timelineHeight = useStableValue(state.timelineHeight);
   const counterRef = useRef(0);
@@ -167,6 +165,24 @@ export const useStreamingSpans = (
 
   useEffect(() => {
     if (!rows.length) return;
+
+    if (eagerRender) {
+      const visible: VisibleSpan[] = [];
+      const events: VisibleSpanEvent[] = [];
+      for (const row of rows) {
+        for (const span of row) {
+          if (!adjustSpanVisibility(span, scale)) continue;
+          visible.push(span);
+          if (span.events) {
+            events.push(...span.events);
+          }
+        }
+      }
+      setVisibleSpans(visible);
+      setVisibleEvents(events);
+      setResultScale(scale);
+      return;
+    }
 
     const $timeline = timelineRef.current;
     let snapshot = scrollSnapshotRef.current;
@@ -342,6 +358,7 @@ export const useStreamingSpans = (
     timelineRef,
     timelineWidth,
     timelineHeight,
+    eagerRender,
   ]);
 
   useEffect(() => {
@@ -359,22 +376,13 @@ export const useStreamingSpans = (
     if (!span || !$span) return;
 
     span.isSelected = true;
-    // Get both the base span className and custom class name
-    const baseClassName = getSpanClassName(span, scale);
-    const customClassName = customSpanClassNameFunc
-      ? customSpanClassNameFunc(span)
-      : '';
-    $span.className = clsx(baseClassName, customClassName);
+    $span.setAttribute('data-selected', '');
 
     return () => {
       span.isSelected = false;
-      const baseClassName = getSpanClassName(span, scale);
-      const customClassName = customSpanClassNameFunc
-        ? customSpanClassNameFunc(span)
-        : '';
-      $span.className = clsx(baseClassName, customClassName);
+      $span.removeAttribute('data-selected');
     };
-  }, [visibleSpans, scale, selected, customSpanClassNameFunc]);
+  }, [visibleSpans, selected]);
 
   return {
     rows,

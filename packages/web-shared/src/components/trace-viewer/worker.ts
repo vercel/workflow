@@ -100,7 +100,10 @@ const filterSpans = (root: RootNode, filter: string): void => {
   }
 
   const match = (span: Span): boolean => {
-    if (!span.name.toLocaleLowerCase().includes(name)) return false;
+    const nameMatch =
+      span.name.toLocaleLowerCase().includes(name) ||
+      span.spanId.toLocaleLowerCase().includes(name);
+    if (!nameMatch) return false;
     // TODO: support resource attribute filtering
     return attrs.every(([key, value]) => {
       const v = span.attributes[key];
