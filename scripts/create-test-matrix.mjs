@@ -86,9 +86,7 @@ const matrix = {
   ],
 };
 
-// TODO: REMOVE after testing
-// biome-ignore lint/correctness/noConstantCondition: <explanation>
-if (process.env.GITHUB_REF === 'refs/heads/main' || true) {
+if (process.env.GITHUB_REF === 'refs/heads/main') {
   const newItems = [];
 
   for (const item of matrix.app) {
