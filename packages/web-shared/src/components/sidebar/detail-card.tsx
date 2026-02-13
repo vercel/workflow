@@ -3,12 +3,18 @@ import type { ReactNode } from 'react';
 export function DetailCard({
   summary,
   children,
+  onToggle,
 }: {
   summary: ReactNode;
   children?: ReactNode;
+  /** Called when the detail card is expanded/collapsed */
+  onToggle?: (open: boolean) => void;
 }) {
   return (
-    <details className="group">
+    <details
+      className="group"
+      onToggle={(e) => onToggle?.((e.target as HTMLDetailsElement).open)}
+    >
       <summary
         className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95"
         style={{
