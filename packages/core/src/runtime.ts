@@ -280,39 +280,42 @@ export function workflowEntrypoint(
                       if (result.timeoutSeconds !== undefined) {
                         return { timeoutSeconds: result.timeoutSeconds };
                       }
-                    } else {
                       // Retry server errors (5xx) with exponential backoff before failing the run
-                      if (
+                    } else if (
+                      WorkflowAPIError.is(err) &&
+                      err.status !== undefined &&
+                      err.status >= 500
+                    ) {
+                      const retryCount = serverErrorRetryCount ?? 0;
+                      const delaySecondSteps = [5, 30, 120]; // 5s, 30s, 120s
+                      if (retryCount < delaySecondSteps.length) {
+                        runtimeLogger.warn(
+                          'Server error (5xx), re-enqueueing workflow with backoff',
+                          {
+                            workflowRunId: runId,
+                            retryCount,
+                            delaySeconds: delaySecondSteps[retryCount],
+                            error: err.message,
+                          }
+                        );
+                        await queueMessage(
+                          world,
+                          getWorkflowQueueName(workflowName),
+                          {
+                            runId,
+                            serverErrorRetryCount: retryCount + 1,
+                            traceCarrier: await serializeTraceCarrier(),
+                            requestedAt: new Date(),
+                          },
+                          { delaySeconds: delaySecondSteps[retryCount] }
+                        );
+                        return; // Don't fail the run, retry later
+                      } else if (
                         WorkflowAPIError.is(err) &&
-                        err.status !== undefined &&
-                        err.status >= 500
+                        err.status === 429
                       ) {
-                        const retryCount = serverErrorRetryCount ?? 0;
-                        const delaySecondSteps = [5, 30, 120]; // 5s, 30s, 120s
-                        if (retryCount < delaySecondSteps.length) {
-                          runtimeLogger.warn(
-                            'Server error (5xx), re-enqueueing workflow with backoff',
-                            {
-                              workflowRunId: runId,
-                              retryCount,
-                              delaySeconds: delaySecondSteps[retryCount],
-                              error: err.message,
-                            }
-                          );
-                          await queueMessage(
-                            world,
-                            getWorkflowQueueName(workflowName),
-                            {
-                              runId,
-                              serverErrorRetryCount: retryCount + 1,
-                              traceCarrier: await serializeTraceCarrier(),
-                              requestedAt: new Date(),
-                            },
-                            { delaySeconds: delaySecondSteps[retryCount] }
-                          );
-                          return; // Don't fail the run, retry later
-                        }
-                        // Fall through to run_failed after exhausting retries
+                        // Throw to let withThrottleRetry handle it
+                        throw err;
                       }
 
                       // NOTE: this error could be an error thrown in user code, or could also be a WorkflowRuntimeError
