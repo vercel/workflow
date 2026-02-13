@@ -190,8 +190,8 @@ export function useWorkflowRuns(
   const [maxPagesVisited, setMaxPagesVisited] = useState(1);
 
   // Store PageResult for each page.
-  // Initial isLoading is false so SSR and client hydration agree; the
-  // useEffect that triggers the first fetch will set it to true immediately.
+  // Initial isLoading is false so SSR and client hydration agree; after mount,
+  // the useEffect that triggers the first fetch will set it to true on the client.
   const [allPageResults, setAllPageResults] = useState<
     Map<number, PageResult<WorkflowRun>>
   >(new Map([[0, { data: null, isLoading: false, error: null }]]));
@@ -415,8 +415,8 @@ export function useWorkflowHooks(
   const [maxPagesVisited, setMaxPagesVisited] = useState(1);
 
   // Store PageResult for each page.
-  // Initial isLoading is false so SSR and client hydration agree; the
-  // useEffect that triggers the first fetch will set it to true immediately.
+  // Initial isLoading is false so SSR and client hydration agree; after mount
+  // the useEffect that triggers the first fetch will set it to true on the client.
   const [allPageResults, setAllPageResults] = useState<
     Map<number, PageResult<Hook>>
   >(new Map([[0, { data: null, isLoading: false, error: null }]]));
