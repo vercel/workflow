@@ -468,3 +468,43 @@ export async function withThrottleRetry(
     throw err;
   }
 }
+
+/**
+ * Retries a function when it throws a 5xx WorkflowAPIError.
+ * Used to handle transient workflow-server errors without consuming step attempts.
+ *
+ * Retries up to 3 times with exponential backoff (500ms, 1s, 2s ≈ 3.5s total).
+ * If all retries fail, the original error is re-thrown.
+ */
+export async function withServerErrorRetry<T>(
+  fn: () => Promise<T>
+): Promise<T> {
+  const delays = [500, 1000, 2000];
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (
+        WorkflowAPIError.is(err) &&
+        err.status !== undefined &&
+        err.status >= 500 &&
+        attempt < delays.length
+      ) {
+        runtimeLogger.warn(
+          'Server error (5xx) from workflow-server, retrying in-process',
+          {
+            status: err.status,
+            attempt: attempt + 1,
+            maxRetries: delays.length,
+            nextDelayMs: delays[attempt],
+            url: err.url,
+          }
+        );
+        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('withServerErrorRetry: unreachable');
+}

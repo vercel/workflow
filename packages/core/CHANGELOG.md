@@ -1,5 +1,22 @@
 # @workflow/core
 
+## 4.1.0-beta.56
+
+### Patch Changes
+
+- [#1015](https://github.com/vercel/workflow/pull/1015) [`c56dc38`](https://github.com/vercel/workflow/commit/c56dc3848ecf3e188f876dc4cb7861df185bd4fb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Extract browser-safe serialization format from `@workflow/core` and split o11y hydration by environment. Data hydration now happens client-side in the browser, enabling future e2e encryption support.
+
+- [#990](https://github.com/vercel/workflow/pull/990) [`d7d005b`](https://github.com/vercel/workflow/commit/d7d005b54b621214720518a2a19aa2cadfa23d47) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Allow `@` in workflow names to support scoped packages
+
+- [#1011](https://github.com/vercel/workflow/pull/1011) [`8d117cd`](https://github.com/vercel/workflow/commit/8d117cd219faac53ffa90db8628defd3d7a8160d) Thanks [@pranaygp](https://github.com/pranaygp)! - Retry 5xx errors from workflow-server in step handler to avoid consuming step attempts on transient infrastructure errors
+
+- [#1020](https://github.com/vercel/workflow/pull/1020) [`63caf93`](https://github.com/vercel/workflow/commit/63caf931380b8211f1948cf44eac7532f33e660d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add format prefix and length-prefix framing to stream chunks for consistent serialization with step inputs/outputs. Backwards compatible with legacy newline-delimited streams.
+
+- [#992](https://github.com/vercel/workflow/pull/992) [`dc2dc6a`](https://github.com/vercel/workflow/commit/dc2dc6ac7908e57be9ab34140addfe98a9246fc7) Thanks [@ijjk](https://github.com/ijjk)! - stop esbuild bundling for deferred step route in Next.js
+
+- Updated dependencies [[`63caf93`](https://github.com/vercel/workflow/commit/63caf931380b8211f1948cf44eac7532f33e660d)]:
+  - @workflow/world-local@4.1.0-beta.32
+
 ## 4.1.0-beta.55
 
 ### Patch Changes
@@ -54,7 +71,6 @@
 - [#873](https://github.com/vercel/workflow/pull/873) [`38e8d55`](https://github.com/vercel/workflow/commit/38e8d5571d2ee4b80387943f8f39a93b6e4bc751) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Ensure class serialization / deserialization only happens in the proper global context
 
 - [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve OpenTelemetry tracing instrumentation
-
   - Add W3C trace context headers to step queue messages for cross-service trace linking
   - Add `peer.service` and RPC semantic conventions for external service attribution
   - Add `step.hydrate` and `step.dehydrate` spans for argument serialization visibility
@@ -69,7 +85,6 @@
 - [#947](https://github.com/vercel/workflow/pull/947) [`efb33b2`](https://github.com/vercel/workflow/commit/efb33b2b5edf6ccb1ec2f02f1d99f2a009333780) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Pass class as `this` context to custom serializer/deserializer methods
 
 - [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Optimize step handler performance and improve server-side validation
-
   - Skip initial `world.steps.get()` call in step handler (saves one HTTP round-trip)
   - Add server-side `retryAfter` validation to local and postgres worlds (HTTP 425 when not reached)
   - Fix HTTP status code for step terminal state: return 409 (Conflict) instead of 410
@@ -92,7 +107,6 @@
 ### Minor Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
-
   - Remove `cancel`, `pause`, `resume` from `runs`
   - Remove `create`, `update` from `runs`, `steps`, `hooks`
   - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
@@ -103,7 +117,6 @@
 ### Patch Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Runtime uses event-sourced entity creation
-
   - Suspension handler creates entities via `events.create()`
   - Track `hasCreatedEvent` flag to avoid duplicate event creation on replay
   - Handle `hook_conflict` events during replay to reject duplicate token hooks
@@ -268,7 +281,6 @@
 ### Patch Changes
 
 - [#544](https://github.com/vercel/workflow/pull/544) [`ea2a67e`](https://github.com/vercel/workflow/commit/ea2a67e19c5d224b4b4fd1c1a417810562df0807) Thanks [@pranaygp](https://github.com/pranaygp)! - perf: parallelize suspension handler and refactor runtime
-
   - Process hooks first, then steps and waits in parallel to prevent race conditions
   - Refactor runtime.ts into modular files: `suspension-handler.ts`, `step-handler.ts`, `helpers.ts`
   - Add otel attributes for hooks created (`workflow.hooks.created`) and waits created (`workflow.waits.created`)
