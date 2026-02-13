@@ -195,6 +195,12 @@
   --ds-purple-900: rgb(88 28 135);
   --ds-purple-1000: rgb(59 7 100);
 
+  /* Pink */
+  --ds-pink-200: rgb(252 231 243);
+  --ds-pink-400: rgb(249 168 212);
+  --ds-pink-500: rgb(244 114 182);
+  --ds-pink-900: rgb(131 24 67);
+
   /* Teal */
   --ds-teal-100: rgb(204 251 241);
   --ds-teal-200: rgb(153 246 228);
@@ -212,6 +218,12 @@
   --ds-shadow-medium: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 4px 8px rgba(0, 0, 0, 0.07), 0 24px 48px rgba(0, 0, 0, 0.07);
   --ds-shadow-large: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 8px 16px rgba(0, 0, 0, 0.10), 0 48px 96px rgba(0, 0, 0, 0.10);
   --ds-shadow-menu: var(--ds-shadow-medium);
+
+  /* Legacy aliases used by trace-viewer.module.css */
+  --geist-background: var(--ds-background-100);
+  --accents-2: var(--ds-gray-300);
+  --accents-5: var(--ds-gray-700);
+  --accents-7: var(--ds-gray-900);
 }
 
 .dark {
@@ -340,6 +352,12 @@
   --ds-purple-900: rgb(233 213 255);
   --ds-purple-1000: rgb(243 232 255);
 
+  /* Pink - Dark Mode */
+  --ds-pink-200: rgb(131 24 67);
+  --ds-pink-400: rgb(157 23 77);
+  --ds-pink-500: rgb(190 24 93);
+  --ds-pink-900: rgb(251 207 232);
+
   /* Teal - Dark Mode */
   --ds-teal-100: rgb(4 47 46);
   --ds-teal-200: rgb(19 78 74);
@@ -357,6 +375,12 @@
   --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
   --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
   --ds-shadow-menu: var(--ds-shadow-medium);
+
+  /* Legacy aliases used by trace-viewer.module.css */
+  --geist-background: var(--ds-background-100);
+  --accents-2: var(--ds-gray-300);
+  --accents-5: var(--ds-gray-700);
+  --accents-7: var(--ds-gray-900);
 }
 
 /* System dark mode preference (when no explicit light/dark class is set) */
@@ -471,6 +495,10 @@
     --ds-purple-800: rgb(216 180 254);
     --ds-purple-900: rgb(233 213 255);
     --ds-purple-1000: rgb(243 232 255);
+    --ds-pink-200: rgb(131 24 67);
+    --ds-pink-400: rgb(157 23 77);
+    --ds-pink-500: rgb(190 24 93);
+    --ds-pink-900: rgb(251 207 232);
     --ds-teal-100: rgb(4 47 46);
     --ds-teal-200: rgb(19 78 74);
     --ds-teal-300: rgb(17 94 89);
@@ -485,6 +513,10 @@
     --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
     --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
     --ds-shadow-menu: var(--ds-shadow-medium);
+    --geist-background: var(--ds-background-100);
+    --accents-2: var(--ds-gray-300);
+    --accents-5: var(--ds-gray-700);
+    --accents-7: var(--ds-gray-900);
   }
 }
 

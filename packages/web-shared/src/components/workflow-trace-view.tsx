@@ -520,6 +520,7 @@ function TraceViewerWithContextMenu({
       onCancelRun,
       onResolveHook,
       hookLookup,
+      spanLookup,
       resolvedHookIds,
       run.runId,
       run.completedAt,

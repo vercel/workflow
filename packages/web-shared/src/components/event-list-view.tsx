@@ -17,7 +17,6 @@ const BUTTON_RESET_STYLE: React.CSSProperties = {
   WebkitAppearance: 'none',
   border: 'none',
   background: 'transparent',
-  padding: 0,
 };
 const DOT_PULSE_ANIMATION =
   'workflow-dot-pulse 1.25s cubic-bezier(0, 0, 0.2, 1) infinite';
@@ -366,13 +365,28 @@ function CopyableCell({
   className?: string;
 }): ReactNode {
   const [copied, setCopied] = useState(false);
+  const resetCopiedTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resetCopiedTimeoutRef.current !== null) {
+        window.clearTimeout(resetCopiedTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = useCallback(
     (e: ReactMouseEvent) => {
       e.stopPropagation();
       navigator.clipboard.writeText(value).then(() => {
         setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
+        if (resetCopiedTimeoutRef.current !== null) {
+          window.clearTimeout(resetCopiedTimeoutRef.current);
+        }
+        resetCopiedTimeoutRef.current = window.setTimeout(() => {
+          setCopied(false);
+          resetCopiedTimeoutRef.current = null;
+        }, 1500);
       });
     },
     [value]
@@ -440,7 +454,16 @@ function deepParseJson(value: unknown): unknown {
 function PayloadBlock({ data }: { data: unknown }): ReactNode {
   const isDark = useDarkMode();
   const [copied, setCopied] = useState(false);
+  const resetCopiedTimeoutRef = useRef<number | null>(null);
   const cleaned = useMemo(() => deepParseJson(data), [data]);
+
+  useEffect(() => {
+    return () => {
+      if (resetCopiedTimeoutRef.current !== null) {
+        window.clearTimeout(resetCopiedTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const formatted = useMemo(() => {
     try {
@@ -455,7 +478,13 @@ function PayloadBlock({ data }: { data: unknown }): ReactNode {
       e.stopPropagation();
       navigator.clipboard.writeText(formatted).then(() => {
         setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
+        if (resetCopiedTimeoutRef.current !== null) {
+          window.clearTimeout(resetCopiedTimeoutRef.current);
+        }
+        resetCopiedTimeoutRef.current = window.setTimeout(() => {
+          setCopied(false);
+          resetCopiedTimeoutRef.current = null;
+        }, 1500);
       });
     },
     [formatted]
@@ -1058,7 +1087,7 @@ export function EventListView({
       <Virtuoso
         ref={virtuosoRef}
         totalCount={sortedEvents.length}
-        overscan={200}
+        overscan={20}
         defaultItemHeight={40}
         endReached={() => {
           if (!hasMoreEvents || isLoadingMoreEvents) {

@@ -29,7 +29,8 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
     }
 
     let mounted = true;
-    abortControllerRef.current = new AbortController();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
     setIsLive(true);
 
     const revivers = getWebRevivers();
@@ -124,10 +125,18 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
 
     const readStreamData = async () => {
       try {
-        const stream = await readStream(env, streamId);
+        const stream = await readStream(
+          env,
+          streamId,
+          undefined,
+          abortController.signal
+        );
         const reader = (stream as ReadableStream<Uint8Array>).getReader();
         await processFramedStream(reader);
       } catch (err) {
+        if (abortController.signal.aborted) {
+          return;
+        }
         handleStreamError(err);
       }
     };

@@ -1218,11 +1218,12 @@ function isServerActionError(value: unknown): value is ServerActionError {
 export async function readStream(
   _env: EnvMap,
   streamId: string,
-  startIndex?: number
+  startIndex?: number,
+  signal?: AbortSignal
 ): Promise<ReadableStream<unknown>> {
   try {
     const url = `/api/stream/${encodeURIComponent(streamId)}${startIndex != null ? `?startIndex=${startIndex}` : ''}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     if (!response.ok) {
       const errorData = await response.json().catch(() => null);
       if (errorData && isServerActionError(errorData)) {

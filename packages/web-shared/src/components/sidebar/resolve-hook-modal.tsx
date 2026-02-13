@@ -84,6 +84,15 @@ export function ResolveHookModal({
     [submitPayload]
   );
 
+  const isMacPlatform =
+    typeof navigator !== 'undefined' &&
+    (
+      (navigator as Navigator & { userAgentData?: { platform?: string } })
+        .userAgentData?.platform ?? navigator.userAgent
+    )
+      .toLowerCase()
+      .includes('mac');
+
   // Handle Cmd/Ctrl + Enter to submit
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -289,10 +298,7 @@ export function ResolveHookModal({
                   border: '1px solid var(--ds-gray-alpha-400)',
                 }}
               >
-                {typeof navigator !== 'undefined' &&
-                navigator.platform?.includes('Mac')
-                  ? '⌘'
-                  : 'Ctrl'}
+                {isMacPlatform ? '⌘' : 'Ctrl'}
                 +Enter
               </kbd>{' '}
               to submit

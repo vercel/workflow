@@ -23,29 +23,9 @@ import {
   getSpanLayout,
 } from './span-strategies';
 
-const isSpanSmall = (node: VisibleSpan, scale: number): boolean =>
-  node.duration * scale < 64;
-
-const isSpanHuge = (node: VisibleSpan, scale: number): boolean =>
-  node.duration * scale >= 500;
-
 export const getSpanColorClassName = (node: SpanNode): string => {
   if (node.isVercel) return String(styles.colorVercel);
   return String(styles[`color${node.resourceIndex % 5}` as 'color0']);
-};
-
-export const getSpanClassName = (node: VisibleSpan, scale: number): string => {
-  const isHuge = isSpanHuge(node, scale);
-  const isHovered = node.isHovered && !isHuge && node.isHighlighted !== false;
-
-  return clsx(
-    styles.spanNode,
-    isHuge && styles.huge,
-    isSpanSmall(node, scale) && styles.small,
-    isHovered && styles.xHover,
-    node.isHighlighted ? styles.colorHighlight : getSpanColorClassName(node),
-    node.isHighlighted === false && styles.unlit
-  );
 };
 
 export const SpanNodes = memo(function SpanNodes({
@@ -136,7 +116,13 @@ export const SpanComponent = memo(function SpanComponent({
   customSpanEventClassNameFunc?: (event: VisibleSpanEvent) => string;
 }): ReactNode {
   const ref = useRef<HTMLButtonElement>(null);
-  node.ref = ref;
+
+  useEffect(() => {
+    node.ref = ref;
+    return () => {
+      node.ref = undefined;
+    };
+  }, [node]);
 
   const { span } = node;
   const resourceType = getResourceType(node);
@@ -295,7 +281,13 @@ export const SpanEventComponent = memo(function SpanEventComponent({
   asBoundary?: boolean;
 }): ReactNode {
   const ref = useRef<HTMLDivElement>(null);
-  event.ref = ref;
+
+  useEffect(() => {
+    event.ref = ref;
+    return () => {
+      event.ref = undefined;
+    };
+  }, [event]);
 
   const {
     event: { name },
@@ -346,6 +338,9 @@ export const SpanEventComponent = memo(function SpanEventComponent({
 
   const left = (event.timestamp - root.startTime) * scale;
   const top = MARKER_HEIGHT + (ROW_HEIGHT + ROW_PADDING) * node.row;
+  const isLeftAligned =
+    node.duration <= 0 ||
+    (event.timestamp - node.startTime) / node.duration < 0.5;
 
   // Get custom class name from callback if provided
   const customClassName = customSpanEventClassNameFunc
@@ -380,9 +375,7 @@ export const SpanEventComponent = memo(function SpanEventComponent({
       <div
         className={clsx(
           styles.hoverInfo,
-          (event.timestamp - node.startTime) / node.duration < 0.5
-            ? styles.alignStart
-            : styles.alignEnd
+          isLeftAligned ? styles.alignStart : styles.alignEnd
         )}
       >
         {asBoundary ? (
