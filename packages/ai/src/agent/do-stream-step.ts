@@ -261,6 +261,41 @@ export async function doStreamStep(
             }
           } else if (chunk.type === 'finish') {
             finish = chunk;
+          } else if (
+            (chunk as unknown as { type: string }).type ===
+            'tool-approval-request'
+          ) {
+            // V3 tool-approval-request: DurableAgent does not support tool
+            // approval yet. Auto-deny with an execution-denied result so the
+            // model receives a response and the agent loop can continue.
+            const req = chunk as unknown as {
+              toolCallId: string;
+              toolName: string;
+            };
+            console.warn(
+              `[DurableAgent] Tool "${req.toolName}" requires approval but tool approval is not yet supported. ` +
+                `Auto-denying the request. Consider using tools without needsApproval.`
+            );
+            const denied: LanguageModelV2StreamPart = {
+              type: 'tool-result',
+              toolCallId: req.toolCallId,
+              toolName: req.toolName,
+              result: {
+                type: 'execution-denied',
+                reason:
+                  'DurableAgent does not support tool approval; request was auto-denied.',
+              },
+              isError: false,
+              providerExecuted: true,
+            };
+            providerExecutedToolResults.set(req.toolCallId, {
+              toolCallId: req.toolCallId,
+              toolName: req.toolName,
+              result: denied.result,
+              isError: false,
+            });
+            chunks.push(denied);
+            controller.enqueue(denied);
           }
           chunks.push(chunk);
           controller.enqueue(chunk);
@@ -512,14 +547,10 @@ export async function doStreamStep(
             }
 
             default: {
-              // V3 tool-approval-request: not yet supported by DurableAgent.
-              // Warn rather than silently hang waiting for an approval response.
-              if (partType === 'tool-approval-request') {
-                console.warn(
-                  `[DurableAgent] Received tool-approval-request but tool approval is not yet supported. ` +
-                    `The tool call may hang. Consider using tools without needsApproval or handling approval externally.`
-                );
-              }
+              // tool-approval-request is handled in the first TransformStream
+              // (auto-denied with execution-denied result). Other unknown V3
+              // part types are silently ignored.
+              break;
             }
           }
         },

@@ -38,6 +38,16 @@ const TOOL_RESULT_OUTPUT_TYPES = new Set([
   'execution-denied',
 ]);
 
+/**
+ * Duck-type check for typed tool result outputs (text, json, content, etc.).
+ *
+ * **Caveat:** Because this is a runtime shape check, a tool that naturally
+ * returns a plain object with `{ type: 'text', value: '...' }` (or any other
+ * `type` value in {@link TOOL_RESULT_OUTPUT_TYPES}) will be treated as a typed
+ * `ToolResultOutput` instead of being wrapped as `json`. Tools should avoid
+ * returning objects whose `type` field matches these reserved values unless
+ * they intend the result to be a `ToolResultOutput`.
+ */
 function isToolResultOutput(
   result: unknown
 ): result is LanguageModelV2ToolResultPart['output'] {
