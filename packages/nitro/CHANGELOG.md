@@ -1,5 +1,15 @@
 # @workflow/nitro
 
+## 4.0.1-beta.51
+
+### Patch Changes
+
+- Updated dependencies [[`c56dc38`](https://github.com/vercel/workflow/commit/c56dc3848ecf3e188f876dc4cb7861df185bd4fb), [`d7d005b`](https://github.com/vercel/workflow/commit/d7d005b54b621214720518a2a19aa2cadfa23d47), [`8d117cd`](https://github.com/vercel/workflow/commit/8d117cd219faac53ffa90db8628defd3d7a8160d), [`94760b4`](https://github.com/vercel/workflow/commit/94760b4640dde4ed84ff0932994ce9a47b1954ad), [`63caf93`](https://github.com/vercel/workflow/commit/63caf931380b8211f1948cf44eac7532f33e660d), [`dc2dc6a`](https://github.com/vercel/workflow/commit/dc2dc6ac7908e57be9ab34140addfe98a9246fc7)]:
+  - @workflow/core@4.1.0-beta.56
+  - @workflow/builders@4.0.1-beta.47
+  - @workflow/rollup@4.0.0-beta.13
+  - @workflow/vite@4.0.0-beta.6
+
 ## 4.0.1-beta.50
 
 ### Patch Changes
@@ -496,7 +506,6 @@
 ### Patch Changes
 
 - f2b1619: Support custom `workflows/` dirs:
-
   - Project root dir
   - Project source dir (if specified, which is usually server/) from all scan layers
   - Custom dirs provided via workflows: { dirs: [] } nitro config
