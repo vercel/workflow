@@ -382,9 +382,7 @@ export async function queueMessage(
       kind: await getSpanKind('PRODUCER'),
     },
     async (span) => {
-      const { messageId } = await withServerErrorRetry(() =>
-        world.queue(...args)
-      );
+      const { messageId } = await world.queue(...args);
       span?.setAttributes(Attribute.MessagingMessageId(messageId));
     }
   );

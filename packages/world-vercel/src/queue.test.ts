@@ -1,72 +1,35 @@
-import { WorkflowAPIError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Use vi.hoisted to define mocks that will be available to vi.mock
-const {
-  mockSend,
-  mockHandleCallback,
-  MockDuplicateMessageError,
-  MockInternalServerError,
-  MockConsumerDiscoveryError,
-  MockConsumerRegistryNotConfiguredError,
-  MockClient,
-} = vi.hoisted(() => {
-  class MockDuplicateMessageError extends Error {
-    public readonly idempotencyKey?: string;
-    constructor(message: string, idempotencyKey?: string) {
-      super(message);
-      this.name = 'DuplicateMessageError';
-      this.idempotencyKey = idempotencyKey;
+const { mockSend, mockHandleCallback, MockDuplicateMessageError, MockClient } =
+  vi.hoisted(() => {
+    class MockDuplicateMessageError extends Error {
+      public readonly idempotencyKey?: string;
+      constructor(message: string, idempotencyKey?: string) {
+        super(message);
+        this.name = 'DuplicateMessageError';
+        this.idempotencyKey = idempotencyKey;
+      }
     }
-  }
 
-  class MockInternalServerError extends Error {
-    constructor(message = 'Internal Server Error') {
-      super(message);
-      this.name = 'InternalServerError';
-    }
-  }
+    const mockSend = vi.fn();
+    const mockHandleCallback = vi.fn();
+    const MockClient = vi.fn().mockImplementation(() => ({
+      send: mockSend,
+      handleCallback: mockHandleCallback,
+    }));
 
-  class MockConsumerDiscoveryError extends Error {
-    public readonly deploymentId?: string;
-    constructor(message: string, deploymentId?: string) {
-      super(message);
-      this.name = 'ConsumerDiscoveryError';
-      this.deploymentId = deploymentId;
-    }
-  }
-
-  class MockConsumerRegistryNotConfiguredError extends Error {
-    constructor(message = 'Consumer registry not configured') {
-      super(message);
-      this.name = 'ConsumerRegistryNotConfiguredError';
-    }
-  }
-
-  const mockSend = vi.fn();
-  const mockHandleCallback = vi.fn();
-  const MockClient = vi.fn().mockImplementation(() => ({
-    send: mockSend,
-    handleCallback: mockHandleCallback,
-  }));
-
-  return {
-    mockSend,
-    mockHandleCallback,
-    MockDuplicateMessageError,
-    MockInternalServerError,
-    MockConsumerDiscoveryError,
-    MockConsumerRegistryNotConfiguredError,
-    MockClient,
-  };
-});
+    return {
+      mockSend,
+      mockHandleCallback,
+      MockDuplicateMessageError,
+      MockClient,
+    };
+  });
 
 vi.mock('@vercel/queue', () => ({
   Client: MockClient,
   DuplicateMessageError: MockDuplicateMessageError,
-  InternalServerError: MockInternalServerError,
-  ConsumerDiscoveryError: MockConsumerDiscoveryError,
-  ConsumerRegistryNotConfiguredError: MockConsumerRegistryNotConfiguredError,
 }));
 
 // Mock utils
@@ -227,100 +190,6 @@ describe('createQueue', () => {
         await expect(
           queue.queue('__wkf_workflow_test', { runId: 'run-123' })
         ).rejects.toThrow('Some other error');
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
-        } else {
-          delete process.env.VERCEL_DEPLOYMENT_ID;
-        }
-      }
-    });
-
-    it('should wrap InternalServerError as WorkflowAPIError with status 500', async () => {
-      mockSend.mockRejectedValue(
-        new MockInternalServerError('VQS internal error')
-      );
-
-      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
-
-      try {
-        const queue = createQueue();
-        await expect(
-          queue.queue('__wkf_workflow_test', { runId: 'run-123' })
-        ).rejects.toSatisfy((error: unknown) => {
-          expect(error).toBeInstanceOf(WorkflowAPIError);
-          expect((error as WorkflowAPIError).status).toBe(500);
-          expect((error as WorkflowAPIError).message).toBe(
-            'VQS internal error'
-          );
-          expect((error as WorkflowAPIError).cause).toBeInstanceOf(
-            MockInternalServerError
-          );
-          return true;
-        });
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
-        } else {
-          delete process.env.VERCEL_DEPLOYMENT_ID;
-        }
-      }
-    });
-
-    it('should wrap ConsumerDiscoveryError as WorkflowAPIError with status 502', async () => {
-      mockSend.mockRejectedValue(
-        new MockConsumerDiscoveryError('Discovery failed', 'dpl_123')
-      );
-
-      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
-
-      try {
-        const queue = createQueue();
-        await expect(
-          queue.queue('__wkf_workflow_test', { runId: 'run-123' })
-        ).rejects.toSatisfy((error: unknown) => {
-          expect(error).toBeInstanceOf(WorkflowAPIError);
-          expect((error as WorkflowAPIError).status).toBe(502);
-          expect((error as WorkflowAPIError).message).toBe('Discovery failed');
-          expect((error as WorkflowAPIError).cause).toBeInstanceOf(
-            MockConsumerDiscoveryError
-          );
-          return true;
-        });
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
-        } else {
-          delete process.env.VERCEL_DEPLOYMENT_ID;
-        }
-      }
-    });
-
-    it('should wrap ConsumerRegistryNotConfiguredError as WorkflowAPIError with status 503', async () => {
-      mockSend.mockRejectedValue(
-        new MockConsumerRegistryNotConfiguredError('Registry not configured')
-      );
-
-      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
-
-      try {
-        const queue = createQueue();
-        await expect(
-          queue.queue('__wkf_workflow_test', { runId: 'run-123' })
-        ).rejects.toSatisfy((error: unknown) => {
-          expect(error).toBeInstanceOf(WorkflowAPIError);
-          expect((error as WorkflowAPIError).status).toBe(503);
-          expect((error as WorkflowAPIError).message).toBe(
-            'Registry not configured'
-          );
-          expect((error as WorkflowAPIError).cause).toBeInstanceOf(
-            MockConsumerRegistryNotConfiguredError
-          );
-          return true;
-        });
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
