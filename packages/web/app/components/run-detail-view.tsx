@@ -373,7 +373,11 @@ export function RunDetailView({
     spanSelection?.resourceId ?? '',
     {
       runId: spanSelection?.runId,
-      enabled: Boolean(spanSelection?.resource && spanSelection?.resourceId),
+      enabled: Boolean(
+        spanSelection?.resource &&
+          spanSelection?.resourceId &&
+          spanSelection.resource !== 'hook'
+      ),
     }
   );
 
