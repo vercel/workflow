@@ -17,7 +17,13 @@ import {
   ObjectValue,
 } from 'react-inspector';
 import { useDarkMode } from '../../hooks/use-dark-mode';
-import { inspectorThemeDark, inspectorThemeLight } from './inspector-theme';
+import {
+  type InspectorThemeExtended,
+  inspectorThemeDark,
+  inspectorThemeExtendedDark,
+  inspectorThemeExtendedLight,
+  inspectorThemeLight,
+} from './inspector-theme';
 
 // ---------------------------------------------------------------------------
 // StreamRef / ClassInstanceRef type detection
@@ -88,17 +94,29 @@ function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
 }
 
 // ---------------------------------------------------------------------------
+// Extended theme context (for colors react-inspector doesn't support natively)
+// ---------------------------------------------------------------------------
+
+const ExtendedThemeContext = createContext<InspectorThemeExtended>(
+  inspectorThemeExtendedLight
+);
+
+// ---------------------------------------------------------------------------
 // Custom nodeRenderer
 // ---------------------------------------------------------------------------
 
 /**
  * Extends the default react-inspector nodeRenderer with special handling
- * for ClassInstanceRef and StreamRef types.
+ * for ClassInstanceRef, StreamRef, and Date types.
+ *
+ * react-inspector renders Date instances as unstyled plain text (no theme
+ * key exists for them), so we intercept here and apply the magenta color
+ * from our extended theme — matching Node.js util.inspect()'s date style.
  *
  * Default nodeRenderer reference:
  * https://github.com/storybookjs/react-inspector/blob/main/README.md#noderenderer
  */
-const nodeRenderer = ({
+function NodeRenderer({
   depth,
   name,
   data,
@@ -109,7 +127,9 @@ const nodeRenderer = ({
   data: unknown;
   isNonenumerable?: boolean;
   expanded?: boolean;
-}) => {
+}) {
+  const extendedTheme = useContext(ExtendedThemeContext);
+
   // StreamRef → inline clickable badge
   if (isStreamRef(data)) {
     return (
@@ -136,6 +156,28 @@ const nodeRenderer = ({
     );
   }
 
+  // Date → magenta color (Node.js: 'date' → 'magenta')
+  // react-inspector has no OBJECT_VALUE_DATE_COLOR theme key, so we handle it here.
+  if (data instanceof Date) {
+    const dateStr = data.toISOString();
+    if (depth === 0) {
+      return (
+        <span style={{ color: extendedTheme.OBJECT_VALUE_DATE_COLOR }}>
+          {dateStr}
+        </span>
+      );
+    }
+    return (
+      <span>
+        {name != null && <ObjectName name={name} />}
+        {name != null && <span>: </span>}
+        <span style={{ color: extendedTheme.OBJECT_VALUE_DATE_COLOR }}>
+          {dateStr}
+        </span>
+      </span>
+    );
+  }
+
   // Default rendering (same as react-inspector's built-in)
   if (depth === 0) {
     return <ObjectRootLabel name={name} data={data} />;
@@ -143,7 +185,7 @@ const nodeRenderer = ({
   return (
     <ObjectLabel name={name} data={data} isNonenumerable={isNonenumerable} />
   );
-};
+}
 
 // ---------------------------------------------------------------------------
 // Public component
@@ -167,17 +209,22 @@ export function DataInspector({
   onStreamClick,
 }: DataInspectorProps) {
   const isDark = useDarkMode();
+  const extendedTheme = isDark
+    ? inspectorThemeExtendedDark
+    : inspectorThemeExtendedLight;
 
   const content = (
-    <ObjectInspector
-      data={data}
-      name={name}
-      // @ts-expect-error react-inspector accepts theme objects at runtime despite
-      // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
-      theme={isDark ? inspectorThemeDark : inspectorThemeLight}
-      expandLevel={expandLevel}
-      nodeRenderer={nodeRenderer}
-    />
+    <ExtendedThemeContext.Provider value={extendedTheme}>
+      <ObjectInspector
+        data={data}
+        name={name}
+        // @ts-expect-error react-inspector accepts theme objects at runtime despite
+        // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
+        theme={isDark ? inspectorThemeDark : inspectorThemeLight}
+        expandLevel={expandLevel}
+        nodeRenderer={NodeRenderer}
+      />
+    </ExtendedThemeContext.Provider>
   );
 
   // Wrap in StreamClickContext if a handler is provided
