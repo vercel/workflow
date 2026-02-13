@@ -178,6 +178,13 @@ interface RunDetailViewProps {
 }
 
 type Tab = 'trace' | 'graph' | 'streams' | 'events';
+const RUN_LEVEL_EVENT_TYPES = new Set([
+  'run_created',
+  'run_started',
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+]);
 
 export function RunDetailView({
   runId,
@@ -257,7 +264,9 @@ export function RunDetailView({
 
   const handleLoadEventData = useCallback(
     async (event: Event) => {
-      if (event.correlationId) {
+      const isRunLevelEvent = RUN_LEVEL_EVENT_TYPES.has(event.eventType);
+
+      if (!isRunLevelEvent && event.correlationId) {
         const { error, result } = await unwrapServerActionResult(
           fetchEventsByCorrelationId(env, event.correlationId, {
             sortOrder: 'asc',
