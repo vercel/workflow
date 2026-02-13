@@ -92,6 +92,25 @@ function useLiveTick(isLive: boolean): void {
 const DEFAULT_PANEL_WIDTH = 380;
 const MIN_PANEL_WIDTH = 240;
 
+function getCompactImportPath(name?: string): string | undefined {
+  if (!name) return undefined;
+  const parsed = name.startsWith('step//')
+    ? parseStepName(name)
+    : name.startsWith('workflow//')
+      ? parseWorkflowName(name)
+      : null;
+  if (!parsed) return name;
+
+  const moduleLastSegment = parsed.moduleSpecifier
+    .split('/')
+    .filter(Boolean)
+    .at(-1);
+  if (!moduleLastSegment) {
+    return parsed.functionName || parsed.shortName;
+  }
+  return `${moduleLastSegment}/${parsed.functionName}`;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Right-click context menu for spans
 // ──────────────────────────────────────────────────────────────────────────
@@ -905,7 +924,7 @@ export const WorkflowTraceViewer = ({
     const data = selectedSpan.data as Record<string, unknown>;
     const stepName = data.stepName as string | undefined;
     const workflowName = data.workflowName as string | undefined;
-    const fullPath = stepName ?? workflowName;
+    const importPath = stepName ?? workflowName;
     const name =
       (stepName ? parseStepName(stepName)?.shortName : undefined) ??
       (workflowName ? parseWorkflowName(workflowName)?.shortName : undefined) ??
@@ -913,6 +932,7 @@ export const WorkflowTraceViewer = ({
       workflowName ??
       (data.hookId as string) ??
       'Details';
+    const fullPath = getCompactImportPath(importPath);
 
     return { name, fullPath };
   }, [selectedSpan?.data]);

@@ -130,6 +130,7 @@ type AttributeKey =
   | keyof WorkflowRun
   | keyof Hook
   | keyof Event
+  | 'importPath'
   | 'eventData'
   | 'resumeAt'
   | 'expiredAt'
@@ -137,6 +138,7 @@ type AttributeKey =
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
+  'importPath',
   'stepName',
   'status',
   'stepId',
@@ -223,6 +225,7 @@ const attributeToDisplayFn: Record<
   // Names that need pretty-printing
   workflowName: (value: unknown) =>
     parseWorkflowName(String(value))?.shortName ?? '?',
+  importPath: (value: unknown) => String(value),
   stepName: (value: unknown) => parseStepName(String(value))?.shortName ?? '?',
   // IDs
   runId: (value: unknown) => String(value),
@@ -476,12 +479,14 @@ export const AttributeBlock = ({
 
 export const AttributePanel = ({
   data,
+  importPath,
   isLoading,
   error,
   expiredAt,
   onStreamClick,
 }: {
   data: Record<string, unknown>;
+  importPath?: string;
   isLoading?: boolean;
   error?: Error;
   expiredAt?: string | Date;
@@ -497,8 +502,15 @@ export const AttributePanel = ({
     if (execCtx?.workflowCoreVersion) {
       result.workflowCoreVersion = execCtx.workflowCoreVersion;
     }
+    if (importPath) {
+      result.importPath = importPath;
+    } else if (typeof data.stepName === 'string') {
+      result.importPath = data.stepName;
+    } else if (typeof data.workflowName === 'string') {
+      result.importPath = data.workflowName;
+    }
     return result;
-  }, [data]);
+  }, [data, importPath]);
   const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))

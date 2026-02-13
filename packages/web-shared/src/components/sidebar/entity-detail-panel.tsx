@@ -312,6 +312,21 @@ export function EntityDetailPanel({
   const displayData = (
     resource === 'sleep' ? data : (spanDetailData ?? data)
   ) as WorkflowRun | Step | Hook | Event;
+  const importPath = useMemo(() => {
+    const displayRecord = displayData as Record<string, unknown>;
+    const displayStepName = displayRecord.stepName;
+    const displayWorkflowName = displayRecord.workflowName;
+    if (typeof displayStepName === 'string') {
+      return displayStepName;
+    }
+    if (typeof displayWorkflowName === 'string') {
+      return displayWorkflowName;
+    }
+    if (typeof run.workflowName === 'string') {
+      return run.workflowName;
+    }
+    return undefined;
+  }, [displayData, run.workflowName]);
 
   return (
     <div
@@ -389,6 +404,7 @@ export function EntityDetailPanel({
       {/* Content display */}
       <AttributePanel
         data={displayData}
+        importPath={importPath}
         expiredAt={run.expiredAt}
         isLoading={loading}
         error={error ?? undefined}
