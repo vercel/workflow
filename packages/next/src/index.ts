@@ -1,7 +1,6 @@
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import {
-  DEFERRED_BUILDER_MIN_VERSION,
   getNextBuilder,
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
@@ -26,6 +25,10 @@ export function withWorkflow(
     };
   } = {}
 ) {
+  if (workflows?.lazyDiscovery) {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
+  }
+
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
       process.env.WORKFLOW_TARGET_WORLD = 'local';
@@ -68,14 +71,7 @@ export function withWorkflow(
     const existingRules = nextConfig.turbopack.rules as any;
     const nextVersion = require('next/package.json').version;
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
-    const useDeferredBuilder =
-      workflows?.lazyDiscovery && shouldUseDeferredBuilder(nextVersion);
-
-    if (workflows?.lazyDiscovery && !useDeferredBuilder) {
-      console.warn(
-        `Enabled lazyDiscovery but Next.js version is not compatible, needs ${DEFERRED_BUILDER_MIN_VERSION} have ${nextVersion}`
-      );
-    }
+    const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
 
     // Deferred builder discovers files via loader socket notifications, so
     // turbopack content conditions are only needed with the eager builder.
