@@ -296,6 +296,7 @@ export async function doStreamStep(
             });
             chunks.push(denied);
             controller.enqueue(denied);
+            return;
           }
           chunks.push(chunk);
           controller.enqueue(chunk);
