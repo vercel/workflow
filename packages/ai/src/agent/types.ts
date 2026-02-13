@@ -7,9 +7,8 @@ import type { LanguageModelV2 } from '@ai-sdk/provider';
  * Compatible language model type that works with both AI SDK v5 and v6.
  *
  * AI SDK v5 uses LanguageModelV2, while AI SDK v6 uses LanguageModelV3.
- * DurableAgent converts model objects to `"provider/modelId"` strings for
- * step boundary serialization (see {@link resolveModelId}), so only the
- * identity properties are required from V3 models.
+ * DurableAgent only needs identity properties from V3 models for
+ * step boundary serialization.
  *
  * The V3 branch intentionally omits `doStream` because the V2 and V3
  * signatures are structurally incompatible at the TypeScript level

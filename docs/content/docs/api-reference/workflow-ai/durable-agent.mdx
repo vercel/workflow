@@ -199,30 +199,9 @@ export default OutputSpecification;`}
 - **Flexible Tool Implementation**: Tools can be implemented as workflow steps for automatic retries, or as regular workflow-level logic
 - **Stream Processing**: Handles streaming responses and tool calls in a structured way
 - **Workflow Native**: Fully integrated with Workflow DevKit for production-grade reliability
-- **AI SDK v5 and v6**: Accepts `LanguageModelV2` and `LanguageModelV3` model objects, with runtime normalization of V3 stream differences
 - **AI SDK Parity**: Supports the same options as AI SDK's `streamText` including generation settings, callbacks, and structured output
 
-## Model Configuration
-
-The `model` field accepts three forms:
-
-| Form | Example | Recommended |
-|------|---------|-------------|
-| String ID | `"anthropic/claude-sonnet-4.5"` | Yes |
-| Model object | `anthropic("claude-sonnet-4.5")` | Accepted |
-| Factory function | `() => Promise<model>` | Deprecated |
-
-**String IDs** are the recommended approach. The string is resolved via the AI SDK gateway inside the workflow step, so it crosses the step boundary cleanly.
-
-**Model objects** from both AI SDK v5 (`LanguageModelV2`) and AI SDK v6 (`LanguageModelV3`) are accepted. They are automatically converted to string IDs using the object's `provider` and `modelId` fields. Middleware and wrappers applied to the model object are **not preserved** across the step boundary — use `providerOptions` to configure provider-specific settings instead.
-
-**Factory functions** are deprecated and will not work in workflow mode. Use a string model ID instead.
-
-<Callout type="info">
-Because workflow steps serialize all arguments across the step boundary, model objects (which contain methods) cannot be passed directly to the underlying `streamText` call. DurableAgent extracts the `provider/modelId` string and resolves it via the gateway inside the step.
-</Callout>
-
-### Instructions Alias
+## Instructions Alias
 
 The `instructions` field is an alias for `system`, available on both the constructor and `stream()` options. When both are provided, `instructions` takes precedence:
 
@@ -898,64 +877,6 @@ async function saveConversation(messages: UIMessage[]) {
 <Callout type="info">
 The `uiMessages` property is only available when `collectUIMessages` is set to `true`. When disabled, `uiMessages` is `undefined`.
 </Callout>
-
-## Migrating from Wrapped Models
-
-If you previously used `wrapLanguageModel` with middleware (e.g., `defaultSettingsMiddleware` for gateway routing or thinking configuration), those settings are lost at the step boundary. Replace them with `providerOptions`, which are serialized as plain objects and cross the boundary correctly.
-
-### Before
-
-```typescript
-import { wrapLanguageModel, defaultSettingsMiddleware } from "ai";
-
-// Middleware carries settings — these are lost at the step boundary
-const model = wrapLanguageModel({
-  model: gateway("anthropic/claude-sonnet-4.5"),
-  middleware: defaultSettingsMiddleware({
-    settings: {
-      providerOptions: {
-        gateway: { only: ["anthropic"], order: ["anthropic"] },
-        anthropic: { thinking: { type: "enabled", budgetTokens: 10000 } },
-      },
-    },
-  }),
-});
-
-const agent = new DurableAgent({ model });
-```
-
-### After
-
-```typescript
-// Settings passed directly — these cross the step boundary as plain objects
-const agent = new DurableAgent({
-  model: "anthropic/claude-sonnet-4.5",
-  providerOptions: {
-    gateway: { only: ["anthropic"], order: ["anthropic"] },
-    anthropic: { thinking: { type: "enabled", budgetTokens: 10000 } },
-  },
-});
-```
-
-### Dynamic Per-Step Configuration
-
-Use `prepareStep` to adjust `providerOptions` dynamically based on step context:
-
-```typescript
-const agent = new DurableAgent({
-  model: "anthropic/claude-sonnet-4.5",
-});
-
-await agent.stream({
-  messages,
-  writable,
-  prepareStep: ({ stepNumber }) => ({
-    providerOptions: stepNumber > 3
-      ? { anthropic: { thinking: { type: "enabled", budgetTokens: 20000 } } }
-      : undefined,
-  }),
-});
-```
 
 ## See Also
 

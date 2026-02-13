@@ -349,22 +349,12 @@ export type PrepareStepCallback<TTools extends ToolSet = ToolSet> = (
  */
 export interface DurableAgentOptions extends GenerationSettings {
   /**
-   * The model to use for the agent.
+   * The model provider to use for the agent.
    *
-   * Accepts three forms:
-   * - **String** (recommended): A model ID compatible with the Vercel AI Gateway
-   *   (e.g., `'anthropic/claude-opus'`).
-   * - **Model object**: A `LanguageModelV2` (AI SDK v5) or `LanguageModelV3`
-   *   (AI SDK v6) instance. Automatically converted to a `'provider/modelId'`
-   *   string for step boundary serialization. Middleware and wrappers are not
-   *   preserved — use `providerOptions` instead.
-   * - **Factory function** (deprecated): A function returning a `LanguageModel` promise.
-   *   Does not work in workflow mode due to step boundary serialization.
+   * This should be a string compatible with the Vercel AI Gateway (e.g., 'anthropic/claude-opus'),
+   * or a step function that returns a LanguageModel instance (V2 or V3 depending on AI SDK version).
    */
-  model:
-    | string
-    | CompatibleLanguageModel
-    | (() => Promise<CompatibleLanguageModel>);
+  model: string | (() => Promise<CompatibleLanguageModel>);
 
   /**
    * A set of tools available to the agent.
@@ -700,7 +690,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private telemetry?: TelemetrySettings;
 
   constructor(options: DurableAgentOptions & { tools?: TBaseTools }) {
-    this.model = resolveModelId(options.model);
+    this.model = options.model;
     this.tools = (options.tools ?? {}) as TBaseTools;
     this.system = options.instructions ?? options.system;
     this.toolChoice = options.toolChoice as ToolChoice<TBaseTools>;
@@ -1083,36 +1073,6 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       uiMessages,
     };
   }
-}
-
-/**
- * Resolve a model option to the internal representation.
- * String and function models pass through as-is. Model objects are converted
- * to a 'provider/modelId' string for step boundary serialization.
- */
-function resolveModelId(
-  model:
-    | string
-    | CompatibleLanguageModel
-    | (() => Promise<CompatibleLanguageModel>)
-): string | (() => Promise<CompatibleLanguageModel>) {
-  if (typeof model === 'string') {
-    return model;
-  }
-  if (typeof model === 'function') {
-    console.warn(
-      `[DurableAgent] Factory function model is deprecated and will not work in workflow mode. ` +
-        `Use a string model ID or a LanguageModel object instead.`
-    );
-    return model;
-  }
-  // Model object — extract provider/modelId for gateway resolution inside the step
-  console.warn(
-    `[DurableAgent] Model object "${model.provider}/${model.modelId}" was converted to ` +
-      `a string for step boundary serialization. Middleware and wrappers are not preserved. ` +
-      `Use providerOptions to configure provider-specific settings.`
-  );
-  return `${model.provider}/${model.modelId}`;
 }
 
 async function writeFinishChunk(writable: WritableStream<UIMessageChunk>) {
