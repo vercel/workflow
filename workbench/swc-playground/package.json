@@ -50,7 +50,7 @@
     "input-otp": "1.4.1",
     "lucide-react": "^0.454.0",
     "monaco-editor": "latest",
-    "next": "https://vercel-packages.vercel.app/next/commits/f7dd09fd5fe57c5d853f2f09157b43cdafbe00af/next",
+    "next": "https://vercel-packages.vercel.app/next/commits/fcf281219bb6f79f9a6f799824787ba4254be965/next",
     "next-themes": "latest",
     "react": "19.2.4",
     "react-day-picker": "9.8.0",

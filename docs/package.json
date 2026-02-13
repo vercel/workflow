@@ -66,7 +66,7 @@
     "mermaid": "^11.12.2",
     "motion": "^12.23.25",
     "nanoid": "5.1.6",
-    "next": "https://vercel-packages.vercel.app/next/commits/f7dd09fd5fe57c5d853f2f09157b43cdafbe00af/next",
+    "next": "https://vercel-packages.vercel.app/next/commits/fcf281219bb6f79f9a6f799824787ba4254be965/next",
     "next-themes": "^0.4.6",
     "next-validate-link": "^1.6.3",
     "radix-ui": "latest",
