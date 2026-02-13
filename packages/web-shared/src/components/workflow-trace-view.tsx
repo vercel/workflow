@@ -92,25 +92,6 @@ function useLiveTick(isLive: boolean): void {
 const DEFAULT_PANEL_WIDTH = 380;
 const MIN_PANEL_WIDTH = 240;
 
-function getCompactImportPath(name?: string): string | undefined {
-  if (!name) return undefined;
-  const parsed = name.startsWith('step//')
-    ? parseStepName(name)
-    : name.startsWith('workflow//')
-      ? parseWorkflowName(name)
-      : null;
-  if (!parsed) return name;
-
-  const moduleLastSegment = parsed.moduleSpecifier
-    .split('/')
-    .filter(Boolean)
-    .at(-1);
-  if (!moduleLastSegment) {
-    return parsed.functionName || parsed.shortName;
-  }
-  return `${moduleLastSegment}/${parsed.functionName}`;
-}
-
 // ──────────────────────────────────────────────────────────────────────────
 // Right-click context menu for spans
 // ──────────────────────────────────────────────────────────────────────────
@@ -918,23 +899,20 @@ export const WorkflowTraceViewer = ({
     setPanelWidth((w) => Math.max(MIN_PANEL_WIDTH, w + deltaX));
   }, []);
 
-  // Get the selected span name and full path for the panel header
-  const selectedSpanHeader = useMemo(() => {
-    if (!selectedSpan?.data) return { name: undefined, fullPath: undefined };
+  // Get the selected span name for the panel header
+  const selectedSpanName = useMemo(() => {
+    if (!selectedSpan?.data) return undefined;
     const data = selectedSpan.data as Record<string, unknown>;
     const stepName = data.stepName as string | undefined;
     const workflowName = data.workflowName as string | undefined;
-    const nameForModuleSpecifier = stepName ?? workflowName;
-    const name =
+    return (
       (stepName ? parseStepName(stepName)?.shortName : undefined) ??
       (workflowName ? parseWorkflowName(workflowName)?.shortName : undefined) ??
       stepName ??
       workflowName ??
       (data.hookId as string) ??
-      'Details';
-    const fullPath = getCompactImportPath(nameForModuleSpecifier);
-
-    return { name, fullPath };
+      'Details'
+    );
   }, [selectedSpan?.data]);
 
   if (isLoading || !trace) {
@@ -1001,19 +979,10 @@ export const WorkflowTraceViewer = ({
               <div
                 className="text-sm font-medium truncate"
                 style={{ color: 'var(--ds-gray-1000)' }}
-                title={selectedSpanHeader.name}
+                title={selectedSpanName}
               >
-                {selectedSpanHeader.name}
+                {selectedSpanName}
               </div>
-              {selectedSpanHeader.fullPath ? (
-                <div
-                  className="text-xs truncate"
-                  style={{ color: 'var(--ds-gray-700)' }}
-                  title={selectedSpanHeader.fullPath}
-                >
-                  {selectedSpanHeader.fullPath}
-                </div>
-              ) : null}
             </div>
             <button
               type="button"
