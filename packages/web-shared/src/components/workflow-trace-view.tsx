@@ -1,6 +1,7 @@
 'use client';
 
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import { Clock, Copy, Info, Send, Type, X, XCircle } from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -898,16 +899,22 @@ export const WorkflowTraceViewer = ({
     setPanelWidth((w) => Math.max(MIN_PANEL_WIDTH, w + deltaX));
   }, []);
 
-  // Get the selected span name and duration for the panel header
-  const selectedSpanName = useMemo(() => {
-    if (!selectedSpan?.data) return undefined;
+  // Get the selected span name and full path for the panel header
+  const selectedSpanHeader = useMemo(() => {
+    if (!selectedSpan?.data) return { name: undefined, fullPath: undefined };
     const data = selectedSpan.data as Record<string, unknown>;
-    return (
-      (data.stepName as string) ??
-      (data.workflowName as string) ??
+    const stepName = data.stepName as string | undefined;
+    const workflowName = data.workflowName as string | undefined;
+    const fullPath = stepName ?? workflowName;
+    const name =
+      (stepName ? parseStepName(stepName)?.shortName : undefined) ??
+      (workflowName ? parseWorkflowName(workflowName)?.shortName : undefined) ??
+      stepName ??
+      workflowName ??
       (data.hookId as string) ??
-      'Details'
-    );
+      'Details';
+
+    return { name, fullPath };
   }, [selectedSpan?.data]);
 
   if (isLoading || !trace) {
@@ -970,12 +977,24 @@ export const WorkflowTraceViewer = ({
             className="flex items-center justify-between px-3 py-2 border-b flex-shrink-0"
             style={{ borderColor: 'var(--ds-gray-200)' }}
           >
-            <span
-              className="text-sm font-medium truncate"
-              style={{ color: 'var(--ds-gray-1000)' }}
-            >
-              {selectedSpanName}
-            </span>
+            <div className="min-w-0 flex-1">
+              <div
+                className="text-sm font-medium truncate"
+                style={{ color: 'var(--ds-gray-1000)' }}
+                title={selectedSpanHeader.name}
+              >
+                {selectedSpanHeader.name}
+              </div>
+              {selectedSpanHeader.fullPath ? (
+                <div
+                  className="text-xs truncate"
+                  style={{ color: 'var(--ds-gray-700)' }}
+                  title={selectedSpanHeader.fullPath}
+                >
+                  {selectedSpanHeader.fullPath}
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               aria-label="Close panel"
