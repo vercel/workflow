@@ -24,10 +24,12 @@ export type { Revivers, StreamRef } from './lib/hydration';
 export {
   CLASS_INSTANCE_REF_TYPE,
   ClassInstanceRef,
+  ENCRYPTED_PLACEHOLDER,
   extractStreamIds,
   getWebRevivers,
   hydrateResourceIO,
   isClassInstanceRef,
+  isEncryptedData,
   isStreamId,
   isStreamRef,
   STREAM_REF_TYPE,

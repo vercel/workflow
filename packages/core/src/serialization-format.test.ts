@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   ClassInstanceRef,
   decodeFormatPrefix,
+  ENCRYPTED_PLACEHOLDER,
   encodeWithFormatPrefix,
   extractStreamIds,
   hydrateData,
   hydrateResourceIO,
   isClassInstanceRef,
+  isEncryptedData,
   isStreamId,
   isStreamRef,
   observabilityRevivers,
@@ -467,5 +469,93 @@ describe('hydrateResourceIO with custom class instances', () => {
     expect(parsed.className).toBe('Point');
     expect(parsed.classId).toBe('class//Point');
     expect(parsed.data).toEqual({ x: 1, y: 2 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Encrypted data detection and placeholder handling
+// ---------------------------------------------------------------------------
+
+describe('encrypted data handling', () => {
+  /** Create a fake encrypted payload: "encr" prefix + random bytes */
+  function makeEncryptedPayload(): Uint8Array {
+    const prefix = new TextEncoder().encode('encr');
+    const fakeEncryptedBody = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const result = new Uint8Array(prefix.length + fakeEncryptedBody.length);
+    result.set(prefix, 0);
+    result.set(fakeEncryptedBody, prefix.length);
+    return result;
+  }
+
+  describe('isEncryptedData', () => {
+    it('should detect encr-prefixed Uint8Array', () => {
+      expect(isEncryptedData(makeEncryptedPayload())).toBe(true);
+    });
+
+    it('should not detect devl-prefixed Uint8Array', () => {
+      const devlPayload = makeDevlPayload('hello');
+      expect(isEncryptedData(devlPayload)).toBe(false);
+    });
+
+    it('should return false for non-Uint8Array values', () => {
+      expect(isEncryptedData('hello')).toBe(false);
+      expect(isEncryptedData(42)).toBe(false);
+      expect(isEncryptedData(null)).toBe(false);
+      expect(isEncryptedData(undefined)).toBe(false);
+      expect(isEncryptedData({ foo: 'bar' })).toBe(false);
+    });
+
+    it('should return false for Uint8Array shorter than 4 bytes', () => {
+      expect(isEncryptedData(new Uint8Array([1, 2, 3]))).toBe(false);
+    });
+  });
+
+  describe('hydrateData with encrypted values', () => {
+    it('should return ENCRYPTED_PLACEHOLDER for encr-prefixed data', () => {
+      const encrypted = makeEncryptedPayload();
+      const result = hydrateData(encrypted, {});
+      expect(result).toBe(ENCRYPTED_PLACEHOLDER);
+    });
+
+    it('should still hydrate devl-prefixed data normally', () => {
+      const payload = makeDevlPayload('hello');
+      const result = hydrateData(payload, {});
+      expect(result).toBe('hello');
+    });
+  });
+
+  describe('hydrateResourceIO with encrypted fields', () => {
+    it('should replace encrypted run input/output with placeholder', () => {
+      const run = {
+        runId: 'wrun_test',
+        input: makeEncryptedPayload(),
+        output: makeEncryptedPayload(),
+      };
+      const result = hydrateResourceIO(run, {});
+      expect(result.input).toBe(ENCRYPTED_PLACEHOLDER);
+      expect(result.output).toBe(ENCRYPTED_PLACEHOLDER);
+    });
+
+    it('should replace encrypted step input/output with placeholder', () => {
+      const step = {
+        stepId: 'step_test',
+        input: makeEncryptedPayload(),
+        output: makeEncryptedPayload(),
+      };
+      const result = hydrateResourceIO(step, {});
+      expect(result.input).toBe(ENCRYPTED_PLACEHOLDER);
+      expect(result.output).toBe(ENCRYPTED_PLACEHOLDER);
+    });
+
+    it('should hydrate normal data alongside encrypted placeholder', () => {
+      const run = {
+        runId: 'wrun_test',
+        input: makeDevlPayload({ greeting: 'hello' }),
+        output: makeEncryptedPayload(),
+      };
+      const result = hydrateResourceIO(run, {});
+      expect(result.input).toEqual({ greeting: 'hello' });
+      expect(result.output).toBe(ENCRYPTED_PLACEHOLDER);
+    });
   });
 });

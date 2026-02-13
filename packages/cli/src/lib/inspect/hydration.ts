@@ -10,17 +10,24 @@ import {
   ClassInstanceRef,
   extractClassName,
   hydrateResourceIO as hydrateResourceIOGeneric,
+  isEncryptedData,
   observabilityRevivers,
   type Revivers,
 } from '@workflow/core/serialization-format';
 import { parseClassName } from '@workflow/utils/parse-name';
+import type { Encryptor } from '@workflow/world';
+
+/** A function that resolves an Encryptor for a given runId, or null to skip decryption. */
+export type EncryptorResolver = ((runId: string) => Promise<Encryptor>) | null;
 
 // Re-export types and utilities that consumers need
 export {
   CLASS_INSTANCE_REF_TYPE,
   ClassInstanceRef,
+  ENCRYPTED_PLACEHOLDER,
   extractStreamIds,
   isClassInstanceRef,
+  isEncryptedData,
   isStreamId,
   isStreamRef,
   type Revivers,
@@ -125,23 +132,129 @@ function getRevivers(): Revivers {
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// Decryption helpers
 // ---------------------------------------------------------------------------
 
-/** Resolver function that retrieves the encryption key for a given run ID. */
-export type EncryptionKeyResolver =
-  | ((runId: string) => Promise<Uint8Array | undefined>)
-  | null;
+/** Format prefix length in bytes (must match serialization-format.ts) */
+const FORMAT_PREFIX_LENGTH = 4;
+
+/**
+ * Decrypt a single encrypted data field, stripping the 'encr' prefix first.
+ * Returns the decrypted Uint8Array (which will have its own format prefix, e.g. 'devl').
+ */
+async function decryptField(
+  data: Uint8Array,
+  encryptor: Encryptor,
+  runId: string
+): Promise<Uint8Array> {
+  if (!encryptor.decrypt) {
+    throw new Error(
+      'Encrypted data encountered but Encryptor does not support decryption.'
+    );
+  }
+  // Strip the 'encr' format prefix — the Encryptor only sees [nonce][ciphertext]
+  const payload = data.subarray(FORMAT_PREFIX_LENGTH);
+  return encryptor.decrypt(payload, { runId });
+}
+
+/**
+ * Pre-process a resource's data fields: if the resolver is provided and
+ * the field is encrypted, decrypt it before generic hydration.
+ *
+ * When the resolver is null (no --decrypt flag), encrypted fields flow
+ * through to the generic hydrateData which returns ENCRYPTED_PLACEHOLDER.
+ */
+async function maybeDecryptFields<
+  T extends {
+    runId?: string;
+    input?: any;
+    output?: any;
+    metadata?: any;
+    eventData?: any;
+  },
+>(resource: T, resolver: EncryptorResolver): Promise<T> {
+  if (!resolver) return resource;
+
+  const runId = (resource as any).runId as string | undefined;
+  if (!runId) return resource;
+
+  let encryptor: Encryptor | null = null;
+  const getEncryptor = async () => {
+    if (!encryptor) encryptor = await resolver(runId);
+    return encryptor;
+  };
+
+  const result = { ...resource };
+
+  // Decrypt input/output fields (WorkflowRun, Step)
+  if (isEncryptedData(result.input)) {
+    result.input = await decryptField(
+      result.input,
+      await getEncryptor(),
+      runId
+    );
+  }
+  if (isEncryptedData(result.output)) {
+    result.output = await decryptField(
+      result.output,
+      await getEncryptor(),
+      runId
+    );
+  }
+
+  // Decrypt metadata field (Hook)
+  if (isEncryptedData(result.metadata)) {
+    result.metadata = await decryptField(
+      result.metadata,
+      await getEncryptor(),
+      runId
+    );
+  }
+
+  // Decrypt eventData fields (Event)
+  if (result.eventData && typeof result.eventData === 'object') {
+    const eventData = { ...result.eventData };
+    if (isEncryptedData(eventData.result)) {
+      eventData.result = await decryptField(
+        eventData.result,
+        await getEncryptor(),
+        runId
+      );
+    }
+    if (isEncryptedData(eventData.input)) {
+      eventData.input = await decryptField(
+        eventData.input,
+        await getEncryptor(),
+        runId
+      );
+    }
+    result.eventData = eventData;
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /**
  * Hydrate the serialized data fields of a resource for CLI display.
  *
- * The optional `_encryptionKeyResolver` parameter is accepted for forward
- * compatibility with encryption support but is not yet used.
+ * When `encryptorResolver` is null (default / no --decrypt flag), encrypted
+ * fields are shown as "🔒 Encrypted" placeholders.
+ *
+ * When `encryptorResolver` is provided (--decrypt flag), encrypted fields
+ * are decrypted before hydration so the actual user data is displayed.
  */
-export function hydrateResourceIO<T>(
+export async function hydrateResourceIO<T>(
   resource: T,
-  _encryptionKeyResolver?: EncryptionKeyResolver
-): T {
-  return hydrateResourceIOGeneric(resource as any, getRevivers()) as T;
+  encryptorResolver?: EncryptorResolver
+): Promise<T> {
+  // Pre-process: decrypt any encrypted fields when a resolver is provided
+  const preprocessed = await maybeDecryptFields(
+    resource as any,
+    encryptorResolver ?? null
+  );
+  return hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
 }

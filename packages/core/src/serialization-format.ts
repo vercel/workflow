@@ -15,6 +15,8 @@ import { parse, unflatten } from 'devalue';
 export const SerializationFormat = {
   /** devalue stringify/parse with TextEncoder/TextDecoder */
   DEVALUE_V1: 'devl',
+  /** Encrypted payload (inner payload has its own format prefix after decryption) */
+  ENCRYPTED: 'encr',
 } as const;
 
 export type SerializationFormatType =
@@ -85,6 +87,28 @@ export function decodeFormatPrefix(data: Uint8Array | unknown): {
 }
 
 // ---------------------------------------------------------------------------
+// Encrypted data detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Placeholder string displayed when data is encrypted and decryption
+ * has not been requested. Used by both CLI and web o11y.
+ */
+export const ENCRYPTED_PLACEHOLDER = '\u{1F512} Encrypted';
+
+/**
+ * Check if a binary value has the 'encr' format prefix indicating encryption.
+ * Browser-safe — does not depend on the full serialization module.
+ */
+export function isEncryptedData(data: unknown): boolean {
+  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
+    return false;
+  }
+  const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
+  return prefix === SerializationFormat.ENCRYPTED;
+}
+
+// ---------------------------------------------------------------------------
 // Revivers type (shared across all environments)
 // ---------------------------------------------------------------------------
 
@@ -101,13 +125,22 @@ export type Revivers = Record<string, (value: any) => any>;
 /**
  * Hydrate (deserialize) a value that was stored in the database.
  *
- * Handles three data shapes:
- * 1. `Uint8Array` with a format prefix (specVersion 2+) → decode prefix, parse
- * 2. `Array` (legacy specVersion 1, "revived devalue") → unflatten
- * 3. Other (already a plain JS value) → return as-is
+ * Handles four data shapes:
+ * 1. `Uint8Array` with 'encr' prefix → return ENCRYPTED_PLACEHOLDER
+ * 2. `Uint8Array` with a format prefix (specVersion 2+) → decode prefix, parse
+ * 3. `Array` (legacy specVersion 1, "revived devalue") → unflatten
+ * 4. Other (already a plain JS value) → return as-is
  */
 export function hydrateData(value: unknown, revivers: Revivers): unknown {
   if (value instanceof Uint8Array) {
+    // Check for encrypted data first — return a placeholder so the UI can
+    // show "Encrypted" instead of raw bytes. Actual decryption (when
+    // requested) is handled by the environment-specific hydration wrapper
+    // before this function is called.
+    if (isEncryptedData(value)) {
+      return ENCRYPTED_PLACEHOLDER;
+    }
+
     const { format, payload } = decodeFormatPrefix(value);
     if (format === SerializationFormat.DEVALUE_V1) {
       const str = new TextDecoder().decode(payload);

@@ -19,10 +19,11 @@ import type {
 } from '@workflow/world';
 import chalk from 'chalk';
 
-/** A function that resolves an encryption key for a given runId, or null to skip decryption. */
-export type EncryptionKeyResolver =
-  | ((runId: string) => Promise<Uint8Array | undefined>)
-  | null;
+import { formatDistance } from 'date-fns';
+import Table from 'easy-table';
+import { logger } from '../config/log.js';
+import type { InspectCLIOptions } from '../config/types.js';
+import { type EncryptionKeyResolver, hydrateResourceIO } from './hydration.js';
 
 /**
  * Create an EncryptionKeyResolver from a World instance.
@@ -34,11 +35,6 @@ function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
   return (runId: string) => world.getEncryptionKeyForRun!(runId);
 }
 
-import { formatDistance } from 'date-fns';
-import Table from 'easy-table';
-import { logger } from '../config/log.js';
-import type { InspectCLIOptions } from '../config/types.js';
-import { hydrateResourceIO } from './hydration.js';
 import { setupListPagination } from './pagination.js';
 import { streamToConsole } from './stream.js';
 import {

@@ -17,8 +17,10 @@ import {
 export {
   CLASS_INSTANCE_REF_TYPE,
   ClassInstanceRef,
+  ENCRYPTED_PLACEHOLDER,
   extractStreamIds,
   isClassInstanceRef,
+  isEncryptedData,
   isStreamId,
   isStreamRef,
   type Revivers,
