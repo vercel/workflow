@@ -20,6 +20,11 @@ function waitForNextTick(): Promise<void> {
   return new Promise((resolve) => process.nextTick(resolve));
 }
 
+// Helper to wait for setTimeout(0) macrotask (used by deferred unconsumed event check)
+function waitForMacrotask(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe('EventsConsumer', () => {
   describe('constructor', () => {
     it('should initialize with provided events', () => {
@@ -148,9 +153,10 @@ describe('EventsConsumer', () => {
       expect(consumer.callbacks).toEqual([callback1, callback3]);
     });
 
-    it('should process all callbacks when none return true', async () => {
+    it('should process all callbacks when none return true and call onUnconsumedEvent', async () => {
       const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([event], onUnconsumedEvent);
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);
@@ -171,6 +177,10 @@ describe('EventsConsumer', () => {
       expect(callback3).toHaveBeenCalledWith(event);
       expect(consumer.eventIndex).toBe(0);
       expect(consumer.callbacks).toEqual([callback1, callback2, callback3]);
+
+      // onUnconsumedEvent is deferred via setTimeout to allow new subscribes
+      await waitForMacrotask();
+      expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
     });
 
     it('should recursively process next event when current event is consumed', async () => {
@@ -332,6 +342,69 @@ describe('EventsConsumer', () => {
 
       expect(callback).toHaveBeenCalledWith(null);
       expect(consumer.eventIndex).toBe(0);
+    });
+  });
+
+  describe('onUnconsumedEvent', () => {
+    it('should call onUnconsumedEvent when a non-null event is not consumed by any callback', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([event], onUnconsumedEvent);
+      const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+
+      consumer.subscribe(callback);
+      await waitForNextTick();
+      await waitForMacrotask();
+
+      expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+    });
+
+    it('should NOT call onUnconsumedEvent for null event (end-of-events)', async () => {
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([], onUnconsumedEvent);
+      const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+
+      consumer.subscribe(callback);
+      await waitForNextTick();
+      await waitForMacrotask();
+
+      expect(callback).toHaveBeenCalledWith(null);
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('should not throw when no onUnconsumedEvent callback is provided', async () => {
+      const event = createMockEvent();
+      const consumer = new EventsConsumer([event]);
+      const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
+
+      consumer.subscribe(callback);
+      await waitForNextTick();
+      await waitForMacrotask();
+
+      // Should not throw - just stays stuck as before (backward compat)
+      expect(consumer.eventIndex).toBe(0);
+    });
+
+    it('should cancel pending unconsumed check when a new callback subscribes', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([event], onUnconsumedEvent);
+      const callback1 = vi
+        .fn()
+        .mockReturnValue(EventConsumerResult.NotConsumed);
+
+      consumer.subscribe(callback1);
+      await waitForNextTick();
+
+      // Before the macrotask fires, subscribe a new callback that consumes the event
+      const callback2 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
+      consumer.subscribe(callback2);
+      await waitForNextTick();
+      await waitForMacrotask();
+
+      // The new callback consumed the event, so onUnconsumedEvent should NOT be called
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      expect(consumer.eventIndex).toBe(1);
     });
   });
 });

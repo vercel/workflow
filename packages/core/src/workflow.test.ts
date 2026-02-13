@@ -2655,6 +2655,267 @@ describe('runWorkflow', () => {
         'sleep with date completed'
       );
     });
+
+    it('should reject with WorkflowRuntimeError when event log has duplicate wait_completed', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'wait_created',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            resumeAt: new Date('2024-01-01T00:00:05.000Z'),
+          },
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: new Date('2024-01-01T00:00:05.000Z'),
+        },
+        {
+          // Duplicate wait_completed - should trigger WorkflowRuntimeError
+          eventId: 'event-2',
+          runId: workflowRunId,
+          eventType: 'wait_completed',
+          correlationId: 'wait_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: new Date('2024-01-01T00:00:05.000Z'),
+        },
+        {
+          eventId: 'event-3',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
+          createdAt: new Date('2024-01-01T00:00:06.000Z'),
+        },
+        {
+          eventId: 'event-4',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
+          eventData: {
+            result: dehydrateStepReturnValue('step done', ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:07.000Z'),
+        },
+      ];
+
+      await expect(
+        runWorkflow(
+          `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+          const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+          async function workflow() {
+            await sleep('5s');
+            const result = await doWork();
+            return result;
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(WorkflowRuntimeError);
+    });
+
+    it('should reject with WorkflowRuntimeError for duplicate step_completed blocking subsequent events', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            result: dehydrateStepReturnValue('first done', ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        {
+          // Duplicate step_completed - orphaned, blocks events below
+          eventId: 'event-2',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            result: dehydrateStepReturnValue('duplicate', ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:02.000Z'),
+        },
+        {
+          eventId: 'event-3',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
+          createdAt: new Date('2024-01-01T00:00:03.000Z'),
+        },
+        {
+          eventId: 'event-4',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
+          eventData: {
+            result: dehydrateStepReturnValue('second done', ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:04.000Z'),
+        },
+      ];
+
+      await expect(
+        runWorkflow(
+          `const doWork1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork1");
+          const doWork2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork2");
+          async function workflow() {
+            await doWork1();
+            return await doWork2();
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(WorkflowRuntimeError);
+    });
+
+    it('should reject with WorkflowRuntimeError for orphaned step_completed blocking workflow step', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          // Orphaned step_completed with unknown correlationId - blocks everything after
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_UNKNOWN_CORRELATION_ID',
+          eventData: {
+            result: dehydrateStepReturnValue('orphan', ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        {
+          eventId: 'event-2',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            result: dehydrateStepReturnValue('done', ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:02.000Z'),
+        },
+      ];
+
+      await expect(
+        runWorkflow(
+          `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+          async function workflow() {
+            return await doWork();
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(WorkflowRuntimeError);
+    });
+
+    it('should reject with WorkflowRuntimeError for orphaned wait_completed blocking workflow step', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const events: Event[] = [
+        {
+          // Orphaned wait_completed with no matching wait_created - blocks everything after
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'wait_completed',
+          correlationId: 'wait_ORPHAN',
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        {
+          eventId: 'event-2',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
+          eventData: {
+            result: dehydrateStepReturnValue('done', ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:02.000Z'),
+        },
+      ];
+
+      await expect(
+        runWorkflow(
+          `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+          async function workflow() {
+            return await doWork();
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow(WorkflowRuntimeError);
+    });
   });
 
   describe('closure variables', () => {

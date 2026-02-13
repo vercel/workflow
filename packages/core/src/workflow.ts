@@ -71,10 +71,18 @@ export async function runWorkflow(
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
 
+    const eventsConsumer = new EventsConsumer(events, (event) => {
+      workflowDiscontinuation.reject(
+        new WorkflowRuntimeError(
+          `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+        )
+      );
+    });
+
     const workflowContext: WorkflowOrchestratorContext = {
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
-      eventsConsumer: new EventsConsumer(events),
+      eventsConsumer,
       generateUlid: () => ulid(+startedAt),
       generateNanoid,
       invocationsQueue: new Map(),
