@@ -146,17 +146,6 @@ describe('hydrateData', () => {
     expect(result.timestamp.toISOString()).toBe('2026-01-15T12:00:00.000Z');
   });
 
-  it('should recover devl payload from numeric-key byte object', () => {
-    const original = { status: 'completed', count: 3 };
-    const encoded = makeDevlPayload(original);
-    const asObject = Object.fromEntries(
-      Array.from(encoded).map((byte, index) => [String(index), byte])
-    );
-
-    const result = hydrateData(asObject, testRevivers);
-    expect(result).toEqual(original);
-  });
-
   it('should throw for unsupported format prefix', () => {
     const fakePrefix = new TextEncoder().encode('fake');
     const payload = new TextEncoder().encode('{}');

@@ -120,40 +120,6 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
     return unflatten(value, revivers);
   }
 
-  // Some storages serialize Uint8Array as plain objects with numeric keys
-  // (e.g. {"0":100,"1":101,...}). Detect and recover that shape.
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length > 0) {
-      const numericEntries: [number, number][] = [];
-      let isUint8ArrayLike = true;
-      for (const [k, v] of entries) {
-        if (!/^\d+$/.test(k) || typeof v !== 'number' || !Number.isInteger(v)) {
-          isUint8ArrayLike = false;
-          break;
-        }
-        if (v < 0 || v > 255) {
-          isUint8ArrayLike = false;
-          break;
-        }
-        numericEntries.push([Number(k), v]);
-      }
-
-      if (isUint8ArrayLike) {
-        numericEntries.sort((a, b) => a[0] - b[0]);
-        const maxIndex = numericEntries[numericEntries.length - 1]?.[0] ?? -1;
-        if (maxIndex >= 0 && maxIndex + 1 === numericEntries.length) {
-          const reconstructed = new Uint8Array(maxIndex + 1);
-          for (const [index, byte] of numericEntries) {
-            reconstructed[index] = byte;
-          }
-          // Re-enter hydrateData through the Uint8Array path.
-          return hydrateData(reconstructed, revivers);
-        }
-      }
-    }
-  }
-
   // Already a plain JS value (e.g., number, string, null)
   return value;
 }
