@@ -406,6 +406,24 @@ function hydrateEventData<T extends { eventId?: string; eventData?: any }>(
     }
   }
 
+  // hook_created events may have serialized metadata
+  if ('metadata' in eventData && eventData.metadata != null) {
+    try {
+      eventData.metadata = hydrateData(eventData.metadata, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
+  // hook_received events have eventData.payload (serialized hook payload)
+  if ('payload' in eventData && eventData.payload != null) {
+    try {
+      eventData.payload = hydrateData(eventData.payload, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
   return { ...resource, eventData };
 }
 
