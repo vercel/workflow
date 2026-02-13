@@ -312,7 +312,7 @@ export function EntityDetailPanel({
   const displayData = (
     resource === 'sleep' ? data : (spanDetailData ?? data)
   ) as WorkflowRun | Step | Hook | Event;
-  const importPath = useMemo(() => {
+  const moduleSpecifier = useMemo(() => {
     const displayRecord = displayData as Record<string, unknown>;
     const displayStepName = displayRecord.stepName;
     const displayWorkflowName = displayRecord.workflowName;
@@ -404,7 +404,7 @@ export function EntityDetailPanel({
       {/* Content display */}
       <AttributePanel
         data={displayData}
-        importPath={importPath}
+        moduleSpecifier={moduleSpecifier}
         expiredAt={run.expiredAt}
         isLoading={loading}
         error={error ?? undefined}

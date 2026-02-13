@@ -130,7 +130,7 @@ type AttributeKey =
   | keyof WorkflowRun
   | keyof Hook
   | keyof Event
-  | 'importPath'
+  | 'moduleSpecifier'
   | 'eventData'
   | 'resumeAt'
   | 'expiredAt'
@@ -138,7 +138,7 @@ type AttributeKey =
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
-  'importPath',
+  'moduleSpecifier',
   'stepName',
   'status',
   'stepId',
@@ -190,6 +190,19 @@ const getAttributeDisplayName = (attribute: string): string => {
   return attributeDisplayNames[attribute as AttributeKey] ?? attribute;
 };
 
+const getModuleSpecifierFromName = (value: unknown): string => {
+  const raw = String(value);
+  const parsedStep = parseStepName(raw);
+  if (parsedStep) {
+    return parsedStep.moduleSpecifier;
+  }
+  const parsedWorkflow = parseWorkflowName(raw);
+  if (parsedWorkflow) {
+    return parsedWorkflow.moduleSpecifier;
+  }
+  return raw;
+};
+
 export const localMillisecondTime = (value: unknown): string => {
   let date: Date;
   if (value instanceof Date) {
@@ -225,7 +238,7 @@ const attributeToDisplayFn: Record<
   // Names that need pretty-printing
   workflowName: (value: unknown) =>
     parseWorkflowName(String(value))?.shortName ?? '?',
-  importPath: (value: unknown) => String(value),
+  moduleSpecifier: (value: unknown) => getModuleSpecifierFromName(value),
   stepName: (value: unknown) => parseStepName(String(value))?.shortName ?? '?',
   // IDs
   runId: (value: unknown) => String(value),
@@ -479,14 +492,14 @@ export const AttributeBlock = ({
 
 export const AttributePanel = ({
   data,
-  importPath,
+  moduleSpecifier,
   isLoading,
   error,
   expiredAt,
   onStreamClick,
 }: {
   data: Record<string, unknown>;
-  importPath?: string;
+  moduleSpecifier?: string;
   isLoading?: boolean;
   error?: Error;
   expiredAt?: string | Date;
@@ -502,15 +515,15 @@ export const AttributePanel = ({
     if (execCtx?.workflowCoreVersion) {
       result.workflowCoreVersion = execCtx.workflowCoreVersion;
     }
-    if (importPath) {
-      result.importPath = importPath;
+    if (moduleSpecifier) {
+      result.moduleSpecifier = moduleSpecifier;
     } else if (typeof data.stepName === 'string') {
-      result.importPath = data.stepName;
+      result.moduleSpecifier = data.stepName;
     } else if (typeof data.workflowName === 'string') {
-      result.importPath = data.workflowName;
+      result.moduleSpecifier = data.workflowName;
     }
     return result;
-  }, [data, importPath]);
+  }, [data, moduleSpecifier]);
   const hasExpired = expiredAt != null && new Date(expiredAt) < new Date();
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))
@@ -529,6 +542,31 @@ export const AttributePanel = ({
     );
     return displayValue !== null;
   });
+
+  // Keep `moduleSpecifier` immediately after `workflowName` or `stepName`.
+  const orderedBasicAttributes = useMemo(() => {
+    const attributes = [...visibleBasicAttributes];
+    const moduleSpecifierIndex = attributes.indexOf('moduleSpecifier');
+    if (moduleSpecifierIndex === -1) {
+      return attributes;
+    }
+
+    attributes.splice(moduleSpecifierIndex, 1);
+    const workflowNameIndex = attributes.indexOf('workflowName');
+    if (workflowNameIndex !== -1) {
+      attributes.splice(workflowNameIndex + 1, 0, 'moduleSpecifier');
+      return attributes;
+    }
+
+    const stepNameIndex = attributes.indexOf('stepName');
+    if (stepNameIndex !== -1) {
+      attributes.splice(stepNameIndex + 1, 0, 'moduleSpecifier');
+      return attributes;
+    }
+
+    attributes.unshift('moduleSpecifier');
+    return attributes;
+  }, [visibleBasicAttributes]);
 
   // Memoize context object to avoid object reconstruction on render
   const displayContext = useMemo(
@@ -550,7 +588,7 @@ export const AttributePanel = ({
               backgroundColor: 'var(--ds-gray-100)',
             }}
           >
-            {visibleBasicAttributes.map((attribute) => (
+            {orderedBasicAttributes.map((attribute) => (
               <div
                 key={attribute}
                 className="flex items-center justify-between px-3 py-1.5"

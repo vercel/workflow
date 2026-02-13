@@ -924,7 +924,7 @@ export const WorkflowTraceViewer = ({
     const data = selectedSpan.data as Record<string, unknown>;
     const stepName = data.stepName as string | undefined;
     const workflowName = data.workflowName as string | undefined;
-    const importPath = stepName ?? workflowName;
+    const nameForModuleSpecifier = stepName ?? workflowName;
     const name =
       (stepName ? parseStepName(stepName)?.shortName : undefined) ??
       (workflowName ? parseWorkflowName(workflowName)?.shortName : undefined) ??
@@ -932,7 +932,7 @@ export const WorkflowTraceViewer = ({
       workflowName ??
       (data.hookId as string) ??
       'Details';
-    const fullPath = getCompactImportPath(importPath);
+    const fullPath = getCompactImportPath(nameForModuleSpecifier);
 
     return { name, fullPath };
   }, [selectedSpan?.data]);
