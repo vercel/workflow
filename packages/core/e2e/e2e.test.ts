@@ -889,6 +889,33 @@ describe('e2e', () => {
         expect(result.failed).toBe(true);
         expect(result.attempt).toBe(1);
       });
+
+      test(
+        'workflow completes despite transient 5xx on step_completed',
+        { timeout: 120_000 },
+        async () => {
+          const run = await start(
+            await e2e('serverError5xxRetryWorkflow'),
+            [42]
+          );
+          const result = await run.returnValue;
+
+          // Correct result proves workflow completed successfully
+          expect(result.result).toBe(84); // 42 * 2
+
+          // retryCount > 0 proves the fault injection actually triggered
+          expect(result.retryCount).toBe(2);
+
+          // attempt === 1 proves no step attempt was consumed by the 5xx retries
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const doWorkStep = steps.find((s: any) =>
+            s.stepName.includes('doWork')
+          );
+          expect(doWorkStep.attempt).toBe(1);
+        }
+      );
     });
 
     describe('catchability', () => {

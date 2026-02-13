@@ -1,66 +1,20 @@
-import type { ChildProcess } from 'node:child_process';
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import type { Server } from 'node:http';
 import chalk from 'chalk';
 import open from 'open';
 import { logger } from '../config/log.js';
 import { getEnvVars } from './env.js';
 import { getVercelDashboardUrl } from './vercel-api.js';
 
-export const WEB_PACKAGE_NAME = '@workflow/web';
 export const getHostUrl = (webPort: number) => `http://localhost:${webPort}`;
 
-let serverProcess: ChildProcess | null = null;
-let isServerStarting = false;
-let cleanupHandlersRegistered = false;
+let httpServer: Server | null = null;
 
 /**
- * Get the path to the @workflow/web package
- * Since it's now a direct dependency, we can resolve it from node_modules
- *
- * We resolve relative to this file's location to handle cases where the CLI
- * is installed as a dependency of another project:
- *   test-project/node_modules/@workflow/cli/node_modules/@workflow/web
- */
-function getWebPackagePath(): string {
-  try {
-    // Get the path to this file so we can resolve relative to the CLI package
-    const thisFilePath = fileURLToPath(import.meta.url);
-
-    logger.debug(`Resolving web package from: ${thisFilePath}`);
-
-    // Create a require function that resolves relative to this file
-    // This is the proper way to resolve dependencies of the CLI package
-    const requireFromHere = createRequire(import.meta.url);
-
-    // Resolve the package.json of @workflow/web from the CLI's location
-    // This ensures we find it even when the CLI is a dependency of another project
-    const packageJsonPath = requireFromHere.resolve(
-      `${WEB_PACKAGE_NAME}/package.json`
-    );
-
-    logger.debug(`Resolved web package: ${packageJsonPath}`);
-
-    // Return the directory containing package.json
-    return dirname(packageJsonPath);
-  } catch (error) {
-    throw new Error(
-      `Failed to resolve ${WEB_PACKAGE_NAME} package. ` +
-        `This should be installed as a dependency of the CLI. Error: ${error}`
-    );
-  }
-}
-
-/**
- * Check if server is already running on the port
+ * Check if a server is already listening on the given URL.
  */
 async function isServerRunning(hostUrl: string): Promise<boolean> {
   try {
-    const response = await fetch(hostUrl, {
-      method: 'HEAD',
-    });
+    const response = await fetch(hostUrl, { method: 'HEAD' });
     return response.ok;
   } catch {
     return false;
@@ -68,153 +22,22 @@ async function isServerRunning(hostUrl: string): Promise<boolean> {
 }
 
 /**
- * Cleanup function to stop the server gracefully
- */
-function cleanupServer(): void {
-  if (serverProcess && !serverProcess.killed) {
-    logger.debug('Cleaning up web server process...');
-    serverProcess.kill('SIGTERM');
-    serverProcess = null;
-  }
-}
-
-/**
- * Register cleanup handlers to ensure server is stopped when CLI exits
- */
-function registerCleanupHandlers(): void {
-  if (cleanupHandlersRegistered) {
-    return;
-  }
-
-  cleanupHandlersRegistered = true;
-
-  // Handle Ctrl+C (SIGINT)
-  process.on('SIGINT', () => {
-    logger.debug('Received SIGINT, cleaning up...');
-    cleanupServer();
-    process.exit(0);
-  });
-
-  // Handle termination signal
-  process.on('SIGTERM', () => {
-    logger.debug('Received SIGTERM, cleaning up...');
-    cleanupServer();
-    process.exit(0);
-  });
-
-  // Handle normal process exit
-  process.on('exit', () => {
-    cleanupServer();
-  });
-
-  // Handle uncaught exceptions
-  process.on('uncaughtException', (error) => {
-    logger.error(`Uncaught exception: ${error}`);
-    cleanupServer();
-    process.exit(1);
-  });
-
-  // Handle unhandled promise rejections
-  process.on('unhandledRejection', (reason) => {
-    logger.error(`Unhandled rejection: ${reason}`);
-    cleanupServer();
-    process.exit(1);
-  });
-}
-
-/**
- * Start the web server without detaching
- * The server will stay attached to the CLI process and be cleaned up on exit
+ * Start the @workflow/web server in the current process.
  */
 async function startWebServer(webPort: number): Promise<boolean> {
-  if (isServerStarting) {
-    logger.debug('Server is already starting...');
-    return false;
-  }
-
   if (await isServerRunning(getHostUrl(webPort))) {
     logger.debug('Server is already running');
     return true;
   }
 
-  const packagePath = getWebPackagePath();
-  logger.debug(`Using web package at: ${packagePath}`);
-
-  isServerStarting = true;
-
   try {
     logger.info('Starting web UI server...');
-    const command = 'npx';
-    const args = ['next', 'start', '-p', String(webPort)];
-    logger.debug(`Running ${command} ${args.join(' ')} in ${packagePath}`);
-
-    // Start the Next.js server WITHOUT detaching
-    // This keeps it attached to the CLI process
-    //
-    // The web UI reads world configuration from server-side environment variables.
-    // We pass through all WORKFLOW_* env vars to the spawned server process.
-    serverProcess = spawn(command, args, {
-      shell: true,
-      cwd: packagePath,
-      detached: false, // Keep attached so Ctrl+C works
-      stdio: ['ignore', 'pipe', 'pipe'], // Pipe output so we can log it if needed
-      env: process.env, // Pass through all env vars including WORKFLOW_* config
-    });
-
-    // Register cleanup handlers to ensure server is killed on exit
-    registerCleanupHandlers();
-
-    // Log server output for debugging
-    if (serverProcess.stdout) {
-      serverProcess.stdout.on('data', (data) => {
-        logger.debug(`[web-server] ${data.toString().trim()}`);
-      });
-    }
-
-    if (serverProcess.stderr) {
-      serverProcess.stderr.on('data', (data) => {
-        logger.debug(`[web-server] ${data.toString().trim()}`);
-      });
-    }
-
-    // Handle server process errors
-    serverProcess.on('error', (error) => {
-      logger.error(`Web server process error: ${error}`);
-      cleanupServer();
-    });
-
-    // Handle server process exit
-    serverProcess.on('exit', (code, signal) => {
-      if (code !== null && code !== 0) {
-        logger.debug(`Web server exited with code ${code}`);
-      } else if (signal) {
-        logger.debug(`Web server exited with signal ${signal}`);
-      }
-      serverProcess = null;
-    });
-
-    // Wait for server to be ready
-    const maxRetries = 30;
-    const retryIntervalMs = 1000;
-    for (let i = 0; i < maxRetries; i++) {
-      await new Promise((resolve) => setTimeout(resolve, retryIntervalMs));
-      if (await isServerRunning(getHostUrl(webPort))) {
-        logger.success(chalk.green(`Web UI server started on port ${webPort}`));
-        isServerStarting = false;
-        return true;
-      }
-    }
-
-    logger.error(
-      `Server failed to start within ${maxRetries * retryIntervalMs}ms`
-    );
-    cleanupServer();
-    isServerStarting = false;
-    return false;
+    const { startServer } = await import('@workflow/web/server');
+    httpServer = await startServer(webPort);
+    logger.success(chalk.green(`Web UI server started on port ${webPort}`));
+    return true;
   } catch (error) {
     logger.error(`Failed to start server: ${error}`);
-    cleanupServer();
-    isServerStarting = false;
     return false;
   }
 }
@@ -352,17 +175,15 @@ export async function launchWebUI(
   }
 
   // If we started the server, keep the process running
-  if (!alreadyRunning && serverProcess) {
+  if (!alreadyRunning && httpServer) {
     logger.info(chalk.cyan('Press Ctrl+C to stop the web UI server and exit'));
 
-    // Keep the CLI process alive to maintain the server
-    // The server will be cleaned up when the process exits
-    await new Promise((resolve) => {
-      // This will only resolve when the server exits, or immediately if there is no serverProcess
-      if (serverProcess) {
-        serverProcess.on('exit', resolve);
+    // Keep the CLI process alive while the server is running
+    await new Promise<void>((resolve) => {
+      if (httpServer) {
+        httpServer.on('close', () => resolve());
       } else {
-        resolve(null);
+        resolve();
       }
     });
   }

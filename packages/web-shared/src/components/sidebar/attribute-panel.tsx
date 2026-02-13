@@ -5,9 +5,10 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import type { ReactNode } from 'react';
 import { createContext, useContext, useMemo, useState } from 'react';
-import { ErrorCard } from '../ui/error-card';
+import { ObjectInspector } from 'react-inspector';
 import { useDarkMode } from '../../hooks/use-dark-mode';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import { ErrorCard } from '../ui/error-card';
 import { ConversationView } from './conversation-view';
 import { DetailCard } from './detail-card';
 
@@ -334,145 +335,45 @@ const StreamRefDisplay = ({ streamRef }: { streamRef: StreamRef }) => {
 };
 
 /**
- * Recursively transforms a value for JSON display, replacing StreamRef and
- * ClassInstanceRef objects with placeholder strings that can be identified
- * and replaced with React elements.
+ * Renders a value using react-inspector's ObjectInspector for proper
+ * display of Map, Set, URLSearchParams, Date, Error, RegExp, typed
+ * arrays, and other non-plain-object types.
+ *
+ * StreamRef and ClassInstanceRef objects are rendered inline as
+ * custom components (clickable stream links and class cards).
  */
-const transformValueForDisplay = (
-  value: unknown
-): {
-  json: string;
-  streamRefs: Map<string, StreamRef>;
-  classInstanceRefs: Map<string, ClassInstanceRef>;
-} => {
-  const streamRefs = new Map<string, StreamRef>();
-  const classInstanceRefs = new Map<string, ClassInstanceRef>();
-  let counter = 0;
-
-  const transform = (v: unknown): unknown => {
-    if (isStreamRef(v)) {
-      const placeholder = `__STREAM_REF_${counter++}__`;
-      streamRefs.set(placeholder, v);
-      return placeholder;
-    }
-    if (isClassInstanceRef(v)) {
-      const placeholder = `__CLASS_INSTANCE_REF_${counter++}__`;
-      classInstanceRefs.set(placeholder, v);
-      return placeholder;
-    }
-    if (Array.isArray(v)) {
-      return v.map(transform);
-    }
-    if (v !== null && typeof v === 'object') {
-      const result: Record<string, unknown> = {};
-      for (const [key, val] of Object.entries(v)) {
-        result[key] = transform(val);
-      }
-      return result;
-    }
-    return v;
-  };
-
-  const transformed = transform(value);
-  return {
-    json: JSON.stringify(transformed, null, 2),
-    streamRefs,
-    classInstanceRefs,
-  };
+const JsonBlock = (value: unknown) => {
+  return <DataInspector data={value} />;
 };
 
-const JsonBlock = (value: unknown) => {
-  const { json, streamRefs, classInstanceRefs } =
-    transformValueForDisplay(value);
+import { inspectorThemeDark, inspectorThemeLight } from '../ui/inspector-theme';
 
-  // If no special refs, just render plain JSON
-  if (streamRefs.size === 0 && classInstanceRefs.size === 0) {
-    return (
-      <pre
-        className="text-[11px] overflow-x-auto rounded-md border p-3"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-1000)',
-        }}
-      >
-        <code>{json}</code>
-      </pre>
-    );
+function DataInspector({ data }: { data: unknown }) {
+  const isDark = useDarkMode();
+
+  // Render top-level StreamRef/ClassInstanceRef as full custom components
+  if (isStreamRef(data)) {
+    return <StreamRefDisplay streamRef={data} />;
   }
-
-  // Build a combined map of all placeholders to their React elements
-  const placeholderComponents = new Map<string, ReactNode>();
-  let keyIndex = 0;
-
-  for (const [placeholder, streamRef] of streamRefs) {
-    placeholderComponents.set(
-      placeholder,
-      <StreamRefDisplay key={keyIndex++} streamRef={streamRef} />
-    );
-  }
-
-  for (const [placeholder, classInstanceRef] of classInstanceRefs) {
-    placeholderComponents.set(
-      placeholder,
-      <ClassInstanceRefDisplay
-        key={keyIndex++}
-        classInstanceRef={classInstanceRef}
-      />
-    );
-  }
-
-  // Split the JSON by all placeholders and render with React elements
-  const parts: ReactNode[] = [];
-  let remaining = json;
-
-  // Process placeholders in order of their appearance in the string
-  while (remaining.length > 0) {
-    let earliestIndex = -1;
-    let earliestPlaceholder = '';
-    let earliestComponent: ReactNode = null;
-
-    // Find the earliest placeholder in the remaining string
-    for (const [placeholder, component] of placeholderComponents) {
-      const index = remaining.indexOf(`"${placeholder}"`);
-      if (index !== -1 && (earliestIndex === -1 || index < earliestIndex)) {
-        earliestIndex = index;
-        earliestPlaceholder = placeholder;
-        earliestComponent = component;
-      }
-    }
-
-    if (earliestIndex === -1) {
-      // No more placeholders found, add the rest
-      parts.push(remaining);
-      break;
-    }
-
-    // Add text before the placeholder
-    if (earliestIndex > 0) {
-      parts.push(remaining.slice(0, earliestIndex));
-    }
-
-    // Add the component
-    parts.push(earliestComponent);
-
-    // Move past the placeholder
-    remaining = remaining.slice(earliestIndex + earliestPlaceholder.length + 2); // +2 for quotes
+  if (isClassInstanceRef(data)) {
+    return <ClassInstanceRefDisplay classInstanceRef={data} />;
   }
 
   return (
-    <pre
-      className="text-[11px] overflow-x-auto rounded-md border p-3"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-1000)',
-      }}
+    <div
+      className="overflow-x-auto rounded-md border p-3"
+      style={{ borderColor: 'var(--ds-gray-300)' }}
     >
-      <code>{parts}</code>
-    </pre>
+      <ObjectInspector
+        data={data}
+        // @ts-expect-error react-inspector accepts theme objects at runtime despite
+        // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
+        theme={isDark ? inspectorThemeDark : inspectorThemeLight}
+        expandLevel={2}
+      />
+    </div>
   );
-};
+}
 
 type AttributeKey =
   | keyof Step

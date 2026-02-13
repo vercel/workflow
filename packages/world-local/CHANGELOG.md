@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.1.0-beta.32
+
+### Patch Changes
+
+- [#1020](https://github.com/vercel/workflow/pull/1020) [`63caf93`](https://github.com/vercel/workflow/commit/63caf931380b8211f1948cf44eac7532f33e660d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Stream chunk files now use .bin extension instead of .json. Backwards compatible with existing .json chunk files.
+
 ## 4.1.0-beta.31
 
 ### Patch Changes
@@ -26,7 +32,6 @@
 - [#867](https://github.com/vercel/workflow/pull/867) [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add optional `writeToStreamMulti` function to the World interface
 
 - [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve OpenTelemetry tracing instrumentation
-
   - Add W3C trace context headers to step queue messages for cross-service trace linking
   - Add `peer.service` and RPC semantic conventions for external service attribution
   - Add `step.hydrate` and `step.dehydrate` spans for argument serialization visibility
@@ -39,7 +44,6 @@
   - Add world-local OTEL instrumentation matching world-vercel
 
 - [#932](https://github.com/vercel/workflow/pull/932) [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6) Thanks [@pranaygp](https://github.com/pranaygp)! - Optimize step handler performance and improve server-side validation
-
   - Skip initial `world.steps.get()` call in step handler (saves one HTTP round-trip)
   - Add server-side `retryAfter` validation to local and postgres worlds (HTTP 425 when not reached)
   - Fix HTTP status code for step terminal state: return 409 (Conflict) instead of 410
@@ -54,7 +58,6 @@
 ### Minor Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
-
   - Remove `cancel`, `pause`, `resume` from `runs`
   - Remove `create`, `update` from `runs`, `steps`, `hooks`
   - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
@@ -65,7 +68,6 @@
 ### Patch Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Add backwards compatibility for runs created with different spec versions
-
   - Add `RunNotSupportedError` for runs requiring newer world versions
   - Add semver-based version comparison utilities
   - Legacy runs (< 4.1): route to legacy handlers
@@ -80,7 +82,6 @@
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Remove deprecated `workflow_completed`, `workflow_failed`, and `workflow_started` events in favor of `run_completed`, `run_failed`, and `run_started` events.
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `specVersion` property to World interface
-
   - All worlds expose `@workflow/world` package version for protocol compatibility
   - Stored in `run_created` event and `WorkflowRun` schema
   - Displayed in observability UI
@@ -90,7 +91,6 @@
 - [#903](https://github.com/vercel/workflow/pull/903) [`60a9b76`](https://github.com/vercel/workflow/commit/60a9b7661a86b6bd44c25cddf68cadf0515f195e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Increase local world concurrency limits for HTTP and queue semaphore from 100 to 1000
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Implement event-sourced entity creation in `events.create()`
-
   - Atomically create run/step/hook entities when processing corresponding events
   - Return `hook_conflict` event when hook token already exists
   - Remove direct entity mutation methods from storage
@@ -123,7 +123,6 @@
 ### Patch Changes
 
 - [#751](https://github.com/vercel/workflow/pull/751) [`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the unused paused/resumed run events and states
-
   - Remove `run_paused` and `run_resumed` event types
   - Remove `paused` status from `WorkflowRunStatus`
   - Remove `PauseWorkflowRunParams` and `ResumeWorkflowRunParams` types
@@ -222,7 +221,6 @@
 ### Patch Changes
 
 - 48b3a12: perf: optimize for high-concurrency workflows
-
   - Add in-memory cache for file existence checks to avoid expensive fs.access() calls
   - Increase default concurrency limit from 20 to 100
   - Improve HTTP connection pooling with undici Agent (100 connections, 30s keepalive)
@@ -290,11 +288,9 @@
 - aa015af: BREAKING: Change `createLocalWorld` API signature from positional parameters to config object. Add baseUrl configuration support.
 
   **Breaking change:**
-
   - `createLocalWorld(dataDir?, port?)` → `createLocalWorld(args?: Partial<Config>)`
 
   **New features:**
-
   - Add `baseUrl` config option for HTTPS and custom hostnames (via config or `WORKFLOW_LOCAL_BASE_URL` env var)
   - Support for port 0 (OS-assigned port)
 

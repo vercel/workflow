@@ -1,23 +1,28 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ObjectInspector } from 'react-inspector';
+import { useDarkMode } from '../hooks/use-dark-mode';
+
+export interface StreamChunk {
+  id: number;
+  /** The raw hydrated value from the stream */
+  data: unknown;
+}
 
 interface StreamViewerProps {
   streamId: string;
-  chunks: Chunk[];
+  chunks: StreamChunk[];
   isLive: boolean;
   error?: string | null;
 }
 
-interface Chunk {
-  id: number;
-  text: string;
-}
+import { inspectorThemeDark, inspectorThemeLight } from './ui/inspector-theme';
 
 /**
  * StreamViewer component that displays real-time stream data.
- * It connects to a stream and displays chunks as they arrive,
- * with auto-scroll functionality.
+ * Each chunk is rendered with ObjectInspector for proper display
+ * of complex types (Map, Set, Date, custom classes, etc.).
  */
 export function StreamViewer({
   streamId,
@@ -25,7 +30,7 @@ export function StreamViewer({
   isLive,
   error,
 }: StreamViewerProps) {
-  // TODO: Handle 410 error specifically (stream expired)
+  const isDark = useDarkMode();
   const [hasMoreBelow, setHasMoreBelow] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -39,13 +44,13 @@ export function StreamViewer({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: chunks.length triggers scroll on new chunks
   useEffect(() => {
-    // Auto-scroll to bottom when new content arrives
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-    // Check scroll position after content changes
     checkScrollPosition();
   }, [chunks.length, checkScrollPosition]);
+
+  const theme = isDark ? inspectorThemeDark : inspectorThemeLight;
 
   return (
     <div className="flex flex-col h-full pb-4">
@@ -106,25 +111,36 @@ export function StreamViewer({
             </div>
           ) : (
             chunks.map((chunk, index) => (
-              <pre
+              <div
                 key={`${streamId}-chunk-${chunk.id}`}
-                className="text-[11px] rounded-md border p-3 m-0 whitespace-pre-wrap break-words"
+                className="rounded-md border p-3"
                 style={{
                   borderColor: 'var(--ds-gray-300)',
-                  backgroundColor: 'var(--ds-gray-100)',
-                  color: 'var(--ds-gray-1000)',
                 }}
               >
-                <code>
+                <span
+                  className="select-none mr-2 text-[11px] font-mono"
+                  style={{ color: 'var(--ds-gray-500)' }}
+                >
+                  [{index}]
+                </span>
+                {typeof chunk.data === 'string' ? (
                   <span
-                    className="select-none mr-2"
-                    style={{ color: 'var(--ds-gray-500)' }}
+                    className="text-[11px] font-mono"
+                    style={{ color: 'var(--ds-gray-1000)' }}
                   >
-                    [{index}]
+                    {chunk.data}
                   </span>
-                  {chunk.text}
-                </code>
-              </pre>
+                ) : (
+                  <ObjectInspector
+                    data={chunk.data}
+                    // @ts-expect-error react-inspector accepts theme objects at runtime despite
+                    // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
+                    theme={theme}
+                    expandLevel={1}
+                  />
+                )}
+              </div>
             ))
           )}
         </div>

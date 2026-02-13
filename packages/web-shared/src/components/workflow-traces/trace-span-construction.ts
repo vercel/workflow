@@ -96,7 +96,7 @@ export function waitToSpan(
   const start = dateToOtelTime(startTime);
   const end = dateToOtelTime(endTime);
   const duration = calculateDuration(startTime, endTime);
-  const spanEvents = convertEventsToSpanEvents(events);
+  const spanEvents = convertEventsToSpanEvents(events, false);
   return {
     spanId: wait.waitId,
     name: 'sleep',
@@ -107,7 +107,7 @@ export function waitToSpan(
     traceFlags: 1,
     attributes: {
       resource: 'sleep' as const,
-      data: wait,
+      data: wait, // wait is a plain object built from events, no non-cloneable types
     },
     links: [],
     events: spanEvents,
@@ -128,19 +128,22 @@ export function stepToSpan(
   const now = nowTime ?? new Date();
   const parsedName = parseStepName(String(step.stepName));
 
-  // Simplified attributes: only store resource type and full data
+  // Only embed identification fields — not the full object with
+  // input/output/error which may contain non-cloneable types.
+  // The detail panel fetches full data separately via spanDetailData.
+  const { input: _i, output: _o, error: _e, ...stepIdentity } = step;
   const attributes = {
     resource: 'step' as const,
-    data: step,
+    data: stepIdentity,
   };
 
   const resource = 'step';
   const endTime = new Date(step.completedAt ?? now);
 
-  // Convert step-related events to span events (for markers like hook_created, step_retrying, etc.)
-  // This determines which events are displayed as markers. In the detail view,
-  // we'll show all events that correlate with the selected resource.
-  const events = convertEventsToSpanEvents(stepEvents);
+  // Include ALL correlated events on the span so the sidebar detail view
+  // can display them. The timeline uses the `showVerticalLine` flag to
+  // determine which events appear as markers.
+  const events = convertEventsToSpanEvents(stepEvents, false);
 
   // Use createdAt as span start time, with activeStartTime for when execution began
   // This allows visualization of the "queued" period before execution
@@ -225,7 +228,7 @@ export function hookToSpan(
   }
 
   // Convert hook-related events to span events
-  const events = convertEventsToSpanEvents(hookEvents);
+  const events = convertEventsToSpanEvents(hookEvents, false);
 
   // We display hooks as a minimum span size of 10 seconds, just to ensure
   // it's clickable even if there is no
@@ -262,10 +265,12 @@ export function runToSpan(
 ): Span {
   const now = nowTime ?? new Date();
 
-  // Simplified attributes: only store resource type and full data
+  // Only embed identification fields — not the full object with
+  // input/output/error which may contain non-cloneable types.
+  const { input: _i, output: _o, error: _e, ...runIdentity } = run;
   const attributes = {
     resource: 'run' as const,
-    data: run,
+    data: runIdentity,
   };
 
   // Use createdAt as span start time, with activeStartTime for when execution began
@@ -274,7 +279,7 @@ export function runToSpan(
   const endTime = run.completedAt ?? now;
 
   // Convert run-level events to span events
-  const events = convertEventsToSpanEvents(runEvents);
+  const events = convertEventsToSpanEvents(runEvents, false);
 
   return {
     spanId: String(run.runId),

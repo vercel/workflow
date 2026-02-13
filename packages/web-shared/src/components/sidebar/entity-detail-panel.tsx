@@ -3,9 +3,8 @@
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { useTraceViewer } from '../trace-viewer';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -33,7 +32,24 @@ export type SpanSelectionInfo = {
 };
 
 /**
- * Custom panel component for workflow traces that displays entity details
+ * Info about the selected span from the trace viewer.
+ */
+export interface SelectedSpanInfo {
+  /** The raw data from the span attributes (step/run/hook object from the trace) */
+  data?: unknown;
+  /** The span resource type (from span attributes) */
+  resource?: string;
+  /** The span ID (correlationId for filtering events) */
+  spanId?: string;
+  /** Raw correlated events from the store (NOT from the trace worker pipeline) */
+  rawEvents?: Event[];
+}
+
+/**
+ * Panel component for workflow traces that displays entity details.
+ *
+ * This component is rendered OUTSIDE the trace viewer context — it
+ * receives all data via props rather than reading from context.
  */
 export function EntityDetailPanel({
   run,
@@ -43,7 +59,9 @@ export function EntityDetailPanel({
   spanDetailLoading,
   onSpanSelect,
   onWakeUpSleep,
+  onLoadEventData,
   onResolveHook,
+  selectedSpan,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -61,47 +79,53 @@ export function EntityDetailPanel({
     runId: string,
     correlationId: string
   ) => Promise<{ stoppedCount: number }>;
+  /** Callback to load event data for a specific event (lazy loading) */
+  onLoadEventData?: (
+    correlationId: string,
+    eventId: string
+  ) => Promise<unknown | null>;
   /** Callback to resolve a hook with a payload. */
   onResolveHook?: (
     hookToken: string,
     payload: unknown,
     hook?: Hook
   ) => Promise<void>;
+  /** Info about the currently selected span from the trace viewer */
+  selectedSpan: SelectedSpanInfo | null;
 }): React.JSX.Element | null {
-  const { state } = useTraceViewer();
-  const { selected } = state;
   const [stoppingSleep, setStoppingSleep] = useState(false);
   const [showResolveHookModal, setShowResolveHookModal] = useState(false);
   const [resolvingHook, setResolvingHook] = useState(false);
 
-  const data = selected?.span.attributes?.data;
+  const data = selectedSpan?.data;
+  const rawEvents = selectedSpan?.rawEvents;
+  const rawEventsLength = rawEvents?.length ?? 0;
 
-  // Stable ref for onSpanSelect to avoid re-render loops when parent
-  // doesn't memoize the callback with useCallback.
-  const onSpanSelectRef = useRef(onSpanSelect);
-  useEffect(() => {
-    onSpanSelectRef.current = onSpanSelect;
-  });
-
-  // Determine resource ID and runId (needed for steps)
-  // Uses type guards to validate the data shape matches the expected resource type
+  // Determine resource type, ID, and runId from the selected span
   const { resource, resourceId, runId } = useMemo(() => {
-    const resource = selected?.span.attributes?.resource;
-    if (resource === 'step' && isStep(data)) {
+    if (!selectedSpan) {
+      return { resource: undefined, resourceId: undefined, runId: undefined };
+    }
+
+    const res = selectedSpan.resource;
+    if (res === 'step' && isStep(data)) {
       return { resource: 'step', resourceId: data.stepId, runId: data.runId };
-    } else if (resource === 'run' && isWorkflowRun(data)) {
+    }
+    if (res === 'run' && isWorkflowRun(data)) {
       return { resource: 'run', resourceId: data.runId, runId: undefined };
-    } else if (resource === 'hook' && isHook(data)) {
+    }
+    if (res === 'hook' && isHook(data)) {
       return { resource: 'hook', resourceId: data.hookId, runId: undefined };
-    } else if (resource === 'sleep') {
+    }
+    if (res === 'sleep') {
       return {
         resource: 'sleep',
-        resourceId: selected?.span?.spanId,
+        resourceId: selectedSpan.spanId,
         runId: undefined,
       };
     }
     return { resource: undefined, resourceId: undefined, runId: undefined };
-  }, [selected, data]);
+  }, [selectedSpan, data]);
 
   // Notify parent when span selection changes
   useEffect(() => {
@@ -110,65 +134,53 @@ export function EntityDetailPanel({
       resourceId &&
       ['run', 'step', 'hook', 'sleep'].includes(resource)
     ) {
-      onSpanSelectRef.current({
+      onSpanSelect({
         resource: resource as 'run' | 'step' | 'hook' | 'sleep',
         resourceId,
         runId,
       });
     }
-  }, [resource, resourceId, runId]);
+  }, [resource, resourceId, runId, onSpanSelect]);
 
   // Check if this sleep is still pending and can be woken up
-  // Requirements: no wait_completed event, resumeAt is in the future, run is not terminal
-  const spanEvents = selected?.span.events;
-  const spanEventsLength = spanEvents?.length ?? 0;
   const canWakeUp = useMemo(() => {
-    void spanEventsLength; // Force dependency on length for reactivity
-    if (resource !== 'sleep' || !spanEvents) return false;
-
-    // Check run is not in a terminal state
+    void rawEventsLength;
+    if (resource !== 'sleep' || !rawEvents) return false;
     const terminalStates = ['completed', 'failed', 'cancelled'];
     if (terminalStates.includes(run.status)) return false;
-
-    // Check if wait has already completed
-    const hasWaitCompleted = spanEvents.some(
-      (e) => e.name === 'wait_completed'
+    const hasWaitCompleted = rawEvents.some(
+      (e) => e.eventType === 'wait_completed'
     );
     if (hasWaitCompleted) return false;
-
-    // Check if resumeAt is in the future
-    const waitCreatedEvent = spanEvents.find((e) => e.name === 'wait_created');
-    const eventData = waitCreatedEvent?.attributes?.eventData as
+    const waitCreatedEvent = rawEvents.find(
+      (e) => e.eventType === 'wait_created'
+    );
+    const eventData = (waitCreatedEvent as any)?.eventData as
       | { resumeAt?: string | Date }
       | undefined;
     const resumeAt = eventData?.resumeAt;
     if (!resumeAt) return false;
-
     const resumeAtDate = new Date(resumeAt);
     return resumeAtDate.getTime() > Date.now();
-  }, [resource, spanEvents, spanEventsLength, run.status]);
+  }, [resource, rawEvents, rawEventsLength, run.status]);
 
-  // Check if this hook can be resolved (not yet resolved, run is not terminal)
+  // Check if this hook can be resolved
   const canResolveHook = useMemo(() => {
-    void spanEventsLength; // Force dependency on length for reactivity
-    if (resource !== 'hook' || !spanEvents) return false;
-
-    // Check run is not in a terminal state
+    void rawEventsLength;
+    if (resource !== 'hook' || !rawEvents) return false;
     const terminalStates = ['completed', 'failed', 'cancelled'];
     if (terminalStates.includes(run.status)) return false;
-
-    // Check if hook has already been disposed
-    const hasHookDisposed = spanEvents.some((e) => e.name === 'hook_disposed');
+    const hasHookDisposed = rawEvents.some(
+      (e) => e.eventType === 'hook_disposed'
+    );
     if (hasHookDisposed) return false;
-
-    // Hook can be resolved
     return true;
-  }, [resource, spanEvents, spanEventsLength, run.status]);
+  }, [resource, rawEvents, rawEventsLength, run.status]);
 
   const error = spanDetailError ?? undefined;
   const loading = spanDetailLoading ?? false;
 
-  // Get the hook token for resolving (prefer fetched data when available)
+  // Get the hook token for resolving
   const hookToken = useMemo(() => {
     if (resource !== 'hook') return undefined;
     const candidate = spanDetailData ?? data;
@@ -176,12 +188,12 @@ export function EntityDetailPanel({
   }, [resource, spanDetailData, data]);
 
   useEffect(() => {
-    if (error && selected && resource) {
+    if (error && selectedSpan && resource) {
       toast.error(`Failed to load ${resource} details`, {
         description: error.message,
       });
     }
-  }, [error, resource, selected]);
+  }, [error, resource, selectedSpan]);
 
   const handleWakeUp = async () => {
     if (stoppingSleep || !resourceId) return;
@@ -255,7 +267,7 @@ export function EntityDetailPanel({
     [onResolveHook, hookToken, resolvingHook, spanDetailData, data]
   );
 
-  if (!selected || !resource || !resourceId) {
+  if (!selectedSpan || !resource || !resourceId) {
     return null;
   }
 
@@ -332,7 +344,9 @@ export function EntityDetailPanel({
         error={error ?? undefined}
         onStreamClick={onStreamClick}
       />
-      {resource !== 'run' && <EventsList events={selected.span.events} />}
+      {resource !== 'run' && rawEvents && (
+        <EventsList events={rawEvents} onLoadEventData={onLoadEventData} />
+      )}
     </div>
   );
 }

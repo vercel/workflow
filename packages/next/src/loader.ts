@@ -1,4 +1,5 @@
 import { connect, type Socket } from 'node:net';
+import { createRequire } from 'node:module';
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import { type SocketMessage, serializeMessage } from './socket-server.js';
@@ -9,17 +10,79 @@ import {
   parseDeferredStepSourceMetadata,
 } from './step-copy-utils.js';
 
-type DecoratorOptions = import('@workflow/builders').DecoratorOptions;
+type DecoratorOptionsWithConfigPath =
+  import('@workflow/builders').DecoratorOptionsWithConfigPath;
 type WorkflowPatternMatch = import('@workflow/builders').WorkflowPatternMatch;
 
 // Cache decorator options per working directory to avoid reading tsconfig for every file
-const decoratorOptionsCache = new Map<string, Promise<DecoratorOptions>>();
+const decoratorOptionsCache = new Map<
+  string,
+  Promise<DecoratorOptionsWithConfigPath>
+>();
 // Cache for shared utilities from @workflow/builders (ESM module loaded dynamically in CommonJS context)
 let cachedBuildersModule: typeof import('@workflow/builders') | null = null;
+type LoaderStaticDependencies = {
+  swcPluginPath: string;
+  files: string[];
+};
+let cachedLoaderStaticDependencies: LoaderStaticDependencies | null = null;
 
 // Cache socket connection to avoid reconnecting on every file.
 let socketClientPromise: Promise<Socket | null> | null = null;
 let socketClient: Socket | null = null;
+
+function registerFileDependency(
+  loaderContext: WorkflowLoaderContext,
+  dependencyPath: string
+): void {
+  loaderContext.addDependency?.(dependencyPath);
+  loaderContext.addBuildDependency?.(dependencyPath);
+}
+
+function resolveLoaderStaticDependencies(): LoaderStaticDependencies {
+  if (cachedLoaderStaticDependencies) {
+    return cachedLoaderStaticDependencies;
+  }
+
+  const swcPluginPath = require.resolve('@workflow/swc-plugin');
+  const swcPluginBuildHashPath = require.resolve(
+    '@workflow/swc-plugin/build-hash.json'
+  );
+  const workflowBuildersPath = require.resolve('@workflow/builders');
+  const swcPluginRequire = createRequire(swcPluginPath);
+  const workflowBuildersRequire = createRequire(workflowBuildersPath);
+  const swcPluginPackageJsonPath = swcPluginRequire.resolve('./package.json');
+  const workflowBuildersPackageJsonPath =
+    workflowBuildersRequire.resolve('../package.json');
+
+  const files = new Set<string>([
+    __filename,
+    require.resolve('./socket-server'),
+    require.resolve('./step-copy-utils'),
+    swcPluginPath,
+    swcPluginBuildHashPath,
+    swcPluginPackageJsonPath,
+    workflowBuildersPath,
+    workflowBuildersPackageJsonPath,
+  ]);
+
+  cachedLoaderStaticDependencies = {
+    swcPluginPath,
+    files: Array.from(files),
+  };
+  return cachedLoaderStaticDependencies;
+}
+
+function registerTransformDependencies(
+  loaderContext: WorkflowLoaderContext
+): string {
+  const staticDependencies = resolveLoaderStaticDependencies();
+  for (const dependencyPath of staticDependencies.files) {
+    registerFileDependency(loaderContext, dependencyPath);
+  }
+
+  return staticDependencies.swcPluginPath;
+}
 
 function resetSocketClient(cachedSocket?: Socket): void {
   if (cachedSocket && socketClient && socketClient !== cachedSocket) {
@@ -183,15 +246,16 @@ async function getBuildersModule(): Promise<
 
 async function getDecoratorOptions(
   workingDir: string
-): Promise<DecoratorOptions> {
+): Promise<DecoratorOptionsWithConfigPath> {
   const cached = decoratorOptionsCache.get(workingDir);
   if (cached) {
     return cached;
   }
 
-  const promise = (async (): Promise<DecoratorOptions> => {
-    const { getDecoratorOptionsForDirectory } = await getBuildersModule();
-    return getDecoratorOptionsForDirectory(workingDir);
+  const promise = (async (): Promise<DecoratorOptionsWithConfigPath> => {
+    const { getDecoratorOptionsForDirectoryWithConfigPath } =
+      await getBuildersModule();
+    return getDecoratorOptionsForDirectoryWithConfigPath(workingDir);
   })();
 
   decoratorOptionsCache.set(workingDir, promise);
@@ -297,15 +361,19 @@ function stripDeferredStepSourceMetadataComment(source: string): string {
 
 // This loader applies the "use workflow"/"use step" transform.
 // Deferred step-copy files are transformed in step mode; all other files use client mode.
+type WorkflowLoaderContext = {
+  resourcePath: string;
+  async?: () => (
+    error: Error | null,
+    content?: string,
+    sourceMap?: any
+  ) => void;
+  addDependency?: (dependency: string) => void;
+  addBuildDependency?: (dependency: string) => void;
+};
+
 export default function workflowLoader(
-  this: {
-    resourcePath: string;
-    async?: () => (
-      error: Error | null,
-      content?: string,
-      sourceMap?: any
-    ) => void;
-  },
+  this: WorkflowLoaderContext,
   source: string | Buffer,
   sourceMap: any
 ): string | Promise<string> | void {
@@ -313,6 +381,8 @@ export default function workflowLoader(
   const run = async (): Promise<{ code: string; map: any }> => {
     const filename = this.resourcePath;
     const normalizedSource = source.toString();
+    const workingDir = process.cwd();
+    const swcPluginPath = registerTransformDependencies(this);
     const isDeferredStepCopyFile = isDeferredStepCopyFilePath(filename);
     const deferredStepSourceMetadata = isDeferredStepCopyFile
       ? parseDeferredStepSourceMetadata(normalizedSource)
@@ -366,13 +436,16 @@ export default function workflowLoader(
 
     // Calculate relative filename for SWC plugin
     // The SWC plugin uses filename to generate workflowId, so it must be relative
-    const workingDir = process.cwd();
     const relativeFilename =
       deferredStepSourceMetadata?.relativeFilename ||
       (await getRelativeFilenameForSwc(filename, workingDir));
 
     // Get decorator options from tsconfig (cached per working directory)
-    const decoratorOptions = await getDecoratorOptions(workingDir);
+    const { options: decoratorOptions, configPath } =
+      await getDecoratorOptions(workingDir);
+    if (configPath) {
+      registerFileDependency(this, configPath);
+    }
 
     // Resolve module specifier for packages (node_modules or workspace packages)
     const moduleSpecifier = await getModuleSpecifier(
@@ -400,12 +473,7 @@ export default function workflowLoader(
         },
         target: 'es2022',
         experimental: {
-          plugins: [
-            [
-              require.resolve('@workflow/swc-plugin'),
-              { mode, moduleSpecifier },
-            ],
-          ],
+          plugins: [[swcPluginPath, { mode, moduleSpecifier }]],
         },
         transform: {
           react: {

@@ -1,12 +1,10 @@
 import type { NextConfig } from 'next';
-import path from 'path';
 import semver from 'semver';
 import {
   getNextBuilder,
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
-import { maybeInvalidateCacheOnSwcChange } from './swc-cache.js';
 
 export function withWorkflow(
   nextConfigOrFn:
@@ -215,12 +213,6 @@ export function withWorkflow(
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
       phase !== 'phase-production-server'
     ) {
-      // Check swc-plugin build hash and invalidate cache if changed
-      const distDir = path.resolve(
-        process.cwd(),
-        nextConfig.distDir || '.next'
-      );
-      maybeInvalidateCacheOnSwcChange(distDir);
       const workflowBuilder = await getWorkflowBuilder();
 
       await workflowBuilder.build();
