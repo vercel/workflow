@@ -146,3 +146,31 @@ function getRevivers(): Revivers {
 export function hydrateResourceIO<T>(resource: T): T {
   return hydrateResourceIOGeneric(resource as any, getRevivers()) as T;
 }
+
+/**
+ * Hydrate resource data with decryption support.
+ *
+ * When a key is provided, encrypted fields are decrypted before hydration.
+ * This is the async version used when the user clicks "Decrypt" in the web UI.
+ */
+export async function hydrateResourceIOWithKey<T>(
+  resource: T,
+  key: Uint8Array
+): Promise<T> {
+  const { hydrateDataWithKey } = await import(
+    '@workflow/core/serialization-format'
+  );
+  const revivers = getRevivers();
+
+  // Process the resource's data fields
+  const r = resource as Record<string, unknown>;
+  const result = { ...r };
+
+  for (const field of ['input', 'output', 'metadata', 'error']) {
+    if (result[field] != null) {
+      result[field] = await hydrateDataWithKey(result[field], revivers, key);
+    }
+  }
+
+  return result as T;
+}

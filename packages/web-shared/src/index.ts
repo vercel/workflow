@@ -28,6 +28,7 @@ export {
   extractStreamIds,
   getWebRevivers,
   hydrateResourceIO,
+  hydrateResourceIOWithKey,
   isClassInstanceRef,
   isEncryptedData,
   isStreamId,

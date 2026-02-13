@@ -6,9 +6,9 @@
  */
 
 import { inspect } from 'node:util';
+import { maybeDecrypt } from '@workflow/core/serialization';
 import {
   ClassInstanceRef,
-  ENCRYPTED_PLACEHOLDER,
   extractClassName,
   hydrateResourceIO as hydrateResourceIOGeneric,
   isEncryptedData,
@@ -16,11 +16,12 @@ import {
   type Revivers,
 } from '@workflow/core/serialization-format';
 import { parseClassName } from '@workflow/utils/parse-name';
-import type { Encryptor } from '@workflow/world';
 import chalk from 'chalk';
 
-/** A function that resolves an Encryptor for a given runId, or null to skip decryption. */
-export type EncryptorResolver = ((runId: string) => Promise<Encryptor>) | null;
+/** A function that resolves an encryption key for a given runId, or null to skip decryption. */
+export type EncryptionKeyResolver =
+  | ((runId: string) => Promise<Uint8Array | undefined>)
+  | null;
 
 // Re-export types and utilities that consumers need
 export {
@@ -170,34 +171,15 @@ function getRevivers(): Revivers {
 // Decryption helpers
 // ---------------------------------------------------------------------------
 
-/** Format prefix length in bytes (must match serialization-format.ts) */
-const FORMAT_PREFIX_LENGTH = 4;
-
-/**
- * Decrypt a single encrypted data field, stripping the 'encr' prefix first.
- * Returns the decrypted Uint8Array (which will have its own format prefix, e.g. 'devl').
- */
-async function decryptField(
-  data: Uint8Array,
-  encryptor: Encryptor,
-  runId: string
-): Promise<Uint8Array> {
-  if (!encryptor.decrypt) {
-    throw new Error(
-      'Encrypted data encountered but Encryptor does not support decryption.'
-    );
-  }
-  // Strip the 'encr' format prefix — the Encryptor only sees [nonce][ciphertext]
-  const payload = data.subarray(FORMAT_PREFIX_LENGTH);
-  return encryptor.decrypt(payload, { runId });
-}
-
 /**
  * Pre-process a resource's data fields: if the resolver is provided and
  * the field is encrypted, decrypt it before generic hydration.
  *
- * When the resolver is null (no --decrypt flag), encrypted fields flow
- * through to the generic hydrateData which returns ENCRYPTED_PLACEHOLDER.
+ * Uses core's `maybeDecrypt()` which handles the 'encr' prefix stripping
+ * and AES-GCM decryption transparently.
+ *
+ * When the resolver is null (no --decrypt flag), encrypted fields pass
+ * through as Uint8Array and are replaced with EncryptedDataRef in post-processing.
  */
 async function maybeDecryptFields<
   T extends {
@@ -207,62 +189,33 @@ async function maybeDecryptFields<
     metadata?: any;
     eventData?: any;
   },
->(resource: T, resolver: EncryptorResolver): Promise<T> {
+>(resource: T, resolver: EncryptionKeyResolver): Promise<T> {
   if (!resolver) return resource;
 
   const runId = (resource as any).runId as string | undefined;
   if (!runId) return resource;
 
-  let encryptor: Encryptor | null = null;
-  const getEncryptor = async () => {
-    if (!encryptor) encryptor = await resolver(runId);
-    return encryptor;
+  let key: Uint8Array | undefined;
+  const getKey = async () => {
+    if (!key) key = await resolver(runId);
+    return key;
   };
 
   const result = { ...resource };
+  const k = await getKey();
 
   // Decrypt input/output fields (WorkflowRun, Step)
-  if (isEncryptedData(result.input)) {
-    result.input = await decryptField(
-      result.input,
-      await getEncryptor(),
-      runId
-    );
-  }
-  if (isEncryptedData(result.output)) {
-    result.output = await decryptField(
-      result.output,
-      await getEncryptor(),
-      runId
-    );
-  }
+  result.input = await maybeDecrypt(result.input, k);
+  result.output = await maybeDecrypt(result.output, k);
 
   // Decrypt metadata field (Hook)
-  if (isEncryptedData(result.metadata)) {
-    result.metadata = await decryptField(
-      result.metadata,
-      await getEncryptor(),
-      runId
-    );
-  }
+  result.metadata = await maybeDecrypt(result.metadata, k);
 
   // Decrypt eventData fields (Event)
   if (result.eventData && typeof result.eventData === 'object') {
     const eventData = { ...result.eventData };
-    if (isEncryptedData(eventData.result)) {
-      eventData.result = await decryptField(
-        eventData.result,
-        await getEncryptor(),
-        runId
-      );
-    }
-    if (isEncryptedData(eventData.input)) {
-      eventData.input = await decryptField(
-        eventData.input,
-        await getEncryptor(),
-        runId
-      );
-    }
+    eventData.result = await maybeDecrypt(eventData.result, k);
+    eventData.input = await maybeDecrypt(eventData.input, k);
     result.eventData = eventData;
   }
 
@@ -274,16 +227,16 @@ async function maybeDecryptFields<
 // ---------------------------------------------------------------------------
 
 /**
- * Replace ENCRYPTED_PLACEHOLDER strings with EncryptedDataRef objects
+ * Replace encrypted Uint8Array values with EncryptedDataRef objects
  * in known data fields so they render with custom inspect styling.
  */
-function replaceEncryptedPlaceholders<T>(resource: T): T {
+function replaceEncryptedWithRef<T>(resource: T): T {
   if (!resource || typeof resource !== 'object') return resource;
   const r = resource as Record<string, unknown>;
   const result = { ...r };
 
   for (const key of ['input', 'output', 'metadata']) {
-    if (result[key] === ENCRYPTED_PLACEHOLDER) {
+    if (isEncryptedData(result[key])) {
       result[key] = ENCRYPTED_REF;
     }
   }
@@ -291,7 +244,7 @@ function replaceEncryptedPlaceholders<T>(resource: T): T {
   if (result.eventData && typeof result.eventData === 'object') {
     const ed = { ...(result.eventData as Record<string, unknown>) };
     for (const key of ['result', 'input']) {
-      if (ed[key] === ENCRYPTED_PLACEHOLDER) {
+      if (isEncryptedData(ed[key])) {
         ed[key] = ENCRYPTED_REF;
       }
     }
@@ -312,14 +265,14 @@ function replaceEncryptedPlaceholders<T>(resource: T): T {
  */
 export async function hydrateResourceIO<T>(
   resource: T,
-  encryptorResolver?: EncryptorResolver
+  keyResolver?: EncryptionKeyResolver
 ): Promise<T> {
   // Pre-process: decrypt any encrypted fields when a resolver is provided
   const preprocessed = await maybeDecryptFields(
     resource as any,
-    encryptorResolver ?? null
+    keyResolver ?? null
   );
   const hydrated = hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
-  // Post-process: swap string placeholders for CLI-styled objects
-  return replaceEncryptedPlaceholders(hydrated);
+  // Post-process: swap encrypted Uint8Arrays for CLI-styled objects
+  return replaceEncryptedWithRef(hydrated);
 }

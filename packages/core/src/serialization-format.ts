@@ -126,19 +126,22 @@ export type Revivers = Record<string, (value: any) => any>;
  * Hydrate (deserialize) a value that was stored in the database.
  *
  * Handles four data shapes:
- * 1. `Uint8Array` with 'encr' prefix → return ENCRYPTED_PLACEHOLDER
+ * 1. `Uint8Array` with 'encr' prefix → returned as-is (encrypted, not yet decrypted)
  * 2. `Uint8Array` with a format prefix (specVersion 2+) → decode prefix, parse
  * 3. `Array` (legacy specVersion 1, "revived devalue") → unflatten
  * 4. Other (already a plain JS value) → return as-is
+ *
+ * Encrypted data is intentionally left as a `Uint8Array` so that consumers
+ * (CLI, web UI) can detect it with `isEncryptedData()` and decide how to
+ * handle it — the CLI replaces it with a styled placeholder, the web UI
+ * renders an "Encrypted" card with a Decrypt button that triggers
+ * client-side decryption on demand.
  */
 export function hydrateData(value: unknown, revivers: Revivers): unknown {
   if (value instanceof Uint8Array) {
-    // Check for encrypted data first — return a placeholder so the UI can
-    // show "Encrypted" instead of raw bytes. Actual decryption (when
-    // requested) is handled by the environment-specific hydration wrapper
-    // before this function is called.
+    // Encrypted data passes through untouched — consumers detect and handle it
     if (isEncryptedData(value)) {
-      return ENCRYPTED_PLACEHOLDER;
+      return value;
     }
 
     const { format, payload } = decodeFormatPrefix(value);
@@ -155,6 +158,34 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
 
   // Already a plain JS value (e.g., number, string, null)
   return value;
+}
+
+/**
+ * Hydrate a value, decrypting it first if an encryption key is provided.
+ *
+ * This is the async version of `hydrateData` that supports transparent
+ * decryption. Used by o11y tooling (web UI, CLI) when the user requests
+ * decryption.
+ *
+ * @param value - The value to hydrate (may be encrypted)
+ * @param revivers - Devalue revivers for deserialization
+ * @param key - AES-256 encryption key (if provided, encrypted data will be decrypted)
+ */
+export async function hydrateDataWithKey(
+  value: unknown,
+  revivers: Revivers,
+  key: Uint8Array | undefined
+): Promise<unknown> {
+  if (value instanceof Uint8Array && isEncryptedData(value) && key) {
+    // Decrypt: strip 'encr' prefix, AES-GCM decrypt, then hydrate the result
+    const { decrypt } = await import('./encryption.js');
+    const { payload } = decodeFormatPrefix(value);
+    const decrypted = await decrypt(key, payload);
+    // The decrypted bytes have their own format prefix (e.g., 'devl')
+    return hydrateData(decrypted, revivers);
+  }
+  // No key or not encrypted — delegate to sync hydrateData
+  return hydrateData(value, revivers);
 }
 
 // ---------------------------------------------------------------------------

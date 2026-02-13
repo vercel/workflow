@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   ClassInstanceRef,
   decodeFormatPrefix,
-  ENCRYPTED_PLACEHOLDER,
   encodeWithFormatPrefix,
   extractStreamIds,
   hydrateData,
@@ -511,10 +510,12 @@ describe('encrypted data handling', () => {
   });
 
   describe('hydrateData with encrypted values', () => {
-    it('should return ENCRYPTED_PLACEHOLDER for encr-prefixed data', () => {
+    it('should pass through encr-prefixed data as Uint8Array', () => {
       const encrypted = makeEncryptedPayload();
       const result = hydrateData(encrypted, {});
-      expect(result).toBe(ENCRYPTED_PLACEHOLDER);
+      expect(result).toBeInstanceOf(Uint8Array);
+      expect(result).toBe(encrypted);
+      expect(isEncryptedData(result)).toBe(true);
     });
 
     it('should still hydrate devl-prefixed data normally', () => {
@@ -525,29 +526,29 @@ describe('encrypted data handling', () => {
   });
 
   describe('hydrateResourceIO with encrypted fields', () => {
-    it('should replace encrypted run input/output with placeholder', () => {
+    it('should pass through encrypted run input/output as Uint8Array', () => {
       const run = {
         runId: 'wrun_test',
         input: makeEncryptedPayload(),
         output: makeEncryptedPayload(),
       };
       const result = hydrateResourceIO(run, {});
-      expect(result.input).toBe(ENCRYPTED_PLACEHOLDER);
-      expect(result.output).toBe(ENCRYPTED_PLACEHOLDER);
+      expect(isEncryptedData(result.input)).toBe(true);
+      expect(isEncryptedData(result.output)).toBe(true);
     });
 
-    it('should replace encrypted step input/output with placeholder', () => {
+    it('should pass through encrypted step input/output as Uint8Array', () => {
       const step = {
         stepId: 'step_test',
         input: makeEncryptedPayload(),
         output: makeEncryptedPayload(),
       };
       const result = hydrateResourceIO(step, {});
-      expect(result.input).toBe(ENCRYPTED_PLACEHOLDER);
-      expect(result.output).toBe(ENCRYPTED_PLACEHOLDER);
+      expect(isEncryptedData(result.input)).toBe(true);
+      expect(isEncryptedData(result.output)).toBe(true);
     });
 
-    it('should hydrate normal data alongside encrypted placeholder', () => {
+    it('should hydrate normal data alongside encrypted Uint8Array', () => {
       const run = {
         runId: 'wrun_test',
         input: makeDevlPayload({ greeting: 'hello' }),
@@ -555,7 +556,7 @@ describe('encrypted data handling', () => {
       };
       const result = hydrateResourceIO(run, {});
       expect(result.input).toEqual({ greeting: 'hello' });
-      expect(result.output).toBe(ENCRYPTED_PLACEHOLDER);
+      expect(isEncryptedData(result.output)).toBe(true);
     });
   });
 });

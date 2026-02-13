@@ -19,6 +19,7 @@ import {
   fetchSteps,
   fetchStreams,
   fetchWorkflowsManifest,
+  getEncryptionKeyForRun,
   getPublicServerConfig,
   recreateRun,
   reenqueueRun,
@@ -56,6 +57,8 @@ const handlers = {
   fetchWorkflowsManifest: (p: any) => fetchWorkflowsManifest(p.worldEnv ?? {}),
   runHealthCheck: (p: any) =>
     runHealthCheck(p.worldEnv ?? {}, p.endpoint, p.options),
+  getEncryptionKeyForRun: (p: any) =>
+    getEncryptionKeyForRun(p.worldEnv ?? {}, p.runId),
   getPublicServerConfig: () => getPublicServerConfig(),
 } as const;
 
