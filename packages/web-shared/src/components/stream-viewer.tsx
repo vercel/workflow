@@ -1,37 +1,264 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { ObjectInspector } from 'react-inspector';
 import { useDarkMode } from '../hooks/use-dark-mode';
+import { inspectorThemeDark, inspectorThemeLight } from './ui/inspector-theme';
+import { Skeleton } from './ui/skeleton';
 
-export interface StreamChunk {
-  id: number;
-  /** The raw hydrated value from the stream */
-  data: unknown;
+// ──────────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────────
+
+function deserializeChunkText(text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === 'string') {
+      return parsed;
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return text;
+  }
 }
+
+function parseChunkData(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Types
+// ──────────────────────────────────────────────────────────────────────────
+
+interface Chunk {
+  id: number;
+  text: string;
+}
+
+type ViewMode = 'chunks' | 'output';
 
 interface StreamViewerProps {
   streamId: string;
-  chunks: StreamChunk[];
+  chunks: Chunk[];
   isLive: boolean;
   error?: string | null;
+  /** True while the initial stream connection is being established */
+  isLoading?: boolean;
 }
 
-import { inspectorThemeDark, inspectorThemeLight } from './ui/inspector-theme';
+// ──────────────────────────────────────────────────────────────────────────
+// View mode toggle
+// ──────────────────────────────────────────────────────────────────────────
+
+function ViewToggle({
+  mode,
+  onChange,
+}: {
+  mode: ViewMode;
+  onChange: (mode: ViewMode) => void;
+}) {
+  return (
+    <div
+      className="inline-flex h-7 items-center rounded-md p-0.5"
+      style={{ backgroundColor: 'var(--ds-gray-100)' }}
+    >
+      {(['chunks', 'output'] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => onChange(m)}
+          className="px-2.5 py-1 rounded text-[11px] font-medium transition-all"
+          style={{
+            backgroundColor:
+              mode === m ? 'var(--ds-background-100)' : 'transparent',
+            color: mode === m ? 'var(--ds-gray-1000)' : 'var(--ds-gray-700)',
+            boxShadow:
+              mode === m
+                ? '0 0 0 1px var(--ds-gray-alpha-400), 0 1px 2px rgba(0,0,0,0.05)'
+                : 'none',
+          }}
+        >
+          {m === 'chunks' ? 'Chunks' : 'Output'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Chunk row — memoized to prevent remounts during polling
+// ──────────────────────────────────────────────────────────────────────────
+
+const ChunkRow = React.memo(function ChunkRow({
+  chunk,
+  index,
+  isDark,
+}: {
+  chunk: Chunk;
+  index: number;
+  isDark: boolean;
+}) {
+  const parsed = parseChunkData(chunk.text);
+
+  return (
+    <div
+      className="text-[11px] rounded-md border p-3"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'var(--ds-gray-100)',
+      }}
+    >
+      <span
+        className="select-none mr-2"
+        style={{ color: 'var(--ds-gray-500)' }}
+      >
+        [{index}]
+      </span>
+      {typeof parsed === 'string' ? (
+        <span
+          className="whitespace-pre-wrap break-words"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
+          {deserializeChunkText(parsed)}
+        </span>
+      ) : (
+        <ObjectInspector
+          data={parsed}
+          theme={isDark ? inspectorThemeDark : inspectorThemeLight}
+          expandLevel={1}
+        />
+      )}
+    </div>
+  );
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Reconstructed output view
+// ──────────────────────────────────────────────────────────────────────────
 
 /**
- * StreamViewer component that displays real-time stream data.
- * Each chunk is rendered with ObjectInspector for proper display
- * of complex types (Map, Set, Date, custom classes, etc.).
+ * Extract the meaningful content from a chunk for the reconstructed output view.
+ * For structured stream protocol chunks (text-delta), extracts just the delta.
+ * For plain text chunks, returns the full deserialized text.
  */
+function extractOutputContent(text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    // Handle structured stream protocol: { type: "text-delta", delta: "..." }
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      'delta' in parsed
+    ) {
+      return typeof parsed.delta === 'string'
+        ? parsed.delta
+        : JSON.stringify(parsed.delta);
+    }
+    // Skip non-content protocol events (start, finish, text-start, text-end, etc.)
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      'type' in parsed
+    ) {
+      const t = parsed.type;
+      if (
+        typeof t === 'string' &&
+        (t === 'start' ||
+          t === 'start-step' ||
+          t === 'finish-step' ||
+          t === 'text-start' ||
+          t === 'text-end' ||
+          t === 'finish')
+      ) {
+        return '';
+      }
+    }
+  } catch {
+    // not JSON — return as plain text
+  }
+  return deserializeChunkText(text);
+}
+
+const ReconstructedOutput = React.memo(function ReconstructedOutput({
+  chunks,
+}: {
+  chunks: Chunk[];
+}) {
+  const output = useMemo(
+    () => chunks.map((c) => extractOutputContent(c.text)).join(''),
+    [chunks]
+  );
+
+  if (!output) {
+    return (
+      <div
+        className="text-[11px] rounded-md border p-3"
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'var(--ds-gray-100)',
+          color: 'var(--ds-gray-600)',
+        }}
+      >
+        No text content in stream — switch to Chunks view to see raw data
+      </div>
+    );
+  }
+
+  return (
+    <pre
+      className="text-[11px] rounded-md border p-3 m-0 whitespace-pre-wrap break-words"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'var(--ds-gray-100)',
+        color: 'var(--ds-gray-1000)',
+      }}
+    >
+      <code>{output}</code>
+    </pre>
+  );
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Skeleton loading
+// ──────────────────────────────────────────────────────────────────────────
+
+function StreamSkeleton() {
+  return (
+    <div className="flex flex-col gap-3 animate-in fade-in">
+      <Skeleton style={{ width: 120, height: 16, borderRadius: 4 }} />
+      {[1, 2, 3, 4].map((i) => (
+        <Skeleton key={i} style={{ height: 56, borderRadius: 6 }} />
+      ))}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Main component
+// ──────────────────────────────────────────────────────────────────────────
+
 export function StreamViewer({
   streamId,
   chunks,
   isLive,
   error,
+  isLoading,
 }: StreamViewerProps) {
   const isDark = useDarkMode();
   const [hasMoreBelow, setHasMoreBelow] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>('chunks');
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const checkScrollPosition = useCallback(() => {
@@ -50,36 +277,54 @@ export function StreamViewer({
     checkScrollPosition();
   }, [chunks.length, checkScrollPosition]);
 
-  const theme = isDark ? inspectorThemeDark : inspectorThemeLight;
+  // Show skeleton when loading and no chunks have arrived yet
+  if (isLoading && chunks.length === 0) {
+    return (
+      <div className="flex flex-col h-full pb-4">
+        <StreamSkeleton />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full pb-4">
-      <div className="flex items-center justify-between mb-3 px-1">
-        <code
-          className="text-xs font-mono truncate max-w-[80%]"
-          style={{ color: 'var(--ds-gray-900)' }}
-          title={streamId}
-        >
-          {streamId}
-        </code>
-        <span
-          className="text-xs flex items-center gap-1.5"
-          style={{
-            color: isLive ? 'var(--ds-green-700)' : 'var(--ds-gray-600)',
-          }}
-        >
+      {/* Live indicator */}
+      {isLive && (
+        <div className="flex items-center gap-1.5 mb-3 px-1">
           <span
             className="inline-block w-2 h-2 rounded-full"
-            style={{
-              backgroundColor: isLive
-                ? 'var(--ds-green-600)'
-                : 'var(--ds-gray-500)',
-            }}
+            style={{ backgroundColor: 'var(--ds-green-600)' }}
           />
-          {isLive ? 'Live' : 'Closed'}
-        </span>
-      </div>
+          <span className="text-xs" style={{ color: 'var(--ds-green-700)' }}>
+            Live
+          </span>
+        </div>
+      )}
 
+      {/* Header: title + toggle */}
+      {chunks.length > 0 && (
+        <div className="flex items-center justify-between mb-2 px-1">
+          <div
+            className="flex items-center gap-2"
+            style={{ color: 'var(--ds-gray-900)' }}
+          >
+            <span className="text-[13px] font-medium">
+              {viewMode === 'chunks' ? 'Stream Chunks' : 'Stream Output'}
+            </span>
+            {viewMode === 'chunks' && (
+              <span
+                className="text-xs tabular-nums"
+                style={{ color: 'var(--ds-gray-600)' }}
+              >
+                ({chunks.length})
+              </span>
+            )}
+          </div>
+          <ViewToggle mode={viewMode} onChange={setViewMode} />
+        </div>
+      )}
+
+      {/* Content */}
       <div className="relative flex-1 min-h-[200px]">
         <div
           ref={scrollRef}
@@ -109,38 +354,16 @@ export function StreamViewer({
             >
               {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
             </div>
+          ) : viewMode === 'output' ? (
+            <ReconstructedOutput chunks={chunks} />
           ) : (
             chunks.map((chunk, index) => (
-              <div
+              <ChunkRow
                 key={`${streamId}-chunk-${chunk.id}`}
-                className="rounded-md border p-3"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                }}
-              >
-                <span
-                  className="select-none mr-2 text-[11px] font-mono"
-                  style={{ color: 'var(--ds-gray-500)' }}
-                >
-                  [{index}]
-                </span>
-                {typeof chunk.data === 'string' ? (
-                  <span
-                    className="text-[11px] font-mono"
-                    style={{ color: 'var(--ds-gray-1000)' }}
-                  >
-                    {chunk.data}
-                  </span>
-                ) : (
-                  <ObjectInspector
-                    data={chunk.data}
-                    // @ts-expect-error react-inspector accepts theme objects at runtime despite
-                    // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
-                    theme={theme}
-                    expandLevel={1}
-                  />
-                )}
-              </div>
+                chunk={chunk}
+                index={index}
+                isDark={isDark}
+              />
             ))
           )}
         </div>
