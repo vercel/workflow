@@ -146,6 +146,17 @@ describe('hydrateData', () => {
     expect(result.timestamp.toISOString()).toBe('2026-01-15T12:00:00.000Z');
   });
 
+  it('should recover devl payload from numeric-key byte object', () => {
+    const original = { status: 'completed', count: 3 };
+    const encoded = makeDevlPayload(original);
+    const asObject = Object.fromEntries(
+      Array.from(encoded).map((byte, index) => [String(index), byte])
+    );
+
+    const result = hydrateData(asObject, testRevivers);
+    expect(result).toEqual(original);
+  });
+
   it('should throw for unsupported format prefix', () => {
     const fakePrefix = new TextEncoder().encode('fake');
     const payload = new TextEncoder().encode('{}');
@@ -211,6 +222,23 @@ describe('hydrateResourceIO', () => {
     expect(hydrated.eventId).toBe('evt_123');
     expect(hydrated.eventData.result).toEqual({ key: 'value' });
     expect(hydrated.eventData.type).toBe('step_completed');
+  });
+
+  it('should hydrate event eventData.output', () => {
+    const outputPayload = makeDevlPayload({ message: 'done' });
+
+    const event = {
+      eventId: 'evt_456',
+      eventData: {
+        type: 'run_completed',
+        output: outputPayload,
+      },
+    };
+
+    const hydrated = hydrateResourceIO(event, testRevivers);
+    expect(hydrated.eventId).toBe('evt_456');
+    expect(hydrated.eventData.output).toEqual({ message: 'done' });
+    expect(hydrated.eventData.type).toBe('run_completed');
   });
 
   it('should hydrate hook metadata', () => {

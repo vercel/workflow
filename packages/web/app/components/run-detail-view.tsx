@@ -46,7 +46,7 @@ import {
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
-import { fetchEventsByCorrelationId } from '~/lib/rpc-client';
+import { fetchEvents, fetchEventsByCorrelationId } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
@@ -257,20 +257,50 @@ export function RunDetailView({
 
   const handleLoadEventData = useCallback(
     async (event: Event) => {
-      if (!event.correlationId) {
+      if (event.correlationId) {
+        const { error, result } = await unwrapServerActionResult(
+          fetchEventsByCorrelationId(env, event.correlationId, {
+            sortOrder: 'asc',
+            limit: 100,
+            withData: true,
+          })
+        );
+        if (error) {
+          throw error;
+        }
+        const rawEvent = result.data.find((e) => e.eventId === event.eventId);
+        const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
+        if (fullEvent && 'eventData' in fullEvent) {
+          return fullEvent.eventData;
+        }
         return null;
       }
+
       const { error, result } = await unwrapServerActionResult(
-        fetchEventsByCorrelationId(env, event.correlationId, {
-          sortOrder: 'asc',
-          limit: 100,
+        fetchEvents(env, event.runId, {
+          sortOrder: 'desc',
+          limit: 1000,
           withData: true,
         })
       );
       if (error) {
         throw error;
       }
-      const rawEvent = result.data.find((e) => e.eventId === event.eventId);
+      let rawEvent = result.data.find((e) => e.eventId === event.eventId);
+      if (!rawEvent) {
+        const { error: ascError, result: ascResult } =
+          await unwrapServerActionResult(
+            fetchEvents(env, event.runId, {
+              sortOrder: 'asc',
+              limit: 1000,
+              withData: true,
+            })
+          );
+        if (ascError) {
+          throw ascError;
+        }
+        rawEvent = ascResult.data.find((e) => e.eventId === event.eventId);
+      }
       const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
       if (fullEvent && 'eventData' in fullEvent) {
         return fullEvent.eventData;

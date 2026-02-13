@@ -590,11 +590,7 @@ function EventRow({
     selectedGroupRange !== null && index === selectedGroupRange.last;
 
   const loadEventDetails = useCallback(async () => {
-    if (
-      loadedEventData !== null ||
-      hasExistingEventData ||
-      !event.correlationId
-    ) {
+    if (loadedEventData !== null || hasExistingEventData) {
       return;
     }
     setIsLoading(true);
@@ -616,12 +612,7 @@ function EventRow({
       setIsLoading(false);
       setHasAttemptedLoad(true);
     }
-  }, [
-    event.correlationId,
-    loadedEventData,
-    hasExistingEventData,
-    onLoadEventData,
-  ]);
+  }, [event, loadedEventData, hasExistingEventData, onLoadEventData]);
 
   const handleExpandToggle = useCallback(
     (e: ReactMouseEvent) => {

@@ -111,6 +111,7 @@ export async function fetchEvents(
     cursor?: string;
     sortOrder?: 'asc' | 'desc';
     limit?: number;
+    withData?: boolean;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   return rpc('fetchEvents', { worldEnv, runId, params });

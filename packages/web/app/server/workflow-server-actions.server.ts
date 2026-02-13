@@ -692,15 +692,16 @@ export async function fetchEvents(
     cursor?: string;
     sortOrder?: 'asc' | 'desc';
     limit?: number;
+    withData?: boolean;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  const { cursor, sortOrder = 'asc', limit = 1000 } = params;
+  const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
     const result = await world.events.list({
       runId,
       pagination: { cursor, limit, sortOrder },
-      resolveData: 'none',
+      resolveData: withData ? 'all' : 'none',
     });
     return createResponse({
       data: result.data as unknown as Event[],
