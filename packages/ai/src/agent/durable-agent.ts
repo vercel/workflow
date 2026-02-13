@@ -147,6 +147,42 @@ export type DownloadFunction = (
 >;
 
 /**
+ * Download a single URL inside a step boundary so that `globalThis.fetch` is
+ * available (the workflow VM replaces it with a throwing stub). Making each
+ * download a step also means results are persisted to the step log and
+ * replayed on workflow resumption rather than re-fetched.
+ */
+async function downloadUrlStep(
+  url: string
+): Promise<{ data: Uint8Array; mediaType: string | undefined } | null> {
+  'use step';
+  const response = await globalThis.fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to download ${url}: ${response.status} ${response.statusText}`
+    );
+  }
+  return {
+    data: new Uint8Array(await response.arrayBuffer()),
+    mediaType: response.headers.get('content-type') ?? undefined,
+  };
+}
+
+/**
+ * Create a workflow-safe {@link DownloadFunction} that delegates each fetch to
+ * {@link downloadUrlStep}. URLs the model already supports natively are skipped
+ * (returned as `null`), matching the AI SDK's default behaviour.
+ */
+function createWorkflowDownload(): DownloadFunction {
+  return (requestedDownloads) =>
+    Promise.all(
+      requestedDownloads.map(({ url, isUrlSupportedByModel }) =>
+        isUrlSupportedByModel ? null : downloadUrlStep(url.toString())
+      )
+    );
+}
+
+/**
  * Generation settings that can be passed to the model.
  * These map directly to LanguageModelV2CallOptions.
  */
@@ -712,7 +748,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       // than passed natively to the provider. This is correct but slightly
       // less efficient for providers that support native URL handling.
       supportedUrls: {},
-      download: options.experimental_download,
+      download: options.experimental_download ?? createWorkflowDownload(),
     });
 
     // Merge generation settings: constructor defaults < stream options
