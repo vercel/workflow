@@ -202,6 +202,14 @@ export async function sleepingWorkflow() {
   return { startTime, endTime };
 }
 
+export async function parallelSleepWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  await Promise.all(Array.from({ length: 10 }, () => sleep('1s')));
+  const endTime = Date.now();
+  return { startTime, endTime };
+}
+
 //////////////////////////////////////////////////////////
 
 async function nullByteStep() {
