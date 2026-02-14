@@ -310,67 +310,63 @@ export function workflowEntrypoint(
                           { delaySeconds: delaySecondSteps[retryCount] }
                         );
                         return; // Don't fail the run, retry later
-                      } else if (
-                        WorkflowAPIError.is(err) &&
-                        err.status === 429
-                      ) {
-                        // Throw to let withThrottleRetry handle it
-                        throw err;
                       }
-
-                      // NOTE: this error could be an error thrown in user code, or could also be a WorkflowRuntimeError
-                      // (for instance when the event log is corrupted, this is thrown by the event consumer). We could
-                      // specially handle these if needed.
-
-                      // Record exception for OTEL error tracking
-                      if (err instanceof Error) {
-                        span?.recordException?.(err);
-                      }
-
-                      const normalizedError = await normalizeUnknownError(err);
-                      const errorName =
-                        normalizedError.name || getErrorName(err);
-                      const errorMessage = normalizedError.message;
-                      let errorStack =
-                        normalizedError.stack || getErrorStack(err);
-
-                      // Remap error stack using source maps to show original source locations
-                      if (errorStack) {
-                        const parsedName = parseWorkflowName(workflowName);
-                        const filename =
-                          parsedName?.moduleSpecifier || workflowName;
-                        errorStack = remapErrorStack(
-                          errorStack,
-                          filename,
-                          workflowCode
-                        );
-                      }
-
-                      runtimeLogger.error('Error while running workflow', {
-                        workflowRunId: runId,
-                        errorName,
-                        errorStack,
-                      });
-                      // Fail the workflow run via event (event-sourced architecture)
-                      await world.events.create(runId, {
-                        eventType: 'run_failed',
-                        specVersion: SPEC_VERSION_CURRENT,
-                        eventData: {
-                          error: {
-                            message: errorMessage,
-                            stack: errorStack,
-                          },
-                          // TODO: include error codes when we define them
-                        },
-                      });
-
-                      span?.setAttributes({
-                        ...Attribute.WorkflowRunStatus('failed'),
-                        ...Attribute.WorkflowErrorName(errorName),
-                        ...Attribute.WorkflowErrorMessage(errorMessage),
-                        ...Attribute.ErrorType(errorName),
-                      });
+                    } else if (WorkflowAPIError.is(err) && err.status === 429) {
+                      // Throw to let withThrottleRetry handle it
+                      throw err;
                     }
+
+                    // NOTE: this error could be an error thrown in user code, or could also be a WorkflowRuntimeError
+                    // (for instance when the event log is corrupted, this is thrown by the event consumer). We could
+                    // specially handle these if needed.
+
+                    // Record exception for OTEL error tracking
+                    if (err instanceof Error) {
+                      span?.recordException?.(err);
+                    }
+
+                    const normalizedError = await normalizeUnknownError(err);
+                    const errorName = normalizedError.name || getErrorName(err);
+                    const errorMessage = normalizedError.message;
+                    let errorStack =
+                      normalizedError.stack || getErrorStack(err);
+
+                    // Remap error stack using source maps to show original source locations
+                    if (errorStack) {
+                      const parsedName = parseWorkflowName(workflowName);
+                      const filename =
+                        parsedName?.moduleSpecifier || workflowName;
+                      errorStack = remapErrorStack(
+                        errorStack,
+                        filename,
+                        workflowCode
+                      );
+                    }
+
+                    runtimeLogger.error('Error while running workflow', {
+                      workflowRunId: runId,
+                      errorName,
+                      errorStack,
+                    });
+                    // Fail the workflow run via event (event-sourced architecture)
+                    await world.events.create(runId, {
+                      eventType: 'run_failed',
+                      specVersion: SPEC_VERSION_CURRENT,
+                      eventData: {
+                        error: {
+                          message: errorMessage,
+                          stack: errorStack,
+                        },
+                        // TODO: include error codes when we define them
+                      },
+                    });
+
+                    span?.setAttributes({
+                      ...Attribute.WorkflowRunStatus('failed'),
+                      ...Attribute.WorkflowErrorName(errorName),
+                      ...Attribute.WorkflowErrorMessage(errorMessage),
+                      ...Attribute.ErrorType(errorName),
+                    });
                   }
                 }); // End withThrottleRetry
               }
