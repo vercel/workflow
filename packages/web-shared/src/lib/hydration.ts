@@ -156,7 +156,7 @@ export function hydrateResourceIO<T>(resource: T): T {
 // Encrypted data display markers
 // ---------------------------------------------------------------------------
 
-const ENCRYPTED_DISPLAY_NAME = '\u{1F512} Encrypted';
+const ENCRYPTED_DISPLAY_NAME = 'Encrypted';
 
 /**
  * Create a display-friendly object for encrypted data.

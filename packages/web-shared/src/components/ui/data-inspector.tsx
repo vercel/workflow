@@ -135,14 +135,19 @@ function NodeRenderer({
   if (
     data !== null &&
     typeof data === 'object' &&
-    data.constructor?.name === '\u{1F512} Encrypted'
+    data.constructor?.name === 'Encrypted'
   ) {
     const label = (
-      <span
-        className="inline-flex items-center gap-1"
-        style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}
-      >
-        <Lock className="h-3 w-3" style={{ verticalAlign: 'text-bottom' }} />
+      <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
+        <Lock
+          className="h-3 w-3"
+          style={{
+            display: 'inline',
+            verticalAlign: 'middle',
+            marginRight: '3px',
+            marginTop: '-1px',
+          }}
+        />
         Encrypted
       </span>
     );
