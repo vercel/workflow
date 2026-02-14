@@ -7,6 +7,7 @@ import type {
   SerializedData,
   Step,
   Storage,
+  Wait,
   WorkflowRun,
 } from '@workflow/world';
 import {
@@ -16,6 +17,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
@@ -156,7 +158,8 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         // Creating new entities on terminal runs is not allowed
         if (
           data.eventType === 'step_created' ||
-          data.eventType === 'hook_created'
+          data.eventType === 'hook_created' ||
+          data.eventType === 'wait_created'
         ) {
           throw new WorkflowAPIError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`,
@@ -240,6 +243,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       let run: WorkflowRun | undefined;
       let step: Step | undefined;
       let hook: Hook | undefined;
+      let wait: Wait | undefined;
 
       // Create/update entity based on event type (event-sourced architecture)
       // Run lifecycle events
@@ -611,6 +615,62 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           `${data.correlationId}.json`
         );
         await deleteJSON(hookPath);
+      } else if (data.eventType === 'wait_created' && 'eventData' in data) {
+        // wait_created: Creates wait entity with status 'waiting'
+        const waitData = data.eventData as {
+          resumeAt?: Date;
+        };
+        const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+        const waitPath = path.join(
+          basedir,
+          'waits',
+          `${waitCompositeKey}.json`
+        );
+        const existingWait = await readJSON(waitPath, WaitSchema);
+        if (existingWait) {
+          throw new WorkflowAPIError(
+            `Wait "${data.correlationId}" already exists`,
+            { status: 409 }
+          );
+        }
+        wait = {
+          waitId: data.correlationId,
+          runId: effectiveRunId,
+          status: 'waiting',
+          resumeAt: waitData.resumeAt,
+          completedAt: undefined,
+          createdAt: now,
+          updatedAt: now,
+          specVersion: effectiveSpecVersion,
+        };
+        await writeJSON(waitPath, wait);
+      } else if (data.eventType === 'wait_completed') {
+        // wait_completed: Transitions wait to 'completed', rejects duplicates
+        const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+        const waitPath = path.join(
+          basedir,
+          'waits',
+          `${waitCompositeKey}.json`
+        );
+        const existingWait = await readJSON(waitPath, WaitSchema);
+        if (!existingWait) {
+          throw new WorkflowAPIError(`Wait "${data.correlationId}" not found`, {
+            status: 404,
+          });
+        }
+        if (existingWait.status === 'completed') {
+          throw new WorkflowAPIError(
+            `Wait "${data.correlationId}" already completed`,
+            { status: 409 }
+          );
+        }
+        wait = {
+          ...existingWait,
+          status: 'completed',
+          completedAt: now,
+          updatedAt: now,
+        };
+        await writeJSON(waitPath, wait, { overwrite: true });
       }
       // Note: hook_received events are stored in the event log but don't
       // modify the Hook entity (which doesn't have a payload field)
@@ -629,6 +689,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         run,
         step,
         hook,
+        wait,
       };
     },
 

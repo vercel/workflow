@@ -11,6 +11,7 @@ import type {
   StepWithoutData,
   Storage,
   StructuredError,
+  Wait,
   WorkflowRun,
   WorkflowRunWithoutData,
 } from '@workflow/world';
@@ -283,6 +284,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .limit(1)
     .prepare('events_get_hook_by_token');
 
+  const getWaitForValidation = drizzle
+    .select({
+      status: Schema.waits.status,
+    })
+    .from(Schema.waits)
+    .where(eq(Schema.waits.waitId, sql.placeholder('waitId')))
+    .limit(1)
+    .prepare('events_get_wait_for_validation');
+
   return {
     async create(runId, data, params): Promise<EventResult> {
       const eventId = `wevt_${ulid()}`;
@@ -304,6 +314,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       let run: WorkflowRun | undefined;
       let step: Step | undefined;
       let hook: Hook | undefined;
+      let wait: Wait | undefined;
       const now = new Date();
 
       // Helper to check if run is in terminal state
@@ -419,7 +430,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // Creating new entities on terminal runs is not allowed
         if (
           data.eventType === 'step_created' ||
-          data.eventType === 'hook_created'
+          data.eventType === 'hook_created' ||
+          data.eventType === 'wait_created'
         ) {
           throw new WorkflowAPIError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`,
@@ -905,6 +917,90 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(eq(Schema.hooks.hookId, data.correlationId));
       }
 
+      // Handle wait_created event: create wait entity
+      if (data.eventType === 'wait_created') {
+        const eventData = (data as any).eventData as {
+          resumeAt?: Date;
+        };
+        const waitId = `${effectiveRunId}-${data.correlationId}`;
+        const [waitValue] = await drizzle
+          .insert(Schema.waits)
+          .values({
+            waitId,
+            runId: effectiveRunId,
+            status: 'waiting',
+            resumeAt: eventData.resumeAt,
+            specVersion: effectiveSpecVersion,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (waitValue) {
+          wait = {
+            waitId: waitValue.waitId,
+            runId: waitValue.runId,
+            status: waitValue.status,
+            resumeAt: waitValue.resumeAt ?? undefined,
+            completedAt: waitValue.completedAt ?? undefined,
+            createdAt: waitValue.createdAt,
+            updatedAt: waitValue.updatedAt,
+            specVersion: waitValue.specVersion ?? undefined,
+          };
+        } else {
+          throw new WorkflowAPIError(
+            `Wait "${data.correlationId}" already exists`,
+            { status: 409 }
+          );
+        }
+      }
+
+      // Handle wait_completed event: transition wait to 'completed'
+      // Uses conditional UPDATE to reject duplicate completions (same pattern as step_completed)
+      if (data.eventType === 'wait_completed') {
+        const waitId = `${effectiveRunId}-${data.correlationId}`;
+        const [waitValue] = await drizzle
+          .update(Schema.waits)
+          .set({
+            status: 'completed',
+            completedAt: now,
+          })
+          .where(
+            and(
+              eq(Schema.waits.waitId, waitId),
+              eq(Schema.waits.status, 'waiting')
+            )
+          )
+          .returning();
+        if (waitValue) {
+          wait = {
+            waitId: waitValue.waitId,
+            runId: waitValue.runId,
+            status: waitValue.status,
+            resumeAt: waitValue.resumeAt ?? undefined,
+            completedAt: waitValue.completedAt ?? undefined,
+            createdAt: waitValue.createdAt,
+            updatedAt: waitValue.updatedAt,
+            specVersion: waitValue.specVersion ?? undefined,
+          };
+        } else {
+          // Wait not updated - check if it exists and why
+          const [existing] = await getWaitForValidation.execute({
+            waitId,
+          });
+          if (!existing) {
+            throw new WorkflowAPIError(
+              `Wait "${data.correlationId}" not found`,
+              { status: 404 }
+            );
+          }
+          if (existing.status === 'completed') {
+            throw new WorkflowAPIError(
+              `Wait "${data.correlationId}" already completed`,
+              { status: 409 }
+            );
+          }
+        }
+      }
+
       const [value] = await drizzle
         .insert(events)
         .values({
@@ -924,7 +1020,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const result = { ...data, ...value, runId: effectiveRunId, eventId };
       const parsed = EventSchema.parse(result);
       const resolveData = params?.resolveData ?? 'all';
-      return { event: filterEventData(parsed, resolveData), run, step, hook };
+      return {
+        event: filterEventData(parsed, resolveData),
+        run,
+        step,
+        hook,
+        wait,
+      };
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
       const limit = params?.pagination?.limit ?? 100;
