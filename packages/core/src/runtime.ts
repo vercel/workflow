@@ -280,93 +280,94 @@ export function workflowEntrypoint(
                       if (result.timeoutSeconds !== undefined) {
                         return { timeoutSeconds: result.timeoutSeconds };
                       }
+                    } else {
                       // Retry server errors (5xx) with exponential backoff before failing the run
-                    } else if (
-                      WorkflowAPIError.is(err) &&
-                      err.status !== undefined &&
-                      err.status >= 500
-                    ) {
-                      const retryCount = serverErrorRetryCount ?? 0;
-                      const delaySecondSteps = [5, 30, 120]; // 5s, 30s, 120s
-                      if (retryCount < delaySecondSteps.length) {
-                        runtimeLogger.warn(
-                          'Server error (5xx), re-enqueueing workflow with backoff',
-                          {
-                            workflowRunId: runId,
-                            retryCount,
-                            delaySeconds: delaySecondSteps[retryCount],
-                            error: err.message,
-                          }
-                        );
-                        await queueMessage(
-                          world,
-                          getWorkflowQueueName(workflowName),
-                          {
-                            runId,
-                            serverErrorRetryCount: retryCount + 1,
-                            traceCarrier: await serializeTraceCarrier(),
-                            requestedAt: new Date(),
-                          },
-                          { delaySeconds: delaySecondSteps[retryCount] }
-                        );
-                        return; // Don't fail the run, retry later
+                      if (
+                        WorkflowAPIError.is(err) &&
+                        err.status !== undefined &&
+                        err.status >= 500
+                      ) {
+                        const retryCount = serverErrorRetryCount ?? 0;
+                        const delaySecondSteps = [5, 30, 120]; // 5s, 30s, 120s
+                        if (retryCount < delaySecondSteps.length) {
+                          runtimeLogger.warn(
+                            'Server error (5xx), re-enqueueing workflow with backoff',
+                            {
+                              workflowRunId: runId,
+                              retryCount,
+                              delaySeconds: delaySecondSteps[retryCount],
+                              error: err.message,
+                            }
+                          );
+                          await queueMessage(
+                            world,
+                            getWorkflowQueueName(workflowName),
+                            {
+                              runId,
+                              serverErrorRetryCount: retryCount + 1,
+                              traceCarrier: await serializeTraceCarrier(),
+                              requestedAt: new Date(),
+                            },
+                            { delaySeconds: delaySecondSteps[retryCount] }
+                          );
+                          return; // Don't fail the run, retry later
+                        }
+                        // Fall through to run_failed after exhausting retries
                       }
-                    } else if (WorkflowAPIError.is(err) && err.status === 429) {
-                      // Throw to let withThrottleRetry handle it
-                      throw err;
-                    }
 
-                    // NOTE: this error could be an error thrown in user code, or could also be a WorkflowRuntimeError
-                    // (for instance when the event log is corrupted, this is thrown by the event consumer). We could
-                    // specially handle these if needed.
+                      // NOTE: this error could be an error thrown in user code, or could also be a WorkflowRuntimeError
+                      // (for instance when the event log is corrupted, this is thrown by the event consumer). We could
+                      // specially handle these if needed.
 
-                    // Record exception for OTEL error tracking
-                    if (err instanceof Error) {
-                      span?.recordException?.(err);
-                    }
+                      // Record exception for OTEL error tracking
+                      if (err instanceof Error) {
+                        span?.recordException?.(err);
+                      }
 
-                    const normalizedError = await normalizeUnknownError(err);
-                    const errorName = normalizedError.name || getErrorName(err);
-                    const errorMessage = normalizedError.message;
-                    let errorStack =
-                      normalizedError.stack || getErrorStack(err);
+                      const normalizedError = await normalizeUnknownError(err);
+                      const errorName =
+                        normalizedError.name || getErrorName(err);
+                      const errorMessage = normalizedError.message;
+                      let errorStack =
+                        normalizedError.stack || getErrorStack(err);
 
-                    // Remap error stack using source maps to show original source locations
-                    if (errorStack) {
-                      const parsedName = parseWorkflowName(workflowName);
-                      const filename =
-                        parsedName?.moduleSpecifier || workflowName;
-                      errorStack = remapErrorStack(
+                      // Remap error stack using source maps to show original source locations
+                      if (errorStack) {
+                        const parsedName = parseWorkflowName(workflowName);
+                        const filename =
+                          parsedName?.moduleSpecifier || workflowName;
+                        errorStack = remapErrorStack(
+                          errorStack,
+                          filename,
+                          workflowCode
+                        );
+                      }
+
+                      runtimeLogger.error('Error while running workflow', {
+                        workflowRunId: runId,
+                        errorName,
                         errorStack,
-                        filename,
-                        workflowCode
-                      );
-                    }
-
-                    runtimeLogger.error('Error while running workflow', {
-                      workflowRunId: runId,
-                      errorName,
-                      errorStack,
-                    });
-                    // Fail the workflow run via event (event-sourced architecture)
-                    await world.events.create(runId, {
-                      eventType: 'run_failed',
-                      specVersion: SPEC_VERSION_CURRENT,
-                      eventData: {
-                        error: {
-                          message: errorMessage,
-                          stack: errorStack,
+                      });
+                      // Fail the workflow run via event (event-sourced architecture)
+                      await world.events.create(runId, {
+                        eventType: 'run_failed',
+                        specVersion: SPEC_VERSION_CURRENT,
+                        eventData: {
+                          error: {
+                            message: errorMessage,
+                            stack: errorStack,
+                          },
+                          // TODO: include error codes when we define them
                         },
-                        // TODO: include error codes when we define them
-                      },
-                    });
+                      });
 
-                    span?.setAttributes({
-                      ...Attribute.WorkflowRunStatus('failed'),
-                      ...Attribute.WorkflowErrorName(errorName),
-                      ...Attribute.WorkflowErrorMessage(errorMessage),
-                      ...Attribute.ErrorType(errorName),
-                    });
+                      span?.setAttributes({
+                        ...Attribute.WorkflowRunStatus('failed'),
+                        ...Attribute.WorkflowErrorName(errorName),
+                        ...Attribute.WorkflowErrorMessage(errorMessage),
+                        ...Attribute.ErrorType(errorName),
+                      });
+                    }
                   }
                 }); // End withThrottleRetry
               }
