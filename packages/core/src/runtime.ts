@@ -220,12 +220,26 @@ export function workflowEntrypoint(
 
                     // Create all wait_completed events
                     for (const waitEvent of waitsToComplete) {
-                      const result = await world.events.create(
-                        runId,
-                        waitEvent
-                      );
-                      // Add the event to the events array so the workflow can see it
-                      events.push(result.event!);
+                      try {
+                        const result = await world.events.create(
+                          runId,
+                          waitEvent
+                        );
+                        // Add the event to the events array so the workflow can see it
+                        events.push(result.event!);
+                      } catch (err) {
+                        if (WorkflowAPIError.is(err) && err.status === 409) {
+                          runtimeLogger.info(
+                            'Wait already completed, skipping',
+                            {
+                              workflowRunId: runId,
+                              correlationId: waitEvent.correlationId,
+                            }
+                          );
+                          continue;
+                        }
+                        throw err;
+                      }
                     }
 
                     const result = await trace(

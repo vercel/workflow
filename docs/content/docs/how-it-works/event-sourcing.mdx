@@ -33,7 +33,7 @@ In the Workflow DevKit, the following entity types are managed through events:
 - **Runs**: Workflow execution instances (materialized in storage)
 - **Steps**: Individual atomic operations within a workflow (materialized in storage)
 - **Hooks**: Suspension points that can receive external data (materialized in storage)
-- **Waits**: Sleep or delay operations (tracked via events only, not materialized)
+- **Waits**: Sleep or delay operations (materialized in storage)
 
 ## Entity Lifecycles
 
@@ -151,7 +151,7 @@ flowchart TD
 - `completed`: Delay period has elapsed, workflow can resume
 
 <Callout type="info">
-Unlike Runs, Steps, and Hooks, waits are conceptual entities tracked only through events. There is no separate "Wait" record in storage that can be queried—the wait state is derived entirely from the `wait_created` and `wait_completed` events in the event log.
+Like Runs, Steps, and Hooks, waits are materialized as entities in storage. When a `wait_created` event is processed, a wait entity is created with status `waiting`. When a `wait_completed` event is processed, the wait entity is atomically transitioned to `completed` — this guarantees that a wait can only be completed exactly once, even if multiple concurrent invocations attempt to complete it simultaneously.
 </Callout>
 
 ## Event Types Reference
