@@ -62,7 +62,6 @@ export function EntityDetailPanel({
   onWakeUpSleep,
   onLoadEventData,
   onResolveHook,
-  onDecrypt,
   encryptionKey,
   selectedSpan,
 }: {
@@ -95,8 +94,6 @@ export function EntityDetailPanel({
     payload: unknown,
     hook?: Hook
   ) => Promise<void>;
-  /** Callback to decrypt encrypted data */
-  onDecrypt?: () => void;
   /** Encryption key (available after Decrypt is clicked), used to re-load event data */
   encryptionKey?: Uint8Array;
   /** Info about the currently selected span from the trace viewer */
@@ -485,7 +482,6 @@ export function EntityDetailPanel({
         isLoading={loading}
         error={error ?? undefined}
         onStreamClick={onStreamClick}
-        onDecrypt={onDecrypt}
       />
       {resource !== 'run' && rawEvents && (
         <EventsList

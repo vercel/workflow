@@ -5,6 +5,7 @@ import {
   EventListView,
   hydrateResourceIO,
   hydrateResourceIOWithKey,
+  isEncryptedMarker,
   StreamViewer,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
@@ -15,6 +16,8 @@ import {
   HelpCircle,
   List,
   Loader2,
+  Lock,
+  Unlock,
 } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
@@ -38,6 +41,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '~/components/ui/breadcrumb';
+import { Button } from '~/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import {
   Tooltip,
@@ -597,8 +601,24 @@ export function RunDetailView({
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                {/* Right side controls */}
                 <LiveStatus hasError={hasError} errorMessage={errorMessage} />
+                {/* Decrypt button — shown when run has encrypted data */}
+                {(isEncryptedMarker(run.input) ||
+                  isEncryptedMarker(run.output)) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDecrypt}
+                    disabled={!!encryptionKey}
+                  >
+                    {encryptionKey ? (
+                      <Unlock className="h-4 w-4" />
+                    ) : (
+                      <Lock className="h-4 w-4" />
+                    )}
+                    {encryptionKey ? 'Decrypted' : 'Decrypt'}
+                  </Button>
+                )}
                 <RunActionsButtons
                   env={env}
                   runId={runId}
@@ -777,7 +797,6 @@ export function RunDetailView({
                     onLoadMoreSpans={loadMoreTraceData}
                     hasMoreSpans={hasMoreTraceData}
                     isLoadingMoreSpans={isLoadingMoreTraceData}
-                    onDecrypt={handleDecrypt}
                     encryptionKey={encryptionKey ?? undefined}
                   />
                 </div>
@@ -792,6 +811,7 @@ export function RunDetailView({
                     steps={allSteps}
                     run={run}
                     onLoadEventData={handleLoadEventData}
+                    encryptionKey={encryptionKey ?? undefined}
                   />
                 </div>
               </ErrorBoundary>

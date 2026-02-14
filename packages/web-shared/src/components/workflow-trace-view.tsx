@@ -893,7 +893,6 @@ export const WorkflowTraceViewer = ({
   onLoadMoreSpans,
   hasMoreSpans = false,
   isLoadingMoreSpans = false,
-  onDecrypt,
   encryptionKey,
 }: {
   run: WorkflowRun;
@@ -931,8 +930,6 @@ export const WorkflowTraceViewer = ({
   hasMoreSpans?: boolean;
   /** Whether trace pagination is currently fetching another page. */
   isLoadingMoreSpans?: boolean;
-  /** Callback to decrypt encrypted data (triggers audit-logged key retrieval) */
-  onDecrypt?: () => void;
   /** Encryption key (available after Decrypt), threaded to event list for re-loading */
   encryptionKey?: Uint8Array;
 }) => {
@@ -1258,7 +1255,6 @@ export const WorkflowTraceViewer = ({
                 onWakeUpSleep={onWakeUpSleep}
                 onLoadEventData={onLoadEventData}
                 onResolveHook={onResolveHook}
-                onDecrypt={onDecrypt}
                 encryptionKey={encryptionKey}
                 selectedSpan={selectedSpan}
               />
