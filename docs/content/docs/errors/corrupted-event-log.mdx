@@ -68,12 +68,11 @@ Unlike other workflow errors, a corrupted event log error is **not catchable** i
 To handle this programmatically from outside the workflow, you can check the run status:
 
 ```typescript lineNumbers
-import { getRun, startWorkflow } from "workflow";
+import { getRun } from "workflow/api";
 
-const run = await getRun(runId);
-if (run.status === "failed") {
-  console.error("Run failed:", run.error);
-  // Optionally start a new run
-  const newRun = await startWorkflow("myWorkflow", input);
+const run = getRun("wrun_abc123");
+const status = await run.status;
+if (status === "failed") {
+  console.error("Run failed");
 }
 ```
