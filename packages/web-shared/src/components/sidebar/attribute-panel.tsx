@@ -525,6 +525,32 @@ const attributeToDisplayFn: Record<
   eventData: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    // Render each eventData subfield individually so encrypted markers
+    // don't appear in ObjectInspector's collapsed preview
+    if (value && typeof value === 'object') {
+      const entries = Object.entries(value as Record<string, unknown>);
+      if (entries.length > 0) {
+        return (
+          <DetailCard summary="Event Data">
+            {entries.map(([key, val]) => (
+              <div key={key} className="mt-2 first:mt-0">
+                <div
+                  className="text-[10px] font-medium mb-1"
+                  style={{ color: 'var(--ds-gray-700)' }}
+                >
+                  {key}
+                </div>
+                {isEncryptedMarker(val) ? (
+                  <EncryptedFieldBlock />
+                ) : (
+                  JsonBlock(val)
+                )}
+              </div>
+            ))}
+          </DetailCard>
+        );
+      }
+    }
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
   },
 };
