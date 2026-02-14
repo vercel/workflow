@@ -19,12 +19,14 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const workflowStartedAt = context.globalThis.Date.now();
   const ctx: WorkflowOrchestratorContext = {
     globalThis: context.globalThis,
-    eventsConsumer: new EventsConsumer(events, (event) => {
-      ctx.onWorkflowError(
-        new WorkflowRuntimeError(
-          `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
-        )
-      );
+    eventsConsumer: new EventsConsumer(events, {
+      onUnconsumedEvent: (event) => {
+        ctx.onWorkflowError(
+          new WorkflowRuntimeError(
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          )
+        );
+      },
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),

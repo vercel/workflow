@@ -18,24 +18,27 @@ export enum EventConsumerResult {
 
 type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
+export interface EventsConsumerOptions {
+  /**
+   * Callback invoked when a non-null event cannot be consumed by any registered
+   * callback, indicating an orphaned or invalid event in the event log. Called
+   * asynchronously after a macrotask delay to allow pending callback
+   * subscriptions to settle first.
+   */
+  onUnconsumedEvent: (event: Event) => void;
+}
+
 export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[] = [];
   readonly callbacks: EventConsumerCallback[] = [];
-  private onUnconsumedEvent?: (event: Event) => void;
+  private onUnconsumedEvent: (event: Event) => void;
   private pendingUnconsumedCheck: ReturnType<typeof setTimeout> | null = null;
 
-  /**
-   * @param events - The event log to consume.
-   * @param onUnconsumedEvent - Optional callback invoked when a non-null event
-   *   cannot be consumed by any registered callback, indicating an orphaned or
-   *   invalid event in the event log. Called asynchronously after a macrotask
-   *   delay to allow pending callback subscriptions to settle first.
-   */
-  constructor(events: Event[], onUnconsumedEvent?: (event: Event) => void) {
+  constructor(events: Event[], options: EventsConsumerOptions) {
     this.events = events;
     this.eventIndex = 0;
-    this.onUnconsumedEvent = onUnconsumedEvent;
+    this.onUnconsumedEvent = options.onUnconsumedEvent;
   }
 
   /**
@@ -91,12 +94,12 @@ export class EventsConsumer {
     // pending process.nextTick microtasks (e.g., new subscribes from the
     // workflow code) can complete first. If the event is still unconsumed
     // when the timeout fires, it's truly orphaned.
-    if (currentEvent !== null && this.onUnconsumedEvent) {
+    if (currentEvent !== null) {
       const unconsumedIndex = this.eventIndex;
       this.pendingUnconsumedCheck = setTimeout(() => {
         this.pendingUnconsumedCheck = null;
         if (this.eventIndex === unconsumedIndex) {
-          this.onUnconsumedEvent!(currentEvent);
+          this.onUnconsumedEvent(currentEvent);
         }
       }, 0);
     }

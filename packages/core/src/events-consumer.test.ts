@@ -15,6 +15,9 @@ function createMockEvent(overrides: Partial<Event> = {}): Event {
   };
 }
 
+// Default options for tests that don't care about onUnconsumedEvent
+const defaultOptions = { onUnconsumedEvent: vi.fn() };
+
 // Helper function to wait for next tick
 function waitForNextTick(): Promise<void> {
   return new Promise((resolve) => process.nextTick(resolve));
@@ -29,7 +32,7 @@ describe('EventsConsumer', () => {
   describe('constructor', () => {
     it('should initialize with provided events', () => {
       const events = [createMockEvent(), createMockEvent({ id: 'event-2' })];
-      const consumer = new EventsConsumer(events);
+      const consumer = new EventsConsumer(events, defaultOptions);
 
       expect(consumer.events).toEqual(events);
       expect(consumer.eventIndex).toBe(0);
@@ -37,7 +40,7 @@ describe('EventsConsumer', () => {
     });
 
     it('should initialize with empty events array', () => {
-      const consumer = new EventsConsumer([]);
+      const consumer = new EventsConsumer([], defaultOptions);
 
       expect(consumer.events).toEqual([]);
       expect(consumer.eventIndex).toBe(0);
@@ -47,7 +50,7 @@ describe('EventsConsumer', () => {
 
   describe('subscribe', () => {
     it('should add callback to callbacks array', () => {
-      const consumer = new EventsConsumer([]);
+      const consumer = new EventsConsumer([], defaultOptions);
       const callback = vi.fn();
 
       consumer.subscribe(callback);
@@ -57,7 +60,7 @@ describe('EventsConsumer', () => {
     });
 
     it('should add multiple callbacks in order', () => {
-      const consumer = new EventsConsumer([]);
+      const consumer = new EventsConsumer([], defaultOptions);
       const callback1 = vi.fn();
       const callback2 = vi.fn();
       const callback3 = vi.fn();
@@ -71,7 +74,7 @@ describe('EventsConsumer', () => {
 
     it('should automatically trigger consume on subscribe', async () => {
       const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
+      const consumer = new EventsConsumer([event], defaultOptions);
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -85,7 +88,7 @@ describe('EventsConsumer', () => {
   describe('consume (implicit)', () => {
     it('should call callbacks with current event', async () => {
       const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
+      const consumer = new EventsConsumer([event], defaultOptions);
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -96,7 +99,7 @@ describe('EventsConsumer', () => {
     });
 
     it('should call callbacks with null when no events exist', async () => {
-      const consumer = new EventsConsumer([]);
+      const consumer = new EventsConsumer([], defaultOptions);
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -108,7 +111,7 @@ describe('EventsConsumer', () => {
     it('should increment event index and remove callback when callback returns Finished', async () => {
       const event1 = createMockEvent({ id: 'event-1' });
       const event2 = createMockEvent({ id: 'event-2' });
-      const consumer = new EventsConsumer([event1, event2]);
+      const consumer = new EventsConsumer([event1, event2], defaultOptions);
       const callback = vi.fn().mockReturnValue(EventConsumerResult.Finished);
 
       consumer.subscribe(callback);
@@ -120,7 +123,7 @@ describe('EventsConsumer', () => {
 
     it('should not increment event index when callback returns false', async () => {
       const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
+      const consumer = new EventsConsumer([event], defaultOptions);
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -132,7 +135,7 @@ describe('EventsConsumer', () => {
 
     it('should process multiple callbacks until one returns true', async () => {
       const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
+      const consumer = new EventsConsumer([event], defaultOptions);
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);
@@ -156,7 +159,7 @@ describe('EventsConsumer', () => {
     it('should process all callbacks when none return true and call onUnconsumedEvent', async () => {
       const event = createMockEvent();
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([event], onUnconsumedEvent);
+      const consumer = new EventsConsumer([event], { onUnconsumedEvent });
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);
@@ -186,7 +189,7 @@ describe('EventsConsumer', () => {
     it('should recursively process next event when current event is consumed', async () => {
       const event1 = createMockEvent({ id: 'event-1', sequence_number: 1 });
       const event2 = createMockEvent({ id: 'event-2', sequence_number: 2 });
-      const consumer = new EventsConsumer([event1, event2]);
+      const consumer = new EventsConsumer([event1, event2], defaultOptions);
       const callback1 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
       const callback2 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
 
@@ -205,7 +208,7 @@ describe('EventsConsumer', () => {
 
     it('should handle event index beyond events array length', async () => {
       const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
+      const consumer = new EventsConsumer([event], defaultOptions);
       const callback = vi.fn().mockReturnValue(EventConsumerResult.Finished);
 
       consumer.subscribe(callback);
@@ -227,7 +230,7 @@ describe('EventsConsumer', () => {
         createMockEvent({ id: 'event-2', event_type: 'type-b' }),
         createMockEvent({ id: 'event-3', event_type: 'type-a' }),
       ];
-      const consumer = new EventsConsumer(events);
+      const consumer = new EventsConsumer(events, defaultOptions);
 
       // Callback that only processes type-a events
       const typeACallback = vi
@@ -264,7 +267,7 @@ describe('EventsConsumer', () => {
   describe('edge cases', () => {
     it('should handle callback that throws error gracefully', async () => {
       const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
+      const consumer = new EventsConsumer([event], defaultOptions);
       const throwingCallback = vi.fn().mockImplementation(() => {
         throw new Error('Callback error');
       });
@@ -283,7 +286,7 @@ describe('EventsConsumer', () => {
 
     it('should handle callback removal during iteration', async () => {
       const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
+      const consumer = new EventsConsumer([event], defaultOptions);
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);
@@ -304,7 +307,7 @@ describe('EventsConsumer', () => {
 
     it('should handle events with null/undefined data', async () => {
       const eventWithNullData = createMockEvent({ event_data: null as any });
-      const consumer = new EventsConsumer([eventWithNullData]);
+      const consumer = new EventsConsumer([eventWithNullData], defaultOptions);
       const callback = vi.fn().mockReturnValue(EventConsumerResult.Finished);
 
       consumer.subscribe(callback);
@@ -317,7 +320,7 @@ describe('EventsConsumer', () => {
     it('should handle multiple subscriptions happening in sequence', async () => {
       const event1 = createMockEvent({ id: 'event-1' });
       const event2 = createMockEvent({ id: 'event-2' });
-      const consumer = new EventsConsumer([event1, event2]);
+      const consumer = new EventsConsumer([event1, event2], defaultOptions);
 
       const callback1 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
       const callback2 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
@@ -334,7 +337,7 @@ describe('EventsConsumer', () => {
     });
 
     it('should handle empty events array gracefully', async () => {
-      const consumer = new EventsConsumer([]);
+      const consumer = new EventsConsumer([], defaultOptions);
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -349,7 +352,7 @@ describe('EventsConsumer', () => {
     it('should call onUnconsumedEvent when a non-null event is not consumed by any callback', async () => {
       const event = createMockEvent();
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([event], onUnconsumedEvent);
+      const consumer = new EventsConsumer([event], { onUnconsumedEvent });
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -361,7 +364,7 @@ describe('EventsConsumer', () => {
 
     it('should NOT call onUnconsumedEvent for null event (end-of-events)', async () => {
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([], onUnconsumedEvent);
+      const consumer = new EventsConsumer([], { onUnconsumedEvent });
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
@@ -372,23 +375,10 @@ describe('EventsConsumer', () => {
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
 
-    it('should not throw when no onUnconsumedEvent callback is provided', async () => {
-      const event = createMockEvent();
-      const consumer = new EventsConsumer([event]);
-      const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
-
-      consumer.subscribe(callback);
-      await waitForNextTick();
-      await waitForMacrotask();
-
-      // Should not throw - just stays stuck as before (backward compat)
-      expect(consumer.eventIndex).toBe(0);
-    });
-
     it('should cancel pending unconsumed check when a new callback subscribes', async () => {
       const event = createMockEvent();
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([event], onUnconsumedEvent);
+      const consumer = new EventsConsumer([event], { onUnconsumedEvent });
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);

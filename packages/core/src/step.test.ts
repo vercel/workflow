@@ -20,7 +20,9 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const workflowStartedAt = context.globalThis.Date.now();
   return {
     globalThis: context.globalThis,
-    eventsConsumer: new EventsConsumer(events),
+    eventsConsumer: new EventsConsumer(events, {
+      onUnconsumedEvent: () => {},
+    }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt), // All generated ulids use the workflow's started at time
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
