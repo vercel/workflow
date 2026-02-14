@@ -4,6 +4,7 @@ import {
   ErrorBoundary,
   EventListView,
   hydrateResourceIO,
+  hydrateResourceIOWithKey,
   StreamViewer,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
@@ -15,7 +16,7 @@ import {
   List,
   Loader2,
 } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
@@ -255,6 +256,10 @@ export function RunDetailView({
     [env]
   );
 
+  // Ref for encryption key so event loading callbacks can access it
+  // without being recreated when the key changes
+  const encryptionKeyRef = useRef<Uint8Array | null>(null);
+
   const handleResolveHook = useCallback(
     async (hookToken: string, payload: unknown) => {
       await resumeHook(env, hookToken, payload);
@@ -278,8 +283,11 @@ export function RunDetailView({
           throw error;
         }
         const rawEvent = result.data.find((e) => e.eventId === event.eventId);
-        const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
-        if (fullEvent && 'eventData' in fullEvent) {
+        if (!rawEvent) return null;
+        const fullEvent = encryptionKeyRef.current
+          ? await hydrateResourceIOWithKey(rawEvent, encryptionKeyRef.current)
+          : hydrateResourceIO(rawEvent);
+        if ('eventData' in fullEvent) {
           return fullEvent.eventData;
         }
         return null;
@@ -310,8 +318,11 @@ export function RunDetailView({
         }
         rawEvent = ascResult.data.find((e) => e.eventId === event.eventId);
       }
-      const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
-      if (fullEvent && 'eventData' in fullEvent) {
+      if (!rawEvent) return null;
+      const fullEvent = encryptionKeyRef.current
+        ? await hydrateResourceIOWithKey(rawEvent, encryptionKeyRef.current)
+        : hydrateResourceIO(rawEvent);
+      if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
       return null;
@@ -333,8 +344,11 @@ export function RunDetailView({
         throw error;
       }
       const rawEvent = result.data.find((e) => e.eventId === eventId);
-      const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
-      if (fullEvent && 'eventData' in fullEvent) {
+      if (!rawEvent) return null;
+      const fullEvent = encryptionKeyRef.current
+        ? await hydrateResourceIOWithKey(rawEvent, encryptionKeyRef.current)
+        : hydrateResourceIO(rawEvent);
+      if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
       return null;
@@ -371,6 +385,7 @@ export function RunDetailView({
     loading: spanDetailLoading,
     error: spanDetailError,
     decrypt: decryptSpanDetail,
+    encryptionKey,
   } = useWorkflowResourceData(
     env,
     spanSelection?.resource ?? 'run',
@@ -384,6 +399,9 @@ export function RunDetailView({
       ),
     }
   );
+
+  // Keep the ref in sync so event callbacks can access the key
+  encryptionKeyRef.current = encryptionKey;
 
   const handleDecrypt = useCallback(() => {
     decryptSpanDetail();
