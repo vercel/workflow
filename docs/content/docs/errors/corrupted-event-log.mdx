@@ -1,0 +1,69 @@
+---
+title: corrupted-event-log
+description: The workflow's event log contains an event that no consumer can process, indicating corruption or invalid state.
+type: troubleshooting
+summary: Resolve corrupted event log errors caused by duplicate or orphaned events.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/errors-and-retries
+---
+
+This error occurs when the Workflow runtime encounters an event in the event log that no registered consumer can process. This means the event log is in an invalid state — typically due to duplicate or orphaned events.
+
+## Error Message
+
+```
+Unconsumed event in event log: eventType=<type>, correlationId=<id>, eventId=<id>. This indicates a corrupted or invalid event log.
+```
+
+## Why This Happens
+
+Workflows persist their progress as an ordered event log. During replay, the runtime processes each event in sequence — every event must be consumed by a matching callback (e.g., a step or sleep waiting for its result). When an event has no matching consumer, the runtime cannot advance past it, which would block all subsequent events and hang the workflow indefinitely.
+
+Instead of silently hanging, the runtime raises a `WorkflowRuntimeError` to fail the workflow fast and surface the problem.
+
+Common scenarios that produce this error:
+
+1. **Duplicate completion events** — Two `wait_completed` events for a single `wait_created`, or two `step_completed` events for the same step. The first is consumed normally, but the second has no consumer.
+2. **Orphaned events** — A `step_completed` or `wait_completed` event whose `correlationId` doesn't match any step or sleep in the workflow code.
+3. **Events after terminal state** — An event that arrives after its corresponding step or wait has already reached a terminal state (e.g., `step_retrying` after `step_completed`).
+
+## What To Do
+
+This error typically indicates a bug in the event delivery infrastructure, not in your workflow code. Your workflow code does not need to change.
+
+### Check for duplicate event delivery
+
+If you see duplicate `wait_completed` or `step_completed` events, the issue is likely at-least-once delivery producing duplicates. This is a platform-level concern — the Workflow runtime is designed to detect and reject these rather than silently hanging.
+
+### Retry the workflow run
+
+Since the event log is corrupted, the current run cannot make progress. You can cancel the run and start a new one:
+
+```typescript lineNumbers
+import { cancelRun, startWorkflow } from "workflow";
+
+// Cancel the corrupted run
+await cancelRun(runId);
+
+// Start a fresh run
+const newRun = await startWorkflow("myWorkflow", input);
+```
+
+### Inspect the event log
+
+If the error persists across runs, inspect the event log to identify the pattern of corruption. The error message includes the `eventType`, `correlationId`, and `eventId` of the offending event, which can help pinpoint the source.
+
+## Handling This Error
+
+This error is a `WorkflowRuntimeError` and is fatal — the workflow run will fail. You can observe it via the run's failed status:
+
+```typescript lineNumbers
+import { getRun } from "workflow";
+
+const run = await getRun(runId);
+if (run.status === "failed") {
+  console.error("Run failed:", run.error);
+}
+```

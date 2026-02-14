@@ -74,7 +74,8 @@ export async function runWorkflow(
     const eventsConsumer = new EventsConsumer(events, (event) => {
       workflowDiscontinuation.reject(
         new WorkflowRuntimeError(
-          `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`,
+          { slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG }
         )
       );
     });
