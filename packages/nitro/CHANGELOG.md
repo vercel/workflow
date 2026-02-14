@@ -1,5 +1,15 @@
 # @workflow/nitro
 
+## 4.0.1-beta.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.1.0-beta.57
+  - @workflow/builders@4.0.1-beta.48
+  - @workflow/rollup@4.0.0-beta.14
+  - @workflow/vite@4.0.0-beta.7
+
 ## 4.0.1-beta.51
 
 ### Patch Changes

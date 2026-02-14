@@ -1,5 +1,17 @@
 # @workflow/next
 
+## 4.0.1-beta.53
+
+### Patch Changes
+
+- [#1038](https://github.com/vercel/workflow/pull/1038) [`f4a1994`](https://github.com/vercel/workflow/commit/f4a1994c4b6416bbd35a81324f3e59f39df8997e) Thanks [@ijjk](https://github.com/ijjk)! - Fix condition for lazy discovery with canary
+
+- [#1036](https://github.com/vercel/workflow/pull/1036) [`01e8e80`](https://github.com/vercel/workflow/commit/01e8e804629f360690ff8c99cda930696d7434dd) Thanks [@ijjk](https://github.com/ijjk)! - Make lazy discovery in Next.js opt-in
+
+- Updated dependencies []:
+  - @workflow/core@4.1.0-beta.57
+  - @workflow/builders@4.0.1-beta.48
+
 ## 4.0.1-beta.52
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @workflow/astro
 
+## 4.0.0-beta.31
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.48
+  - @workflow/rollup@4.0.0-beta.14
+  - @workflow/vite@4.0.0-beta.7
+
 ## 4.0.0-beta.30
 
 ### Patch Changes

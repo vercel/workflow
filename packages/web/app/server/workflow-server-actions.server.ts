@@ -692,15 +692,16 @@ export async function fetchEvents(
     cursor?: string;
     sortOrder?: 'asc' | 'desc';
     limit?: number;
+    withData?: boolean;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  const { cursor, sortOrder = 'asc', limit = 1000 } = params;
+  const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
     const result = await world.events.list({
       runId,
       pagination: { cursor, limit, sortOrder },
-      resolveData: 'none',
+      resolveData: withData ? 'all' : 'none',
     });
     return createResponse({
       data: result.data as unknown as Event[],
@@ -1011,12 +1012,16 @@ export async function fetchStreams(
  *
  * Configuration priority:
  * 1. WORKFLOW_MANIFEST_PATH - explicit path to the manifest file
- * 2. Standard Next.js app router locations (app/.well-known/workflow/v1/manifest.json)
- * 3. WORKFLOW_EMBEDDED_DATA_DIR - legacy data directory
+ * 2. WORKFLOW_LOCAL_DATA_DIR - local world data directory (manifest.json)
+ * 3. Standard Next.js app router locations (app/.well-known/workflow/v1/manifest.json)
+ * 4. WORKFLOW_EMBEDDED_DATA_DIR - legacy data directory
  */
 export async function fetchWorkflowsManifest(
   _worldEnv: EnvMap
 ): Promise<ServerActionResult<any>> {
+  // Ensure local-world data dir is derived when running packages/web directly.
+  await ensureLocalWorldDataDirEnv();
+
   const cwd = getObservabilityCwd();
 
   // Helper to resolve path (absolute or relative to cwd)
@@ -1031,13 +1036,33 @@ export async function fetchWorkflowsManifest(
     manifestPaths.push(resolvePath(process.env.WORKFLOW_MANIFEST_PATH));
   }
 
-  // 2. Standard Next.js app router locations
+  // 2. Local world data directory manifest
+  if (process.env.WORKFLOW_LOCAL_DATA_DIR) {
+    const localDataDir = resolvePath(process.env.WORKFLOW_LOCAL_DATA_DIR);
+    manifestPaths.push(path.join(localDataDir, 'manifest.json'));
+
+    // When local data lives in `.next/workflow-data`, the manifest is typically
+    // generated under the project app router path, not inside the data dir.
+    const localInfo = await findWorkflowDataDir(localDataDir);
+    manifestPaths.push(
+      path.join(
+        localInfo.projectDir,
+        'app/.well-known/workflow/v1/manifest.json'
+      ),
+      path.join(
+        localInfo.projectDir,
+        'src/app/.well-known/workflow/v1/manifest.json'
+      )
+    );
+  }
+
+  // 3. Standard Next.js app router locations
   manifestPaths.push(
     path.join(cwd, 'app/.well-known/workflow/v1/manifest.json'),
     path.join(cwd, 'src/app/.well-known/workflow/v1/manifest.json')
   );
 
-  // 3. Legacy data directory locations
+  // 4. Legacy data directory locations
   if (process.env.WORKFLOW_EMBEDDED_DATA_DIR) {
     manifestPaths.push(
       path.join(

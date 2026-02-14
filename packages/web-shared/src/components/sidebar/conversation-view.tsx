@@ -1,5 +1,6 @@
 import type { ModelMessage } from 'ai';
 import { Streamdown } from 'streamdown';
+import { DataInspector } from '../ui/data-inspector';
 
 interface ConversationViewProps {
   messages: ModelMessage[];
@@ -108,24 +109,27 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
           <span style={{ color: 'var(--ds-purple-900)' }}>{part.toolName}</span>
         </div>
         {part.input != null && (
-          <pre
-            className="mt-1.5 text-[10px] overflow-x-auto p-1.5 rounded"
-            style={{
-              backgroundColor: 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-800)',
-            }}
+          <div
+            className="mt-1.5 overflow-x-auto p-1.5 rounded"
+            style={{ backgroundColor: 'var(--ds-gray-100)' }}
           >
-            {typeof part.input === 'string'
-              ? part.input
-              : JSON.stringify(part.input, null, 2)}
-          </pre>
+            {typeof part.input === 'string' ? (
+              <pre
+                className="text-[10px]"
+                style={{ color: 'var(--ds-gray-800)' }}
+              >
+                {part.input}
+              </pre>
+            ) : (
+              <DataInspector data={part.input} />
+            )}
+          </div>
         )}
       </div>
     );
   }
 
   if (part.type === 'tool-result') {
-    const outputText = formatOutput(part.output);
     return (
       <div
         className="rounded border px-2 py-1.5"
@@ -140,16 +144,22 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
             {part.toolName} result
           </span>
         </div>
-        {outputText && (
-          <pre
-            className="mt-1.5 text-[10px] overflow-x-auto max-h-[80px] p-1.5 rounded"
-            style={{
-              backgroundColor: 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-800)',
-            }}
+        {part.output != null && (
+          <div
+            className="mt-1.5 overflow-x-auto max-h-[200px] overflow-y-auto p-1.5 rounded"
+            style={{ backgroundColor: 'var(--ds-gray-100)' }}
           >
-            {outputText}
-          </pre>
+            {typeof part.output === 'string' ? (
+              <pre
+                className="text-[10px]"
+                style={{ color: 'var(--ds-gray-800)' }}
+              >
+                {part.output}
+              </pre>
+            ) : (
+              <DataInspector data={part.output} expandLevel={1} />
+            )}
+          </div>
         )}
       </div>
     );
@@ -225,11 +235,4 @@ function parseContent(content: unknown): ParsedPart[] {
   }
 
   return [];
-}
-
-function formatOutput(output: unknown): string | null {
-  if (output == null) return null;
-  const text =
-    typeof output === 'string' ? output : JSON.stringify(output, null, 2);
-  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }

@@ -189,10 +189,12 @@ export function useWorkflowRuns(
   ]);
   const [maxPagesVisited, setMaxPagesVisited] = useState(1);
 
-  // Store PageResult for each page
+  // Store PageResult for each page.
+  // Initial isLoading is false so SSR and client hydration agree; after mount,
+  // the useEffect that triggers the first fetch will set it to true on the client.
   const [allPageResults, setAllPageResults] = useState<
     Map<number, PageResult<WorkflowRun>>
-  >(new Map([[0, { data: null, isLoading: true, error: null }]]));
+  >(new Map([[0, { data: null, isLoading: false, error: null }]]));
 
   // Cache for fetched pages - key is cursor (or 'initial' for first page)
   const pageCache = useRef<
@@ -412,10 +414,12 @@ export function useWorkflowHooks(
   ]);
   const [maxPagesVisited, setMaxPagesVisited] = useState(1);
 
-  // Store PageResult for each page
+  // Store PageResult for each page.
+  // Initial isLoading is false so SSR and client hydration agree; after mount
+  // the useEffect that triggers the first fetch will set it to true on the client.
   const [allPageResults, setAllPageResults] = useState<
     Map<number, PageResult<Hook>>
-  >(new Map([[0, { data: null, isLoading: true, error: null }]]));
+  >(new Map([[0, { data: null, isLoading: false, error: null }]]));
 
   // Cache for fetched pages - key is cursor (or 'initial' for first page)
   const pageCache = useRef<
@@ -1218,11 +1222,12 @@ function isServerActionError(value: unknown): value is ServerActionError {
 export async function readStream(
   _env: EnvMap,
   streamId: string,
-  startIndex?: number
+  startIndex?: number,
+  signal?: AbortSignal
 ): Promise<ReadableStream<unknown>> {
   try {
     const url = `/api/stream/${encodeURIComponent(streamId)}${startIndex != null ? `?startIndex=${startIndex}` : ''}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     if (!response.ok) {
       const errorData = await response.json().catch(() => null);
       if (errorData && isServerActionError(errorData)) {

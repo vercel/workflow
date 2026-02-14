@@ -29,8 +29,9 @@ Run the demo workflow with OpenTelemetry tracing enabled.
    pnpm dev
    ```
 
-   Also start the workflow web UI in a separate terminal:
+   Also start the workflow web UI in a separate terminal (from the same workbench directory):
    ```bash
+   cd workbench/nextjs-turbopack
    npx workflow web
    ```
 

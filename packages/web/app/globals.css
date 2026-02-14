@@ -128,6 +128,13 @@
   --ds-gray-900: rgb(23 23 23);
   --ds-gray-1000: rgb(0 0 0);
 
+  /* Gray Alpha */
+  --ds-gray-alpha-100: rgba(0, 0, 0, 0.05);
+  --ds-gray-alpha-200: hsla(0, 0%, 0%, 0.081);
+  --ds-gray-alpha-400: hsla(0, 0%, 0%, 0.08);
+  --ds-gray-alpha-700: hsla(0, 0%, 0%, 0.44);
+  --ds-gray-alpha-1000: hsla(0, 0%, 0%, 0.91);
+
   /* Blue */
   --ds-blue-100: rgb(224 242 254);
   --ds-blue-200: rgb(186 230 253);
@@ -188,6 +195,12 @@
   --ds-purple-900: rgb(88 28 135);
   --ds-purple-1000: rgb(59 7 100);
 
+  /* Pink */
+  --ds-pink-200: rgb(252 231 243);
+  --ds-pink-400: rgb(249 168 212);
+  --ds-pink-500: rgb(244 114 182);
+  --ds-pink-900: rgb(131 24 67);
+
   /* Teal */
   --ds-teal-100: rgb(204 251 241);
   --ds-teal-200: rgb(153 246 228);
@@ -204,6 +217,13 @@
   --ds-shadow-small: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 24px rgba(0, 0, 0, 0.05);
   --ds-shadow-medium: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 4px 8px rgba(0, 0, 0, 0.07), 0 24px 48px rgba(0, 0, 0, 0.07);
   --ds-shadow-large: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 8px 16px rgba(0, 0, 0, 0.10), 0 48px 96px rgba(0, 0, 0, 0.10);
+  --ds-shadow-menu: var(--ds-shadow-medium);
+
+  /* Legacy aliases used by trace-viewer.module.css */
+  --geist-background: var(--ds-background-100);
+  --accents-2: var(--ds-gray-300);
+  --accents-5: var(--ds-gray-700);
+  --accents-7: var(--ds-gray-900);
 }
 
 .dark {
@@ -265,6 +285,13 @@
   --ds-gray-900: rgb(245 245 245);
   --ds-gray-1000: rgb(255 255 255);
 
+  /* Gray Alpha - Dark Mode */
+  --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
+  --ds-gray-alpha-200: rgba(255, 255, 255, 0.09);
+  --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
+  --ds-gray-alpha-700: rgba(255, 255, 255, 0.45);
+  --ds-gray-alpha-1000: rgba(255, 255, 255, 0.92);
+
   /* Blue - Dark Mode */
   --ds-blue-100: rgb(8 47 73);
   --ds-blue-200: rgb(12 74 110);
@@ -325,6 +352,12 @@
   --ds-purple-900: rgb(233 213 255);
   --ds-purple-1000: rgb(243 232 255);
 
+  /* Pink - Dark Mode */
+  --ds-pink-200: rgb(131 24 67);
+  --ds-pink-400: rgb(157 23 77);
+  --ds-pink-500: rgb(190 24 93);
+  --ds-pink-900: rgb(251 207 232);
+
   /* Teal - Dark Mode */
   --ds-teal-100: rgb(4 47 46);
   --ds-teal-200: rgb(19 78 74);
@@ -341,6 +374,13 @@
   --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
   --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
   --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+  --ds-shadow-menu: var(--ds-shadow-medium);
+
+  /* Legacy aliases used by trace-viewer.module.css */
+  --geist-background: var(--ds-background-100);
+  --accents-2: var(--ds-gray-300);
+  --accents-5: var(--ds-gray-700);
+  --accents-7: var(--ds-gray-900);
 }
 
 /* System dark mode preference (when no explicit light/dark class is set) */
@@ -400,6 +440,11 @@
     --ds-gray-800: rgb(229 229 229);
     --ds-gray-900: rgb(245 245 245);
     --ds-gray-1000: rgb(255 255 255);
+    --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
+    --ds-gray-alpha-200: rgba(255, 255, 255, 0.09);
+    --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
+    --ds-gray-alpha-700: rgba(255, 255, 255, 0.45);
+    --ds-gray-alpha-1000: rgba(255, 255, 255, 0.92);
     --ds-blue-100: rgb(8 47 73);
     --ds-blue-200: rgb(12 74 110);
     --ds-blue-300: rgb(7 89 133);
@@ -450,6 +495,10 @@
     --ds-purple-800: rgb(216 180 254);
     --ds-purple-900: rgb(233 213 255);
     --ds-purple-1000: rgb(243 232 255);
+    --ds-pink-200: rgb(131 24 67);
+    --ds-pink-400: rgb(157 23 77);
+    --ds-pink-500: rgb(190 24 93);
+    --ds-pink-900: rgb(251 207 232);
     --ds-teal-100: rgb(4 47 46);
     --ds-teal-200: rgb(19 78 74);
     --ds-teal-300: rgb(17 94 89);
@@ -463,6 +512,11 @@
     --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
     --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
     --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+    --ds-shadow-menu: var(--ds-shadow-medium);
+    --geist-background: var(--ds-background-100);
+    --accents-2: var(--ds-gray-300);
+    --accents-5: var(--ds-gray-700);
+    --accents-7: var(--ds-gray-900);
   }
 }
 

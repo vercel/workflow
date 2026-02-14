@@ -33,6 +33,10 @@ interface TraceViewerProps {
   withPanel?: boolean;
   getQuickLinks?: GetQuickLinks;
   highlightedSpans?: string[];
+  /** Render all spans immediately (no progressive streaming). */
+  eagerRender?: boolean;
+  /** Whether the trace is live (for continuous tick updates). */
+  isLive?: boolean;
 }
 
 export function TraceViewerProvider({
@@ -97,25 +101,82 @@ export function TraceViewerTimeline({
   height,
   withPanel = false,
   highlightedSpans,
+  eagerRender = false,
+  isLive = false,
 }: Omit<TraceViewerProps, 'getQuickLinks'>): ReactNode {
   const isSkeleton = trace === skeletonTrace;
   const { state, dispatch } = useTraceViewer();
   const { timelineRef, scrollSnapshotRef } = state;
   const memoCache = state.memoCacheRef.current;
-  const hideSearchBar =
-    (highlightedSpans?.length ?? 0) > 0 || trace.spans.length <= 10;
+  const hideSearchBar = (highlightedSpans?.length ?? 0) > 0;
+
+  const hasInitializedRef = useRef(false);
+  const prevSpanKeyRef = useRef('');
+  const prevRootRef = useRef<ReturnType<typeof parseTrace>['root'] | null>(
+    null
+  );
+  const prevSpanMapRef = useRef<ReturnType<typeof parseTrace>['map']>({});
 
   useEffect(() => {
-    const { root, map: spanMap } = parseTrace(trace);
+    const { root: newRoot, map: newSpanMap } = parseTrace(trace);
+    const isInitial = !hasInitializedRef.current;
+    hasInitializedRef.current = true;
+
+    // Build a structural key from span IDs + event counts.
+    // When only timing changes (same spans, same events), we can skip the
+    // worker restart. When events change (step completed, etc.) we need a
+    // full update because the VisibleSpan objects rendered by React hold
+    // copies of the events from the worker — in-place mutation won't reach them.
+    const spanKey = Object.keys(newSpanMap)
+      .sort()
+      .map((id) => `${id}:${newSpanMap[id].events?.length ?? 0}`)
+      .join(',');
+
+    if (
+      !isInitial &&
+      spanKey === prevSpanKeyRef.current &&
+      prevRootRef.current
+    ) {
+      // Same span set, same event counts — only timing changed.
+      // Mutate in-place so the worker effect (which depends on root/spanMap
+      // references) does NOT restart.
+      const oldRoot = prevRootRef.current;
+      const oldSpanMap = prevSpanMapRef.current;
+
+      oldRoot.endTime = newRoot.endTime;
+      oldRoot.duration = newRoot.duration;
+
+      for (const [id, newNode] of Object.entries(newSpanMap)) {
+        const oldNode = oldSpanMap[id];
+        if (oldNode) {
+          oldNode.endTime = newNode.endTime;
+          oldNode.duration = newNode.duration;
+          Object.assign(oldNode.span, newNode.span);
+        }
+      }
+
+      // Trigger re-render (scale/markers) without restarting the worker.
+      // useLiveTick handles continuous scale recalculation for live runs.
+      dispatch({ type: 'forceRender' });
+      return;
+    }
+
+    // Structure changed or initial load — full dispatch (worker computes new rows)
+    prevSpanKeyRef.current = spanKey;
+    prevRootRef.current = newRoot;
+    prevSpanMapRef.current = newSpanMap;
     dispatch({
-      type: 'setRoot',
-      root,
-      spanMap,
+      type: isInitial ? 'setRoot' : 'updateRoot',
+      root: newRoot,
+      spanMap: newSpanMap,
       resources: trace.resources || [],
     });
   }, [dispatch, trace]);
 
-  const { rows, spans, events, scale } = useStreamingSpans(highlightedSpans);
+  const { rows, spans, events, scale } = useStreamingSpans(
+    highlightedSpans,
+    eagerRender
+  );
 
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -202,7 +263,11 @@ export function TraceViewerTimeline({
     [dispatch]
   );
 
-  // Zoom helper
+  // Zoom helper — apply the scroll snapshot once after a zoom operation so
+  // the anchor point stays at the same screen position, then clear it.
+  // Without clearing, live runs (where scale changes every frame via
+  // detectBaseScale) would continuously reset scrollLeft and prevent the
+  // user from scrolling horizontally.
   useLayoutEffect(() => {
     const $timeline = timelineRef.current;
     if (!$timeline) return;
@@ -210,6 +275,7 @@ export function TraceViewerTimeline({
     const snapshot = scrollSnapshotRef.current;
     if (snapshot) {
       $timeline.scrollLeft = snapshot.anchorT * scale - snapshot.anchorX;
+      scrollSnapshotRef.current = undefined;
     }
   }, [scrollSnapshotRef, timelineRef, scale]);
 
@@ -359,7 +425,7 @@ export function TraceViewerTimeline({
                 height: timelineHeight - TIMELINE_PADDING * 2,
               }}
             >
-              <Markers scale={scale} />
+              <Markers scale={scale} isLive={isLive} />
               <EventMarkers events={events} root={state.root} scale={scale} />
               <CursorMarker
                 dispatch={dispatch}

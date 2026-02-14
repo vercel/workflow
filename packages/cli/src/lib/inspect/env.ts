@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import { logger } from '../config/log.js';
 import { getWorkflowConfig } from '../config/workflow-config.js';
-import { getAuth } from './auth.js';
+import { getAuthToken } from './auth.js';
 import { fetchTeamInfo } from './vercel-api.js';
 import {
   findRepoRoot,
@@ -201,11 +201,11 @@ export const inferVercelEnvVars = async () => {
 
   if (!envVars.WORKFLOW_VERCEL_AUTH_TOKEN) {
     logger.debug('Inferring vercel auth token from CLI auth file');
-    const auth = getAuth();
-    if (!auth) {
+    const token = await getAuthToken();
+    if (!token) {
       throw new Error('Could not find credentials. Run `vc login` to log in.');
     }
-    envVars.WORKFLOW_VERCEL_AUTH_TOKEN = auth.token;
+    envVars.WORKFLOW_VERCEL_AUTH_TOKEN = token;
     writeEnvVars(envVars);
   }
 

@@ -118,12 +118,6 @@ export interface TraceViewerState {
    */
   isMobile: boolean;
   /**
-   * @deprecated Panel rendering has been moved outside the context.
-   * This field is kept for backwards compatibility but is no longer
-   * used by the workflow trace viewer.
-   */
-  customPanelComponent: ReactNode | null;
-  /**
    * A function to provide custom class names for spans.
    */
   customSpanClassNameFunc?: (span: SpanNode) => string;
@@ -216,6 +210,13 @@ export type TraceViewerAction =
     }
   | {
       type: 'forceRender';
+    }
+  | {
+      /** Like setRoot but preserves scroll position and memo cache (for incremental data updates) */
+      type: 'updateRoot';
+      root: RootNode;
+      spanMap: Record<string, SpanNode>;
+      resources: Resource[];
     };
 
 export interface TraceViewerContextProps {
@@ -251,7 +252,6 @@ export const initialState: TraceViewerState = {
   getQuickLinks: () => [],
   withPanel: false,
   isMobile: false,
-  customPanelComponent: null,
 };
 
 const getMinScale = (state: TraceViewerState): number => {
@@ -562,6 +562,23 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
       return {
         ...state,
       };
+    case 'updateRoot':
+      // Incremental update: preserve scroll snapshot and only invalidate
+      // memo cache for spans whose data may have changed
+      state.memoCacheRef.current.set('', {});
+      return reducer(
+        {
+          ...state,
+          root: action.root,
+          spanMap: action.spanMap,
+          resourceMap: Object.fromEntries(
+            action.resources.map(({ name, attributes }) => [name, attributes])
+          ),
+        },
+        {
+          type: 'detectBaseScale',
+        }
+      );
   }
 };
 
@@ -594,7 +611,6 @@ export function TraceViewerContextProvider({
       scrollSnapshotRef,
       customSpanClassNameFunc,
       customSpanEventClassNameFunc,
-      customPanelComponent,
       memoCacheRef,
       withPanel,
       getQuickLinks: (span) => {
@@ -624,11 +640,23 @@ export function TraceViewerContextProvider({
   );
 
   return (
-    <TraceViewerContext.Provider value={value}>
-      {children}
-    </TraceViewerContext.Provider>
+    <CustomPanelContext.Provider value={customPanelComponent}>
+      <TraceViewerContext.Provider value={value}>
+        {children}
+      </TraceViewerContext.Provider>
+    </CustomPanelContext.Provider>
   );
 }
 
 export const useTraceViewer = (): TraceViewerContextProps =>
   useContext(TraceViewerContext);
+
+/**
+ * Separate context for the custom panel component. This is intentionally
+ * outside the useReducer state so that the panel re-renders reactively
+ * when props like spanDetailData change.
+ */
+const CustomPanelContext = createContext<ReactNode | null>(null);
+
+export const useCustomPanelComponent = (): ReactNode | null =>
+  useContext(CustomPanelContext);
