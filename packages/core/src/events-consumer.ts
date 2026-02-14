@@ -25,6 +25,13 @@ export class EventsConsumer {
   private onUnconsumedEvent?: (event: Event) => void;
   private pendingUnconsumedCheck: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * @param events - The event log to consume.
+   * @param onUnconsumedEvent - Optional callback invoked when a non-null event
+   *   cannot be consumed by any registered callback, indicating an orphaned or
+   *   invalid event in the event log. Called asynchronously after a macrotask
+   *   delay to allow pending callback subscriptions to settle first.
+   */
   constructor(events: Event[], onUnconsumedEvent?: (event: Event) => void) {
     this.events = events;
     this.eventIndex = 0;

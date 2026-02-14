@@ -11,6 +11,8 @@ related:
 
 This error occurs when the Workflow runtime encounters an event in the event log that no registered consumer can process. This means the event log is in an invalid state — typically due to duplicate or orphaned events.
 
+This is a **workflow-level fatal error**. It cannot be caught or handled inside your workflow code. A corrupted event log immediately fails the entire run without executing any more user code. The run must be retried from outside the workflow.
+
 ## Error Message
 
 ```
@@ -31,39 +33,47 @@ Common scenarios that produce this error:
 
 ## What To Do
 
-This error typically indicates a bug in the event delivery infrastructure, not in your workflow code. Your workflow code does not need to change.
+This error indicates a bug in the Workflow SDK or Workflow server — not in your workflow code. Your workflow code does not need to change. Follow these steps to resolve the issue:
 
-### Check for duplicate event delivery
+### 1. Upgrade to the latest `workflow` package
 
-If you see duplicate `wait_completed` or `step_completed` events, the issue is likely at-least-once delivery producing duplicates. This is a platform-level concern — the Workflow runtime is designed to detect and reject these rather than silently hanging.
+The bug that caused the corrupted event log may have already been identified and fixed in a newer version. Update to the latest version:
 
-### Retry the workflow run
-
-Since the event log is corrupted, the current run cannot make progress. You can cancel the run and start a new one:
-
-```typescript lineNumbers
-import { cancelRun, startWorkflow } from "workflow";
-
-// Cancel the corrupted run
-await cancelRun(runId);
-
-// Start a fresh run
-const newRun = await startWorkflow("myWorkflow", input);
+```bash
+npm install workflow@latest
 ```
 
-### Inspect the event log
+### 2. Retry the failed run
 
-If the error persists across runs, inspect the event log to identify the pattern of corruption. The error message includes the `eventType`, `correlationId`, and `eventId` of the offending event, which can help pinpoint the source.
+Since this is a fatal error, the run is automatically marked as `failed`. You can start a new run using the Workflow Dashboard or the CLI:
 
-## Handling This Error
+```bash
+# Using the CLI
+npx workflow runs start <workflow-name> [input]
+```
 
-This error is a `WorkflowRuntimeError` and is fatal — the workflow run will fail. You can observe it via the run's failed status:
+### 3. Report the issue
+
+If the error persists after upgrading, please [open an issue on GitHub](https://github.com/vercel/workflow/issues/new) so we can investigate and fix the underlying bug. Include the following details to help us diagnose the problem:
+
+- The version of the `workflow` package you are using
+- The run ID(s) of the affected workflow run(s)
+- The error message (including `eventType`, `correlationId`, and `eventId`)
+- Any details about the event log or the workflow that triggered the error
+
+## This Error Cannot Be Caught
+
+Unlike other workflow errors, a corrupted event log error is **not catchable** inside your workflow function. Because the event log itself is invalid, the runtime cannot safely continue executing any user code. The entire run fails immediately and is marked as `failed`.
+
+To handle this programmatically from outside the workflow, you can check the run status:
 
 ```typescript lineNumbers
-import { getRun } from "workflow";
+import { getRun, startWorkflow } from "workflow";
 
 const run = await getRun(runId);
 if (run.status === "failed") {
   console.error("Run failed:", run.error);
+  // Optionally start a new run
+  const newRun = await startWorkflow("myWorkflow", input);
 }
 ```
