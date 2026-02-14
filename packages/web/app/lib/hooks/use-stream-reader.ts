@@ -7,8 +7,8 @@ import { readStream } from '~/lib/workflow-api-client';
 
 export interface StreamChunk {
   id: number;
-  /** The raw hydrated value from the stream */
-  data: unknown;
+  /** Serialized payload expected by StreamViewer */
+  text: string;
 }
 
 export function useStreamReader(env: EnvMap, streamId: string | null) {
@@ -29,7 +29,8 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
     }
 
     let mounted = true;
-    abortControllerRef.current = new AbortController();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
     setIsLive(true);
 
     const revivers = getWebRevivers();
@@ -58,7 +59,11 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
         } catch {
           hydrated = value;
         }
-        setChunks((prev) => [...prev, { id: chunkId, data: hydrated }]);
+        const text =
+          typeof hydrated === 'string'
+            ? hydrated
+            : JSON.stringify(hydrated, null, 2);
+        setChunks((prev) => [...prev, { id: chunkId, text }]);
       }
     };
 
@@ -120,10 +125,18 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
 
     const readStreamData = async () => {
       try {
-        const stream = await readStream(env, streamId);
+        const stream = await readStream(
+          env,
+          streamId,
+          undefined,
+          abortController.signal
+        );
         const reader = (stream as ReadableStream<Uint8Array>).getReader();
         await processFramedStream(reader);
       } catch (err) {
+        if (abortController.signal.aborted) {
+          return;
+        }
         handleStreamError(err);
       }
     };

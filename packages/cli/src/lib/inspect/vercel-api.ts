@@ -40,10 +40,7 @@ export async function fetchTeamInfo(
           '\nPlease ensure you are logged in and have access to the team:'
         )
       );
-      logger.warn(chalk.yellow('  1. Run `vercel login` to authenticate'));
-      logger.warn(
-        chalk.yellow('  2. Run `vercel env pull` to sync environment variables')
-      );
+      logger.warn(chalk.yellow('  Run `vercel login` to authenticate'));
       return null;
     }
 

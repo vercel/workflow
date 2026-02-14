@@ -46,7 +46,7 @@ import {
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
-import { fetchEventsByCorrelationId } from '~/lib/rpc-client';
+import { fetchEvents, fetchEventsByCorrelationId } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
@@ -93,7 +93,24 @@ function GraphTabContent({
   // Find the workflow graph for this run
   const workflowGraph = useMemo(() => {
     if (!graphManifest || !run.workflowName) return null;
-    return graphManifest.workflows[run.workflowName] ?? null;
+    const runWorkflowName = String(run.workflowName).trim();
+
+    // Primary lookup: manifest key match.
+    const direct = graphManifest.workflows[runWorkflowName];
+    if (direct) return direct;
+
+    const runShortName = parseWorkflowName(runWorkflowName)?.shortName;
+    const workflows = Object.values(graphManifest.workflows);
+
+    // Fallbacks: workflowId/workflowName/shortName match.
+    return (
+      workflows.find((wf) => {
+        if (wf.workflowId === runWorkflowName) return true;
+        if (wf.workflowName === runWorkflowName) return true;
+        if (!runShortName) return false;
+        return parseWorkflowName(wf.workflowName)?.shortName === runShortName;
+      }) ?? null
+    );
   }, [graphManifest, run.workflowName]);
 
   // Map run data to execution overlay
@@ -161,6 +178,13 @@ interface RunDetailViewProps {
 }
 
 type Tab = 'trace' | 'graph' | 'streams' | 'events';
+const RUN_LEVEL_EVENT_TYPES = new Set([
+  'run_created',
+  'run_started',
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+]);
 
 export function RunDetailView({
   runId,
@@ -240,20 +264,52 @@ export function RunDetailView({
 
   const handleLoadEventData = useCallback(
     async (event: Event) => {
-      if (!event.correlationId) {
+      const isRunLevelEvent = RUN_LEVEL_EVENT_TYPES.has(event.eventType);
+
+      if (!isRunLevelEvent && event.correlationId) {
+        const { error, result } = await unwrapServerActionResult(
+          fetchEventsByCorrelationId(env, event.correlationId, {
+            sortOrder: 'asc',
+            limit: 100,
+            withData: true,
+          })
+        );
+        if (error) {
+          throw error;
+        }
+        const rawEvent = result.data.find((e) => e.eventId === event.eventId);
+        const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
+        if (fullEvent && 'eventData' in fullEvent) {
+          return fullEvent.eventData;
+        }
         return null;
       }
+
       const { error, result } = await unwrapServerActionResult(
-        fetchEventsByCorrelationId(env, event.correlationId, {
-          sortOrder: 'asc',
-          limit: 100,
+        fetchEvents(env, event.runId, {
+          sortOrder: 'desc',
+          limit: 1000,
           withData: true,
         })
       );
       if (error) {
         throw error;
       }
-      const rawEvent = result.data.find((e) => e.eventId === event.eventId);
+      let rawEvent = result.data.find((e) => e.eventId === event.eventId);
+      if (!rawEvent) {
+        const { error: ascError, result: ascResult } =
+          await unwrapServerActionResult(
+            fetchEvents(env, event.runId, {
+              sortOrder: 'asc',
+              limit: 1000,
+              withData: true,
+            })
+          );
+        if (ascError) {
+          throw ascError;
+        }
+        rawEvent = ascResult.data.find((e) => e.eventId === event.eventId);
+      }
       const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
       if (fullEvent && 'eventData' in fullEvent) {
         return fullEvent.eventData;
@@ -317,7 +373,11 @@ export function RunDetailView({
     spanSelection?.resourceId ?? '',
     {
       runId: spanSelection?.runId,
-      enabled: Boolean(spanSelection?.resource && spanSelection?.resourceId),
+      enabled: Boolean(
+        spanSelection?.resource &&
+          spanSelection?.resourceId &&
+          spanSelection.resource !== 'hook'
+      ),
     }
   );
 
@@ -673,6 +733,8 @@ export function RunDetailView({
                 <div className="h-full">
                   <EventListView
                     events={allEvents}
+                    steps={allSteps}
+                    run={run}
                     onLoadEventData={handleLoadEventData}
                   />
                 </div>

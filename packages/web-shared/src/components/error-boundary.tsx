@@ -1,70 +1,59 @@
 'use client';
 
-import React, { type ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import { Component } from 'react';
 import { ErrorCard } from './ui/error-card';
 
-interface ErrorBoundaryProps {
+export interface ErrorBoundaryProps {
   children: ReactNode;
-  /** Optional title for the error message */
+  /** Optional fallback UI to render on error. When omitted, a default ErrorCard is shown. */
+  fallback?: ReactNode;
+  /** Optional title for the default error card (used when no fallback is provided) */
   title?: string;
-  /** Optional fallback component to render on error */
-  fallback?: (error: Error, reset: () => void) => ReactNode;
+  /** Optional callback when an error is caught */
+  onCatch?: (error: unknown, retry: () => void) => void;
 }
 
-interface ErrorBoundaryState {
+export interface ErrorBoundaryState {
   hasError: boolean;
-  error: Error | null;
+  error: unknown;
 }
 
-/**
- * Error boundary component that catches errors in child components
- * and displays them without breaking the entire application.
- *
- * Errors are localized to this boundary, so other parts of the UI
- * remain functional.
- */
-export class ErrorBoundary extends React.Component<
+export class ErrorBoundary extends Component<
   ErrorBoundaryProps,
   ErrorBoundaryState
 > {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = {
-      hasError: false,
-      error: null,
-    };
+    this.state = { hasError: false, error: null };
   }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return {
-      hasError: true,
-      error,
-    };
+  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+    return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    // Log error for debugging
-    console.error('Error caught by boundary:', error, errorInfo);
+  retry(): void {
+    this.setState({ hasError: false, error: null });
   }
 
-  handleReset = () => {
-    this.setState({
-      hasError: false,
-      error: null,
-    });
-  };
+  componentDidCatch(error: unknown, errorInfo: unknown): void {
+    if (process.env.NODE_ENV === 'development') {
+      console.error(error, errorInfo);
+    }
+    this.props.onCatch?.(error, () => this.retry());
+  }
 
-  render() {
-    if (this.state.hasError && this.state.error) {
-      // Use custom fallback if provided
+  render(): ReactNode {
+    if (this.state.hasError) {
       if (this.props.fallback) {
-        return this.props.fallback(this.state.error, this.handleReset);
+        return this.props.fallback;
       }
 
       // Default error UI
-      const errorDetails = this.state.error.stack
-        ? `${this.state.error.message}\n\n${this.state.error.stack}`
-        : this.state.error.message;
+      const err = this.state.error instanceof Error ? this.state.error : null;
+      const errorDetails = err?.stack
+        ? `${err.message}\n\n${err.stack}`
+        : (err?.message ?? 'Unknown error');
 
       return (
         <ErrorCard

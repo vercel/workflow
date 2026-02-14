@@ -1,6 +1,5 @@
 'use client';
 
-import clsx from 'clsx';
 import { Send, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -17,6 +16,9 @@ interface ResolveHookModalProps {
 
 /**
  * Modal component for resolving a hook by entering a JSON payload.
+ *
+ * Styled to match the Geist design-system dialog component used in the
+ * Vercel dashboard so it looks native when rendered inside `front`.
  */
 export function ResolveHookModal({
   isOpen,
@@ -82,6 +84,15 @@ export function ResolveHookModal({
     [submitPayload]
   );
 
+  const isMacPlatform =
+    typeof navigator !== 'undefined' &&
+    (
+      (navigator as Navigator & { userAgentData?: { platform?: string } })
+        .userAgentData?.platform ?? navigator.userAgent
+    )
+      .toLowerCase()
+      .includes('mac');
+
   // Handle Cmd/Ctrl + Enter to submit
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -99,30 +110,60 @@ export function ResolveHookModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 50,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="resolve-hook-modal-title"
     >
-      {/* Backdrop */}
+      {/* Backdrop — matches Geist dialog ::backdrop */}
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.7)',
+        }}
         onClick={isSubmitting ? undefined : onClose}
       />
 
-      {/* Modal content */}
+      {/* Modal card — matches Geist dialog.geist-dialog */}
       <div
-        className={clsx(
-          'relative z-10 w-full max-w-lg mx-4',
-          'bg-background text-foreground rounded-lg shadow-xl',
-          'border border-border'
-        )}
+        style={{
+          position: 'relative',
+          zIndex: 10,
+          width: 480,
+          maxWidth: 'calc(100% - 32px)',
+          borderRadius: 12,
+          border: 'none',
+          boxShadow: 'var(--ds-shadow-menu)',
+          background: 'var(--ds-background-100)',
+          color: 'var(--ds-gray-1000)',
+          overflow: 'hidden',
+        }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '16px 24px',
+          }}
+        >
           <h2
             id="resolve-hook-modal-title"
-            className="text-lg font-semibold text-foreground"
+            style={{
+              margin: 0,
+              fontSize: 16,
+              fontWeight: 600,
+              color: 'var(--ds-gray-1000)',
+            }}
           >
             Resolve Hook
           </h2>
@@ -130,30 +171,69 @@ export function ResolveHookModal({
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
-            className={clsx(
-              'p-1 rounded-md transition-colors',
-              'text-muted-foreground hover:text-foreground',
-              'hover:bg-muted',
-              'disabled:opacity-50 disabled:cursor-not-allowed'
-            )}
             aria-label="Close modal"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 4,
+              borderRadius: 6,
+              border: 'none',
+              background: 'transparent',
+              color: 'var(--ds-gray-900)',
+              cursor: isSubmitting ? 'not-allowed' : 'pointer',
+              opacity: isSubmitting ? 0.5 : 1,
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'var(--ds-gray-alpha-200)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+            }}
           >
-            <X className="h-5 w-5" />
+            <X style={{ width: 16, height: 16 }} />
           </button>
         </div>
 
         {/* Body */}
         <form onSubmit={handleSubmit}>
-          <div className="px-4 py-4">
+          <div style={{ padding: '0 24px 16px' }}>
             <label
               htmlFor="json-payload"
-              className="block text-sm font-medium text-foreground mb-2"
+              style={{
+                display: 'block',
+                fontSize: 14,
+                fontWeight: 500,
+                marginBottom: 6,
+                color: 'var(--ds-gray-1000)',
+              }}
             >
               JSON Payload
             </label>
-            <p className="text-xs text-muted-foreground mb-3">
+            <p
+              style={{
+                fontSize: 13,
+                marginBottom: 12,
+                marginTop: 0,
+                color: 'var(--ds-gray-900)',
+                lineHeight: 1.5,
+              }}
+            >
               Enter a JSON value to send to the hook. Leave empty to send{' '}
-              <code className="px-1 py-0.5 bg-muted rounded text-xs">null</code>
+              <code
+                style={{
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  fontSize: 12,
+                  fontFamily:
+                    'var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace)',
+                  background: 'var(--ds-gray-alpha-200)',
+                  color: 'var(--ds-gray-1000)',
+                }}
+              >
+                null
+              </code>
               .
             </p>
             <textarea
@@ -167,34 +247,97 @@ export function ResolveHookModal({
               onKeyDown={handleKeyDown}
               disabled={isSubmitting}
               placeholder='{"key": "value"}'
-              className={clsx(
-                'w-full h-40 px-3 py-2 font-mono text-sm',
-                'text-foreground',
-                'bg-background',
-                'border rounded-md',
-                'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background',
-                'disabled:opacity-50 disabled:cursor-not-allowed',
-                'placeholder:text-muted-foreground',
-                parseError ? 'border-destructive' : 'border-input'
-              )}
+              style={{
+                width: '100%',
+                height: 160,
+                padding: '8px 12px',
+                fontFamily:
+                  'var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace)',
+                fontSize: 13,
+                lineHeight: 1.5,
+                borderRadius: 8,
+                border: `1px solid ${parseError ? 'var(--ds-red-700)' : 'var(--ds-gray-alpha-400)'}`,
+                color: 'var(--ds-gray-1000)',
+                background: 'var(--ds-background-100)',
+                outline: 'none',
+                resize: 'none',
+                opacity: isSubmitting ? 0.5 : 1,
+                cursor: isSubmitting ? 'not-allowed' : 'text',
+                boxSizing: 'border-box',
+              }}
             />
             {parseError && (
-              <p className="mt-2 text-sm text-destructive">{parseError}</p>
+              <p
+                style={{
+                  marginTop: 8,
+                  fontSize: 13,
+                  color: 'var(--ds-red-900)',
+                  margin: '8px 0 0',
+                }}
+              >
+                {parseError}
+              </p>
             )}
+            <p
+              style={{
+                marginTop: 8,
+                fontSize: 12,
+                color: 'var(--ds-gray-800)',
+                margin: '8px 0 0',
+              }}
+            >
+              Press{' '}
+              <kbd
+                style={{
+                  padding: '2px 5px',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  fontFamily:
+                    'var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace)',
+                  background: 'var(--ds-gray-alpha-200)',
+                  border: '1px solid var(--ds-gray-alpha-400)',
+                }}
+              >
+                {isMacPlatform ? '⌘' : 'Ctrl'}
+                +Enter
+              </kbd>{' '}
+              to submit
+            </p>
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              gap: 8,
+              padding: '12px 24px',
+              borderTop: '1px solid var(--ds-gray-alpha-400)',
+            }}
+          >
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className={clsx(
-                'px-4 py-2 text-sm font-medium rounded-md transition-colors',
-                'bg-secondary text-secondary-foreground',
-                'hover:bg-secondary/80',
-                'disabled:opacity-50 disabled:cursor-not-allowed'
-              )}
+              style={{
+                padding: '8px 16px',
+                fontSize: 14,
+                fontWeight: 500,
+                borderRadius: 8,
+                border: '1px solid var(--ds-gray-alpha-400)',
+                background: 'var(--ds-background-100)',
+                color: 'var(--ds-gray-1000)',
+                cursor: isSubmitting ? 'not-allowed' : 'pointer',
+                opacity: isSubmitting ? 0.5 : 1,
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--ds-gray-alpha-100)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'var(--ds-background-100)';
+              }}
             >
               Cancel
             </button>
@@ -202,13 +345,29 @@ export function ResolveHookModal({
               type="button"
               onClick={() => void submitPayload()}
               disabled={isSubmitting}
-              className={clsx(
-                'flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md transition-colors',
-                'bg-primary text-primary-foreground hover:bg-primary/90',
-                'disabled:opacity-50 disabled:cursor-not-allowed'
-              )}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 16px',
+                fontSize: 14,
+                fontWeight: 500,
+                borderRadius: 8,
+                border: 'none',
+                background: 'var(--ds-gray-1000)',
+                color: 'var(--ds-background-100)',
+                cursor: isSubmitting ? 'not-allowed' : 'pointer',
+                opacity: isSubmitting ? 0.5 : 1,
+                transition: 'opacity 0.15s',
+              }}
+              onMouseEnter={(e) => {
+                if (!isSubmitting) e.currentTarget.style.opacity = '0.9';
+              }}
+              onMouseLeave={(e) => {
+                if (!isSubmitting) e.currentTarget.style.opacity = '1';
+              }}
             >
-              <Send className="h-4 w-4" />
+              <Send style={{ width: 14, height: 14 }} />
               {isSubmitting ? 'Sending...' : 'Send Payload'}
             </button>
           </div>

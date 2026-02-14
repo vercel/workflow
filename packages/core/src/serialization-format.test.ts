@@ -213,6 +213,60 @@ describe('hydrateResourceIO', () => {
     expect(hydrated.eventData.type).toBe('step_completed');
   });
 
+  it('should hydrate event eventData.output', () => {
+    const outputPayload = makeDevlPayload({ message: 'done' });
+
+    const event = {
+      eventId: 'evt_456',
+      eventData: {
+        type: 'run_completed',
+        output: outputPayload,
+      },
+    };
+
+    const hydrated = hydrateResourceIO(event, testRevivers);
+    expect(hydrated.eventId).toBe('evt_456');
+    expect(hydrated.eventData.output).toEqual({ message: 'done' });
+    expect(hydrated.eventData.type).toBe('run_completed');
+  });
+
+  it('should hydrate event eventData.metadata for hook_created events', () => {
+    const metadataPayload = makeDevlPayload({ source: 'webhook', retries: 2 });
+
+    const event = {
+      eventId: 'evt_hook_created',
+      eventData: {
+        type: 'hook_created',
+        token: 'hook_tok_123',
+        metadata: metadataPayload,
+      },
+    };
+
+    const hydrated = hydrateResourceIO(event, testRevivers);
+    expect(hydrated.eventId).toBe('evt_hook_created');
+    expect(hydrated.eventData.metadata).toEqual({
+      source: 'webhook',
+      retries: 2,
+    });
+    expect(hydrated.eventData.token).toBe('hook_tok_123');
+  });
+
+  it('should hydrate event eventData.payload for hook_received events', () => {
+    const payload = makeDevlPayload({ hello: 'world', count: 7 });
+
+    const event = {
+      eventId: 'evt_hook_received',
+      eventData: {
+        type: 'hook_received',
+        payload,
+      },
+    };
+
+    const hydrated = hydrateResourceIO(event, testRevivers);
+    expect(hydrated.eventId).toBe('evt_hook_received');
+    expect(hydrated.eventData.payload).toEqual({ hello: 'world', count: 7 });
+  });
+
   it('should hydrate hook metadata', () => {
     const metadata = makeDevlPayload({ token: 'abc123' });
 

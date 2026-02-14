@@ -28,20 +28,22 @@ export function ErrorCard({
     <div className="flex justify-center w-full">
       <div
         className={cn(
-          'rounded-lg border border-destructive/50 bg-destructive/5 w-full max-w-[800px]',
+          'rounded-lg border border-red-400 w-full max-w-[800px]',
           className
         )}
+        style={{ background: 'var(--ds-red-100)' }}
       >
         <button
           type="button"
           onClick={() => setIsExpanded(!isExpanded)}
-          className="w-full px-4 py-3 flex items-center justify-between gap-2 text-left hover:bg-destructive/10 transition-colors"
+          className="w-full px-4 py-3 flex items-center justify-between gap-2 text-left transition-colors"
+          style={{ color: 'var(--ds-red-900)' }}
         >
-          <div className="flex items-center gap-2 text-destructive">
+          <div className="flex items-center gap-2">
             <AlertCircle className="h-4 w-4 shrink-0" />
             <span className="font-medium text-sm">{title}</span>
           </div>
-          <div className="flex items-center gap-1.5 text-destructive/70">
+          <div className="flex items-center gap-1.5 opacity-70">
             <span className="text-xs">Click to show details</span>
             <ChevronDown
               className={cn(
@@ -53,8 +55,17 @@ export function ErrorCard({
         </button>
 
         {isExpanded && details && (
-          <div className="px-4 pb-3 border-t border-destructive/20">
-            <pre className="mt-3 p-3 rounded-md bg-destructive/10 text-destructive text-xs font-mono whitespace-pre-wrap break-words overflow-auto">
+          <div
+            className="px-4 pb-3"
+            style={{ borderTop: '1px solid var(--ds-red-400)' }}
+          >
+            <pre
+              className="mt-3 p-3 rounded-md text-xs font-mono whitespace-pre-wrap break-words overflow-auto"
+              style={{
+                background: 'var(--ds-red-200)',
+                color: 'var(--ds-red-900)',
+              }}
+            >
               {details}
             </pre>
           </div>

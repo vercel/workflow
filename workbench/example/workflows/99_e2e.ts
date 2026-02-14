@@ -971,12 +971,39 @@ export class ChainableService {
 // ============================================================
 
 const FAULT_MAP_SYMBOL = Symbol.for('__test_5xx_fault_map');
+const FAULT_WRAPPER_INSTALLED_SYMBOL = Symbol.for(
+  '__test_5xx_fault_wrapper_installed'
+);
 
 type FaultState = {
-  skipCount: number;
+  installStepId: string;
+  targetStepId?: string;
   remaining: number;
   triggered: number;
 };
+
+function shouldInjectStepCompletedFault(state: FaultState, data: any): boolean {
+  if (data?.eventType !== 'step_completed') return false;
+
+  const correlationId =
+    typeof data?.correlationId === 'string' ? data.correlationId : null;
+  if (!correlationId) return false;
+
+  // Never inject on the install step itself. This avoids flakiness when
+  // workflow-server transiently retries install step_completed.
+  if (correlationId === state.installStepId) return false;
+
+  // Target exactly one non-install step (the first one encountered).
+  // Retries of that same step share correlationId and are intercepted.
+  state.targetStepId ??= correlationId;
+
+  if (correlationId !== state.targetStepId) return false;
+  if (state.remaining <= 0) return false;
+
+  state.remaining--;
+  state.triggered++;
+  return true;
+}
 
 /**
  * Step that installs a fault injection patch on world.events.create,
@@ -986,8 +1013,8 @@ type FaultState = {
 async function installServerErrorFaultInjection(failCount: number) {
   'use step';
   const { workflowRunId } = getWorkflowMetadata();
+  const { stepId: installStepId } = getStepMetadata();
   const world = (globalThis as any)[Symbol.for('@workflow/world//cache')];
-  const original = world.events.create.bind(world.events);
 
   // Process-level map for run-scoped fault state
   (globalThis as any)[FAULT_MAP_SYMBOL] ??= new Map<string, FaultState>();
@@ -995,27 +1022,24 @@ async function installServerErrorFaultInjection(failCount: number) {
     string,
     FaultState
   >;
-  // skipCount: 1 to skip this install step's own step_completed event
+
   faultMap.set(workflowRunId, {
-    skipCount: 1,
+    installStepId,
     remaining: failCount,
     triggered: 0,
   });
 
-  world.events.create = async (
-    rid: string,
-    data: any,
-    ...rest: any[]
-  ): Promise<any> => {
-    const state = faultMap.get(rid);
-    if (state && data.eventType === 'step_completed') {
-      if (state.skipCount > 0) {
-        state.skipCount--;
-        return original(rid, data, ...rest);
-      }
-      if (state.remaining > 0) {
-        state.remaining--;
-        state.triggered++;
+  // Install the wrapper once per process to avoid nested wrappers across runs.
+  if (!(world.events.create as any)[FAULT_WRAPPER_INSTALLED_SYMBOL]) {
+    const original = world.events.create.bind(world.events);
+
+    const wrappedCreate = async (
+      rid: string,
+      data: any,
+      ...rest: any[]
+    ): Promise<any> => {
+      const state = faultMap.get(rid);
+      if (state && shouldInjectStepCompletedFault(state, data)) {
         // Create an error that matches WorkflowAPIError.is() check:
         // isError(value) && value.name === 'WorkflowAPIError'
         const err: any = new Error('Injected 5xx');
@@ -1023,9 +1047,13 @@ async function installServerErrorFaultInjection(failCount: number) {
         err.status = 500;
         throw err;
       }
-    }
-    return original(rid, data, ...rest);
-  };
+
+      return original(rid, data, ...rest);
+    };
+
+    (wrappedCreate as any)[FAULT_WRAPPER_INSTALLED_SYMBOL] = true;
+    world.events.create = wrappedCreate;
+  }
 }
 
 /**

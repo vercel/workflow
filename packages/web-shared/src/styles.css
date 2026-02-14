@@ -1,0 +1,186 @@
+/**
+ * @workflow/web-shared default theme
+ *
+ * This file provides default values for the Geist design system CSS variables
+ * used by @workflow/web-shared components. Import this file if your application
+ * does not already provide Geist styles (e.g., via the `geist` package).
+ *
+ * If you are using this inside a Vercel dashboard app that already imports
+ * Geist styles, you do NOT need to import this file.
+ *
+ * Usage:
+ *   import '@workflow/web-shared/styles.css';
+ */
+
+:root {
+  /* Background */
+  --ds-background-100: hsl(0, 0%, 100%);
+  --ds-background-200: hsl(0, 0%, 98%);
+
+  /* Gray */
+  --ds-gray-100: hsl(0, 0%, 95%);
+  --ds-gray-200: hsl(0, 0%, 92%);
+  --ds-gray-300: hsl(0, 0%, 90%);
+  --ds-gray-400: hsl(0, 0%, 92%);
+  --ds-gray-500: hsl(0, 0%, 79%);
+  --ds-gray-600: hsl(0, 0%, 66%);
+  --ds-gray-700: hsl(0, 0%, 56%);
+  --ds-gray-800: hsl(0, 0%, 49%);
+  --ds-gray-900: hsl(0, 0%, 40%);
+  --ds-gray-1000: hsl(0, 0%, 9%);
+
+  /* Gray Alpha */
+  --ds-gray-alpha-100: rgba(0, 0, 0, 0.05);
+  --ds-gray-alpha-200: hsla(0, 0%, 0%, 0.081);
+  --ds-gray-alpha-400: hsla(0, 0%, 0%, 0.08);
+  --ds-gray-alpha-700: hsla(0, 0%, 0%, 0.44);
+  --ds-gray-alpha-1000: hsla(0, 0%, 0%, 0.91);
+
+  /* Blue */
+  --ds-blue-100: hsl(212, 100%, 97%);
+  --ds-blue-200: hsl(210, 100%, 96%);
+  --ds-blue-300: hsl(210, 100%, 94%);
+  --ds-blue-400: hsl(209, 100%, 90%);
+  --ds-blue-500: hsl(209, 100%, 80%);
+  --ds-blue-600: hsl(208, 100%, 66%);
+  --ds-blue-700: hsl(212, 100%, 48%);
+  --ds-blue-900: hsl(211, 100%, 42%);
+
+  /* Red */
+  --ds-red-100: hsl(0, 100%, 97%);
+  --ds-red-200: hsl(0, 100%, 96%);
+  --ds-red-300: hsl(0, 100%, 95%);
+  --ds-red-400: hsl(0, 90%, 92%);
+  --ds-red-500: hsl(0, 82%, 85%);
+  --ds-red-600: hsl(359, 90%, 71%);
+  --ds-red-700: hsl(358, 75%, 59%);
+  --ds-red-900: hsl(358, 66%, 48%);
+
+  /* Amber */
+  --ds-amber-100: hsl(39, 100%, 95%);
+  --ds-amber-200: hsl(44, 100%, 92%);
+  --ds-amber-300: hsl(43, 96%, 90%);
+  --ds-amber-400: hsl(42, 100%, 78%);
+  --ds-amber-500: hsl(38, 100%, 71%);
+  --ds-amber-600: hsl(36, 90%, 62%);
+  --ds-amber-700: hsl(39, 100%, 57%);
+  --ds-amber-900: hsl(30, 100%, 32%);
+
+  /* Green */
+  --ds-green-100: hsl(120, 60%, 96%);
+  --ds-green-200: hsl(120, 60%, 95%);
+  --ds-green-300: hsl(120, 60%, 91%);
+  --ds-green-400: hsl(122, 60%, 86%);
+  --ds-green-500: hsl(124, 60%, 75%);
+  --ds-green-600: hsl(125, 60%, 64%);
+  --ds-green-700: hsl(131, 41%, 46%);
+  --ds-green-900: hsl(133, 50%, 32%);
+
+  /* Teal */
+  --ds-teal-200: hsl(167, 70%, 94%);
+  --ds-teal-400: hsl(170, 70%, 85%);
+  --ds-teal-500: hsl(170, 70%, 72%);
+  --ds-teal-900: hsl(174, 91%, 25%);
+
+  /* Purple */
+  --ds-purple-100: hsl(276, 100%, 97%);
+  --ds-purple-200: hsl(277, 87%, 97%);
+  --ds-purple-300: hsl(274, 78%, 95%);
+  --ds-purple-400: hsl(276, 71%, 92%);
+  --ds-purple-500: hsl(274, 70%, 82%);
+  --ds-purple-600: hsl(273, 72%, 73%);
+  --ds-purple-700: hsl(272, 51%, 54%);
+  --ds-purple-900: hsl(274, 71%, 43%);
+
+  /* Pink */
+  --ds-pink-200: hsl(340, 90%, 96%);
+  --ds-pink-400: hsl(341, 76%, 91%);
+  --ds-pink-500: hsl(340, 75%, 84%);
+  --ds-pink-900: hsl(336, 65%, 45%);
+
+  /* Shadows */
+  --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+/* Dark theme defaults */
+.dark-theme,
+.dark,
+[data-theme='dark'] {
+  --ds-background-100: hsl(0, 0%, 7%);
+  --ds-background-200: hsl(0, 0%, 10%);
+
+  --ds-gray-100: hsl(0, 0%, 11%);
+  --ds-gray-200: hsl(0, 0%, 14%);
+  --ds-gray-300: hsl(0, 0%, 17%);
+  --ds-gray-400: hsl(0, 0%, 14%);
+  --ds-gray-500: hsl(0, 0%, 23%);
+  --ds-gray-600: hsl(0, 0%, 34%);
+  --ds-gray-700: hsl(0, 0%, 44%);
+  --ds-gray-800: hsl(0, 0%, 51%);
+  --ds-gray-900: hsl(0, 0%, 63%);
+  --ds-gray-1000: hsl(0, 0%, 93%);
+
+  --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
+  --ds-gray-alpha-200: rgba(255, 255, 255, 0.09);
+  --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
+  --ds-gray-alpha-700: rgba(255, 255, 255, 0.45);
+  --ds-gray-alpha-1000: rgba(255, 255, 255, 0.92);
+
+  --ds-blue-100: hsl(216, 50%, 12%);
+  --ds-blue-200: hsl(214, 59%, 15%);
+  --ds-blue-300: hsl(213, 71%, 20%);
+  --ds-blue-400: hsl(212, 78%, 23%);
+  --ds-blue-500: hsl(211, 86%, 27%);
+  --ds-blue-600: hsl(210, 92%, 36%);
+  --ds-blue-700: hsl(210, 100%, 45%);
+  --ds-blue-900: hsl(210, 100%, 72%);
+
+  --ds-red-100: hsl(357, 37%, 12%);
+  --ds-red-200: hsl(357, 46%, 16%);
+  --ds-red-300: hsl(356, 54%, 22%);
+  --ds-red-400: hsl(357, 55%, 26%);
+  --ds-red-500: hsl(357, 60%, 32%);
+  --ds-red-600: hsl(358, 75%, 44%);
+  --ds-red-700: hsl(358, 75%, 59%);
+  --ds-red-900: hsl(358, 100%, 76%);
+
+  --ds-amber-100: hsl(35, 100%, 8%);
+  --ds-amber-200: hsl(33, 100%, 11%);
+  --ds-amber-300: hsl(33, 100%, 15%);
+  --ds-amber-400: hsl(35, 100%, 17%);
+  --ds-amber-500: hsl(35, 100%, 22%);
+  --ds-amber-600: hsl(36, 100%, 30%);
+  --ds-amber-700: hsl(39, 100%, 57%);
+  --ds-amber-900: hsl(39, 100%, 77%);
+
+  --ds-green-100: hsl(136, 50%, 9%);
+  --ds-green-200: hsl(137, 50%, 12%);
+  --ds-green-300: hsl(136, 50%, 14%);
+  --ds-green-400: hsl(135, 70%, 16%);
+  --ds-green-500: hsl(135, 70%, 23%);
+  --ds-green-600: hsl(135, 70%, 34%);
+  --ds-green-700: hsl(131, 41%, 46%);
+  --ds-green-900: hsl(120, 46%, 72%);
+
+  --ds-teal-200: hsl(169, 78%, 10%);
+  --ds-teal-400: hsl(170, 70%, 17%);
+  --ds-teal-500: hsl(170, 70%, 22%);
+  --ds-teal-900: hsl(168, 80%, 60%);
+
+  --ds-purple-100: hsl(283, 30%, 12%);
+  --ds-purple-200: hsl(281, 38%, 16%);
+  --ds-purple-300: hsl(279, 44%, 23%);
+  --ds-purple-400: hsl(277, 46%, 28%);
+  --ds-purple-500: hsl(274, 49%, 35%);
+  --ds-purple-600: hsl(272, 51%, 54%);
+  --ds-purple-700: hsl(272, 51%, 54%);
+  --ds-purple-900: hsl(275, 80%, 71%);
+
+  --ds-pink-200: hsl(335, 32%, 14%);
+  --ds-pink-400: hsl(336, 44%, 25%);
+  --ds-pink-500: hsl(336, 50%, 32%);
+  --ds-pink-900: hsl(336, 80%, 70%);
+
+  --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.3);
+}
+

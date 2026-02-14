@@ -7,7 +7,7 @@ import type {
   MutableRefObject,
   ReactNode,
 } from 'react';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { type TraceViewerAction, useTraceViewer } from '../context';
 import styles from '../trace-viewer.module.css';
 import type {
@@ -23,32 +23,70 @@ import {
   ROW_PADDING,
   TIMELINE_PADDING,
 } from '../util/constants';
-import { formatDurationForTimeline, formatTimeSelection } from '../util/timing';
+import {
+  formatDurationForTimeline,
+  formatTimeSelection,
+  formatWallClockTime,
+} from '../util/timing';
 import { useImmediateStyle } from '../util/use-immediate-style';
 import { useTrackpadZoom } from '../util/use-trackpad-zoom';
 
-const DIVISORS = [1, 2, 4, 5, 8, 10];
+/**
+ * Snap a raw duration to the nearest "nice" number in the 1-2-5 × 10^n
+ * sequence (e.g. …, 0.5, 1, 2, 5, 10, 20, 50, 100, …).
+ */
+function snapToNice(raw: number): number {
+  if (raw <= 0) return 1;
+  const log10 = Math.floor(Math.log10(raw));
+  const pow = 10 ** log10;
+  const normalized = raw / pow;
 
-export function Markers({ scale }: { scale: number }): ReactNode {
+  if (normalized <= 1.5) return pow;
+  if (normalized <= 3.5) return 2 * pow;
+  if (normalized <= 7.5) return 5 * pow;
+  return 10 * pow;
+}
+
+export function Markers({
+  scale,
+  isLive = false,
+}: {
+  scale: number;
+  isLive?: boolean;
+}): ReactNode {
   const {
     state: { root },
   } = useTraceViewer();
+  // Force a re-render every second when live to pick up new tick marks.
+  // The markers container width is grown at 60fps by useLiveTick;
+  // this interval only ensures the marker *labels* stay current.
+  const [, forceMarkerUpdate] = useState(0);
+  useEffect(() => {
+    if (!isLive) return;
+    const id = setInterval(() => forceMarkerUpdate((v) => v + 1), 1000);
+    return () => clearInterval(id);
+  }, [isLive]);
 
   const fullDuration = root.duration;
-  const logFull = Math.floor(Math.log10(fullDuration));
-  const logHalf = Math.floor(Math.log10(fullDuration * 0.5));
-  let markerDuration = Math.max(
-    2,
-    10 ** logFull * (logHalf === logFull ? 1 : 0.5)
-  );
-  let markerWidth = markerDuration * scale;
-  let divisor = 1;
-  for (const d of DIVISORS) {
-    if (markerDuration / d < 24) break;
-    divisor = d;
+
+  // Calculate a marker interval that gives reasonable spacing at any zoom level.
+  // We target ~50px per notch mark; labels appear on every Nth notch via labelSpacing.
+  // When scale is <= 0 (e.g. the initial -1 sentinel), fall back to a safe default
+  // to avoid generating an absurd number of markers.
+  const effectiveScale =
+    scale > 0 ? scale : fullDuration > 0 ? 1 / fullDuration : 1;
+  const targetNotchPx = 50;
+  let markerDuration = snapToNice(targetNotchPx / effectiveScale);
+  markerDuration = Math.max(1, markerDuration);
+  let markerWidth = markerDuration * effectiveScale;
+
+  // Cap marker count to avoid creating too many DOM elements at extreme zoom
+  // on very long traces.  Only the visible portion is shown on screen anyway.
+  const MAX_MARKERS = 1000;
+  if (fullDuration / markerDuration > MAX_MARKERS) {
+    markerDuration = snapToNice(fullDuration / MAX_MARKERS);
+    markerWidth = markerDuration * effectiveScale;
   }
-  markerDuration /= divisor;
-  markerWidth /= divisor;
   const markerCount = Math.ceil(fullDuration / markerDuration);
 
   // How often labels should appear for markers, e.g. 3 === one label for every third marker
@@ -77,6 +115,9 @@ export function Markers({ scale }: { scale: number }): ReactNode {
               {hasLabel ? (
                 <span className={styles.markerLabel}>
                   {formatDurationForTimeline(markerDuration * i)}
+                  <span className={styles.markerClockTime}>
+                    {formatWallClockTime(root.startTime + markerDuration * i)}
+                  </span>
                 </span>
               ) : null}
             </span>
@@ -327,13 +368,20 @@ export function CursorMarker({
           cache.set(span.span.spanId, {});
         }
 
-        // Event Hover
+        // Event Hover — only show the nearest event when multiple overlap
         const eventSpreadPx = 12;
         const eventSpreadMs = eventSpreadPx / scale;
+        let closestEvent: (typeof eventsRef.current)[number] | null = null;
+        let closestDist = Infinity;
         for (const event of eventsRef.current) {
-          const isHovered =
-            t >= event.timestamp - eventSpreadMs &&
-            t <= event.timestamp + eventSpreadMs;
+          const dist = Math.abs(event.timestamp - t);
+          if (dist <= eventSpreadMs && dist < closestDist) {
+            closestDist = dist;
+            closestEvent = event;
+          }
+        }
+        for (const event of eventsRef.current) {
+          const isHovered = event === closestEvent;
           if (event.isHovered === isHovered) continue;
           event.isHovered = isHovered;
           const $event = event.ref?.current;

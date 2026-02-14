@@ -11,7 +11,11 @@ import {
   useRef,
   useState,
 } from 'react';
-import { initialState, useTraceViewer } from '../context';
+import {
+  initialState,
+  useCustomPanelComponent,
+  useTraceViewer,
+} from '../context';
 import styles from '../trace-viewer.module.css';
 import type {
   GetQuickLinks,
@@ -249,9 +253,10 @@ export function SpanDetailPanel({
   attached?: boolean;
 }): ReactNode {
   const {
-    state: { selected, isMobile, customPanelComponent },
+    state: { selected, isMobile },
     dispatch,
   } = useTraceViewer();
+  const customPanelComponent = useCustomPanelComponent();
 
   if (!selected) return null;
 

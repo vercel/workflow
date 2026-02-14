@@ -313,6 +313,12 @@ export function workflowEntrypoint(
                           return; // Don't fail the run, retry later
                         }
                         // Fall through to run_failed after exhausting retries
+                      } else if (
+                        WorkflowAPIError.is(err) &&
+                        err.status === 429
+                      ) {
+                        // Throw to let withThrottleRetry handle it
+                        throw err;
                       }
 
                       // NOTE: this error could be an error thrown in user code, or could also be a WorkflowRuntimeError

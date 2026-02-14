@@ -116,6 +116,7 @@ jobs:
   unit:
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     strategy:
       fail-fast: false
@@ -143,6 +144,7 @@ jobs:
   build-error-messages:
     name: Node.js Module Build Errors Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -181,6 +183,7 @@ jobs:
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -301,6 +304,7 @@ jobs:
   e2e-local-dev:
     name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
@@ -327,8 +331,8 @@ jobs:
       - name: Setup canary
         if: ${{ matrix.app.canary }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="canary"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
+          cat packages/next/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -368,6 +372,7 @@ jobs:
   e2e-local-prod:
     name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
@@ -394,8 +399,8 @@ jobs:
       - name: Setup canary
         if: ${{ matrix.app.canary }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="canary"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
+          cat packages/next/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -438,6 +443,7 @@ jobs:
   e2e-local-postgres:
     name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
@@ -481,8 +487,8 @@ jobs:
       - name: Setup canary
         if: ${{ matrix.app.canary }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="canary"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
+          cat packages/next/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -528,6 +534,7 @@ jobs:
   e2e-windows:
     name: E2E Windows Tests
     runs-on: windows-latest
+    timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
