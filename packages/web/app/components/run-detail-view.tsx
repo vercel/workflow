@@ -605,19 +605,40 @@ export function RunDetailView({
                 {/* Decrypt button — shown when run has encrypted data */}
                 {(isEncryptedMarker(run.input) ||
                   isEncryptedMarker(run.output)) && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleDecrypt}
-                    disabled={!!encryptionKey}
-                  >
-                    {encryptionKey ? (
-                      <Unlock className="h-4 w-4" />
-                    ) : (
-                      <Lock className="h-4 w-4" />
-                    )}
-                    {encryptionKey ? 'Decrypted' : 'Decrypt'}
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleDecrypt}
+                          disabled={!!encryptionKey}
+                        >
+                          {encryptionKey ? (
+                            <Unlock className="h-4 w-4" />
+                          ) : (
+                            <Lock className="h-4 w-4" />
+                          )}
+                          {encryptionKey ? 'Decrypted' : 'Decrypt'}
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {encryptionKey ? (
+                        <p>
+                          Data has been decrypted for this workflow run. All
+                          encrypted input, output, and event data is now visible
+                          across all tabs.
+                        </p>
+                      ) : (
+                        <p>
+                          This run&apos;s data is end-to-end encrypted. Decrypt
+                          to reveal input, output, and event data across all
+                          tabs for this workflow run.
+                        </p>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
                 )}
                 <RunActionsButtons
                   env={env}
