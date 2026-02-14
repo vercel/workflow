@@ -32,11 +32,24 @@ import {
 /**
  * Create an EncryptionKeyResolver from a World instance.
  * Returns null if decrypt is false — encrypted data will show as a placeholder.
+ *
+ * The resolver fetches the full WorkflowRun (cached per runId) so that the
+ * World can inspect deployment-specific fields for key resolution.
  */
 function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
   if (!decrypt) return null;
   if (!world.getEncryptionKeyForRun) return null;
-  return (runId: string) => world.getEncryptionKeyForRun!(runId);
+  const cache = new Map<string, Promise<Uint8Array | undefined>>();
+  return (runId: string) => {
+    let cached = cache.get(runId);
+    if (!cached) {
+      cached = world.runs
+        .get(runId)
+        .then((run) => world.getEncryptionKeyForRun!(run));
+      cache.set(runId, cached);
+    }
+    return cached;
+  };
 }
 
 import { setupListPagination } from './pagination.js';

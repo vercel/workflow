@@ -18,7 +18,11 @@ import {
 import { parseClassName } from '@workflow/utils/parse-name';
 import chalk from 'chalk';
 
-/** A function that resolves an encryption key for a given runId, or null to skip decryption. */
+/**
+ * A function that resolves an encryption key for a run, or null to skip
+ * decryption. Accepts a runId — the resolver is responsible for looking
+ * up the WorkflowRun internally (with caching) if the World needs it.
+ */
 export type EncryptionKeyResolver =
   | ((runId: string) => Promise<Uint8Array | undefined>)
   | null;
@@ -195,14 +199,8 @@ async function maybeDecryptFields<
   const runId = (resource as any).runId as string | undefined;
   if (!runId) return resource;
 
-  let key: Uint8Array | undefined;
-  const getKey = async () => {
-    if (!key) key = await resolver(runId);
-    return key;
-  };
-
   const result = { ...resource };
-  const k = await getKey();
+  const k = await resolver(runId);
 
   // Decrypt input/output fields (WorkflowRun, Step)
   result.input = await maybeDecrypt(result.input, k);
