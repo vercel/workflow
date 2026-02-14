@@ -6,7 +6,7 @@ import type { ModelMessage } from 'ai';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { isEncryptedData } from '../../lib/hydration';
+import { isEncryptedMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
@@ -715,7 +715,14 @@ export const AttributePanel = ({
   const hasEncryptedData = useMemo(() => {
     return resolvedAttributes.some((attr) => {
       const val = displayData[attr as keyof typeof displayData];
-      return isEncryptedData(val);
+      if (isEncryptedMarker(val)) return true;
+      // Check eventData subfields for encrypted values
+      if (attr === 'eventData' && val && typeof val === 'object') {
+        return Object.values(val as Record<string, unknown>).some(
+          isEncryptedMarker
+        );
+      }
+      return false;
     });
   }, [resolvedAttributes, displayData]);
 

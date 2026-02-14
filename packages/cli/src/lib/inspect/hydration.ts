@@ -95,7 +95,7 @@ class EncryptedDataRef {
 /** Singleton encrypted data placeholder for CLI display */
 const ENCRYPTED_REF = new EncryptedDataRef();
 
-/** Check if a value is an EncryptedDataRef (for custom table formatting) */
+/** Check if a value is an EncryptedDataRef (for custom table formatting in CLI) */
 export function isEncryptedRef(value: unknown): value is EncryptedDataRef {
   return value instanceof EncryptedDataRef;
 }

@@ -139,7 +139,9 @@ export type Revivers = Record<string, (value: any) => any>;
  */
 export function hydrateData(value: unknown, revivers: Revivers): unknown {
   if (value instanceof Uint8Array) {
-    // Encrypted data passes through untouched — consumers detect and handle it
+    // Encrypted data passes through untouched — o11y layers detect it with
+    // isEncryptedData() and handle display (web: named constructor object,
+    // CLI: EncryptedDataRef with util.inspect.custom).
     if (isEncryptedData(value)) {
       return value;
     }
