@@ -47,7 +47,11 @@ import {
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
-import { fetchEvents, fetchEventsByCorrelationId } from '~/lib/rpc-client';
+import {
+  fetchEvents,
+  fetchEventsByCorrelationId,
+  getEncryptionKeyForRun,
+} from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
@@ -377,6 +381,12 @@ export function RunDetailView({
   } = useWorkflowTraceViewerData(env, runId, { live: true });
   const run = runData ?? ({} as WorkflowRun);
 
+  // Encryption key persisted for the lifetime of this run page.
+  // Once fetched (via Decrypt button), it's used automatically for all
+  // subsequent resource + event hydration, even across span selection changes.
+  const [encryptionKey, setEncryptionKey] = useState<Uint8Array | null>(null);
+  encryptionKeyRef.current = encryptionKey;
+
   const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
     null
   );
@@ -384,8 +394,7 @@ export function RunDetailView({
     data: spanDetailData,
     loading: spanDetailLoading,
     error: spanDetailError,
-    decrypt: decryptSpanDetail,
-    encryptionKey,
+    refresh: refreshSpanDetail,
   } = useWorkflowResourceData(
     env,
     spanSelection?.resource ?? 'run',
@@ -397,15 +406,31 @@ export function RunDetailView({
           spanSelection?.resourceId &&
           spanSelection.resource !== 'hook'
       ),
+      encryptionKey: encryptionKey ?? undefined,
     }
   );
 
-  // Keep the ref in sync so event callbacks can access the key
-  encryptionKeyRef.current = encryptionKey;
-
-  const handleDecrypt = useCallback(() => {
-    decryptSpanDetail();
-  }, [decryptSpanDetail]);
+  const handleDecrypt = useCallback(async () => {
+    if (encryptionKey) {
+      // Key already available — just re-fetch to trigger decrypted hydration
+      refreshSpanDetail();
+      return;
+    }
+    // Fetch the key for this run
+    const { error: keyError, result: keyResult } =
+      await unwrapServerActionResult(getEncryptionKeyForRun(env, runId));
+    if (keyError) {
+      console.error('Failed to fetch encryption key:', keyError);
+      return;
+    }
+    if (!keyResult) {
+      console.error('Encryption is not configured for this deployment.');
+      return;
+    }
+    setEncryptionKey(keyResult);
+    // Refresh will happen automatically via the state change propagating
+    // to useWorkflowResourceData's encryptionKey option
+  }, [encryptionKey, env, runId, refreshSpanDetail]);
 
   const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
     setSpanSelection(info);

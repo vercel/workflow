@@ -270,14 +270,18 @@ export async function hydrateResourceIOWithKey<T>(
 
   // Decrypt + hydrate top-level serialized fields (runs, steps, hooks)
   for (const field of ['input', 'output', 'metadata', 'error']) {
-    result[field] = await decryptField(result[field], revivers, key);
+    if (field in result) {
+      result[field] = await decryptField(result[field], revivers, key);
+    }
   }
 
   // Decrypt + hydrate eventData subfields (events)
   if (result.eventData && typeof result.eventData === 'object') {
     const eventData = { ...(result.eventData as Record<string, unknown>) };
     for (const field of EVENT_DATA_SERIALIZED_FIELDS) {
-      eventData[field] = await decryptField(eventData[field], revivers, key);
+      if (field in eventData) {
+        eventData[field] = await decryptField(eventData[field], revivers, key);
+      }
     }
     result.eventData = eventData;
   }
