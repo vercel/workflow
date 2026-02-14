@@ -298,6 +298,10 @@ export type CreateEventRequest = Exclude<
 export interface CreateEventParams {
   v1Compat?: boolean;
   resolveData?: ResolveData;
+  /** Vercel request ID (x-vercel-id header) for correlating request logs with step executions. */
+  requestId?: string;
+  /** VQS message ID that triggered this event, for queue observability. */
+  messageId?: string;
 }
 
 /**

@@ -190,6 +190,8 @@ export function createQueue(config: Partial<Config>): Queue {
       const queueName = headers.data['x-vqs-queue-name'];
       const messageId = headers.data['x-vqs-message-id'];
       const attempt = headers.data['x-vqs-message-attempt'];
+      const rawRequestId = req.headers.get('x-vercel-id');
+      const requestId = rawRequestId?.trim() || undefined;
 
       if (!queueName.startsWith(prefix)) {
         return Response.json({ error: 'Unhandled queue' }, { status: 400 });
@@ -197,7 +199,12 @@ export function createQueue(config: Partial<Config>): Queue {
 
       const body = await new JsonTransport().deserialize(req.body);
       try {
-        const result = await handler(body, { attempt, queueName, messageId });
+        const result = await handler(body, {
+          attempt,
+          queueName,
+          messageId,
+          requestId,
+        });
 
         let timeoutSeconds: number | null = null;
         if (typeof result?.timeoutSeconds === 'number') {

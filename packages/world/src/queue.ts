@@ -89,7 +89,12 @@ export interface Queue {
     queueNamePrefix: QueuePrefix,
     handler: (
       message: unknown,
-      meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }
+      meta: {
+        attempt: number;
+        queueName: ValidQueueName;
+        messageId: MessageId;
+        requestId?: string;
+      }
       // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
     ) => Promise<void | { timeoutSeconds: number }>
   ): (req: Request) => Promise<Response>;

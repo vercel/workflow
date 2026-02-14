@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Client, DuplicateMessageError } from '@vercel/queue';
 import {
   MessageId,
@@ -9,6 +10,9 @@ import {
 } from '@workflow/world';
 import * as z from 'zod';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
+
+const requestIdStorage = new AsyncLocalStorage<string | undefined>();
+const VERCEL_REQUEST_ID_HEADER = 'x-vercel-id';
 
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
@@ -140,15 +144,17 @@ export function createQueue(config?: APIConfig): Queue {
     ...baseClientOptions,
   });
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
-    return handleCallbackClient.handleCallback({
+    const vqsHandler = handleCallbackClient.handleCallback({
       [`${prefix}*`]: {
         default: async (body, meta) => {
+          const requestId = requestIdStorage.getStore();
           const { payload, queueName, deploymentId } =
             MessageWrapper.parse(body);
           const result = await handler(payload, {
             queueName,
             messageId: MessageId.parse(meta.messageId),
             attempt: meta.deliveryCount,
+            requestId,
           });
 
           if (typeof result?.timeoutSeconds === 'number') {
@@ -176,6 +182,12 @@ export function createQueue(config?: APIConfig): Queue {
         },
       },
     });
+
+    return async (req: Request) => {
+      const rawId = req.headers.get(VERCEL_REQUEST_ID_HEADER);
+      const requestId = rawId?.trim() || undefined;
+      return requestIdStorage.run(requestId, () => vqsHandler(req));
+    };
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {

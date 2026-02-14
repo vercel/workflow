@@ -118,11 +118,18 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           let step;
           try {
             const startResult = await withServerErrorRetry(() =>
-              world.events.create(workflowRunId, {
-                eventType: 'step_started',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: stepId,
-              })
+              world.events.create(
+                workflowRunId,
+                {
+                  eventType: 'step_started',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                },
+                {
+                  requestId: metadata.requestId,
+                  messageId: metadata.messageId,
+                }
+              )
             );
 
             if (!startResult.step) {
