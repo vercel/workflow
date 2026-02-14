@@ -491,10 +491,13 @@ describe('e2e', () => {
     expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
   });
 
-  test('parallelSleepWorkflow', { timeout: 60_000 }, async () => {
+  test('parallelSleepWorkflow', { timeout: 30_000 }, async () => {
     const run = await start(await e2e('parallelSleepWorkflow'), []);
     const returnValue = await run.returnValue;
-    expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
+    // 10 parallel sleep('1s') should complete in ~1s, not 10s
+    const elapsed = returnValue.endTime - returnValue.startTime;
+    expect(elapsed).toBeGreaterThan(999);
+    expect(elapsed).toBeLessThan(10_000);
   });
 
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
