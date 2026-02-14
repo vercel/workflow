@@ -778,6 +778,7 @@ export function RunDetailView({
                     hasMoreSpans={hasMoreTraceData}
                     isLoadingMoreSpans={isLoadingMoreTraceData}
                     onDecrypt={handleDecrypt}
+                    encryptionKey={encryptionKey ?? undefined}
                   />
                 </div>
               </ErrorBoundary>

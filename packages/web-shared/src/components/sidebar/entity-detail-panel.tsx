@@ -63,6 +63,7 @@ export function EntityDetailPanel({
   onLoadEventData,
   onResolveHook,
   onDecrypt,
+  encryptionKey,
   selectedSpan,
 }: {
   run: WorkflowRun;
@@ -96,6 +97,8 @@ export function EntityDetailPanel({
   ) => Promise<void>;
   /** Callback to decrypt encrypted data */
   onDecrypt?: () => void;
+  /** Encryption key (available after Decrypt is clicked), used to re-load event data */
+  encryptionKey?: Uint8Array;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
 }): React.JSX.Element | null {
@@ -485,7 +488,11 @@ export function EntityDetailPanel({
         onDecrypt={onDecrypt}
       />
       {resource !== 'run' && rawEvents && (
-        <EventsList events={rawEvents} onLoadEventData={onLoadEventData} />
+        <EventsList
+          events={rawEvents}
+          onLoadEventData={onLoadEventData}
+          encryptionKey={encryptionKey}
+        />
       )}
     </div>
   );
