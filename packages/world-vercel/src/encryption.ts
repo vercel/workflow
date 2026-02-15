@@ -69,17 +69,25 @@ export async function deriveRunKey(
 }
 
 /**
- * Fetch the deployment key for a specific deployment from the Vercel API.
+ * Fetch the per-run encryption key from the Vercel API.
+ *
+ * The API performs HKDF-SHA256 derivation server-side, so the raw
+ * deployment key never leaves the API boundary. The returned key
+ * is ready-to-use for AES-GCM encrypt/decrypt operations.
  *
  * Uses OIDC token authentication (for cross-deployment runtime calls like
  * resumeHook) or falls back to VERCEL_TOKEN (for external tooling like o11y).
  *
- * @param deploymentId - The deployment ID to fetch the key for
+ * @param deploymentId - The deployment ID that holds the base key material
+ * @param projectId - The project ID for HKDF context isolation
+ * @param runId - The workflow run ID for per-run key derivation
  * @param options.token - Auth token (from config). Falls back to OIDC or VERCEL_TOKEN.
- * @returns Raw 32-byte deployment key
+ * @returns Derived 32-byte per-run AES-256 key
  */
-export async function fetchDeploymentKey(
+export async function fetchRunKey(
   deploymentId: string,
+  projectId: string,
+  runId: string,
   options?: {
     /** Auth token (from config). Falls back to OIDC or VERCEL_TOKEN. */
     token?: string;
@@ -91,12 +99,13 @@ export async function fetchDeploymentKey(
   const token = options?.token ?? oidcToken ?? process.env.VERCEL_TOKEN;
   if (!token) {
     throw new Error(
-      'Cannot fetch deployment key: no OIDC token or VERCEL_TOKEN available'
+      'Cannot fetch run key: no OIDC token or VERCEL_TOKEN available'
     );
   }
 
+  const params = new URLSearchParams({ projectId, runId });
   const response = await fetch(
-    `https://api.vercel.com/v1/workflow/deployment-key/${deploymentId}`,
+    `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
     {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -106,7 +115,7 @@ export async function fetchDeploymentKey(
 
   if (!response.ok) {
     throw new Error(
-      `Failed to fetch deployment key for ${deploymentId}: HTTP ${response.status}`
+      `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${response.status}`
     );
   }
 
