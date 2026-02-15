@@ -1400,9 +1400,6 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
-      '@workflow/core':
-        specifier: workspace:*
-        version: link:../core
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig

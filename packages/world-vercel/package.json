@@ -48,7 +48,6 @@
   "devDependencies": {
     "@opentelemetry/api": "1.9.0",
     "@types/node": "catalog:",
-    "@workflow/core": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "genversion": "3.2.0",
     "vitest": "catalog:"
