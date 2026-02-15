@@ -1,11 +1,11 @@
 import type { WorkflowRun, World } from '@workflow/world';
-import { deriveRunKey, fetchDeploymentKey } from './encryption.js';
+import { deriveRunKey, fetchRunKey } from './encryption.js';
 import { createQueue } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 import type { APIConfig } from './utils.js';
 
-export { deriveRunKey, fetchDeploymentKey } from './encryption.js';
+export { deriveRunKey, fetchRunKey } from './encryption.js';
 export { createQueue } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
@@ -31,11 +31,6 @@ export function createVercelWorld(config?: APIConfig): World {
     return localDeploymentKey;
   }
 
-  // Instance-scoped cache for remote deployment keys.
-  // Must NOT be module-level to prevent key material leaking across
-  // tenants in multi-tenant environments (e.g., Vercel dashboard).
-  const remoteKeyCache = new Map<string, Uint8Array>();
-
   return {
     ...createQueue(config),
     ...storage,
@@ -51,24 +46,22 @@ export function createVercelWorld(config?: APIConfig): World {
         typeof run === 'string' ? undefined : run.deploymentId;
 
       // Same deployment (or run is just a string, i.e., from start())
-      // → use local deployment key
+      // → use local deployment key + local HKDF derivation
       if (!deploymentId || deploymentId === currentDeploymentId) {
         const localKey = getLocalDeploymentKey();
         if (!localKey) return undefined;
         return deriveRunKey(localKey, projectId, runId);
       }
 
-      // Different deployment — fetch key from Vercel API.
-      // This covers cross-deployment resumeHook() (using OIDC auth)
-      // and o11y tooling reading data from other deployments (using VERCEL_TOKEN).
-      let remoteKey = remoteKeyCache.get(deploymentId);
-      if (!remoteKey) {
-        remoteKey = await fetchDeploymentKey(deploymentId, {
-          token: config?.token,
-        });
-        remoteKeyCache.set(deploymentId, remoteKey);
-      }
-      return deriveRunKey(remoteKey, projectId, runId);
+      // Different deployment — fetch the derived per-run key from the
+      // Vercel API. The API performs HKDF derivation server-side so the
+      // raw deployment key never leaves the API boundary.
+      // Covers cross-deployment resumeHook() (OIDC auth) and o11y
+      // tooling reading data from other deployments (VERCEL_TOKEN).
+      // No caching needed here — callers (CLI/web) cache at a higher level.
+      return fetchRunKey(deploymentId, projectId, runId, {
+        token: config?.token,
+      });
     },
   };
 }
