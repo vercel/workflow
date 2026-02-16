@@ -19,6 +19,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const workflowStartedAt = context.globalThis.Date.now();
   const ctx: WorkflowOrchestratorContext = {
     globalThis: context.globalThis,
+    // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         ctx.onWorkflowError(
