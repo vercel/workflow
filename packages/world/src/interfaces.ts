@@ -177,4 +177,13 @@ export interface World extends Queue, Storage, Streamer {
    * For example, in the case of a queue backed World, this would start the queue processing.
    */
   start?(): Promise<void>;
+
+  /**
+   * Release any resources held by the World implementation (connection pools, listeners, etc.).
+   * After calling `close()`, the World instance should not be used again.
+   *
+   * This is important for CLI commands and short-lived processes that need to exit cleanly
+   * without relying on `process.exit()`.
+   */
+  close?(): Promise<void>;
 }

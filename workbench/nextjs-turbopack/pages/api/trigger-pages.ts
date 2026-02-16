@@ -64,7 +64,7 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
     // Args from JSON body
     args = req.body;
   } else {
-    args = [42];
+    args = [];
   }
   console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
 

@@ -38,7 +38,15 @@ class Rc<T extends { drop(): void }> {
   }
 }
 
-export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
+export type PostgresStreamer = Streamer & {
+  /** Unlisten from the LISTEN subscription and release resources. */
+  close(): Promise<void>;
+};
+
+export function createStreamer(
+  postgres: Sql,
+  drizzle: Drizzle
+): PostgresStreamer {
   const ulid = monotonicFactory();
   const events = new EventEmitter<{
     [key: `strm:${string}`]: [StreamChunkEvent];
@@ -59,7 +67,7 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
   };
 
   const STREAM_TOPIC = 'workflow_event_chunk';
-  postgres.listen(STREAM_TOPIC, async (msg) => {
+  const listenSubscription = postgres.listen(STREAM_TOPIC, async (msg) => {
     const parsed = await Promise.resolve(msg)
       .then(JSON.parse)
       .then(StreamPublishMessage.parse);
@@ -260,6 +268,11 @@ export function createStreamer(postgres: Sql, drizzle: Drizzle): Streamer {
         .where(eq(streams.runId, runId));
 
       return results.map((r) => r.streamId);
+    },
+
+    async close() {
+      const sub = await listenSubscription;
+      await sub.unlisten();
     },
   };
 }
