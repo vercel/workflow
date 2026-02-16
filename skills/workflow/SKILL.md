@@ -336,21 +336,21 @@ async function streamData() {
 npx workflow health
 npx workflow health --port 3001  # Non-default port
 
-# Visual dashboard for runs (local)
+# Visual dashboard for runs
 npx workflow web
-npx workflow web --app-url http://localhost:3001
+npx workflow web <run_id>
 
 # CLI inspection (use --json for machine-readable output, --help for full usage)
 npx workflow inspect runs
 npx workflow inspect run <run_id>
 
-# Open Vercel o11y dashboard in browser for a specific run
-npx workflow inspect run <run_id> --web
-
 # For Vercel-deployed projects, specify backend and project
 npx workflow inspect runs --backend vercel --project <project-name> --team <team-slug>
 npx workflow inspect run <run_id> --backend vercel --project <project-name> --team <team-slug>
-npx workflow inspect run <run_id> --backend vercel --project <project-name> --team <team-slug> --web
+
+# Open Vercel dashboard in browser for a specific run
+npx workflow inspect run <run_id> --web
+npx workflow web <run_id> --backend vercel --project <project-name> --team <team-slug>
 
 # Cancel a running workflow
 npx workflow cancel <run_id>
@@ -359,6 +359,7 @@ npx workflow cancel <run_id> --backend vercel --project <project-name> --team <t
 ```
 
 **Debugging tips:**
-- Use `--web` to open the Vercel Observability dashboard directly in your browser for visual debugging
-- Use `npx workflow inspect run <run_id>` to see run status, steps completed, and error details from the CLI
+- Use `--json` (`-j`) on any command for machine-readable output
+- Use `--web` to open the Vercel Observability dashboard in your browser
+- Use `--help` on any command for full usage details
 - Only import workflow APIs you actually use. Unused imports can cause 500 errors.
