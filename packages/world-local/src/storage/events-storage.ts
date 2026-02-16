@@ -634,7 +634,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           );
         }
         wait = {
-          waitId: data.correlationId,
+          waitId: waitCompositeKey,
           runId: effectiveRunId,
           status: 'waiting',
           resumeAt: waitData.resumeAt,
