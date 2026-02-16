@@ -174,6 +174,8 @@ export async function myAgentWorkflow(userMessage: string) {
 - `maxSteps` limits the number of LLM calls (default is unlimited)
 - Multi-turn: pass `result.messages` plus new user messages to subsequent `agent.stream()` calls
 
+**For more details on `DurableAgent`, check the AI docs in `node_modules/@workflow/ai/docs/`.**
+
 ## Starting Workflows & Child Workflows
 
 Use `start()` to launch workflows from API routes. **`start()` cannot be called directly in workflow context** — wrap it in a step function.
@@ -338,7 +340,7 @@ npx workflow health --port 3001  # Non-default port
 npx workflow web
 npx workflow web --app-url http://localhost:3001
 
-# CLI inspection
+# CLI inspection (use --json for machine-readable output, --help for full usage)
 npx workflow inspect runs
 npx workflow inspect run <run_id>
 
@@ -349,10 +351,6 @@ npx workflow inspect run <run_id> --web
 npx workflow inspect runs --backend vercel --project <project-name> --team <team-slug>
 npx workflow inspect run <run_id> --backend vercel --project <project-name> --team <team-slug>
 npx workflow inspect run <run_id> --backend vercel --project <project-name> --team <team-slug> --web
-
-# Start a workflow from the CLI
-npx workflow start <workflowName>
-npx workflow start <workflowName> --backend vercel --project <project-name> --team <team-slug>
 
 # Cancel a running workflow
 npx workflow cancel <run_id>
