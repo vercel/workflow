@@ -1,4 +1,7 @@
-import { WorkflowRunFailedError } from '@workflow/errors';
+import {
+  WorkflowRunCancelledError,
+  WorkflowRunFailedError,
+} from '@workflow/errors';
 import fs from 'fs';
 import path from 'path';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
@@ -12,6 +15,7 @@ import {
   start,
 } from '../src/runtime';
 import {
+  cliCancel,
   cliHealthJson,
   cliInspectJson,
   getProtectionBypassHeaders,
@@ -1646,6 +1650,31 @@ describe('e2e', () => {
         viaStepResult: 8,
         doubled: 16,
       });
+    }
+  );
+
+  // ==================== CANCEL TESTS ====================
+  test(
+    'cancelRun via CLI - cancelling a running workflow',
+    { timeout: 60_000 },
+    async () => {
+      // Start a long-running workflow (sleeps for 10s)
+      const run = await start(await e2e('sleepingWorkflow'), []);
+
+      // Wait a bit for the workflow to start and enter the sleep
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Cancel the run via the CLI command (this is the code path that was broken
+      // for world-vercel because it was missing the specVersion field)
+      await cliCancel(run.runId);
+
+      // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
+      const error = await run.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunCancelledError.is(error)).toBe(true);
+
+      // Verify the run status is 'cancelled' via CLI inspect
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('cancelled');
     }
   );
 
