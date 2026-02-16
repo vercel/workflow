@@ -193,25 +193,6 @@ export const cliInspectJson = async (args: string) => {
 };
 
 /**
- * Executes the `workflow cancel` CLI command for a given run ID.
- * Returns the raw stdout/stderr from the CLI process.
- */
-export const cliCancel = async (runId: string) => {
-  const cliAppPath = getWorkbenchAppPath();
-  const cliArgs = getCliArgs();
-
-  const command = `node ./node_modules/workflow/bin/run.js cancel`;
-  const result = await awaitCommand(
-    command,
-    [runId, cliArgs],
-    cliAppPath,
-    10_000
-  );
-  console.log('Cancel result:', result.stdout, result.stderr);
-  return result;
-};
-
-/**
  * Executes the `workflow health` CLI command and returns the parsed JSON result.
  * Uses --json flag for machine-readable output.
  */

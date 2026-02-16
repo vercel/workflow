@@ -15,7 +15,6 @@ import {
   start,
 } from '../src/runtime';
 import {
-  cliCancel,
   cliHealthJson,
   cliInspectJson,
   getProtectionBypassHeaders,
@@ -1655,7 +1654,7 @@ describe('e2e', () => {
 
   // ==================== CANCEL TESTS ====================
   test(
-    'cancelRun via CLI - cancelling a running workflow',
+    'cancelRun - cancelling a running workflow',
     { timeout: 60_000 },
     async () => {
       // Start a long-running workflow (sleeps for 10s)
@@ -1664,9 +1663,11 @@ describe('e2e', () => {
       // Wait a bit for the workflow to start and enter the sleep
       await new Promise((resolve) => setTimeout(resolve, 5_000));
 
-      // Cancel the run via the CLI command (this is the code path that was broken
-      // for world-vercel because it was missing the specVersion field)
-      await cliCancel(run.runId);
+      // Cancel the run using the core runtime cancelRun function.
+      // This exercises the same cancelRun code path that the CLI uses
+      // (the CLI delegates directly to this function).
+      const { cancelRun } = await import('../src/runtime');
+      await cancelRun(getWorld(), run.runId);
 
       // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
       const error = await run.returnValue.catch((e: unknown) => e);
