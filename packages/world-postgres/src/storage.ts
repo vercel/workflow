@@ -189,8 +189,11 @@ async function handleLegacyEventPostgres(
         })
         .where(eq(Schema.runs.runId, runId));
 
-      // Delete all hooks for this run
-      await drizzle.delete(Schema.hooks).where(eq(Schema.hooks.runId, runId));
+      // Delete all hooks and waits for this run
+      await Promise.all([
+        drizzle.delete(Schema.hooks).where(eq(Schema.hooks.runId, runId)),
+        drizzle.delete(Schema.waits).where(eq(Schema.waits.runId, runId)),
+      ]);
 
       // Fetch updated run for return value
       const [updatedRun] = await drizzle
@@ -571,10 +574,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (runValue) {
           run = deserializeRunError(compact(runValue));
         }
-        // Delete all hooks for this run to allow token reuse
-        await drizzle
-          .delete(Schema.hooks)
-          .where(eq(Schema.hooks.runId, effectiveRunId));
+        // Delete all hooks and waits for this run to allow token reuse
+        await Promise.all([
+          drizzle
+            .delete(Schema.hooks)
+            .where(eq(Schema.hooks.runId, effectiveRunId)),
+          drizzle
+            .delete(Schema.waits)
+            .where(eq(Schema.waits.runId, effectiveRunId)),
+        ]);
       }
 
       // Handle run_failed event: update run status and cleanup hooks
@@ -604,10 +612,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (runValue) {
           run = deserializeRunError(compact(runValue));
         }
-        // Delete all hooks for this run to allow token reuse
-        await drizzle
-          .delete(Schema.hooks)
-          .where(eq(Schema.hooks.runId, effectiveRunId));
+        // Delete all hooks and waits for this run to allow token reuse
+        await Promise.all([
+          drizzle
+            .delete(Schema.hooks)
+            .where(eq(Schema.hooks.runId, effectiveRunId)),
+          drizzle
+            .delete(Schema.waits)
+            .where(eq(Schema.waits.runId, effectiveRunId)),
+        ]);
       }
 
       // Handle run_cancelled event: update run status and cleanup hooks
@@ -624,10 +637,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (runValue) {
           run = deserializeRunError(compact(runValue));
         }
-        // Delete all hooks for this run to allow token reuse
-        await drizzle
-          .delete(Schema.hooks)
-          .where(eq(Schema.hooks.runId, effectiveRunId));
+        // Delete all hooks and waits for this run to allow token reuse
+        await Promise.all([
+          drizzle
+            .delete(Schema.hooks)
+            .where(eq(Schema.hooks.runId, effectiveRunId)),
+          drizzle
+            .delete(Schema.waits)
+            .where(eq(Schema.waits.runId, effectiveRunId)),
+        ]);
       }
 
       // Handle step_created event: create step entity

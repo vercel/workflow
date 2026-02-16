@@ -34,6 +34,25 @@ import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 
 /**
+ * Helper function to delete all waits associated with a workflow run.
+ * Called when a run reaches a terminal state.
+ */
+async function deleteAllWaitsForRun(
+  basedir: string,
+  runId: string
+): Promise<void> {
+  const waitsDir = path.join(basedir, 'waits');
+  const files = await listJSONFiles(waitsDir);
+
+  for (const file of files) {
+    if (file.startsWith(`${runId}-`)) {
+      const waitPath = path.join(waitsDir, `${file}.json`);
+      await deleteJSON(waitPath);
+    }
+  }
+}
+
+/**
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
@@ -316,7 +335,10 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             updatedAt: now,
           };
           await writeJSON(runPath, run, { overwrite: true });
-          await deleteAllHooksForRun(basedir, effectiveRunId);
+          await Promise.all([
+            deleteAllHooksForRun(basedir, effectiveRunId),
+            deleteAllWaitsForRun(basedir, effectiveRunId),
+          ]);
         }
       } else if (data.eventType === 'run_failed' && 'eventData' in data) {
         const failedData = data.eventData as {
@@ -350,7 +372,10 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             updatedAt: now,
           };
           await writeJSON(runPath, run, { overwrite: true });
-          await deleteAllHooksForRun(basedir, effectiveRunId);
+          await Promise.all([
+            deleteAllHooksForRun(basedir, effectiveRunId),
+            deleteAllWaitsForRun(basedir, effectiveRunId),
+          ]);
         }
       } else if (data.eventType === 'run_cancelled') {
         // Reuse currentRun from validation (already read above)
@@ -373,7 +398,10 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             updatedAt: now,
           };
           await writeJSON(runPath, run, { overwrite: true });
-          await deleteAllHooksForRun(basedir, effectiveRunId);
+          await Promise.all([
+            deleteAllHooksForRun(basedir, effectiveRunId),
+            deleteAllWaitsForRun(basedir, effectiveRunId),
+          ]);
         }
       } else if (
         // Step lifecycle events
