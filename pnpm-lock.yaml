@@ -1335,6 +1335,9 @@ importers:
       '@workflow/cli':
         specifier: workspace:*
         version: link:../cli
+      '@workflow/core':
+        specifier: workspace:*
+        version: link:../core
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
