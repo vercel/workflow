@@ -122,14 +122,21 @@ export function TraceViewerTimeline({
     const isInitial = !hasInitializedRef.current;
     hasInitializedRef.current = true;
 
-    // Build a structural key from span IDs + event counts.
-    // When only timing changes (same spans, same events), we can skip the
+    // Build a structural key from span IDs + lightweight event signatures.
+    // When only timing changes (same spans and boundary events), we can skip the
     // worker restart. When events change (step completed, etc.) we need a
     // full update because the VisibleSpan objects rendered by React hold
     // copies of the events from the worker — in-place mutation won't reach them.
     const spanKey = Object.keys(newSpanMap)
       .sort()
-      .map((id) => `${id}:${newSpanMap[id].events?.length ?? 0}`)
+      .map((id) => {
+        const events = newSpanMap[id].events;
+        const count = events?.length ?? 0;
+        const first = count ? events?.[0] : undefined;
+        const last = count ? events?.[count - 1] : undefined;
+        const eventSignature = `${first?.event.name ?? 'none'}@${first?.timestamp ?? 0}|${last?.event.name ?? 'none'}@${last?.timestamp ?? 0}`;
+        return `${id}:${count}:${eventSignature}`;
+      })
       .join(',');
 
     if (
@@ -444,6 +451,7 @@ export function TraceViewerTimeline({
                 customSpanEventClassNameFunc={
                   state.customSpanEventClassNameFunc
                 }
+                isLive={isLive}
                 root={state.root}
                 scale={scale}
                 scrollSnapshotRef={scrollSnapshotRef}

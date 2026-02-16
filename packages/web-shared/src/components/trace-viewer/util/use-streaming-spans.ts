@@ -90,6 +90,7 @@ export const useStreamingSpans = (
 
       switch (data.type) {
         case 'setRowsResult': {
+          if (data?.requestId !== requestId) return;
           if (data.isEnd) {
             for (const row of data.rows) {
               for (const node of row) {

@@ -1,7 +1,7 @@
 'use client';
 
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
+import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import { Clock, Copy, Info, Send, Type, X, XCircle } from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -355,7 +355,7 @@ function TraceViewerWithContextMenu({
   );
 
   const handleContextMenu = useCallback(
-    (e: ReactMouseEvent): void => {
+    (e: ReactMouseEvent | MouseEvent): void => {
       const target = e.target as HTMLElement;
       const $button = target.closest<HTMLButtonElement>('[data-span-id]');
       if (!$button) return;
@@ -387,6 +387,21 @@ function TraceViewerWithContextMenu({
     },
     [spanLookup]
   );
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const $container = containerRef.current;
+    if (!$container) return;
+
+    const onContextMenu = (event: MouseEvent): void => {
+      handleContextMenu(event);
+    };
+    $container.addEventListener('contextmenu', onContextMenu);
+
+    return () => {
+      $container.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, [handleContextMenu]);
 
   const closeMenu = useCallback(() => {
     setContextMenu(null);
@@ -529,7 +544,7 @@ function TraceViewerWithContextMenu({
   );
 
   return (
-    <div className="relative w-full h-full" onContextMenu={handleContextMenu}>
+    <div className="relative w-full h-full" ref={containerRef}>
       {children}
       {contextMenu ? (
         <SpanContextMenu
@@ -635,9 +650,10 @@ const buildSpans = (
   groupedEvents: GroupedEvents,
   now: Date
 ) => {
+  const viewerEndTime = new Date(run.completedAt || now);
   const stepSpans = steps.map((step) => {
     const stepEvents = groupedEvents.eventsByStepId.get(step.stepId) || [];
-    return stepToSpan(step, stepEvents, now);
+    return stepToSpan(step, stepEvents, now, viewerEndTime);
   });
 
   const hookSpans = Array.from(groupedEvents.hookEvents.values())
@@ -889,6 +905,36 @@ export const WorkflowTraceViewer = ({
     },
     [events]
   );
+
+  // Keep selected span raw events live as polling updates arrive.
+  useEffect(() => {
+    const correlationId = selectedSpan?.spanId;
+    if (!correlationId) return;
+
+    const nextRawEvents = events.filter(
+      (e) => e.correlationId === correlationId
+    );
+    setSelectedSpan((prev) => {
+      if (!prev || prev.spanId !== correlationId) {
+        return prev;
+      }
+
+      const prevRawEvents = prev.rawEvents ?? [];
+      const isSame =
+        prevRawEvents.length === nextRawEvents.length &&
+        prevRawEvents.every(
+          (event, index) => event.eventId === nextRawEvents[index]?.eventId
+        );
+      if (isSame) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        rawEvents: nextRawEvents,
+      };
+    });
+  }, [events, selectedSpan?.spanId]);
 
   const handleClose = useCallback(() => {
     setSelectedSpan(null);
