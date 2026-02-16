@@ -4,24 +4,7 @@ import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from '@/_workflows';
-
-// Disable body parsing to receive raw binary data
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
-
-async function readRawBody(req: NextApiRequest): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-}
 
 export default async function handler(
   req: NextApiRequest,
@@ -77,14 +60,11 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
       const num = parseFloat(arg);
       return Number.isNaN(num) ? arg.trim() : num;
     });
+  } else if (req.body && Array.isArray(req.body)) {
+    // Args from JSON body
+    args = req.body;
   } else {
-    // Args from body (binary serialized data)
-    const buffer = await readRawBody(req);
-    if (buffer.byteLength > 0) {
-      args = hydrateWorkflowArguments(new Uint8Array(buffer), globalThis);
-    } else {
-      args = [42];
-    }
+    args = [42];
   }
   console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
 
