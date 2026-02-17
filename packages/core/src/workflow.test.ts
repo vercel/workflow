@@ -410,6 +410,84 @@ describe('runWorkflow', () => {
     expect(hydrateWorkflowReturnValue(result as any, ops)).toEqual('done');
   });
 
+  it('should isolate concurrent runs that share workflow code', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowCode = `
+      const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+      async function workflow(value) {
+        await Promise.resolve();
+        return await add(value, 1);
+      }${getWorkflowTransformCode('workflow')}`;
+
+    const run1: WorkflowRun = {
+      runId: 'wrun_lease_isolation_1',
+      workflowName: 'workflow',
+      status: 'running',
+      input: dehydrateWorkflowArguments([1], ops),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const run2: WorkflowRun = {
+      runId: 'wrun_lease_isolation_2',
+      workflowName: 'workflow',
+      status: 'running',
+      input: dehydrateWorkflowArguments([2], ops),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const getStepCorrelationId = async (workflowRun: WorkflowRun) => {
+      try {
+        await runWorkflow(workflowCode, workflowRun, []);
+      } catch (error) {
+        const suspension = error as WorkflowSuspension;
+        const step = suspension.steps.find((item) => item.type === 'step') as
+          | WorkflowSuspension['steps'][number]
+          | undefined;
+        assert(step && step.type === 'step');
+        return step.correlationId;
+      }
+
+      throw new Error(
+        'Expected workflow to suspend while probing step correlation ID'
+      );
+    };
+
+    const correlationId1 = await getStepCorrelationId(run1);
+    const correlationId2 = await getStepCorrelationId(run2);
+
+    const [result1, result2] = await Promise.all([
+      runWorkflow(workflowCode, run1, [
+        {
+          eventId: 'event-run1',
+          runId: run1.runId,
+          eventType: 'step_completed',
+          correlationId: correlationId1,
+          eventData: { result: dehydrateStepReturnValue(2, ops) },
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+      ]),
+      runWorkflow(workflowCode, run2, [
+        {
+          eventId: 'event-run2',
+          runId: run2.runId,
+          eventType: 'step_completed',
+          correlationId: correlationId2,
+          eventData: { result: dehydrateStepReturnValue(3, ops) },
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+      ]),
+    ]);
+
+    expect(hydrateWorkflowReturnValue(result1 as any, ops)).toEqual(2);
+    expect(hydrateWorkflowReturnValue(result2 as any, ops)).toEqual(3);
+  });
+
   describe('concurrency', () => {
     it('should resolve `Promise.all()` steps that have `step_completed` events', async () => {
       const ops: Promise<any>[] = [];
