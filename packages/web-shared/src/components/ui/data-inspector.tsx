@@ -8,7 +8,7 @@
  * and expand behavior.
  */
 
-import { createContext, useContext, useRef } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   ObjectInspector,
   ObjectLabel,
@@ -209,10 +209,17 @@ export function DataInspector({
   onStreamClick,
 }: DataInspectorProps) {
   const stableData = useStableInspectorData(data);
+  const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
   const isDark = useDarkMode();
   const extendedTheme = isDark
     ? inspectorThemeExtendedDark
     : inspectorThemeExtendedLight;
+
+  useEffect(() => {
+    // react-inspector reapplies expandLevel on every data change, which can
+    // reopen paths the user manually collapsed. Apply it only on mount.
+    setInitialExpandLevel(0);
+  }, []);
 
   const content = (
     <ExtendedThemeContext.Provider value={extendedTheme}>
@@ -222,7 +229,7 @@ export function DataInspector({
         // @ts-expect-error react-inspector accepts theme objects at runtime despite
         // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
         theme={isDark ? inspectorThemeDark : inspectorThemeLight}
-        expandLevel={expandLevel}
+        expandLevel={initialExpandLevel}
         nodeRenderer={NodeRenderer}
       />
     </ExtendedThemeContext.Provider>
