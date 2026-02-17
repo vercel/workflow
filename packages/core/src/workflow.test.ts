@@ -96,6 +96,48 @@ describe('runWorkflow', () => {
       expect(result.name).toEqual('TypeError');
       expect(result.message).toEqual('my workflow error');
     });
+
+    it('should not reinitialize workflow code for sequential runs with shared code', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowCode = `
+        globalThis.__workflow_init_count = (globalThis.__workflow_init_count ?? 0) + 1;
+        function workflow() { return globalThis.__workflow_init_count; }
+        ${getWorkflowTransformCode('workflow')}`;
+
+      const run1: WorkflowRun = {
+        runId: 'wrun_init_counter_1',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const run2: WorkflowRun = {
+        runId: 'wrun_init_counter_2',
+        workflowName: 'workflow',
+        status: 'running',
+        input: dehydrateWorkflowArguments([], ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      const result1 = hydrateWorkflowReturnValue(
+        (await runWorkflow(workflowCode, run1, [])) as any,
+        ops
+      );
+      const result2 = hydrateWorkflowReturnValue(
+        (await runWorkflow(workflowCode, run2, [])) as any,
+        ops
+      );
+
+      expect(result1).toEqual(1);
+      expect(result2).toEqual(1);
+    });
   });
 
   it('should resolve a step that has a `step_completed` event', async () => {
