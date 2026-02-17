@@ -1,4 +1,7 @@
-import { WorkflowRunFailedError } from '@workflow/errors';
+import {
+  WorkflowRunCancelledError,
+  WorkflowRunFailedError,
+} from '@workflow/errors';
 import fs from 'fs';
 import path from 'path';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
@@ -1646,6 +1649,33 @@ describe('e2e', () => {
         viaStepResult: 8,
         doubled: 16,
       });
+    }
+  );
+
+  // ==================== CANCEL TESTS ====================
+  test(
+    'cancelRun - cancelling a running workflow',
+    { timeout: 60_000 },
+    async () => {
+      // Start a long-running workflow (sleeps for 10s)
+      const run = await start(await e2e('sleepingWorkflow'), []);
+
+      // Wait a bit for the workflow to start and enter the sleep
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Cancel the run using the core runtime cancelRun function.
+      // This exercises the same cancelRun code path that the CLI uses
+      // (the CLI delegates directly to this function).
+      const { cancelRun } = await import('../src/runtime');
+      await cancelRun(getWorld(), run.runId);
+
+      // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
+      const error = await run.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunCancelledError.is(error)).toBe(true);
+
+      // Verify the run status is 'cancelled' via CLI inspect
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('cancelled');
     }
   );
 
