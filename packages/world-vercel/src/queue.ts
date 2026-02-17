@@ -48,6 +48,28 @@ const MAX_DELAY_SECONDS = Number(
   process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS || 82800 // 23 hours - leave 1h buffer before 24h retention limit
 );
 
+/**
+ * Extract known identifiers from a queue payload and return them as VQS headers.
+ * This ensures observability headers are always set without relying on callers.
+ */
+function getHeadersFromPayload(
+  payload: QueuePayload
+): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
+
+  if ('runId' in payload && typeof payload.runId === 'string') {
+    headers['x-workflow-run-id'] = payload.runId;
+  }
+  if ('workflowRunId' in payload && typeof payload.workflowRunId === 'string') {
+    headers['x-workflow-run-id'] = payload.workflowRunId;
+  }
+  if ('stepId' in payload && typeof payload.stepId === 'string') {
+    headers['x-workflow-step-id'] = payload.stepId;
+  }
+
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
 type QueueFunction = (
   queueName: ValidQueueName,
   payload: QueuePayload,
@@ -114,7 +136,10 @@ export function createQueue(config?: APIConfig): Queue {
         {
           idempotencyKey: opts?.idempotencyKey,
           delaySeconds: opts?.delaySeconds,
-          headers: opts?.headers,
+          headers: {
+            ...getHeadersFromPayload(payload),
+            ...opts?.headers,
+          },
         }
       );
       return { messageId: MessageId.parse(messageId) };
