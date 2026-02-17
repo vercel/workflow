@@ -1,5 +1,7 @@
 {
   "env": {
-    "WORKFLOW_PUBLIC_MANIFEST": "1"
+    "WORKFLOW_PUBLIC_MANIFEST": "1",
+    "NEXT_ENABLE_ADAPTER": "1",
+    "VERCEL_CLI_VERSION": "vercel@https://vercel-6ujp1pmw6.vercel.sh/tarballs/vercel.tgz"
   }
 }
