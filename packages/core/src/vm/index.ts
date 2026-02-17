@@ -18,7 +18,7 @@ export interface CreateContextOptions {
 export function createContext(options: CreateContextOptions) {
   let { fixedTimestamp } = options;
   const { seed } = options;
-  const rng = seedrandom(seed);
+  let rng = seedrandom(seed);
   const context = vmCreateContext();
 
   const g: typeof globalThis = runInContext('globalThis', context);
@@ -54,7 +54,7 @@ export function createContext(options: CreateContextOptions) {
     return array;
   }
 
-  const randomUUID = createRandomUUID(rng);
+  let randomUUID = createRandomUUID(rng);
 
   const boundDigest = originalSubtle.digest.bind(originalSubtle);
 
@@ -107,6 +107,11 @@ export function createContext(options: CreateContextOptions) {
     globalThis: g,
     updateTimestamp: (timestamp: number) => {
       fixedTimestamp = timestamp;
+    },
+    resetRandomSeed: (nextSeed: string = seed) => {
+      rng = seedrandom(nextSeed);
+      randomUUID = createRandomUUID(rng);
+      g.Math.random = rng;
     },
   };
 }

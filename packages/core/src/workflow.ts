@@ -1,4 +1,4 @@
-import { runInContext } from 'node:vm';
+import { runInContext, type Context } from 'node:vm';
 import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
@@ -31,6 +31,29 @@ import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
+const WorkflowVmCacheSymbol = Symbol.for('@workflow/core//workflow-vm-cache');
+
+interface WorkflowVmCacheEntry {
+  workflowFns: Map<string, (...args: unknown[]) => unknown>;
+  workflowContext: WorkflowOrchestratorContext;
+  context: Context;
+  vmGlobalThis: typeof globalThis;
+  updateTimestamp: (timestamp: number) => void;
+  resetRandomSeed: (seed?: string) => void;
+  port: number | undefined;
+}
+
+const globalSymbols: typeof globalThis & {
+  [WorkflowVmCacheSymbol]?: Map<string, WorkflowVmCacheEntry>;
+} = globalThis;
+
+function getWorkflowVmCache() {
+  if (!globalSymbols[WorkflowVmCacheSymbol]) {
+    globalSymbols[WorkflowVmCacheSymbol] = new Map();
+  }
+  return globalSymbols[WorkflowVmCacheSymbol];
+}
+
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
@@ -51,18 +74,46 @@ export async function runWorkflow(
       );
     }
 
-    // Get the port before creating VM context to avoid async operations
-    // affecting the deterministic timestamp
-    const port = await getPort();
+    const workflowVmCache = getWorkflowVmCache();
+    const workflowCacheKey = workflowCode;
+    let cachedVm = workflowVmCache.get(workflowCacheKey);
 
-    const {
-      context,
-      globalThis: vmGlobalThis,
-      updateTimestamp,
-    } = createContext({
-      seed: workflowRun.runId,
-      fixedTimestamp: +startedAt,
-    });
+    let context: Context;
+    let vmGlobalThis: typeof globalThis;
+    let updateTimestamp: (timestamp: number) => void;
+    let resetRandomSeed: (seed?: string) => void;
+    let workflowContext: WorkflowOrchestratorContext;
+    let workflowFn!: (...args: unknown[]) => unknown;
+    let port: number | undefined;
+
+    if (cachedVm) {
+      ({
+        context,
+        vmGlobalThis,
+        updateTimestamp,
+        resetRandomSeed,
+        workflowContext,
+        port,
+      } = cachedVm);
+    } else {
+      // Get the port before creating VM context to avoid async operations
+      // affecting the deterministic timestamp.
+      port = await getPort();
+
+      ({
+        context,
+        globalThis: vmGlobalThis,
+        updateTimestamp,
+        resetRandomSeed,
+      } = createContext({
+        seed: workflowRun.runId,
+        fixedTimestamp: +startedAt,
+      }));
+    }
+
+    // Re-seed deterministic random sources and reset virtual clock before each replay.
+    resetRandomSeed(workflowRun.runId);
+    updateTimestamp(+startedAt);
 
     const workflowDiscontinuation = withResolvers<void>();
 
@@ -82,14 +133,23 @@ export async function runWorkflow(
       },
     });
 
-    const workflowContext: WorkflowOrchestratorContext = {
-      globalThis: vmGlobalThis,
-      onWorkflowError: workflowDiscontinuation.reject,
-      eventsConsumer,
-      generateUlid: () => ulid(+startedAt),
-      generateNanoid,
-      invocationsQueue: new Map(),
-    };
+    if (cachedVm) {
+      workflowContext = cachedVm.workflowContext;
+      workflowContext.onWorkflowError = workflowDiscontinuation.reject;
+      workflowContext.eventsConsumer = eventsConsumer;
+      workflowContext.generateUlid = () => ulid(+startedAt);
+      workflowContext.generateNanoid = generateNanoid;
+      workflowContext.invocationsQueue = new Map();
+    } else {
+      workflowContext = {
+        globalThis: vmGlobalThis,
+        onWorkflowError: workflowDiscontinuation.reject,
+        eventsConsumer,
+        generateUlid: () => ulid(+startedAt),
+        generateNanoid,
+        invocationsQueue: new Map(),
+      };
+    }
 
     // Subscribe to the events log to update the timestamp in the vm context
     workflowContext.eventsConsumer.subscribe((event) => {
@@ -615,24 +675,46 @@ export async function runWorkflow(
       SYMBOL_FOR_REQ_CONTEXT
     ];
 
-    // Get a reference to the user-defined workflow function.
-    // The filename parameter ensures stack traces show a meaningful name
-    // (e.g., "example/workflows/99_e2e.ts") instead of "evalmachine.<anonymous>".
-    const parsedName = parseWorkflowName(workflowRun.workflowName);
-    const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
+    if (!cachedVm) {
+      // Initialize workflow code once per workflow bundle. Individual workflow
+      // functions are then resolved from globalThis.__private_workflows.
+      // The filename parameter ensures stack traces show a meaningful name
+      // (e.g., "example/workflows/99_e2e.ts") instead of "evalmachine.<anonymous>".
+      const parsedName = parseWorkflowName(workflowRun.workflowName);
+      const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
-    const workflowFn = runInContext(
-      `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-      context,
-      { filename }
-    );
+      runInContext(workflowCode, context, { filename });
 
-    if (typeof workflowFn !== 'function') {
-      throw new ReferenceError(
-        `Workflow ${JSON.stringify(
-          workflowRun.workflowName
-        )} must be a function, but got "${typeof workflowFn}" instead`
-      );
+      cachedVm = {
+        workflowFns: new Map(),
+        workflowContext,
+        context,
+        vmGlobalThis,
+        updateTimestamp,
+        resetRandomSeed,
+        port,
+      };
+      workflowVmCache.set(workflowCacheKey, cachedVm);
+    }
+
+    const cachedWorkflowFn = cachedVm.workflowFns.get(workflowRun.workflowName);
+    if (cachedWorkflowFn) {
+      workflowFn = cachedWorkflowFn;
+    }
+
+    if (!cachedWorkflowFn) {
+      const workflowMap = (vmGlobalThis as any).__private_workflows;
+      const resolvedWorkflowFn = workflowMap?.get(workflowRun.workflowName);
+      if (typeof resolvedWorkflowFn !== 'function') {
+        throw new ReferenceError(
+          `Workflow ${JSON.stringify(
+            workflowRun.workflowName
+          )} must be a function, but got "${typeof resolvedWorkflowFn}" instead`
+        );
+      }
+
+      workflowFn = resolvedWorkflowFn;
+      cachedVm.workflowFns.set(workflowRun.workflowName, workflowFn);
     }
 
     const args = hydrateWorkflowArguments(workflowRun.input, vmGlobalThis);

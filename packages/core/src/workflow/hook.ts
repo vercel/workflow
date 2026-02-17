@@ -43,8 +43,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         eventLogEmpty = true;
 
         if (promises.length > 0) {
+          const onWorkflowError = ctx.onWorkflowError;
           setTimeout(() => {
-            ctx.onWorkflowError(
+            onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
           }, 0);
@@ -114,8 +115,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      const onWorkflowError = ctx.onWorkflowError;
       setTimeout(() => {
-        ctx.onWorkflowError(
+        onWorkflowError(
           new WorkflowRuntimeError(
             `Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`
           )
@@ -150,8 +152,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (eventLogEmpty) {
         // If the event log is already empty then we know the hook will not be resolved.
         // Treat this case as a "step not run" scenario and suspend the workflow.
+        const onWorkflowError = ctx.onWorkflowError;
         setTimeout(() => {
-          ctx.onWorkflowError(
+          onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
         }, 0);

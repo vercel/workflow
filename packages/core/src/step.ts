@@ -53,8 +53,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
+          const onWorkflowError = ctx.onWorkflowError;
           setTimeout(() => {
-            ctx.onWorkflowError(
+            onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
           }, 0);
@@ -153,8 +154,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         }
 
         // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+        const onWorkflowError = ctx.onWorkflowError;
         setTimeout(() => {
-          ctx.onWorkflowError(
+          onWorkflowError(
             new WorkflowRuntimeError(
               `Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`
             )

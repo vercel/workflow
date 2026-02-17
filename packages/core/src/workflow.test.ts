@@ -353,6 +353,63 @@ describe('runWorkflow', () => {
     }
   );
 
+  it('should replay suspended sleeps with deterministic correlation IDs', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'test-run-sleep-replay';
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: dehydrateWorkflowArguments([], ops),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const workflowCode = `
+      const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+      async function workflow() {
+        await sleep(1);
+        return "done";
+      }${getWorkflowTransformCode('workflow')}`;
+
+    let suspension: WorkflowSuspension | undefined;
+    try {
+      await runWorkflow(workflowCode, workflowRun, []);
+    } catch (error) {
+      suspension = error as WorkflowSuspension;
+    }
+    assert(suspension);
+
+    const wait = suspension.steps.find((item) => item.type === 'wait') as
+      | WorkflowSuspension['steps'][number]
+      | undefined;
+    assert(wait && wait.type === 'wait');
+
+    const result = await runWorkflow(workflowCode, workflowRun, [
+      {
+        eventId: 'event-0',
+        runId: workflowRunId,
+        eventType: 'wait_created',
+        correlationId: wait.correlationId,
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+      {
+        eventId: 'event-1',
+        runId: workflowRunId,
+        eventType: 'wait_completed',
+        correlationId: wait.correlationId,
+        createdAt: new Date('2024-01-01T00:00:02.000Z'),
+      },
+    ]);
+
+    expect(hydrateWorkflowReturnValue(result as any, ops)).toEqual('done');
+  });
+
   describe('concurrency', () => {
     it('should resolve `Promise.all()` steps that have `step_completed` events', async () => {
       const ops: Promise<any>[] = [];

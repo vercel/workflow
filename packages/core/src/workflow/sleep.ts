@@ -27,8 +27,9 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       // If there are no events and we're waiting for wait_completed,
       // suspend the workflow until the wait fires
       if (!event) {
+        const onWorkflowError = ctx.onWorkflowError;
         setTimeout(() => {
-          ctx.onWorkflowError(
+          onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
         }, 0);
@@ -65,8 +66,9 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       }
 
       // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
+      const onWorkflowError = ctx.onWorkflowError;
       setTimeout(() => {
-        ctx.onWorkflowError(
+        onWorkflowError(
           new WorkflowRuntimeError(
             `Unexpected event type for wait ${correlationId} "${event.eventType}"`
           )

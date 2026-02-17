@@ -222,4 +222,22 @@ describe('createContext', () => {
     updateTimestamp(1234567890009);
     expect(vm.runInContext('Date.now()', context)).toEqual(1234567890009);
   });
+
+  it('should allow resetting deterministic random state', () => {
+    const { context, resetRandomSeed } = createContext({
+      seed,
+      fixedTimestamp,
+    });
+    const firstMathRandom = vm.runInContext('Math.random()', context);
+
+    // Advance RNG state, then reset and verify the sequence restarts.
+    vm.runInContext('Math.random()', context);
+    resetRandomSeed(seed);
+    expect(vm.runInContext('Math.random()', context)).toEqual(firstMathRandom);
+    expect(
+      Array.from(
+        vm.runInContext('crypto.getRandomValues(new Uint8Array(4))', context)
+      )
+    ).toEqual([46, 96, 94, 95]);
+  });
 });
