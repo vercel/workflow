@@ -1,6 +1,15 @@
 ---
 title: Streaming Updates from Tools
 description: Show progress updates and stream step output to users during long-running tool executions.
+type: guide
+summary: Write custom data parts from step functions to show progress updates during long-running tool calls.
+prerequisites:
+  - /docs/ai
+  - /docs/foundations/streaming
+related:
+  - /docs/ai/defining-tools
+  - /docs/ai/resumable-streams
+  - /docs/api-reference/workflow/get-writable
 ---
 
 After [building a durable AI agent](/docs/ai), we already get UI message chunks for displaying tool invocations and return values. However, for long-running steps, we may want to show progress updates, or stream step output to the user while it's being generated.

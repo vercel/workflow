@@ -183,6 +183,16 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
   } catch {}
 }
 
+/**
+ * Frame format for stream chunks:
+ *   [4-byte big-endian length][format-prefixed payload]
+ *
+ * Each chunk is independently framed so the deserializer can find
+ * chunk boundaries even when multiple chunks are concatenated or
+ * split across transport reads.
+ */
+const FRAME_HEADER_SIZE = 4;
+
 export function getSerializeStream(
   reducers: Reducers
 ): TransformStream<any, Uint8Array> {
@@ -191,7 +201,17 @@ export function getSerializeStream(
     transform(chunk, controller) {
       try {
         const serialized = stringify(chunk, reducers);
-        controller.enqueue(encoder.encode(`${serialized}\n`));
+        const payload = encoder.encode(serialized);
+        const prefixed = encodeWithFormatPrefix(
+          SerializationFormat.DEVALUE_V1,
+          payload
+        ) as Uint8Array;
+
+        // Write length-prefixed frame: [4-byte length][prefixed data]
+        const frame = new Uint8Array(FRAME_HEADER_SIZE + prefixed.length);
+        new DataView(frame.buffer).setUint32(0, prefixed.length, false);
+        frame.set(prefixed, FRAME_HEADER_SIZE);
+        controller.enqueue(frame);
       } catch (error) {
         controller.error(
           new WorkflowRuntimeError(
@@ -209,29 +229,81 @@ export function getDeserializeStream(
   revivers: Revivers
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
-  let buffer = '';
+  let buffer = new Uint8Array(0);
+
+  function appendToBuffer(data: Uint8Array) {
+    const newBuffer = new Uint8Array(buffer.length + data.length);
+    newBuffer.set(buffer, 0);
+    newBuffer.set(data, buffer.length);
+    buffer = newBuffer;
+  }
+
+  function processFrames(controller: TransformStreamDefaultController<any>) {
+    // Try to extract complete length-prefixed frames
+    while (buffer.length >= FRAME_HEADER_SIZE) {
+      const frameLength = new DataView(
+        buffer.buffer,
+        buffer.byteOffset,
+        buffer.byteLength
+      ).getUint32(0, false);
+
+      if (buffer.length < FRAME_HEADER_SIZE + frameLength) {
+        break; // Incomplete frame, wait for more data
+      }
+
+      const frameData = buffer.slice(
+        FRAME_HEADER_SIZE,
+        FRAME_HEADER_SIZE + frameLength
+      );
+      buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
+
+      const { format, payload } = decodeFormatPrefix(frameData);
+      if (format === SerializationFormat.DEVALUE_V1) {
+        const text = decoder.decode(payload);
+        controller.enqueue(parse(text, revivers));
+      }
+    }
+  }
+
   const stream = new TransformStream<Uint8Array, any>({
     transform(chunk, controller) {
-      // Append new chunk to buffer
-      buffer += decoder.decode(chunk, { stream: true });
+      // First, try to detect if this is length-prefixed framed data
+      // by checking if the first 4 bytes form a plausible length.
+      if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
+        const possibleLength = new DataView(
+          chunk.buffer,
+          chunk.byteOffset,
+          chunk.byteLength
+        ).getUint32(0, false);
+        if (
+          possibleLength > 0 &&
+          possibleLength < 100_000_000 // sanity check: < 100MB
+        ) {
+          // Looks like framed data
+          appendToBuffer(chunk);
+          processFrames(controller);
+          return;
+        }
+      } else if (buffer.length > 0) {
+        // Already in framed mode (have buffered data)
+        appendToBuffer(chunk);
+        processFrames(controller);
+        return;
+      }
 
-      // Process all complete lines
-      while (true) {
-        const newlineIndex = buffer.indexOf('\n');
-        if (newlineIndex === -1) break;
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
+      // Legacy format: newline-delimited devalue text (no framing)
+      const text = decoder.decode(chunk);
+      const lines = text.split('\n');
+      for (const line of lines) {
         if (line.length > 0) {
-          const obj = parse(line, revivers);
-          controller.enqueue(obj);
+          controller.enqueue(parse(line, revivers));
         }
       }
     },
     flush(controller) {
-      // Process any remaining data in the buffer at the end of the stream
-      if (buffer && buffer.length > 0) {
-        const obj = parse(buffer, revivers);
-        controller.enqueue(obj);
+      // Process any remaining framed data
+      if (buffer.length > 0) {
+        processFrames(controller);
       }
     },
   });
@@ -280,15 +352,9 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
-  constructor(name: string, runId: string | Promise<string>) {
-    // runId can be a promise, because we need a runID to write to a stream,
-    // but at class instantiation time, we might not have a run ID yet. This
-    // mainly happens when calling start() for a workflow with already-serialized
-    // arguments.
-    if (typeof runId !== 'string' && !(runId instanceof Promise)) {
-      throw new Error(
-        `"runId" must be a string or a promise that resolves to a string, got "${typeof runId}"`
-      );
+  constructor(name: string, runId: string) {
+    if (typeof runId !== 'string') {
+      throw new Error(`"runId" must be a string, got "${typeof runId}"`);
     }
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`"name" is required, got "${name}"`);
@@ -312,18 +378,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // This prevents data loss if the write operation fails
       const chunksToFlush = buffer.slice();
 
-      const _runId = await runId;
-
       // Use writeToStreamMulti if available for batch writes
       if (
         typeof world.writeToStreamMulti === 'function' &&
         chunksToFlush.length > 1
       ) {
-        await world.writeToStreamMulti(name, _runId, chunksToFlush);
+        await world.writeToStreamMulti(name, runId, chunksToFlush);
       } else {
         // Fall back to sequential writes
         for (const chunk of chunksToFlush) {
-          await world.writeToStream(name, _runId, chunk);
+          await world.writeToStream(name, runId, chunk);
         }
       }
 
@@ -361,8 +425,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Flush any remaining buffered chunks
         await flush();
 
-        const _runId = await runId;
-        await world.closeStream(name, _runId);
+        await world.closeStream(name, runId);
       },
       abort() {
         // Clean up timer to prevent leaks
@@ -620,7 +683,7 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
 export function getExternalReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string | Promise<string>
+  runId: string
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -727,7 +790,7 @@ export function getWorkflowReducers(
 function getStepReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string | Promise<string>
+  runId: string
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -926,7 +989,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 export function getExternalRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string | Promise<string>
+  runId: string
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1138,7 +1201,7 @@ export function getWorkflowRevivers(
 function getStepRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string | Promise<string>
+  runId: string
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1315,7 +1378,7 @@ function getStepRevivers(
 export function dehydrateWorkflowArguments(
   value: unknown,
   ops: Promise<void>[],
-  runId: string | Promise<string>,
+  runId: string,
   global: Record<string, any> = globalThis,
   v1Compat = false
 ): Uint8Array | unknown {
@@ -1412,7 +1475,7 @@ export function dehydrateWorkflowReturnValue(
 export function hydrateWorkflowReturnValue(
   value: Uint8Array | unknown,
   ops: Promise<void>[],
-  runId: string | Promise<string>,
+  runId: string,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1480,7 +1543,7 @@ export function dehydrateStepArguments(
 export function hydrateStepArguments(
   value: Uint8Array | unknown,
   ops: Promise<any>[],
-  runId: string | Promise<string>,
+  runId: string,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1519,7 +1582,7 @@ export function hydrateStepArguments(
 export function dehydrateStepReturnValue(
   value: unknown,
   ops: Promise<any>[],
-  runId: string | Promise<string>,
+  runId: string,
   global: Record<string, any> = globalThis,
   v1Compat = false
 ): Uint8Array | unknown {

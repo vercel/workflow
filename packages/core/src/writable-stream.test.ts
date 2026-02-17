@@ -32,12 +32,10 @@ describe('WorkflowServerWritableStream', () => {
   });
 
   describe('constructor validation', () => {
-    it('should throw error when runId is not a string or promise', () => {
+    it('should throw error when runId is not a string', () => {
       expect(() => {
         new WorkflowServerWritableStream('test-stream', 123 as any);
-      }).toThrow(
-        '"runId" must be a string or a promise that resolves to a string'
-      );
+      }).toThrow('"runId" must be a string');
     });
 
     it('should throw error when name is empty', () => {
@@ -49,15 +47,6 @@ describe('WorkflowServerWritableStream', () => {
     it('should accept a string runId', () => {
       expect(() => {
         new WorkflowServerWritableStream('test-stream', 'run-123');
-      }).not.toThrow();
-    });
-
-    it('should accept a promise runId', () => {
-      expect(() => {
-        new WorkflowServerWritableStream(
-          'test-stream',
-          Promise.resolve('run-123')
-        );
       }).not.toThrow();
     });
   });
@@ -276,41 +265,6 @@ describe('WorkflowServerWritableStream', () => {
       expect(mockWorld.writeToStream).not.toHaveBeenCalled();
       expect(mockWorld.writeToStreamMulti).not.toHaveBeenCalled();
       expect(mockWorld.closeStream).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('promise runId handling', () => {
-    it('should wait for runId promise before writing', async () => {
-      let resolveRunId: (value: string) => void;
-      const runIdPromise = new Promise<string>((resolve) => {
-        resolveRunId = resolve;
-      });
-
-      const stream = new WorkflowServerWritableStream(
-        'test-stream',
-        runIdPromise
-      );
-      const writer = stream.getWriter();
-
-      // Write and trigger flush
-      await writer.write(new Uint8Array([1, 2, 3]));
-      await vi.advanceTimersByTimeAsync(10);
-
-      // Write should not have happened yet because runId is not resolved
-      expect(mockWorld.writeToStream).not.toHaveBeenCalled();
-
-      // Resolve runId
-      resolveRunId!('resolved-run-123');
-      await vi.advanceTimersByTimeAsync(0); // Let promises settle
-
-      // Now the write should have happened
-      expect(mockWorld.writeToStream).toHaveBeenCalledWith(
-        'test-stream',
-        'resolved-run-123',
-        new Uint8Array([1, 2, 3])
-      );
-
-      await writer.close();
     });
   });
 

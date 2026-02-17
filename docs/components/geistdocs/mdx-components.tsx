@@ -22,12 +22,11 @@ export const getMDXComponents = (
   components?: MDXComponents
 ): MDXComponents => ({
   ...defaultMdxComponents,
-  ...components,
 
   pre: CodeBlock,
 
   a: ({ href, ...props }) =>
-    typeof href === 'string' && href.startsWith('/') ? (
+    href.startsWith('/') ? (
       <DynamicLink
         className="font-normal text-primary no-underline"
         href={`/[lang]${href}`}
@@ -56,4 +55,7 @@ export const getMDXComponents = (
   Mermaid,
 
   Video,
+
+  // User components last to allow overwriting defaults
+  ...components,
 });

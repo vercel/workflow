@@ -30,6 +30,9 @@ packages/swc-plugin-workflow/build-hash.json
 # claude local settings
 .claude/settings.local.json
 
+# jj
+.jj/
+
 .next
 
 .DS_Store

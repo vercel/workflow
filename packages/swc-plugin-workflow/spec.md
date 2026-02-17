@@ -739,6 +739,53 @@ Note that:
 - The `classId` in the manifest also uses `Bash`
 - This ensures the registration call references a symbol that's actually in scope at module level
 
+### Anonymous Class Expression Name Re-insertion
+
+When a serializable class expression has no internal name (anonymous) but has a binding name from a variable declaration, the plugin re-inserts the binding name as the class expression's identifier. This handles the common case where upstream bundlers like esbuild/tsup transform `class Foo { ... }` into `var Foo = class { ... }` (stripping the class name).
+
+Without this fix, the anonymous class would have an empty `.name` property, which can break downstream bundlers that rely on the class name for serialization registration.
+
+Input (e.g., after tsup pre-bundling):
+```javascript
+var Shell = class {
+  constructor(cmd) {
+    this.cmd = cmd;
+  }
+
+  static [Symbol.for('workflow-serialize')](instance) {
+    return { cmd: instance.cmd };
+  }
+
+  static [Symbol.for('workflow-deserialize')](data) {
+    return new Shell(data.cmd);
+  }
+};
+```
+
+Output:
+```javascript
+import { registerSerializationClass } from "workflow/internal/class-serialization";
+/**__internal_workflows{"classes":{"input.js":{"Shell":{"classId":"class//./input//Shell"}}}}*/;
+var Shell = class Shell {
+    constructor(cmd) {
+        this.cmd = cmd;
+    }
+    static [Symbol.for('workflow-serialize')](instance) {
+        return { cmd: instance.cmd };
+    }
+    static [Symbol.for('workflow-deserialize')](data) {
+        return new Shell(data.cmd);
+    }
+};
+registerSerializationClass("class//./input//Shell", Shell);
+```
+
+Note that:
+- The class expression `class { ... }` becomes `class Shell { ... }` — the binding name is inserted
+- For typical usage, behavior is preserved while ensuring the `.name` property survives subsequent bundling (an inner class name binding is introduced, which can differ in edge cases that depend on assigning to or shadowing that name inside the class body)
+- Classes that already have an internal name (e.g., `class _Bash { ... }`) are not modified
+- Only classes with serialization methods (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`) are affected
+
 ### File Discovery for Custom Serialization
 
 Files containing classes with custom serialization are automatically discovered for transformation, even if they don't contain `"use step"` or `"use workflow"` directives. The discovery mechanism looks for:

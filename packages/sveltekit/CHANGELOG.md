@@ -1,5 +1,43 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.48
+  - @workflow/rollup@4.0.0-beta.14
+  - @workflow/vite@4.0.0-beta.7
+
+## 4.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`94760b4`](https://github.com/vercel/workflow/commit/94760b4640dde4ed84ff0932994ce9a47b1954ad)]:
+  - @workflow/builders@4.0.1-beta.47
+  - @workflow/rollup@4.0.0-beta.13
+  - @workflow/vite@4.0.0-beta.6
+
+## 4.0.0-beta.44
+
+### Patch Changes
+
+- Updated dependencies [[`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee), [`054e40c`](https://github.com/vercel/workflow/commit/054e40c91be615809c71d3ad29573c78c4491825), [`a5935ab`](https://github.com/vercel/workflow/commit/a5935abec7c7e57b2a89c629203d567cd7ac76a7), [`1adcc6a`](https://github.com/vercel/workflow/commit/1adcc6a618562e0b31ae53d10f9f6aa797107705)]:
+  - @workflow/builders@4.0.1-beta.46
+  - @workflow/swc-plugin@4.1.0-beta.18
+  - @workflow/rollup@4.0.0-beta.12
+  - @workflow/vite@4.0.0-beta.5
+
+## 4.0.0-beta.43
+
+### Patch Changes
+
+- Updated dependencies [[`2d1d69f`](https://github.com/vercel/workflow/commit/2d1d69f4ca7be9cf6d01aa2dfb9b031d74ba166c), [`ef23b0b`](https://github.com/vercel/workflow/commit/ef23b0be770bbb5ccca015fb2564953fe6a761d7), [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c)]:
+  - @workflow/builders@4.0.1-beta.45
+  - @workflow/swc-plugin@4.1.0-beta.17
+  - @workflow/rollup@4.0.0-beta.11
+  - @workflow/vite@4.0.0-beta.4
+
 ## 4.0.0-beta.42
 
 ### Patch Changes

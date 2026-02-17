@@ -1,7 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
-import { WORKFLOW_DEFINITIONS } from '@/app/workflows/definitions';
+import {
+  materializeWorkflowArgs,
+  WORKFLOW_DEFINITIONS,
+} from '@/app/workflows/definitions';
 import { InvocationsPanel } from '@/components/invocations-panel';
 import { TerminalLog } from '@/components/terminal-log';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -223,6 +226,8 @@ export default function Home() {
     let tempId = '';
 
     try {
+      const resolvedArgs = materializeWorkflowArgs(args);
+
       // Create invocation with "invoked" status
       tempId = `temp-${crypto.randomUUID()}`;
       addLog('info', `Starting workflow: ${workflowName}`);
@@ -235,7 +240,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           workflowName,
-          args,
+          args: resolvedArgs,
         }),
       });
 

@@ -9,6 +9,11 @@ export interface DecoratorOptions {
   decoratorMetadata: boolean;
 }
 
+export interface DecoratorOptionsWithConfigPath {
+  options: DecoratorOptions;
+  configPath: string | undefined;
+}
+
 /**
  * Reads tsconfig.json and extracts decorator-related compiler options.
  * Returns decorator options based on experimentalDecorators and emitDecoratorMetadata settings.
@@ -62,10 +67,22 @@ export async function getDecoratorOptionsFromTsConfig(
 export async function getDecoratorOptionsForDirectory(
   cwd: string
 ): Promise<DecoratorOptions> {
-  const tsconfigPath = await findUp(['tsconfig.json', 'jsconfig.json'], {
+  const { options } = await getDecoratorOptionsForDirectoryWithConfigPath(cwd);
+  return options;
+}
+
+/**
+ * Finds tsconfig.json/jsconfig.json in the given directory tree and returns
+ * both decorator options and the config path used to derive them.
+ */
+export async function getDecoratorOptionsForDirectoryWithConfigPath(
+  cwd: string
+): Promise<DecoratorOptionsWithConfigPath> {
+  const configPath = await findUp(['tsconfig.json', 'jsconfig.json'], {
     cwd,
   });
-  return getDecoratorOptionsFromTsConfig(tsconfigPath);
+  const options = await getDecoratorOptionsFromTsConfig(configPath);
+  return { options, configPath };
 }
 
 /**

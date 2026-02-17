@@ -118,11 +118,6 @@ export interface TraceViewerState {
    */
   isMobile: boolean;
   /**
-   * Panel to render instead of the default span detail panel. The panel
-   * should use the context to get the selected span and other state.
-   */
-  customPanelComponent: ReactNode | null;
-  /**
    * A function to provide custom class names for spans.
    */
   customSpanClassNameFunc?: (span: SpanNode) => string;
@@ -215,6 +210,13 @@ export type TraceViewerAction =
     }
   | {
       type: 'forceRender';
+    }
+  | {
+      /** Like setRoot but preserves scroll position and memo cache (for incremental data updates) */
+      type: 'updateRoot';
+      root: RootNode;
+      spanMap: Record<string, SpanNode>;
+      resources: Resource[];
     };
 
 export interface TraceViewerContextProps {
@@ -250,16 +252,10 @@ export const initialState: TraceViewerState = {
   getQuickLinks: () => [],
   withPanel: false,
   isMobile: false,
-  customPanelComponent: null,
 };
 
 const getMinScale = (state: TraceViewerState): number => {
-  return (
-    (state.width -
-      state.scrollbarWidth -
-      Number(Boolean(state.selected && state.withPanel)) * state.panelWidth) /
-    state.root.duration
-  );
+  return (state.timelineWidth - state.scrollbarWidth) / state.root.duration;
 };
 
 export const TraceViewerContext = createContext<TraceViewerContextProps>({
@@ -323,11 +319,20 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
         240,
         Math.min(action.width, state.width - 240)
       );
-      return {
-        ...state,
-        timelineWidth: state.width - panelWidth,
-        panelWidth,
-      };
+      const timelineWidth =
+        state.withPanel && state.selected && !state.isMobile
+          ? state.width - panelWidth
+          : state.width;
+      return reducer(
+        {
+          ...state,
+          timelineWidth,
+          panelWidth,
+        },
+        {
+          type: 'detectBaseScale',
+        }
+      );
     }
     case 'setFilter':
       return {
@@ -342,7 +347,7 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
           timelineWidth: state.width,
         },
         {
-          type: 'minScale',
+          type: 'detectBaseScale',
         }
       );
     case 'select': {
@@ -351,13 +356,18 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
         return state;
       }
 
-      return {
-        ...state,
-        selected: node,
-        timelineWidth:
-          state.width -
-          (state.withPanel && !state.isMobile ? state.panelWidth : 0),
-      };
+      return reducer(
+        {
+          ...state,
+          selected: node,
+          timelineWidth:
+            state.width -
+            (state.withPanel && !state.isMobile ? state.panelWidth : 0),
+        },
+        {
+          type: 'detectBaseScale',
+        }
+      );
     }
     case 'escape': {
       if (state.selected) {
@@ -386,13 +396,18 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
     }
     case 'detectBaseScale': {
       const baseScale =
-        (state.width - state.scrollbarWidth) / state.root.duration;
+        (state.timelineWidth - state.scrollbarWidth) / state.root.duration;
 
-      return {
-        ...state,
-        baseScale,
-        scale: baseScale * state.scaleRatio,
-      };
+      return reducer(
+        {
+          ...state,
+          baseScale,
+          scale: baseScale * state.scaleRatio,
+        },
+        {
+          type: 'minScale',
+        }
+      );
     }
     case 'setScale':
       return {
@@ -551,16 +566,43 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
     }
     case 'setWithPanel': {
       if (state.withPanel === action.withPanel) return state;
-      return {
-        ...state,
-        withPanel: action.withPanel,
-      };
+      const timelineWidth =
+        action.withPanel && state.selected && !state.isMobile
+          ? state.width - state.panelWidth
+          : state.width;
+      return reducer(
+        {
+          ...state,
+          withPanel: action.withPanel,
+          timelineWidth,
+        },
+        {
+          type: 'detectBaseScale',
+        }
+      );
     }
     case 'forceRender':
       state.memoCacheRef.current.set('', {});
       return {
         ...state,
       };
+    case 'updateRoot':
+      // Incremental update: preserve scroll snapshot and only invalidate
+      // memo cache for spans whose data may have changed
+      state.memoCacheRef.current.set('', {});
+      return reducer(
+        {
+          ...state,
+          root: action.root,
+          spanMap: action.spanMap,
+          resourceMap: Object.fromEntries(
+            action.resources.map(({ name, attributes }) => [name, attributes])
+          ),
+        },
+        {
+          type: 'detectBaseScale',
+        }
+      );
   }
 };
 
@@ -593,7 +635,6 @@ export function TraceViewerContextProvider({
       scrollSnapshotRef,
       customSpanClassNameFunc,
       customSpanEventClassNameFunc,
-      customPanelComponent,
       memoCacheRef,
       withPanel,
       getQuickLinks: (span) => {
@@ -623,11 +664,23 @@ export function TraceViewerContextProvider({
   );
 
   return (
-    <TraceViewerContext.Provider value={value}>
-      {children}
-    </TraceViewerContext.Provider>
+    <CustomPanelContext.Provider value={customPanelComponent}>
+      <TraceViewerContext.Provider value={value}>
+        {children}
+      </TraceViewerContext.Provider>
+    </CustomPanelContext.Provider>
   );
 }
 
 export const useTraceViewer = (): TraceViewerContextProps =>
   useContext(TraceViewerContext);
+
+/**
+ * Separate context for the custom panel component. This is intentionally
+ * outside the useReducer state so that the panel re-renders reactively
+ * when props like spanDetailData change.
+ */
+const CustomPanelContext = createContext<ReactNode | null>(null);
+
+export const useCustomPanelComponent = (): ReactNode | null =>
+  useContext(CustomPanelContext);

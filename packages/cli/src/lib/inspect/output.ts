@@ -1,4 +1,3 @@
-import { hydrateResourceIO } from '@workflow/core/observability';
 import {
   getDeserializeStream,
   getExternalRevivers,
@@ -21,6 +20,7 @@ import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
+import { hydrateResourceIO } from './hydration.js';
 import { setupListPagination } from './pagination.js';
 import { streamToConsole } from './stream.js';
 import {

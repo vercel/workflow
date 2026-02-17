@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.1.0-beta.53",
+  "version": "4.1.0-beta.57",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -60,10 +60,9 @@
       "types": "./dist/serialization.d.ts",
       "default": "./dist/serialization.js"
     },
-    "./observability": {
-      "types": "./dist/observability.d.ts",
-      "node": "./dist/observability.js",
-      "default": "./dist/observability.js"
+    "./serialization-format": {
+      "types": "./dist/serialization-format.d.ts",
+      "default": "./dist/serialization-format.js"
     },
     "./_workflow": "./dist/workflow/index.js"
   },

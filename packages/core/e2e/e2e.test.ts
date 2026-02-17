@@ -1,4 +1,7 @@
-import { WorkflowRunFailedError } from '@workflow/errors';
+import {
+  WorkflowRunCancelledError,
+  WorkflowRunFailedError,
+} from '@workflow/errors';
 import fs from 'fs';
 import path from 'path';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
@@ -12,6 +15,7 @@ import {
   start,
 } from '../src/runtime';
 import {
+  cliCancel,
   cliHealthJson,
   cliInspectJson,
   getProtectionBypassHeaders,
@@ -168,9 +172,6 @@ async function startWorkflowViaHttp(
   url.searchParams.set('workflowFile', workflowFile);
   url.searchParams.set('workflowFn', workflowFn);
 
-  // Note: when args is empty, the server may use default args (e.g., [42]).
-  // This is acceptable for Pages Router tests since the workflows called
-  // with empty args don't use their arguments.
   if (args.length > 0) {
     url.searchParams.set('args', args.map(String).join(','));
   }
@@ -491,6 +492,15 @@ describe('e2e', () => {
     expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
   });
 
+  test('parallelSleepWorkflow', { timeout: 30_000 }, async () => {
+    const run = await start(await e2e('parallelSleepWorkflow'), []);
+    const returnValue = await run.returnValue;
+    // 10 parallel sleep('1s') should complete in ~1s, not 10s
+    const elapsed = returnValue.endTime - returnValue.startTime;
+    expect(elapsed).toBeGreaterThan(999);
+    expect(elapsed).toBeLessThan(10_000);
+  });
+
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);
     const returnValue = await run.returnValue;
@@ -729,8 +739,8 @@ describe('e2e', () => {
             // Workflow catches the error and returns it
             expect(result.caught).toBe(true);
             expect(result.message).toContain('Step error message');
-            // Stack trace contains function name and source file
-            expect(result.stack).toContain('errorStepFn');
+            // Stack trace can show either the original step function or its transformed wrapper name
+            expect(result.stack).toMatch(/errorStepFn|registerStepFunction/);
             expect(result.stack).not.toContain('evalmachine');
 
             // Source maps are not supported everyhwere. Check the definition
@@ -751,8 +761,10 @@ describe('e2e', () => {
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.message).toContain('Step error message');
 
-            // Step error also has function name and source file in stack
-            expect(failedStep.error.stack).toContain('errorStepFn');
+            // Step error stack can show either the original step function or its transformed wrapper name
+            expect(failedStep.error.stack).toMatch(
+              /errorStepFn|registerStepFunction/
+            );
             expect(failedStep.error.stack).not.toContain('evalmachine');
 
             // Source maps are not supported everyhwere. Check the definition
@@ -783,7 +795,9 @@ describe('e2e', () => {
             );
             // Stack trace propagates to caught error with function names and source file
             expect(result.stack).toContain('throwErrorFromStep');
-            expect(result.stack).toContain('stepThatThrowsFromHelper');
+            expect(result.stack).toMatch(
+              /stepThatThrowsFromHelper|registerStepFunction/
+            );
             expect(result.stack).not.toContain('evalmachine');
 
             // Source maps are not supported everyhwere. Check the definition
@@ -803,8 +817,8 @@ describe('e2e', () => {
             );
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.stack).toContain('throwErrorFromStep');
-            expect(failedStep.error.stack).toContain(
-              'stepThatThrowsFromHelper'
+            expect(failedStep.error.stack).toMatch(
+              /stepThatThrowsFromHelper|registerStepFunction/
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
             // Source maps are not supported everyhwere. Check the definition
@@ -885,6 +899,33 @@ describe('e2e', () => {
         expect(result.failed).toBe(true);
         expect(result.attempt).toBe(1);
       });
+
+      test(
+        'workflow completes despite transient 5xx on step_completed',
+        { timeout: 120_000 },
+        async () => {
+          const run = await start(
+            await e2e('serverError5xxRetryWorkflow'),
+            [42]
+          );
+          const result = await run.returnValue;
+
+          // Correct result proves workflow completed successfully
+          expect(result.result).toBe(84); // 42 * 2
+
+          // retryCount > 0 proves the fault injection actually triggered
+          expect(result.retryCount).toBe(2);
+
+          // attempt === 1 proves no step attempt was consumed by the 5xx retries
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const doWorkStep = steps.find((s: any) =>
+            s.stepName.includes('doWork')
+          );
+          expect(doWorkStep.attempt).toBe(1);
+        }
+      );
     });
 
     describe('catchability', () => {
@@ -1606,6 +1647,59 @@ describe('e2e', () => {
         viaStepResult: 8,
         doubled: 16,
       });
+    }
+  );
+
+  // ==================== CANCEL TESTS ====================
+  test(
+    'cancelRun - cancelling a running workflow',
+    { timeout: 60_000 },
+    async () => {
+      // Start a long-running workflow with a 30s sleep to provide a wide
+      // window for the cancel to arrive while the workflow is still running.
+      const run = await start(await e2e('sleepingWorkflow'), [30_000]);
+
+      // Wait for the workflow to start and enter the sleep
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Cancel the run using the core runtime cancelRun function.
+      // This exercises the same cancelRun code path that the CLI uses
+      // (the CLI delegates directly to this function).
+      const { cancelRun } = await import('../src/runtime');
+      await cancelRun(getWorld(), run.runId);
+
+      // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
+      const error = await run.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunCancelledError.is(error)).toBe(true);
+
+      // Verify the run status is 'cancelled' via CLI inspect
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('cancelled');
+    }
+  );
+
+  test(
+    'cancelRun via CLI - cancelling a running workflow',
+    { timeout: 60_000 },
+    async () => {
+      // Start a long-running workflow with a 30s sleep to provide a wide
+      // window for the cancel to arrive while the workflow is still running.
+      const run = await start(await e2e('sleepingWorkflow'), [30_000]);
+
+      // Wait for the workflow to start and enter the sleep
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Cancel the run via the CLI command. This tests the full CLI code path
+      // including World.close() which ensures the process exits cleanly.
+      await cliCancel(run.runId);
+
+      // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
+      const error = await run.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunCancelledError.is(error)).toBe(true);
+
+      // Verify the run status is 'cancelled' via CLI inspect
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('cancelled');
     }
   );
 

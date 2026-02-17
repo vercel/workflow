@@ -1,6 +1,14 @@
 ---
 title: Queueing User Messages
 description: Inject messages during an agent's turn, before tool calls complete or while the model is reasoning.
+type: guide
+summary: Inject user messages mid-turn using the `prepareStep` callback to influence the agent's next step.
+prerequisites:
+  - /docs/ai
+related:
+  - /docs/ai/chat-session-modeling
+  - /docs/api-reference/workflow-ai/durable-agent
+  - /docs/api-reference/workflow/define-hook
 ---
 
 When using [multi-turn workflows](/docs/ai/chat-session-modeling#multi-turn-workflows), messages typically arrive between agent turns. The workflow waits at a hook, receives a message, then starts a new turn. But sometimes you need to inject messages *during* an agent's turn, before tool calls complete or while the model is reasoning.

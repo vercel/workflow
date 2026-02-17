@@ -11,6 +11,7 @@ import {
   jsTsRegex,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow' | 'client';
@@ -187,10 +188,16 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             // Handle files discovered outside the working directory
             // These come back as ../path/to/file, but we want just path/to/file
             if (relativeFilepath.startsWith('../')) {
-              relativeFilepath = relativeFilepath
-                .split('/')
-                .filter((part) => part !== '..')
-                .join('/');
+              const aliasedRelativePath =
+                await resolveWorkflowAliasRelativePath(args.path, workingDir);
+              if (aliasedRelativePath) {
+                relativeFilepath = aliasedRelativePath;
+              } else {
+                relativeFilepath = relativeFilepath
+                  .split('/')
+                  .filter((part) => part !== '..')
+                  .join('/');
+              }
             }
           }
 

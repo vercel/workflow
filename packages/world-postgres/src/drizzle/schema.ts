@@ -4,6 +4,8 @@ import {
   type Step,
   StepStatusSchema,
   type StructuredError,
+  type Wait,
+  WaitStatusSchema,
   type WorkflowRun,
   WorkflowRunStatusSchema,
 } from '@workflow/world';
@@ -35,6 +37,11 @@ export const workflowRunStatus = pgEnum(
 export const stepStatus = pgEnum(
   'step_status',
   mustBeMoreThanOne(StepStatusSchema.options)
+);
+
+export const waitStatus = pgEnum(
+  'wait_status',
+  mustBeMoreThanOne(WaitStatusSchema.options)
 );
 
 /**
@@ -164,6 +171,24 @@ export const hooks = schema.table(
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
+);
+
+export const waits = schema.table(
+  'workflow_waits',
+  {
+    waitId: varchar('wait_id').primaryKey(),
+    runId: varchar('run_id').notNull(),
+    status: waitStatus('status').notNull(),
+    resumeAt: timestamp('resume_at'),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at')
+      .defaultNow()
+      .$onUpdateFn(() => new Date())
+      .notNull(),
+    specVersion: integer('spec_version'),
+  } satisfies DrizzlishOfType<Wait>,
+  (tb) => [index().on(tb.runId)]
 );
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({

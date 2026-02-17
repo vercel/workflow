@@ -1,6 +1,10 @@
 ---
 title: getWritable
 description: Retrieves the current workflow run's default writable stream.
+type: reference
+summary: Use getWritable to access the workflow run's output stream for real-time data streaming.
+prerequisites:
+  - /docs/foundations/streaming
 ---
 
 The writable stream can be obtained in workflow functions and passed to steps, or called directly within step functions to write data that can be read outside the workflow by using the `readable` property of the [`Run` object](/docs/api-reference/workflow-api/get-run).

@@ -23,7 +23,11 @@ import {
   trace,
   withTraceContext,
 } from '../telemetry.js';
-import { getErrorName, getErrorStack } from '../types.js';
+import {
+  getErrorName,
+  getErrorStack,
+  normalizeUnknownError,
+} from '../types.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -31,6 +35,7 @@ import {
   parseHealthCheckPayload,
   queueMessage,
   withHealthCheck,
+  withServerErrorRetry,
 } from './helpers.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
@@ -112,11 +117,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           // - Workflow still active (returns 410 if completed)
           let step;
           try {
-            const startResult = await world.events.create(workflowRunId, {
-              eventType: 'step_started',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-            });
+            const startResult = await withServerErrorRetry(() =>
+              world.events.create(workflowRunId, {
+                eventType: 'step_started',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: stepId,
+              })
+            );
 
             if (!startResult.step) {
               throw new WorkflowRuntimeError(
@@ -126,6 +133,19 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             step = startResult.step;
           } catch (err) {
             if (WorkflowAPIError.is(err)) {
+              if (WorkflowAPIError.is(err) && err.status === 429) {
+                const retryRetryAfter = Math.max(
+                  1,
+                  typeof err.retryAfter === 'number' ? err.retryAfter : 1
+                );
+                runtimeLogger.warn(
+                  'Throttled again on retry, deferring to queue',
+                  {
+                    retryAfterSeconds: retryRetryAfter,
+                  }
+                );
+                return { timeoutSeconds: retryRetryAfter };
+              }
               // 410 Gone: Workflow has already completed
               if (err.status === 410) {
                 console.warn(
@@ -157,7 +177,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   'step.name': stepName,
                   'step.id': stepId,
                 });
-                await queueMessage(world, `__wkf_workflow_${workflowName}`, {
+                await queueMessage(world, getWorkflowQueueName(workflowName), {
                   runId: workflowRunId,
                   traceCarrier: await serializeTraceCarrier(),
                   requestedAt: new Date(),
@@ -367,14 +387,16 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // Run step_completed and trace serialization concurrently;
             // the trace carrier is used in the final queueMessage call below
             const [, traceCarrier] = await Promise.all([
-              world.events.create(workflowRunId, {
-                eventType: 'step_completed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: stepId,
-                eventData: {
-                  result: result as Uint8Array,
-                },
-              }),
+              withServerErrorRetry(() =>
+                world.events.create(workflowRunId, {
+                  eventType: 'step_completed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    result: result as Uint8Array,
+                  },
+                })
+              ),
               serializeTraceCarrier(),
             ]);
 
@@ -384,13 +406,17 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             });
 
             // Queue the workflow continuation with the concurrently-resolved trace carrier
-            await queueMessage(world, `__wkf_workflow_${workflowName}`, {
+            await queueMessage(world, getWorkflowQueueName(workflowName), {
               runId: workflowRunId,
               traceCarrier,
               requestedAt: new Date(),
             });
             return;
           } catch (err: unknown) {
+            const normalizedError = await normalizeUnknownError(err);
+            const normalizedStack =
+              normalizedError.stack || getErrorStack(err) || '';
+
             // Record exception for OTEL error tracking
             if (err instanceof Error) {
               span?.recordException?.(err);
@@ -407,7 +433,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
             span?.setAttributes({
               ...Attribute.StepErrorName(getErrorName(err)),
-              ...Attribute.StepErrorMessage(String(err)),
+              ...Attribute.StepErrorMessage(normalizedError.message),
               ...Attribute.ErrorType(getErrorName(err)),
               ...Attribute.ErrorCategory(errorCategory),
               ...Attribute.ErrorRetryable(!isFatal),
@@ -426,28 +452,52 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 );
                 return;
               }
+
+              // Server errors (5xx) from workflow-server are treated as persistent
+              // infrastructure issues. The withServerErrorRetry wrapper already
+              // retried the call a few times; if we still have a 5xx here it's
+              // likely persistent. Re-throw so the queue can retry the job and
+              // re-invoke this handler. Note: by the time we reach this point,
+              // step_started has already run and incremented step.attempt, and a
+              // subsequent queue retry may increment attempts again depending on
+              // storage semantics, so these retries are not guaranteed to be
+              // "free" with respect to step attempts.
+              if (err.status !== undefined && err.status >= 500) {
+                runtimeLogger.warn(
+                  'Persistent server error (5xx) during step, deferring to queue retry',
+                  {
+                    status: err.status,
+                    workflowRunId,
+                    stepId,
+                    error: err.message,
+                    url: err.url,
+                  }
+                );
+                throw err;
+              }
             }
 
             if (isFatal) {
-              const errorStack = getErrorStack(err);
               stepLogger.error(
                 'Encountered FatalError while executing step, bubbling up to parent workflow',
                 {
                   workflowRunId,
                   stepName,
-                  errorStack,
+                  errorStack: normalizedStack,
                 }
               );
               // Fail the step via event (event-sourced architecture)
-              await world.events.create(workflowRunId, {
-                eventType: 'step_failed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: stepId,
-                eventData: {
-                  error: String(err),
-                  stack: errorStack,
-                },
-              });
+              await withServerErrorRetry(() =>
+                world.events.create(workflowRunId, {
+                  eventType: 'step_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    error: normalizedError.message,
+                    stack: normalizedStack,
+                  },
+                })
+              );
 
               span?.setAttributes({
                 ...Attribute.StepStatus('failed'),
@@ -466,7 +516,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               // Note: maxRetries is the number of RETRIES after the first attempt, so total attempts = maxRetries + 1
               if (currentAttempt >= maxRetries + 1) {
                 // Max retries reached
-                const errorStack = getErrorStack(err);
                 const retryCount = step.attempt - 1;
                 stepLogger.error(
                   'Max retries reached, bubbling error to parent workflow',
@@ -475,20 +524,22 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     stepName,
                     attempt: step.attempt,
                     retryCount,
-                    errorStack,
+                    errorStack: normalizedStack,
                   }
                 );
-                const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${String(err)}`;
+                const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
                 // Fail the step via event (event-sourced architecture)
-                await world.events.create(workflowRunId, {
-                  eventType: 'step_failed',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  correlationId: stepId,
-                  eventData: {
-                    error: errorMessage,
-                    stack: errorStack,
-                  },
-                });
+                await withServerErrorRetry(() =>
+                  world.events.create(workflowRunId, {
+                    eventType: 'step_failed',
+                    specVersion: SPEC_VERSION_CURRENT,
+                    correlationId: stepId,
+                    eventData: {
+                      error: errorMessage,
+                      stack: normalizedStack,
+                    },
+                  })
+                );
 
                 span?.setAttributes({
                   ...Attribute.StepStatus('failed'),
@@ -507,29 +558,29 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     }
                   );
                 } else {
-                  const errorStack = getErrorStack(err);
                   stepLogger.warn('Encountered Error, step will be retried', {
                     workflowRunId,
                     stepName,
                     attempt: currentAttempt,
-                    errorStack,
+                    errorStack: normalizedStack,
                   });
                 }
                 // Set step to pending for retry via event (event-sourced architecture)
                 // step_retrying records the error and sets status to pending
-                const errorStack = getErrorStack(err);
-                await world.events.create(workflowRunId, {
-                  eventType: 'step_retrying',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  correlationId: stepId,
-                  eventData: {
-                    error: String(err),
-                    stack: errorStack,
-                    ...(RetryableError.is(err) && {
-                      retryAfter: err.retryAfter,
-                    }),
-                  },
-                });
+                await withServerErrorRetry(() =>
+                  world.events.create(workflowRunId, {
+                    eventType: 'step_retrying',
+                    specVersion: SPEC_VERSION_CURRENT,
+                    correlationId: stepId,
+                    eventData: {
+                      error: normalizedError.message,
+                      stack: normalizedStack,
+                      ...(RetryableError.is(err) && {
+                        retryAfter: err.retryAfter,
+                      }),
+                    },
+                  })
+                );
 
                 const timeoutSeconds = Math.max(
                   1,

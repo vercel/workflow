@@ -1,5 +1,49 @@
 # @workflow/next
 
+## 4.0.1-beta.53
+
+### Patch Changes
+
+- [#1038](https://github.com/vercel/workflow/pull/1038) [`f4a1994`](https://github.com/vercel/workflow/commit/f4a1994c4b6416bbd35a81324f3e59f39df8997e) Thanks [@ijjk](https://github.com/ijjk)! - Fix condition for lazy discovery with canary
+
+- [#1036](https://github.com/vercel/workflow/pull/1036) [`01e8e80`](https://github.com/vercel/workflow/commit/01e8e804629f360690ff8c99cda930696d7434dd) Thanks [@ijjk](https://github.com/ijjk)! - Make lazy discovery in Next.js opt-in
+
+- Updated dependencies []:
+  - @workflow/core@4.1.0-beta.57
+  - @workflow/builders@4.0.1-beta.48
+
+## 4.0.1-beta.52
+
+### Patch Changes
+
+- [#1029](https://github.com/vercel/workflow/pull/1029) [`94760b4`](https://github.com/vercel/workflow/commit/94760b4640dde4ed84ff0932994ce9a47b1954ad) Thanks [@ijjk](https://github.com/ijjk)! - Track loader transform deps instead of clearing Next cache
+
+- [#992](https://github.com/vercel/workflow/pull/992) [`dc2dc6a`](https://github.com/vercel/workflow/commit/dc2dc6ac7908e57be9ab34140addfe98a9246fc7) Thanks [@ijjk](https://github.com/ijjk)! - stop esbuild bundling for deferred step route in Next.js
+
+- Updated dependencies [[`c56dc38`](https://github.com/vercel/workflow/commit/c56dc3848ecf3e188f876dc4cb7861df185bd4fb), [`d7d005b`](https://github.com/vercel/workflow/commit/d7d005b54b621214720518a2a19aa2cadfa23d47), [`8d117cd`](https://github.com/vercel/workflow/commit/8d117cd219faac53ffa90db8628defd3d7a8160d), [`94760b4`](https://github.com/vercel/workflow/commit/94760b4640dde4ed84ff0932994ce9a47b1954ad), [`63caf93`](https://github.com/vercel/workflow/commit/63caf931380b8211f1948cf44eac7532f33e660d), [`dc2dc6a`](https://github.com/vercel/workflow/commit/dc2dc6ac7908e57be9ab34140addfe98a9246fc7)]:
+  - @workflow/core@4.1.0-beta.56
+  - @workflow/builders@4.0.1-beta.47
+
+## 4.0.1-beta.51
+
+### Patch Changes
+
+- [#976](https://github.com/vercel/workflow/pull/976) [`a5935ab`](https://github.com/vercel/workflow/commit/a5935abec7c7e57b2a89c629203d567cd7ac76a7) Thanks [@ijjk](https://github.com/ijjk)! - Add lazy workflow/step discovery via deferredEntries in next
+
+- Updated dependencies [[`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee), [`054e40c`](https://github.com/vercel/workflow/commit/054e40c91be615809c71d3ad29573c78c4491825), [`a5935ab`](https://github.com/vercel/workflow/commit/a5935abec7c7e57b2a89c629203d567cd7ac76a7), [`fc4cad6`](https://github.com/vercel/workflow/commit/fc4cad68088b0f4fa4e5eeb828e2af29e05d4fe1), [`1adcc6a`](https://github.com/vercel/workflow/commit/1adcc6a618562e0b31ae53d10f9f6aa797107705), [`56f2221`](https://github.com/vercel/workflow/commit/56f22219b338a5a2c29466798a5ad36a6a450498)]:
+  - @workflow/builders@4.0.1-beta.46
+  - @workflow/core@4.1.0-beta.55
+  - @workflow/swc-plugin@4.1.0-beta.18
+
+## 4.0.1-beta.50
+
+### Patch Changes
+
+- Updated dependencies [[`2d1d69f`](https://github.com/vercel/workflow/commit/2d1d69f4ca7be9cf6d01aa2dfb9b031d74ba166c), [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c), [`d9e9859`](https://github.com/vercel/workflow/commit/d9e98590fae17fd090e0be4f0b54bbaa80c7be69), [`ef23b0b`](https://github.com/vercel/workflow/commit/ef23b0be770bbb5ccca015fb2564953fe6a761d7), [`f7fd88e`](https://github.com/vercel/workflow/commit/f7fd88ea963e127e62c8d527dcfdb895ba646fc2), [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c)]:
+  - @workflow/builders@4.0.1-beta.45
+  - @workflow/core@4.1.0-beta.54
+  - @workflow/swc-plugin@4.1.0-beta.17
+
 ## 4.0.1-beta.49
 
 ### Patch Changes
@@ -11,7 +55,6 @@
 - [#899](https://github.com/vercel/workflow/pull/899) [`73bf7be`](https://github.com/vercel/workflow/commit/73bf7be925a8ffc0c6fce0cc75b6092243882088) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Change compiler ID generation logic to use Node.js import specifiers
 
   IDs for workflows, steps, and classes now use module specifiers:
-
   - Local files use `./path/to/file` format instead of `path/to/file.ext`
   - Package files use `packageName@version` format (e.g., `workflow@4.0.1`)
 
@@ -215,7 +258,6 @@
 ### Patch Changes
 
 - 21cff15: Add support for `.mjs`, `.mts`, `.cjs`, and `.cts` file extensions in the SWC transform
-
   - Updated turbopack rules to include `*.mjs`, `*.mts`, `*.cjs`, `*.cts` in addition to existing extensions
   - Fixed TypeScript detection for `.mts` and `.cts` files across all transform plugins
   - Updated esbuild `resolveExtensions` to include `.mts` and `.cts`

@@ -1,10 +1,6 @@
-import {
-  isLegacySpecVersion,
-  type WorkflowRun,
-  type World,
-} from '@workflow/world';
+import { start } from '@workflow/core/runtime';
+import type { WorkflowRun, World } from '@workflow/world';
 import { logger } from '../config/log.js';
-import { start } from '../runtime.js';
 
 interface CLICreateOpts {
   json?: boolean;
@@ -68,15 +64,4 @@ export const startRun = async (
   } else {
     logger.log(newRun);
   }
-};
-
-export const cancelRun = async (world: World, runId: string) => {
-  const run = await world.runs.get(runId);
-  await world.events.create(
-    runId,
-    { eventType: 'run_cancelled' },
-    {
-      v1Compat: isLegacySpecVersion(run.specVersion),
-    }
-  );
 };

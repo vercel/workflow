@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-testing",
-  "version": "4.1.0-beta.54",
+  "version": "4.1.0-beta.58",
   "description": "Testing utilities and World implementation for Workflow DevKit",
   "main": "dist/src/index.mjs",
   "files": [
@@ -24,6 +24,7 @@
   "dependencies": {
     "@hono/node-server": "1.19.5",
     "@workflow/cli": "workspace:*",
+    "@workflow/core": "workspace:*",
     "workflow": "workspace:*",
     "@workflow/world": "workspace:*",
     "chalk": "5.6.2",

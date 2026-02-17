@@ -1,6 +1,12 @@
 ---
 title: webhook-response-not-sent
 description: Manual webhooks must send a response before execution completes.
+type: troubleshooting
+summary: Resolve the webhook-response-not-sent error by ensuring all code paths call respondWith.
+prerequisites:
+  - /docs/foundations/hooks
+related:
+  - /docs/api-reference/workflow/create-webhook
 ---
 
 This error occurs when a webhook is configured with `respondWith: "manual"` but the workflow does not send a response using `request.respondWith()` before the webhook execution completes.

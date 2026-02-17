@@ -50,6 +50,13 @@
       "when": 1768500000000,
       "tag": "0006_add_error_cbor",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1769500000000,
+      "tag": "0007_add_waits_table",
+      "breakpoints": true
     }
   ]
 }

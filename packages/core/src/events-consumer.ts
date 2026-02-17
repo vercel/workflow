@@ -18,14 +18,27 @@ export enum EventConsumerResult {
 
 type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
+export interface EventsConsumerOptions {
+  /**
+   * Callback invoked when a non-null event cannot be consumed by any registered
+   * callback, indicating an orphaned or invalid event in the event log. Called
+   * asynchronously after a macrotask delay to allow pending callback
+   * subscriptions to settle first.
+   */
+  onUnconsumedEvent: (event: Event) => void;
+}
+
 export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[] = [];
   readonly callbacks: EventConsumerCallback[] = [];
+  private onUnconsumedEvent: (event: Event) => void;
+  private pendingUnconsumedCheck: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(events: Event[]) {
+  constructor(events: Event[], options: EventsConsumerOptions) {
     this.events = events;
     this.eventIndex = 0;
+    this.onUnconsumedEvent = options.onUnconsumedEvent;
   }
 
   /**
@@ -39,6 +52,11 @@ export class EventsConsumer {
    */
   subscribe(fn: EventConsumerCallback) {
     this.callbacks.push(fn);
+    // Cancel any pending unconsumed check since a new callback may consume the event
+    if (this.pendingUnconsumedCheck !== null) {
+      clearTimeout(this.pendingUnconsumedCheck);
+      this.pendingUnconsumedCheck = null;
+    }
     process.nextTick(this.consume);
   }
 
@@ -71,8 +89,19 @@ export class EventsConsumer {
     }
 
     // If we reach here, all callbacks returned NotConsumed.
-    // We do NOT auto-advance - every event must have a consumer.
-    // With proper consumers for run_created/run_started/step_created,
-    // this should not cause events to get stuck.
+    // If the current event is non-null (a real event, not end-of-events),
+    // schedule a deferred check. We use setTimeout (macrotask) so that any
+    // pending process.nextTick microtasks (e.g., new subscribes from the
+    // workflow code) can complete first. If the event is still unconsumed
+    // when the timeout fires, it's truly orphaned.
+    if (currentEvent !== null) {
+      const unconsumedIndex = this.eventIndex;
+      this.pendingUnconsumedCheck = setTimeout(() => {
+        this.pendingUnconsumedCheck = null;
+        if (this.eventIndex === unconsumedIndex) {
+          this.onUnconsumedEvent(currentEvent);
+        }
+      }, 0);
+    }
   };
 }

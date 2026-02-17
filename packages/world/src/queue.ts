@@ -25,6 +25,8 @@ export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
   requestedAt: z.coerce.date().optional(),
+  /** Number of times this message has been re-enqueued due to server errors (5xx) */
+  serverErrorRetryCount: z.number().int().optional(),
 });
 
 export const StepInvokePayloadSchema = z.object({
@@ -60,6 +62,8 @@ export interface QueueOptions {
   deploymentId?: string;
   idempotencyKey?: string;
   headers?: Record<string, string>;
+  /** Delay message delivery by this many seconds */
+  delaySeconds?: number;
 }
 
 export interface Queue {

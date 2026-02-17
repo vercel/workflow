@@ -1,4 +1,4 @@
-import { createWorld } from '@workflow/core/runtime';
+import { getWorld } from '@workflow/core/runtime';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
@@ -26,7 +26,7 @@ export const setupCliWorld = async (
   },
   version: string,
   ignoreLocalWorldConfigError = false
-): Promise<Awaited<ReturnType<typeof createWorld>> | null> => {
+) => {
   setJsonMode(Boolean(flags.json));
   setVerboseMode(Boolean(flags.verbose));
 
@@ -107,6 +107,8 @@ export const setupCliWorld = async (
   }
 
   logger.debug('Initializing world');
-  const world = await createWorld();
+  // Use getWorld() instead of createWorld() so the world is stored in the
+  // global cache. This allows BaseCommand.finally() to find and close it.
+  const world = getWorld();
   return world;
 };

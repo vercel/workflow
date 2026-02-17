@@ -1,6 +1,15 @@
 ---
 title: Resumable Streams
 description: Handle network interruptions, page refreshes, and timeouts without losing agent progress.
+type: guide
+summary: Reconnect to interrupted agent streams using `WorkflowChatTransport` without losing progress.
+prerequisites:
+  - /docs/ai
+  - /docs/foundations/streaming
+related:
+  - /docs/ai/chat-session-modeling
+  - /docs/api-reference/workflow-ai/workflow-chat-transport
+  - /docs/api-reference/workflow-api/get-run
 ---
 
 When building chat interfaces, it's common to run into network interruptions, page refreshes, or serverless function timeouts, which can break the connection to an in-progress agent.

@@ -1,6 +1,12 @@
 ---
 title: Starting Workflows
 description: Trigger workflow execution with the start() function and track progress with Run objects.
+type: guide
+summary: Trigger workflows and track their execution using the start() function.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/workflow-api/start
 ---
 
 Once you've defined your workflow functions, you need to trigger them to begin execution. This is done using the `start()` function from `workflow/api`, which enqueues a new workflow run and returns a `Run` object that you can use to track its progress.

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  detectWorkflowPatterns,
   useStepPattern,
   useWorkflowPattern,
+  workflowSerdeComputedPropertyPattern,
   workflowSerdeImportPattern,
   workflowSerdeSymbolPattern,
 } from './transform-utils.js';
@@ -193,6 +195,141 @@ describe('transform-utils patterns', () => {
       `;
       expect(workflowSerdeImportPattern.test(source)).toBe(true);
       expect(workflowSerdeSymbolPattern.test(source)).toBe(true);
+    });
+  });
+
+  describe('workflowSerdeComputedPropertyPattern', () => {
+    it('should match [WORKFLOW_SERIALIZE] computed property', () => {
+      const source = `static [WORKFLOW_SERIALIZE](instance) {}`;
+      expect(workflowSerdeComputedPropertyPattern.test(source)).toBe(true);
+    });
+
+    it('should match [WORKFLOW_DESERIALIZE] computed property', () => {
+      const source = `static [WORKFLOW_DESERIALIZE](data) {}`;
+      expect(workflowSerdeComputedPropertyPattern.test(source)).toBe(true);
+    });
+
+    it('should match with whitespace inside brackets', () => {
+      expect(
+        workflowSerdeComputedPropertyPattern.test(`[ WORKFLOW_SERIALIZE ]`)
+      ).toBe(true);
+      expect(
+        workflowSerdeComputedPropertyPattern.test(`[  WORKFLOW_DESERIALIZE  ]`)
+      ).toBe(true);
+    });
+
+    it('should match in bundled code where symbols are imported from chunks', () => {
+      // This is the pattern seen in bundled packages like just-bash
+      const source = `
+        import {
+          WORKFLOW_DESERIALIZE,
+          WORKFLOW_SERIALIZE
+        } from "./chunks/chunk-453323QY.js";
+
+        var Bash = class _Bash {
+          static [WORKFLOW_SERIALIZE](instance) {
+            return { fs: instance.fs };
+          }
+          static [WORKFLOW_DESERIALIZE](serialized) {
+            return Object.create(_Bash.prototype, {
+              fs: { value: serialized.fs }
+            });
+          }
+        };
+      `;
+      expect(workflowSerdeComputedPropertyPattern.test(source)).toBe(true);
+      // Note: import pattern won't match because it's from a chunk, not @workflow/serde
+      expect(workflowSerdeImportPattern.test(source)).toBe(false);
+    });
+
+    it('should not match partial names', () => {
+      expect(
+        workflowSerdeComputedPropertyPattern.test(`[WORKFLOW_SERIALIZE_EXTRA]`)
+      ).toBe(false);
+      expect(
+        workflowSerdeComputedPropertyPattern.test(`[MY_WORKFLOW_SERIALIZE]`)
+      ).toBe(false);
+    });
+
+    it('should not match string literals', () => {
+      expect(
+        workflowSerdeComputedPropertyPattern.test(`['WORKFLOW_SERIALIZE']`)
+      ).toBe(false);
+      expect(
+        workflowSerdeComputedPropertyPattern.test(`["WORKFLOW_DESERIALIZE"]`)
+      ).toBe(false);
+    });
+  });
+
+  describe('detectWorkflowPatterns', () => {
+    it('should detect hasSerde for @workflow/serde import', () => {
+      const source = `import { WORKFLOW_SERIALIZE } from '@workflow/serde';`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasSerde).toBe(true);
+      expect(result.hasSerdeImport).toBe(true);
+    });
+
+    it('should detect hasSerde for Symbol.for pattern', () => {
+      const source = `static [Symbol.for('workflow-serialize')](instance) {}`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasSerde).toBe(true);
+      expect(result.hasSerdeSymbol).toBe(true);
+    });
+
+    it('should detect hasSerde for computed property pattern', () => {
+      const source = `static [WORKFLOW_SERIALIZE](instance) {}`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasSerde).toBe(true);
+    });
+
+    it('should detect hasSerde for bundled third-party packages', () => {
+      // Simulates bundled output from packages like just-bash
+      const source = `
+        import {
+          WORKFLOW_DESERIALIZE,
+          WORKFLOW_SERIALIZE
+        } from "./chunks/chunk-ABC123.js";
+
+        var MyClass = class {
+          static [WORKFLOW_SERIALIZE](instance) {
+            return { data: instance.data };
+          }
+          static [WORKFLOW_DESERIALIZE](serialized) {
+            return new MyClass(serialized.data);
+          }
+        };
+      `;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasSerde).toBe(true);
+    });
+
+    it('should not detect hasSerde for unrelated code', () => {
+      const source = `
+        export class RegularClass {
+          constructor(value) {
+            this.value = value;
+          }
+        }
+      `;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasSerde).toBe(false);
+    });
+
+    it('should detect both directive and serde patterns', () => {
+      const source = `
+        'use step';
+        import { WORKFLOW_SERIALIZE } from '@workflow/serde';
+        
+        export class Point {
+          static [WORKFLOW_SERIALIZE](instance) {
+            return { x: instance.x };
+          }
+        }
+      `;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasDirective).toBe(true);
+      expect(result.hasUseStep).toBe(true);
+      expect(result.hasSerde).toBe(true);
     });
   });
 });

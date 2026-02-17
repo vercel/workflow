@@ -6824,8 +6824,11 @@ impl VisitMut for StepTransform {
 
     // Handle class expressions to track class name for static methods
     fn visit_mut_class_expr(&mut self, class_expr: &mut ClassExpr) {
+        // Get the binding name set by visit_mut_var_decl (e.g., "Foo" from `var Foo = class { ... }`)
+        let binding_name = self.current_class_binding_name.take();
+
         // Get the internal class name (used for current_class_name tracking)
-        let internal_class_name = class_expr
+        let mut internal_class_name = class_expr
             .ident
             .as_ref()
             .map(|i| i.sym.to_string())
@@ -6834,17 +6837,42 @@ impl VisitMut for StepTransform {
         // For serialization registration, use the binding name if available
         // e.g., for `var Bash = class _Bash {}`, use "Bash" not "_Bash"
         // because "_Bash" is not accessible at module scope
-        let registration_name = self
-            .current_class_binding_name
-            .take()
+        let registration_name = binding_name
+            .clone()
             .unwrap_or_else(|| internal_class_name.clone());
 
         let old_class_name = self.current_class_name.take();
         self.current_class_name = Some(internal_class_name.clone());
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
-        if self.has_custom_serialization_methods(&class_expr.class) {
-            self.classes_needing_serialization.insert(registration_name);
+        let has_serde = self.has_custom_serialization_methods(&class_expr.class);
+        if has_serde {
+            self.classes_needing_serialization
+                .insert(registration_name.clone());
+        }
+
+        // esbuild emits anonymous class expressions for classes that don't
+        // self-reference (e.g. `var Foo = class { ... }`). Downstream bundlers
+        // (like Nitro's Rollup bundler) rely on the class expression name for
+        // serialization class registration. Without a name, the class `.name`
+        // property is empty and lookups can fail at runtime. Re-insert the
+        // binding name so the output becomes `var Foo = class Foo { ... }` —
+        // behaviorally equivalent for typical class usage and preserves the
+        // identifier through subsequent bundling passes.
+        if has_serde && class_expr.ident.is_none() {
+            if let Some(ref name) = binding_name {
+                class_expr.ident = Some(Ident::new(
+                    name.clone().into(),
+                    DUMMY_SP,
+                    SyntaxContext::empty(),
+                ));
+                // Recompute internal_class_name and update current_class_name so
+                // that subsequent logic (e.g. step/workflow method naming and
+                // method-stripping filters) uses the actual class name rather
+                // than "AnonymousClass".
+                internal_class_name = name.clone();
+                self.current_class_name = Some(name.clone());
+            }
         }
 
         // Visit the class body (this populates static_step_methods_to_strip)

@@ -1,6 +1,15 @@
 ---
 title: Sleep, Suspense, and Scheduling
 description: Schedule recurring actions, handle rate limiting, and wait for external state in AI agents.
+type: guide
+summary: Pause agent execution with `sleep()` for scheduling, rate limiting, and waiting on external state.
+prerequisites:
+  - /docs/ai
+related:
+  - /docs/ai/defining-tools
+  - /docs/ai/streaming-updates-from-tools
+  - /docs/foundations/errors-and-retries
+  - /docs/api-reference/workflow/sleep
 ---
 
 AI agents sometimes need to pause execution in order to schedule recurring or future actions, wait before retrying an operation (e.g. for rate limiting), or wait for external state to be available.

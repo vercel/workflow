@@ -282,7 +282,7 @@ export type AnyEventRequest = z.infer<typeof CreateEventSchema>;
 
 /**
  * Event request for creating a new workflow run.
- * Must be used with runId: null since the server generates the runId.
+ * Can be used with a client-generated runId or null for server-generated.
  */
 export type RunCreatedEventRequest = z.infer<typeof RunCreatedEventSchema>;
 
@@ -315,6 +315,8 @@ export interface EventResult {
   step?: import('./steps.js').Step;
   /** The hook entity (for hook_created events) */
   hook?: import('./hooks.js').Hook;
+  /** The wait entity (for wait_created/wait_completed events) */
+  wait?: import('./waits.js').Wait;
 }
 
 export interface ListEventsParams {

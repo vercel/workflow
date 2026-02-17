@@ -1,5 +1,39 @@
 # @workflow/world-testing
 
+## 4.1.0-beta.58
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.1.0-beta.57
+  - @workflow/cli@4.1.0-beta.57
+
+## 4.1.0-beta.57
+
+### Patch Changes
+
+- Updated dependencies [[`7653e6b`](https://github.com/vercel/workflow/commit/7653e6bfdbfe29624a5cbc1477b299f6aca3a0f0), [`c56dc38`](https://github.com/vercel/workflow/commit/c56dc3848ecf3e188f876dc4cb7861df185bd4fb)]:
+  - @workflow/cli@4.1.0-beta.56
+  - workflow@4.1.0-beta.56
+
+## 4.1.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies [[`56f2221`](https://github.com/vercel/workflow/commit/56f22219b338a5a2c29466798a5ad36a6a450498)]:
+  - @workflow/world@4.1.0-beta.4
+  - @workflow/cli@4.1.0-beta.55
+  - workflow@4.1.0-beta.55
+
+## 4.1.0-beta.55
+
+### Patch Changes
+
+- Updated dependencies [[`d9e9859`](https://github.com/vercel/workflow/commit/d9e98590fae17fd090e0be4f0b54bbaa80c7be69)]:
+  - @workflow/world@4.1.0-beta.3
+  - @workflow/cli@4.1.0-beta.54
+  - workflow@4.1.0-beta.54
+
 ## 4.1.0-beta.54
 
 ### Patch Changes
@@ -22,7 +56,6 @@
 ### Minor Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
-
   - Remove `cancel`, `pause`, `resume` from `runs`
   - Remove `create`, `update` from `runs`, `steps`, `hooks`
   - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`

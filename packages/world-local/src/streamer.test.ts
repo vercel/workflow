@@ -102,7 +102,7 @@ describe('streamer', () => {
             const chunk = deserializeChunk(
               await fs.readFile(`${testDir}/streams/chunks/${file}`)
             );
-            // Extract ULID from filename: "streamName-chnk_ULID.json"
+            // Extract ULID from filename: "streamName-chnk_ULID.bin"
             const chunkIdPart = String(file.split('-').at(-1)).split('.')[0]; // "chnk_ULID"
             const ulid = chunkIdPart.replace('chnk_', ''); // Just the ULID
             const time = decodeTime(ulid);
@@ -143,7 +143,7 @@ describe('streamer', () => {
 
         expect(files).toHaveLength(2);
         expect(files.every((f) => f.startsWith(`${streamName}-`))).toBe(true);
-        expect(files.every((f) => f.endsWith('.json'))).toBe(true);
+        expect(files.every((f) => f.endsWith('.bin'))).toBe(true);
       });
 
       it('should write Buffer chunks to a stream', async () => {

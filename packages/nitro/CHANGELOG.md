@@ -1,5 +1,49 @@
 # @workflow/nitro
 
+## 4.0.1-beta.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.1.0-beta.57
+  - @workflow/builders@4.0.1-beta.48
+  - @workflow/rollup@4.0.0-beta.14
+  - @workflow/vite@4.0.0-beta.7
+
+## 4.0.1-beta.51
+
+### Patch Changes
+
+- Updated dependencies [[`c56dc38`](https://github.com/vercel/workflow/commit/c56dc3848ecf3e188f876dc4cb7861df185bd4fb), [`d7d005b`](https://github.com/vercel/workflow/commit/d7d005b54b621214720518a2a19aa2cadfa23d47), [`8d117cd`](https://github.com/vercel/workflow/commit/8d117cd219faac53ffa90db8628defd3d7a8160d), [`94760b4`](https://github.com/vercel/workflow/commit/94760b4640dde4ed84ff0932994ce9a47b1954ad), [`63caf93`](https://github.com/vercel/workflow/commit/63caf931380b8211f1948cf44eac7532f33e660d), [`dc2dc6a`](https://github.com/vercel/workflow/commit/dc2dc6ac7908e57be9ab34140addfe98a9246fc7)]:
+  - @workflow/core@4.1.0-beta.56
+  - @workflow/builders@4.0.1-beta.47
+  - @workflow/rollup@4.0.0-beta.13
+  - @workflow/vite@4.0.0-beta.6
+
+## 4.0.1-beta.50
+
+### Patch Changes
+
+- Updated dependencies [[`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee), [`054e40c`](https://github.com/vercel/workflow/commit/054e40c91be615809c71d3ad29573c78c4491825), [`a5935ab`](https://github.com/vercel/workflow/commit/a5935abec7c7e57b2a89c629203d567cd7ac76a7), [`fc4cad6`](https://github.com/vercel/workflow/commit/fc4cad68088b0f4fa4e5eeb828e2af29e05d4fe1), [`1adcc6a`](https://github.com/vercel/workflow/commit/1adcc6a618562e0b31ae53d10f9f6aa797107705), [`56f2221`](https://github.com/vercel/workflow/commit/56f22219b338a5a2c29466798a5ad36a6a450498)]:
+  - @workflow/builders@4.0.1-beta.46
+  - @workflow/core@4.1.0-beta.55
+  - @workflow/swc-plugin@4.1.0-beta.18
+  - @workflow/rollup@4.0.0-beta.12
+  - @workflow/vite@4.0.0-beta.5
+
+## 4.0.1-beta.49
+
+### Patch Changes
+
+- [#974](https://github.com/vercel/workflow/pull/974) [`5b5b36a`](https://github.com/vercel/workflow/commit/5b5b36a03bead5572fa5b1c6caca3a4e854c7c10) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix Nitro prod builds: use a physical handler file with inlined manifest content instead of a virtual module with `readFileSync` that referenced an absolute build-machine path
+
+- Updated dependencies [[`2d1d69f`](https://github.com/vercel/workflow/commit/2d1d69f4ca7be9cf6d01aa2dfb9b031d74ba166c), [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c), [`d9e9859`](https://github.com/vercel/workflow/commit/d9e98590fae17fd090e0be4f0b54bbaa80c7be69), [`ef23b0b`](https://github.com/vercel/workflow/commit/ef23b0be770bbb5ccca015fb2564953fe6a761d7), [`f7fd88e`](https://github.com/vercel/workflow/commit/f7fd88ea963e127e62c8d527dcfdb895ba646fc2), [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c)]:
+  - @workflow/builders@4.0.1-beta.45
+  - @workflow/core@4.1.0-beta.54
+  - @workflow/swc-plugin@4.1.0-beta.17
+  - @workflow/rollup@4.0.0-beta.11
+  - @workflow/vite@4.0.0-beta.4
+
 ## 4.0.1-beta.48
 
 ### Patch Changes
@@ -472,7 +516,6 @@
 ### Patch Changes
 
 - f2b1619: Support custom `workflows/` dirs:
-
   - Project root dir
   - Project source dir (if specified, which is usually server/) from all scan layers
   - Custom dirs provided via workflows: { dirs: [] } nitro config

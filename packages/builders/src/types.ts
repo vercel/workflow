@@ -28,6 +28,19 @@ interface BaseWorkflowConfig {
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;
 
+  // Suppress informational logs emitted by createWorkflowsBundle()
+  // (e.g. intermediate/final workflow bundle timing logs).
+  suppressCreateWorkflowsBundleLogs?: boolean;
+
+  // Suppress esbuild warnings emitted by createWorkflowsBundle().
+  suppressCreateWorkflowsBundleWarnings?: boolean;
+
+  // Suppress informational logs emitted by createWebhookBundle().
+  suppressCreateWebhookBundleLogs?: boolean;
+
+  // Suppress informational logs emitted by createManifest().
+  suppressCreateManifestLogs?: boolean;
+
   // Node.js runtime version for Vercel Functions (e.g., "nodejs22.x", "nodejs24.x")
   runtime?: string;
 }
