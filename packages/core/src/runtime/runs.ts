@@ -1,3 +1,4 @@
+import { WorkflowAPIError } from '@workflow/errors';
 import { hydrateWorkflowArguments } from '../serialization.js';
 import {
   type Event,
@@ -183,7 +184,11 @@ export async function wakeUpRun(
         await world.events.create(runId, eventData, { v1Compat: compatMode });
         stoppedCount++;
       } catch (err) {
-        errors.push(err instanceof Error ? err : new Error(String(err)));
+        if (WorkflowAPIError.is(err) && err.status === 409) {
+          stoppedCount++;
+        } else {
+          errors.push(err instanceof Error ? err : new Error(String(err)));
+        }
       }
     }
 

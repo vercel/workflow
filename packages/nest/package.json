@@ -10,11 +10,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./builder": {
       "types": "./dist/builder.d.ts",
-      "import": "./dist/builder.js"
+      "import": "./dist/builder.js",
+      "default": "./dist/builder.js"
     }
   },
   "files": [
@@ -26,7 +28,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist"
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run src"
   },
   "dependencies": {
     "@swc/core": "catalog:",
@@ -59,7 +62,8 @@
     "@nestjs/core": "^11.0.1",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "license": "Apache-2.0",
   "repository": {
