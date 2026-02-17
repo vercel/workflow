@@ -1062,6 +1062,7 @@ export const OPTIONS = handler;`;
       experimentalTriggers?: Array<{
         type: 'queue/v2beta';
         topic: string;
+        consumer: string;
         maxDeliveries?: number;
         retryAfterSeconds?: number;
         initialDelaySeconds?: number;
