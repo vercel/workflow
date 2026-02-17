@@ -1,4 +1,5 @@
-import { Client, DuplicateMessageError } from '@vercel/queue';
+import { QueueClient, DuplicateMessageError } from '@vercel/queue';
+import { handleCallback } from '@vercel/queue/web';
 import {
   MessageId,
   type Queue,
@@ -13,10 +14,6 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
   queueName: ValidQueueName,
-  /**
-   * The deployment ID to use when re-enqueueing the message.
-   * This ensures the message is processed by the same deployment.
-   */
   deploymentId: z.string().optional(),
 });
 
@@ -58,7 +55,7 @@ export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
-  const baseClientOptions = {
+  const clientOptions = {
     baseUrl: usingProxy ? baseUrl : undefined,
     // The proxy will strip `/queues` from the path, and add `/api` in front,
     // so this ends up being `/api/v3/topic` when arriving at the queue server,
@@ -73,7 +70,6 @@ export function createQueue(config?: APIConfig): Queue {
     payload,
     opts?: QueueOptions & { delaySeconds?: number }
   ) => {
-    // Check if we have a deployment ID either from options or environment
     const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
       throw new Error(
@@ -83,8 +79,8 @@ export function createQueue(config?: APIConfig): Queue {
       );
     }
 
-    const sendMessageClient = new Client({
-      ...baseClientOptions,
+    const client = new QueueClient({
+      ...clientOptions,
       deploymentId,
     });
 
@@ -103,29 +99,20 @@ export function createQueue(config?: APIConfig): Queue {
     const encoded = encoder({
       payload,
       queueName,
-      // Store deploymentId in the message so it can be preserved when re-enqueueing
       deploymentId: opts?.deploymentId,
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     try {
-      const { messageId } = await sendMessageClient.send(
-        sanitizedQueueName,
-        encoded,
-        {
-          idempotencyKey: opts?.idempotencyKey,
-          delaySeconds: opts?.delaySeconds,
-          headers: opts?.headers,
-        }
-      );
+      const { messageId } = await client.sendMessage({
+        queueName: sanitizedQueueName,
+        payload: encoded,
+        idempotencyKey: opts?.idempotencyKey,
+        delaySeconds: opts?.delaySeconds,
+        headers: opts?.headers,
+      });
       return { messageId: MessageId.parse(messageId) };
     } catch (error) {
-      // Silently handle idempotency key conflicts - the message was already queued
-      // This matches the behavior of world-local and world-postgres
       if (error instanceof DuplicateMessageError) {
-        // Return a placeholder messageId since the original is not available from the error.
-        // Callers using idempotency keys shouldn't depend on the returned messageId.
-        // TODO: VQS should return the message ID of the existing message, or we should
-        // stop expecting any world to include this
         return {
           messageId: MessageId.parse(
             `msg_duplicate_${error.idempotencyKey ?? opts?.idempotencyKey ?? 'unknown'}`
@@ -136,46 +123,35 @@ export function createQueue(config?: APIConfig): Queue {
     }
   };
 
-  const handleCallbackClient = new Client({
-    ...baseClientOptions,
-  });
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
-    return handleCallbackClient.handleCallback({
-      [`${prefix}*`]: {
-        default: async (body, meta) => {
-          const { payload, queueName, deploymentId } =
-            MessageWrapper.parse(body);
-          const result = await handler(payload, {
-            queueName,
-            messageId: MessageId.parse(meta.messageId),
-            attempt: meta.deliveryCount,
-          });
+    const topicPattern = `${prefix}*`;
 
-          if (typeof result?.timeoutSeconds === 'number') {
-            // Use delaySeconds approach: send new message with delay, then delete current
-            // Clamp to max delay (23h) - for longer sleeps, the workflow will chain
-            // multiple delayed messages until the full sleep duration has elapsed
-            const delaySeconds = Math.min(
-              result.timeoutSeconds,
-              MAX_DELAY_SECONDS
-            );
+    return handleCallback(
+      topicPattern,
+      async (message, metadata) => {
+        if (!message || !metadata) {
+          return;
+        }
 
-            // Send new message with delay BEFORE acknowledging current message
-            // This ensures crash safety: if process dies after send but before ack,
-            // we may get a duplicate invocation but won't lose the scheduled wakeup
-            await queue(queueName, payload, {
-              deploymentId,
-              delaySeconds,
-            });
+        const { payload, queueName, deploymentId } =
+          MessageWrapper.parse(message);
 
-            // Acknowledge current message by returning undefined
-            return undefined;
-          }
+        const result = await handler(payload, {
+          queueName,
+          messageId: MessageId.parse(metadata.messageId),
+          attempt: metadata.deliveryCount,
+        });
 
-          return undefined;
-        },
+        if (typeof result?.timeoutSeconds === 'number') {
+          const delaySeconds = Math.min(
+            result.timeoutSeconds,
+            MAX_DELAY_SECONDS
+          );
+          await queue(queueName, payload, { deploymentId, delaySeconds });
+        }
       },
-    });
+      { client: new QueueClient(clientOptions) }
+    );
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {

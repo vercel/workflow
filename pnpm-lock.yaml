@@ -22,8 +22,8 @@ catalogs:
       specifier: 3.0.5
       version: 3.0.5
     '@vercel/queue':
-      specifier: 0.0.0-alpha.36
-      version: 0.0.0-alpha.36
+      specifier: https://vqs-c338sich1.labs.vercel.dev/queue.tgz
+      version: 0.0.0-alpha.37
     '@vitest/coverage-v8':
       specifier: ^3.2.4
       version: 3.2.4
@@ -1200,7 +1200,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.0.0-alpha.36
+        version: https://vqs-c338sich1.labs.vercel.dev/queue.tgz
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1246,7 +1246,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.0.0-alpha.36
+        version: https://vqs-c338sich1.labs.vercel.dev/queue.tgz
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1344,7 +1344,7 @@ importers:
         version: 3.0.5
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.0.0-alpha.36
+        version: https://vqs-c338sich1.labs.vercel.dev/queue.tgz
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -8019,8 +8019,9 @@ packages:
       '@opentelemetry/sdk-metrics': '>=1.19.0 <2.0.0'
       '@opentelemetry/sdk-trace-base': '>=1.19.0 <2.0.0'
 
-  '@vercel/queue@0.0.0-alpha.36':
-    resolution: {integrity: sha512-+0RWV/ljyK0lXH7LYUbTJ02UJLhPfZIvzMOjhMdD6tEm8o+VzJGJY9KwIljohtdfeep78cFUGuWvNmT+bi29Wg==}
+  '@vercel/queue@https://vqs-c338sich1.labs.vercel.dev/queue.tgz':
+    resolution: {tarball: https://vqs-c338sich1.labs.vercel.dev/queue.tgz}
+    version: 0.0.0-alpha.37
     engines: {node: '>=20.0.0'}
 
   '@vercel/routing-utils@5.3.0':
@@ -22476,7 +22477,7 @@ snapshots:
       '@opentelemetry/sdk-metrics': 1.30.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/sdk-trace-base': 1.30.1(@opentelemetry/api@1.9.0)
 
-  '@vercel/queue@0.0.0-alpha.36':
+  '@vercel/queue@https://vqs-c338sich1.labs.vercel.dev/queue.tgz':
     dependencies:
       '@vercel/oidc': 3.0.5
       mixpart: 0.0.5-alpha.1
