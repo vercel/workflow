@@ -45,7 +45,7 @@
     "@types/semver": "7.7.1",
     "@types/watchpack": "2.4.4",
     "@workflow/tsconfig": "workspace:*",
-    "next": "16.1.6"
+    "next": "canary"
   },
   "peerDependencies": {
     "next": ">13"
