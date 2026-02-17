@@ -28,18 +28,22 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
-// Create a custom agent optimized for high-concurrency local workflows:
-// - headersTimeout: 0 allows long-running steps
-// - connections: 1000 allows many parallel connections to the same host
-// - pipelining: 1 (default) for HTTP/1.1 compatibility
-// - keepAliveTimeout: 30s keeps connections warm for rapid step execution
-const httpAgent = new Agent({
-  headersTimeout: 0,
-  connections: 1000,
-  keepAliveTimeout: 30_000,
-});
+export type LocalQueue = Queue & {
+  /** Close the HTTP agent and release resources. */
+  close(): Promise<void>;
+};
 
-export function createQueue(config: Partial<Config>): Queue {
+export function createQueue(config: Partial<Config>): LocalQueue {
+  // Create a custom agent optimized for high-concurrency local workflows:
+  // - headersTimeout: 0 allows long-running steps
+  // - connections: 1000 allows many parallel connections to the same host
+  // - pipelining: 1 (default) for HTTP/1.1 compatibility
+  // - keepAliveTimeout: 30s keeps connections warm for rapid step execution
+  const httpAgent = new Agent({
+    headersTimeout: 0,
+    connections: 1000,
+    keepAliveTimeout: 30_000,
+  });
   const transport = new JsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
@@ -223,5 +227,12 @@ export function createQueue(config: Partial<Config>): Queue {
     return `dpl_local@${packageInfo.version}`;
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  return {
+    queue,
+    createQueueHandler,
+    getDeploymentId,
+    async close() {
+      await httpAgent.close();
+    },
+  };
 }

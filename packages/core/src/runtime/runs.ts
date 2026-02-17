@@ -1,11 +1,11 @@
 import { WorkflowAPIError } from '@workflow/errors';
-import { hydrateWorkflowArguments } from '../serialization.js';
 import {
   type Event,
   isLegacySpecVersion,
   SPEC_VERSION_LEGACY,
   type World,
 } from '@workflow/world';
+import { hydrateWorkflowArguments } from '../serialization.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { start } from './start.js';
 

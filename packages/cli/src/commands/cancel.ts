@@ -1,9 +1,9 @@
 import { Args } from '@oclif/core';
+import { cancelRun } from '@workflow/core/runtime';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG } from '../lib/config/log.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
-import { cancelRun } from '../lib/runtime.js';
 
 export default class Cancel extends BaseCommand {
   static description = 'Cancel a workflow';

@@ -1,6 +1,6 @@
+import { start } from '@workflow/core/runtime';
 import type { WorkflowRun, World } from '@workflow/world';
 import { logger } from '../config/log.js';
-import { start } from '../runtime.js';
 
 interface CLICreateOpts {
   json?: boolean;

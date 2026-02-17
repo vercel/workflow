@@ -15,6 +15,7 @@ import {
   start,
 } from '../src/runtime';
 import {
+  cliCancel,
   cliHealthJson,
   cliInspectJson,
   getProtectionBypassHeaders,
@@ -171,9 +172,6 @@ async function startWorkflowViaHttp(
   url.searchParams.set('workflowFile', workflowFile);
   url.searchParams.set('workflowFn', workflowFn);
 
-  // Note: when args is empty, the server may use default args (e.g., [42]).
-  // This is acceptable for Pages Router tests since the workflows called
-  // with empty args don't use their arguments.
   if (args.length > 0) {
     url.searchParams.set('args', args.map(String).join(','));
   }
@@ -1657,10 +1655,11 @@ describe('e2e', () => {
     'cancelRun - cancelling a running workflow',
     { timeout: 60_000 },
     async () => {
-      // Start a long-running workflow (sleeps for 10s)
-      const run = await start(await e2e('sleepingWorkflow'), []);
+      // Start a long-running workflow with a 30s sleep to provide a wide
+      // window for the cancel to arrive while the workflow is still running.
+      const run = await start(await e2e('sleepingWorkflow'), [30_000]);
 
-      // Wait a bit for the workflow to start and enter the sleep
+      // Wait for the workflow to start and enter the sleep
       await new Promise((resolve) => setTimeout(resolve, 5_000));
 
       // Cancel the run using the core runtime cancelRun function.
@@ -1668,6 +1667,31 @@ describe('e2e', () => {
       // (the CLI delegates directly to this function).
       const { cancelRun } = await import('../src/runtime');
       await cancelRun(getWorld(), run.runId);
+
+      // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
+      const error = await run.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunCancelledError.is(error)).toBe(true);
+
+      // Verify the run status is 'cancelled' via CLI inspect
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('cancelled');
+    }
+  );
+
+  test(
+    'cancelRun via CLI - cancelling a running workflow',
+    { timeout: 60_000 },
+    async () => {
+      // Start a long-running workflow with a 30s sleep to provide a wide
+      // window for the cancel to arrive while the workflow is still running.
+      const run = await start(await e2e('sleepingWorkflow'), [30_000]);
+
+      // Wait for the workflow to start and enter the sleep
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Cancel the run via the CLI command. This tests the full CLI code path
+      // including World.close() which ensures the process exits cleanly.
+      await cliCancel(run.runId);
 
       // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
       const error = await run.returnValue.catch((e: unknown) => e);
