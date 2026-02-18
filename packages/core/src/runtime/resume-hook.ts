@@ -6,6 +6,7 @@ import {
   SPEC_VERSION_CURRENT,
   type WorkflowInvokePayload,
 } from '@workflow/world';
+import { type CryptoKey, importKey } from '../encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -22,10 +23,11 @@ import { getWorld } from './world.js';
  */
 async function getHookByTokenWithKey(
   token: string
-): Promise<{ hook: Hook; encryptionKey: Uint8Array | undefined }> {
+): Promise<{ hook: Hook; encryptionKey: CryptoKey | undefined }> {
   const world = getWorld();
   const hook = await world.hooks.getByToken(token);
-  const encryptionKey = await world.getEncryptionKeyForRun?.(hook.runId);
+  const rawKey = await world.getEncryptionKeyForRun?.(hook.runId);
+  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
   if (typeof hook.metadata !== 'undefined') {
     hook.metadata = await hydrateStepArguments(
       hook.metadata as any,
@@ -80,7 +82,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
-  encryptionKeyOverride?: Uint8Array | undefined
+  encryptionKeyOverride?: CryptoKey | undefined
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -88,16 +90,17 @@ export async function resumeHook<T = any>(
 
       try {
         let hook: Hook;
-        let encryptionKey: Uint8Array | undefined;
+        let encryptionKey: CryptoKey | undefined;
         if (typeof tokenOrHook === 'string') {
           const result = await getHookByTokenWithKey(tokenOrHook);
           hook = result.hook;
           encryptionKey = encryptionKeyOverride ?? result.encryptionKey;
         } else {
           hook = tokenOrHook;
+          const rawKey = await world.getEncryptionKeyForRun?.(hook.runId);
           encryptionKey =
             encryptionKeyOverride ??
-            (await world.getEncryptionKeyForRun?.(hook.runId));
+            (rawKey ? await importKey(rawKey) : undefined);
         }
 
         span?.setAttributes({

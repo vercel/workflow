@@ -13,6 +13,7 @@ import type {
   WaitInvocationQueueItem,
   WorkflowSuspension,
 } from '../global.js';
+import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -78,7 +79,8 @@ export async function handleSuspension({
   );
 
   // Resolve encryption key for this run
-  const encryptionKey = await world.getEncryptionKeyForRun?.(runId);
+  const rawKey = await world.getEncryptionKeyForRun?.(runId);
+  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
   // Build hook_created events (World will atomically create hook entities)
   const hookEvents: CreateEventRequest[] = await Promise.all(

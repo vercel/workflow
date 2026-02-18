@@ -6,6 +6,7 @@ import {
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
+import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
@@ -250,8 +251,11 @@ export function workflowEntrypoint(
                           ...Attribute.WorkflowEventsCount(events.length),
                         });
                         // Resolve the encryption key for this run's deployment
-                        const encryptionKey =
+                        const rawKey =
                           await world.getEncryptionKeyForRun?.(runId);
+                        const encryptionKey = rawKey
+                          ? await importKey(rawKey)
+                          : undefined;
                         return await runWorkflow(
                           workflowCode,
                           workflowRun,
