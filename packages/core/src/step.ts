@@ -141,20 +141,23 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Terminal state - we can remove the invocationQueue item
           ctx.invocationsQueue.delete(event.correlationId);
 
-          // Step has completed, so resolve the Promise with the cached result
-          // Preserve macrotask timing semantics (setTimeout) to match
-          // the original synchronous code path's scheduling behavior
-          hydrateStepReturnValue(event.eventData.result, ctx.globalThis)
-            .then((hydratedResult) => {
-              setTimeout(() => {
-                resolve(hydratedResult);
-              }, 0);
-            })
-            .catch((error) => {
-              setTimeout(() => {
-                reject(error);
-              }, 0);
-            });
+          // Step has completed, so resolve the Promise with the cached result.
+          // The hydration is async, so we schedule the resolve via setTimeout
+          // after hydration completes to preserve macrotask timing semantics.
+          // We use a single setTimeout that awaits hydration inside it, keeping
+          // the same scheduling order as the original synchronous code path
+          // (where setTimeout was called synchronously from this callback).
+          setTimeout(async () => {
+            try {
+              const hydratedResult = await hydrateStepReturnValue(
+                event.eventData.result,
+                ctx.globalThis
+              );
+              resolve(hydratedResult);
+            } catch (error) {
+              reject(error);
+            }
+          }, 0);
           return EventConsumerResult.Finished;
         }
 

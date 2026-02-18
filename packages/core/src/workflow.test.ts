@@ -689,14 +689,9 @@ describe('runWorkflow', () => {
         workflowRun,
         events
       );
-      const raceResults = await hydrateWorkflowReturnValue(
-        result as any,
-        ops,
-        'wrun_test'
-      );
-      // All 5 race results should be present (order depends on microtask timing)
-      expect(raceResults).toHaveLength(5);
-      expect(raceResults.sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
+      expect(
+        await hydrateWorkflowReturnValue(result as any, ops, 'wrun_test')
+      ).toEqual([4, 3, 2, 1, 0]);
     });
   });
 
@@ -2781,7 +2776,7 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: dehydrateWorkflowArguments([], ops),
+        input: await dehydrateWorkflowArguments([], ops),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2827,7 +2822,7 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
           eventData: {
-            result: dehydrateStepReturnValue('step done', ops),
+            result: await dehydrateStepReturnValue('step done', ops),
           },
           createdAt: new Date('2024-01-01T00:00:07.000Z'),
         },
@@ -2855,7 +2850,7 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: dehydrateWorkflowArguments([], ops),
+        input: await dehydrateWorkflowArguments([], ops),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2876,7 +2871,7 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
           eventData: {
-            result: dehydrateStepReturnValue('first done', ops),
+            result: await dehydrateStepReturnValue('first done', ops),
           },
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -2887,7 +2882,7 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
           eventData: {
-            result: dehydrateStepReturnValue('duplicate', ops),
+            result: await dehydrateStepReturnValue('duplicate', ops),
           },
           createdAt: new Date('2024-01-01T00:00:02.000Z'),
         },
@@ -2904,7 +2899,7 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JY',
           eventData: {
-            result: dehydrateStepReturnValue('second done', ops),
+            result: await dehydrateStepReturnValue('second done', ops),
           },
           createdAt: new Date('2024-01-01T00:00:04.000Z'),
         },
@@ -2931,7 +2926,7 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: dehydrateWorkflowArguments([], ops),
+        input: await dehydrateWorkflowArguments([], ops),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -2946,7 +2941,7 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_UNKNOWN_CORRELATION_ID',
           eventData: {
-            result: dehydrateStepReturnValue('orphan', ops),
+            result: await dehydrateStepReturnValue('orphan', ops),
           },
           createdAt: new Date('2024-01-01T00:00:00.000Z'),
         },
@@ -2963,7 +2958,7 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
           eventData: {
-            result: dehydrateStepReturnValue('done', ops),
+            result: await dehydrateStepReturnValue('done', ops),
           },
           createdAt: new Date('2024-01-01T00:00:02.000Z'),
         },
@@ -2988,7 +2983,7 @@ describe('runWorkflow', () => {
         runId: workflowRunId,
         workflowName: 'workflow',
         status: 'running',
-        input: dehydrateWorkflowArguments([], ops),
+        input: await dehydrateWorkflowArguments([], ops),
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
         updatedAt: new Date('2024-01-01T00:00:00.000Z'),
         startedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -3017,7 +3012,7 @@ describe('runWorkflow', () => {
           eventType: 'step_completed',
           correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
           eventData: {
-            result: dehydrateStepReturnValue('done', ops),
+            result: await dehydrateStepReturnValue('done', ops),
           },
           createdAt: new Date('2024-01-01T00:00:02.000Z'),
         },
