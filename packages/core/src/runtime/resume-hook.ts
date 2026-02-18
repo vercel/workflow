@@ -82,7 +82,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
-  encryptionKeyOverride?: CryptoKey | undefined
+  encryptionKeyOverride?: CryptoKey
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -97,10 +97,12 @@ export async function resumeHook<T = any>(
           encryptionKey = encryptionKeyOverride ?? result.encryptionKey;
         } else {
           hook = tokenOrHook;
-          const rawKey = await world.getEncryptionKeyForRun?.(hook.runId);
-          encryptionKey =
-            encryptionKeyOverride ??
-            (rawKey ? await importKey(rawKey) : undefined);
+          if (encryptionKeyOverride) {
+            encryptionKey = encryptionKeyOverride;
+          } else {
+            const rawKey = await world.getEncryptionKeyForRun?.(hook.runId);
+            encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+          }
         }
 
         span?.setAttributes({
