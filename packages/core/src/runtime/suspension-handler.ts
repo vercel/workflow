@@ -8,13 +8,13 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
 import type {
   HookInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
   WorkflowSuspension,
 } from '../global.js';
+import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';

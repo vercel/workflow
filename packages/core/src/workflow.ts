@@ -680,12 +680,18 @@ export async function runWorkflow(
       );
     }
 
-    const args = (await hydrateWorkflowArguments(
+    const args = await hydrateWorkflowArguments(
       workflowRun.input,
       workflowRun.runId,
       encryptionKey,
       vmGlobalThis
-    )) as any[];
+    );
+
+    if (!Array.isArray(args)) {
+      throw new Error(
+        `Workflow arguments must be an array, but got "${typeof args}" instead`
+      );
+    }
 
     span?.setAttributes({
       ...Attribute.WorkflowArgumentsCount(args.length),
