@@ -73,7 +73,7 @@ const world = createWorld({
 
 This package uses PostgreSQL with the following components:
 
-- **pg-boss**: For queue processing and job management
+- **graphile-worker**: For queue processing and job management
 - **Drizzle ORM**: For database operations and schema management
 - **postgres**: For PostgreSQL client connections
 
@@ -115,7 +115,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 ## Features
 
 - **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
-- **Queue Processing**: Uses pg-boss for reliable job queue processing
+- **Queue Processing**: Uses graphile-worker for reliable job queue processing
 - **Streaming**: Real-time event streaming capabilities
 - **Health Checks**: Built-in connection health monitoring
 - **Configurable Concurrency**: Adjustable worker concurrency for queue processing
@@ -135,6 +135,20 @@ pnpm drizzle-kit migrate
 # Set environment variables for local development
 export WORKFLOW_POSTGRES_URL="postgres://world:world@localhost:5432/world"
 export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+```
+
+## Testing
+
+Integration tests use [Testcontainers](https://testcontainers.com/) to start a PostgreSQL container. **Docker must be installed and running** before you run tests.
+
+- **Linux/macOS**: Start the Docker daemon (e.g. `sudo systemctl start docker` or Docker Desktop).
+- **WSL2**: Use Docker Desktop with WSL2 integration, or run the Docker engine inside WSL and ensure the daemon is started. Verify with `docker info`.
+
+Then from the package directory:
+
+```bash
+pnpm build
+pnpm test
 ```
 
 ## World Selection
