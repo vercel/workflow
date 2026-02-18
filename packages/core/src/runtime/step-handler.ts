@@ -312,25 +312,28 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             const ops: Promise<void>[] = [];
             const rawKey = await world.getEncryptionKeyForRun?.(workflowRunId);
             const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+            // The hydrated input is { args, thisVal, closureVars } but
+            // hydrateStepArguments returns `unknown` since the serialization
+            // layer can't know the shape at compile time.
             const hydratedInput = (await trace(
               'step.hydrate',
               {},
               async (hydrateSpan) => {
                 const startTime = Date.now();
-                const result = (await hydrateStepArguments(
+                const result = await hydrateStepArguments(
                   step.input,
                   workflowRunId,
                   encryptionKey,
                   ops
-                )) as any;
+                );
                 const durationMs = Date.now() - startTime;
                 hydrateSpan?.setAttributes({
-                  ...Attribute.StepArgumentsCount(result.args.length),
+                  ...Attribute.StepArgumentsCount((result as any).args.length),
                   ...Attribute.QueueDeserializeTimeMs(durationMs),
                 });
                 return result;
               }
-            )) as any;
+            )) as { args: any[]; thisVal?: any; closureVars?: any };
 
             const args = hydratedInput.args;
             const thisVal = hydratedInput.thisVal ?? null;

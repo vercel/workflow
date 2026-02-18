@@ -64,6 +64,10 @@
       "types": "./dist/serialization-format.d.ts",
       "default": "./dist/serialization-format.js"
     },
+    "./encryption": {
+      "types": "./dist/encryption.d.ts",
+      "default": "./dist/encryption.js"
+    },
     "./_workflow": "./dist/workflow/index.js"
   },
   "scripts": {

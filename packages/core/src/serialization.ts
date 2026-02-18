@@ -47,10 +47,10 @@ import {
 //
 // Current formats:
 // - "devl" - devalue stringify/parse with TextEncoder/TextDecoder (current default)
+// - "encr" - Encrypted payload (inner payload has its own format prefix)
 //
 // Future formats (reserved):
 // - "cbor" - CBOR binary serialization
-// - "encr" - Encrypted payload (inner payload has its own format prefix)
 
 /**
  * Known serialization format identifiers.
@@ -354,6 +354,7 @@ export function getDeserializeStream(
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
+  #cryptoKey?: Awaited<ReturnType<typeof importEncryptionKey>>;
 
   constructor(name: string, startIndex?: number, runId?: string) {
     if (typeof name !== 'string' || name.length === 0) {
@@ -391,25 +392,28 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
               );
               return;
             }
-            const world = getWorld();
-            const key = await world.getEncryptionKeyForRun?.(runId);
-            if (!key) {
-              controller.error(
-                new WorkflowRuntimeError(
-                  'Encrypted stream data encountered but no encryption key available. ' +
-                    'Ensure encryption is configured.'
-                )
-              );
-              return;
+            // Resolve and cache the CryptoKey on first encrypted chunk
+            if (!this.#cryptoKey) {
+              const world = getWorld();
+              const key = await world.getEncryptionKeyForRun?.(runId);
+              if (!key) {
+                controller.error(
+                  new WorkflowRuntimeError(
+                    'Encrypted stream data encountered but no encryption key available. ' +
+                      'Ensure encryption is configured.'
+                  )
+                );
+                return;
+              }
+              this.#cryptoKey = await importEncryptionKey(key);
             }
-            const cryptoKey = await importEncryptionKey(key);
             runtimeLogger.debug('[encryption] stream decrypt', {
               runId,
               inputBytes: chunk.byteLength,
             });
             // Strip 'encr' prefix — prefix is a core framing concern
             const { payload } = decodeFormatPrefix(chunk);
-            chunk = await aesGcmDecrypt(cryptoKey, payload);
+            chunk = await aesGcmDecrypt(this.#cryptoKey, payload);
           }
           controller.enqueue(chunk);
         }
@@ -434,6 +438,21 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     }
     const world = getWorld();
 
+    // Resolve the encryption key once at construction time, not per flush.
+    // The key is the same for the lifetime of a stream (same run, same deployment).
+    let cryptoKeyPromise: Promise<
+      Awaited<ReturnType<typeof importEncryptionKey>> | undefined
+    > | null = null;
+    async function getCryptoKey() {
+      if (!cryptoKeyPromise) {
+        cryptoKeyPromise = (async () => {
+          const rawKey = await world.getEncryptionKeyForRun?.(runId);
+          return rawKey ? await importEncryptionKey(rawKey) : undefined;
+        })();
+      }
+      return cryptoKeyPromise;
+    }
+
     // Buffering state for batched writes
     let buffer: Uint8Array[] = [];
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -452,9 +471,8 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       let chunksToFlush = buffer.slice();
 
       // Encrypt chunks if world supports encryption
-      const rawKey = await world.getEncryptionKeyForRun?.(runId);
-      if (rawKey) {
-        const cryptoKey = await importEncryptionKey(rawKey);
+      const cryptoKey = await getCryptoKey();
+      if (cryptoKey) {
         runtimeLogger.debug('[encryption] stream encrypt', {
           runId,
           chunks: chunksToFlush.length,
