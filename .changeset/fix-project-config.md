@@ -5,4 +5,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Fix `projectConfig.projectId` to contain the real project ID instead of the project name
+Separate project ID and project name into distinct env vars (WORKFLOW_VERCEL_PROJECT and WORKFLOW_VERCEL_PROJECT_NAME)

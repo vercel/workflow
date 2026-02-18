@@ -185,7 +185,18 @@ export const inferVercelProjectAndTeam = async () => {
 export const inferVercelEnvVars = async () => {
   const envVars = getEnvVars();
 
-  if (!envVars.WORKFLOW_VERCEL_PROJECT || !envVars.WORKFLOW_VERCEL_TEAM) {
+  // Infer project/team from .vercel folder when:
+  // - WORKFLOW_VERCEL_PROJECT or WORKFLOW_VERCEL_TEAM is missing, OR
+  // - WORKFLOW_VERCEL_PROJECT is set but doesn't look like a real project ID
+  //   (e.g., user passed a slug via --project flag), OR
+  // - WORKFLOW_VERCEL_PROJECT_NAME is missing (need to populate the slug)
+  const needsInference =
+    !envVars.WORKFLOW_VERCEL_PROJECT ||
+    !envVars.WORKFLOW_VERCEL_TEAM ||
+    !envVars.WORKFLOW_VERCEL_PROJECT_NAME ||
+    !envVars.WORKFLOW_VERCEL_PROJECT.startsWith('prj_');
+
+  if (needsInference) {
     logger.debug('Inferring vercel project and team from .vercel folder');
     const inferredProject = await inferVercelProjectAndTeam();
     if (inferredProject) {
@@ -194,7 +205,7 @@ export const inferVercelEnvVars = async () => {
       envVars.WORKFLOW_VERCEL_PROJECT = projectId;
       // WORKFLOW_VERCEL_PROJECT_NAME is the project slug (e.g., my-app)
       envVars.WORKFLOW_VERCEL_PROJECT_NAME = projectName || projectId;
-      envVars.WORKFLOW_VERCEL_TEAM = teamId;
+      envVars.WORKFLOW_VERCEL_TEAM = envVars.WORKFLOW_VERCEL_TEAM || teamId;
       writeEnvVars(envVars);
     } else {
       logger.warn(
