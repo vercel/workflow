@@ -333,7 +333,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 });
                 return result;
               }
-            )) as { args: any[]; thisVal?: any; closureVars?: any };
+            )) as { args: unknown[]; thisVal?: unknown; closureVars?: unknown };
 
             const args = hydratedInput.args;
             const thisVal = hydratedInput.thisVal ?? null;
