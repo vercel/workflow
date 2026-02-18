@@ -138,9 +138,8 @@ export function workflowEntrypoint(
 
                 return await withThrottleRetry(async () => {
                   let workflowStartedAt = -1;
+                  let workflowRun = await world.runs.get(runId);
                   try {
-                    let workflowRun = await world.runs.get(runId);
-
                     if (workflowRun.status === 'pending') {
                       // Transition run to 'running' via event (event-sourced architecture)
                       const result = await world.events.create(runId, {
@@ -308,9 +307,7 @@ export function workflowEntrypoint(
                       const result = await handleSuspension({
                         suspension: err,
                         world,
-                        runId,
-                        workflowName,
-                        workflowStartedAt,
+                        run: workflowRun,
                         span,
                       });
 
