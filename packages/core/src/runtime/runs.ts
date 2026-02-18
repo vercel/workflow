@@ -50,7 +50,7 @@ export async function recreateRunFromExisting(
 ): Promise<string> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
-    const rawKey = await world.getEncryptionKeyForRun?.(runId);
+    const rawKey = await world.getEncryptionKeyForRun?.(run);
     const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
     const workflowArgs = normalizeWorkflowArgs(
       await hydrateWorkflowArguments(

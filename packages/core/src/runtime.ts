@@ -252,7 +252,7 @@ export function workflowEntrypoint(
                         });
                         // Resolve the encryption key for this run's deployment
                         const rawKey =
-                          await world.getEncryptionKeyForRun?.(runId);
+                          await world.getEncryptionKeyForRun?.(workflowRun);
                         const encryptionKey = rawKey
                           ? await importKey(rawKey)
                           : undefined;
