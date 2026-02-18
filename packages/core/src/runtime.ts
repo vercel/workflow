@@ -279,7 +279,7 @@ export function workflowEntrypoint(
                             message: err.message,
                           }
                         );
-                        // Continue
+                        return;
                       } else {
                         throw err;
                       }
@@ -410,7 +410,12 @@ export function workflowEntrypoint(
                               message: err.message,
                             }
                           );
-                          // Continue
+                          span?.setAttributes({
+                            ...Attribute.WorkflowErrorName(errorName),
+                            ...Attribute.WorkflowErrorMessage(errorMessage),
+                            ...Attribute.ErrorType(errorName),
+                          });
+                          return;
                         } else {
                           throw err;
                         }
