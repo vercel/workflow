@@ -1,9 +1,9 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
-import { decrypt, encrypt } from './encryption.js';
+import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import {
   decodeFormatPrefix,
@@ -3555,15 +3555,22 @@ describe('getDeserializeStream legacy fallback', () => {
 });
 
 describe('encryption integration', () => {
-  // Real 32-byte AES-256 test key
-  const testKey = new Uint8Array([
+  // Real 32-byte AES-256 test key (raw bytes for importKey)
+  const testKeyRaw = new Uint8Array([
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
     0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
     0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
   ]);
   // A different key for wrong-key tests
-  const wrongKey = new Uint8Array(32);
-  wrongKey.fill(0xff);
+  const wrongKeyRaw = new Uint8Array(32);
+  wrongKeyRaw.fill(0xff);
+
+  let testKey: CryptoKey;
+  let wrongKey: CryptoKey;
+  beforeAll(async () => {
+    testKey = await importKey(testKeyRaw);
+    wrongKey = await importKey(wrongKeyRaw);
+  });
 
   it('should encrypt workflow arguments when key is provided', async () => {
     const testRunId = 'wrun_test123';
@@ -3915,11 +3922,15 @@ describe('encryption integration', () => {
 });
 
 describe('encrypt/decrypt primitives', () => {
-  const testKey = new Uint8Array([
+  const testKeyRaw = new Uint8Array([
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
     0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
     0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
   ]);
+  let testKey: CryptoKey;
+  beforeAll(async () => {
+    testKey = await importKey(testKeyRaw);
+  });
 
   it('should round-trip arbitrary data', async () => {
     const data = new TextEncoder().encode('hello world');
@@ -3953,13 +3964,9 @@ describe('encrypt/decrypt primitives', () => {
     expect(await decrypt(testKey, enc2)).toEqual(data);
   });
 
-  it('should reject keys that are not 32 bytes', async () => {
+  it('should reject keys that are not 32 bytes via importKey', async () => {
     const shortKey = new Uint8Array(16);
-    const data = new TextEncoder().encode('test');
-    await expect(encrypt(shortKey, data)).rejects.toThrow(
-      'Encryption key must be exactly 32 bytes'
-    );
-    await expect(decrypt(shortKey, data)).rejects.toThrow(
+    await expect(importKey(shortKey)).rejects.toThrow(
       'Encryption key must be exactly 32 bytes'
     );
   });
@@ -3974,8 +3981,7 @@ describe('encrypt/decrypt primitives', () => {
   it('should fail with wrong key (auth tag mismatch)', async () => {
     const data = new TextEncoder().encode('secret');
     const encrypted = await encrypt(testKey, data);
-    const wrongKey = new Uint8Array(32);
-    wrongKey.fill(0xff);
+    const wrongKey = await importKey(new Uint8Array(32).fill(0xff));
     await expect(decrypt(wrongKey, encrypted)).rejects.toThrow();
   });
 
@@ -3989,11 +3995,15 @@ describe('encrypt/decrypt primitives', () => {
 });
 
 describe('maybeEncrypt / maybeDecrypt', () => {
-  const testKey = new Uint8Array([
+  const testKeyRaw = new Uint8Array([
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
     0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
     0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
   ]);
+  let testKey: CryptoKey;
+  beforeAll(async () => {
+    testKey = await importKey(testKeyRaw);
+  });
 
   it('should pass through data unchanged when key is undefined', async () => {
     const data = new Uint8Array([1, 2, 3, 4]);
