@@ -45,7 +45,7 @@ export const KNOWN_WORLDS: KnownWorld[] = [
     id: 'postgres',
     displayName: 'PostgreSQL',
     packageName: '@workflow/world-postgres',
-    description: 'PostgreSQL-based storage with pg-boss queue',
+    description: 'PostgreSQL-based storage with graphile-worker queue',
     isBuiltIn: false,
   },
 ];
