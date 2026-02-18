@@ -262,13 +262,27 @@ export function workflowEntrypoint(
                     );
 
                     // Complete the workflow run via event (event-sourced architecture)
-                    await world.events.create(runId, {
-                      eventType: 'run_completed',
-                      specVersion: SPEC_VERSION_CURRENT,
-                      eventData: {
-                        output: result,
-                      },
-                    });
+                    try {
+                      await world.events.create(runId, {
+                        eventType: 'run_completed',
+                        specVersion: SPEC_VERSION_CURRENT,
+                        eventData: {
+                          output: result,
+                        },
+                      });
+                    } catch (err) {
+                      if (WorkflowAPIError.is(err) && err.status === 409) {
+                        runtimeLogger.warn(
+                          'Tried completing workflow run, but was already completed.',
+                          {
+                            workflowRunId: runId,
+                            message: err.message,
+                          }
+                        );
+                        return;
+                      }
+                      throw err;
+                    }
 
                     span?.setAttributes({
                       ...Attribute.WorkflowRunStatus('completed'),
