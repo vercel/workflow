@@ -148,7 +148,10 @@ export function createQueue(config?: APIConfig): Queue {
     }
   };
 
-  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+  const createQueueHandler: Queue['createQueueHandler'] = (
+    _prefix,
+    handler
+  ) => {
     return handleCallback(
       async (message, metadata) => {
         if (!message || !metadata) {
