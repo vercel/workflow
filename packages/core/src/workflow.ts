@@ -34,7 +34,8 @@ import { createSleep } from './workflow/sleep.js';
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
-  events: Event[]
+  events: Event[],
+  encryptionKey: Uint8Array | undefined
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -83,6 +84,8 @@ export async function runWorkflow(
     });
 
     const workflowContext: WorkflowOrchestratorContext = {
+      runId: workflowRun.runId,
+      encryptionKey,
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
@@ -635,7 +638,12 @@ export async function runWorkflow(
       );
     }
 
-    const args = hydrateWorkflowArguments(workflowRun.input, vmGlobalThis);
+    const args = await hydrateWorkflowArguments(
+      workflowRun.input,
+      workflowRun.runId,
+      encryptionKey,
+      vmGlobalThis
+    );
 
     span?.setAttributes({
       ...Attribute.WorkflowArgumentsCount(args.length),
@@ -647,7 +655,12 @@ export async function runWorkflow(
       workflowDiscontinuation.promise,
     ]);
 
-    const dehydrated = dehydrateWorkflowReturnValue(result, vmGlobalThis);
+    const dehydrated = await dehydrateWorkflowReturnValue(
+      result,
+      workflowRun.runId,
+      encryptionKey,
+      vmGlobalThis
+    );
 
     span?.setAttributes({
       ...Attribute.WorkflowResultType(typeof result),

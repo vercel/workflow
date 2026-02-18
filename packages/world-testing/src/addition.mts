@@ -23,7 +23,11 @@ export function addition(world: string) {
         timeout: 10_000,
       }
     );
-    const output = await hydrateWorkflowReturnValue(run.output!, [], run.runId);
+    const output = await hydrateWorkflowReturnValue(
+      run.output!,
+      run.runId,
+      undefined
+    );
     expect(output).toEqual(3);
   });
 }

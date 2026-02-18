@@ -19,6 +19,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
+    runId: 'wrun_test',
+    encryptionKey: undefined,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
@@ -42,7 +44,12 @@ describe('createCreateHook', () => {
         eventType: 'hook_received',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          payload: dehydrateStepReturnValue({ message: 'hello' }, ops),
+          payload: await dehydrateStepReturnValue(
+            { message: 'hello' },
+            'wrun_test',
+            undefined,
+            ops
+          ),
         },
         createdAt: new Date(),
       },
@@ -127,7 +134,12 @@ describe('createCreateHook', () => {
         eventType: 'hook_received',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          payload: dehydrateStepReturnValue({ data: 'test' }, ops),
+          payload: await dehydrateStepReturnValue(
+            { data: 'test' },
+            'wrun_test',
+            undefined,
+            ops
+          ),
         },
         createdAt: new Date(),
       },
@@ -191,7 +203,12 @@ describe('createCreateHook', () => {
         eventType: 'hook_received',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          payload: dehydrateStepReturnValue({ message: 'first' }, ops),
+          payload: await dehydrateStepReturnValue(
+            { message: 'first' },
+            'wrun_test',
+            undefined,
+            ops
+          ),
         },
         createdAt: new Date(),
       },
@@ -201,7 +218,12 @@ describe('createCreateHook', () => {
         eventType: 'hook_received',
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          payload: dehydrateStepReturnValue({ message: 'second' }, ops),
+          payload: await dehydrateStepReturnValue(
+            { message: 'second' },
+            'wrun_test',
+            undefined,
+            ops
+          ),
         },
         createdAt: new Date(),
       },

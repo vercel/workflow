@@ -1,5 +1,6 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
+
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { getSerializationClass } from './class-serialization.js';
@@ -1370,18 +1371,22 @@ function getStepRevivers(
  * into a format that can be saved to the database and then hydrated from
  * within the workflow execution environment.
  *
- * @param value
- * @param global
- * @param runId
+ * @param value - The workflow arguments to serialize
+ * @param runId - The workflow run ID (used for stream serialization)
+ * @param _key - Per-run AES-256 encryption key, or undefined to skip encryption
+ * @param ops - Array to collect pending async operations (e.g., stream uploads)
+ * @param global - The global object for custom type serialization
+ * @param v1Compat - Whether to use legacy v1 serialization format
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
-export function dehydrateWorkflowArguments(
+export async function dehydrateWorkflowArguments(
   value: unknown,
-  ops: Promise<void>[],
   runId: string,
+  _key: Uint8Array | undefined,
+  ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   v1Compat = false
-): Uint8Array | unknown {
+): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getExternalReducers(global, ops, runId));
     if (v1Compat) {
@@ -1402,12 +1407,16 @@ export function dehydrateWorkflowArguments(
  * arguments from the database at the start of workflow execution.
  *
  * @param value - Binary serialized data (Uint8Array) with format prefix
- * @param global
- * @param extraRevivers
+ * @param _runId - The workflow run ID (reserved for future encryption use)
+ * @param _key - Per-run AES-256 encryption key, or undefined to skip decryption
+ * @param global - The global object for custom type deserialization
+ * @param extraRevivers - Additional revivers for custom types
  * @returns The hydrated value
  */
-export function hydrateWorkflowArguments(
+export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
+  _runId: string,
+  _key: Uint8Array | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1436,15 +1445,20 @@ export function hydrateWorkflowArguments(
  * Called at the end of a completed workflow execution to serialize the
  * return value into a format that can be saved to the database.
  *
- * @param value
- * @param global
+ * @param value - The workflow return value to serialize
+ * @param _runId - The workflow run ID (reserved for future encryption use)
+ * @param _key - Per-run AES-256 encryption key, or undefined to skip encryption
+ * @param global - The global object for custom type serialization
+ * @param v1Compat - Whether to use legacy v1 serialization format
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
-export function dehydrateWorkflowReturnValue(
+export async function dehydrateWorkflowReturnValue(
   value: unknown,
+  _runId: string,
+  _key: Uint8Array | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false
-): Uint8Array | unknown {
+): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getWorkflowReducers(global));
     if (v1Compat) {
@@ -1466,16 +1480,18 @@ export function dehydrateWorkflowReturnValue(
  * return value of a completed workflow run.
  *
  * @param value - Binary serialized data (Uint8Array) with format prefix
- * @param ops
- * @param global
- * @param extraRevivers
- * @param runId
+ * @param runId - The workflow run ID (used for stream deserialization)
+ * @param _key - Per-run AES-256 encryption key, or undefined to skip decryption
+ * @param ops - Array to collect pending async operations (e.g., stream downloads)
+ * @param global - The global object for custom type deserialization
+ * @param extraRevivers - Additional revivers for custom types
  * @returns The hydrated return value, ready to be consumed by the client
  */
-export function hydrateWorkflowReturnValue(
+export async function hydrateWorkflowReturnValue(
   value: Uint8Array | unknown,
-  ops: Promise<void>[],
   runId: string,
+  _key: Uint8Array | undefined,
+  ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1505,15 +1521,20 @@ export function hydrateWorkflowReturnValue(
  * Dehydrates values from within the workflow execution environment
  * into a format that can be saved to the database.
  *
- * @param value
- * @param global
+ * @param value - The step arguments to serialize
+ * @param _runId - The workflow run ID (reserved for future encryption use)
+ * @param _key - Per-run AES-256 encryption key, or undefined to skip encryption
+ * @param global - The global object for custom type serialization
+ * @param v1Compat - Whether to use legacy v1 serialization format
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
-export function dehydrateStepArguments(
+export async function dehydrateStepArguments(
   value: unknown,
-  global: Record<string, any>,
+  _runId: string,
+  _key: Uint8Array | undefined,
+  global: Record<string, any> = globalThis,
   v1Compat = false
-): Uint8Array | unknown {
+): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getWorkflowReducers(global));
     if (v1Compat) {
@@ -1534,16 +1555,18 @@ export function dehydrateStepArguments(
  * from the database at the start of the step execution.
  *
  * @param value - Binary serialized data (Uint8Array) with format prefix
- * @param ops
- * @param global
- * @param extraRevivers
- * @param runId
+ * @param runId - The workflow run ID (used for stream deserialization)
+ * @param _key - Per-run AES-256 encryption key, or undefined to skip decryption
+ * @param ops - Array to collect pending async operations (e.g., stream downloads)
+ * @param global - The global object for custom type deserialization
+ * @param extraRevivers - Additional revivers for custom types
  * @returns The hydrated value, ready to be consumed by the step user-code function
  */
-export function hydrateStepArguments(
+export async function hydrateStepArguments(
   value: Uint8Array | unknown,
-  ops: Promise<any>[],
   runId: string,
+  _key: Uint8Array | undefined,
+  ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1573,19 +1596,22 @@ export function hydrateStepArguments(
  * Dehydrates values from within the step execution environment
  * into a format that can be saved to the database.
  *
- * @param value
- * @param ops
- * @param global
- * @param runId
+ * @param value - The step return value to serialize
+ * @param runId - The workflow run ID (used for stream serialization)
+ * @param _key - Per-run AES-256 encryption key, or undefined to skip encryption
+ * @param ops - Array to collect pending async operations (e.g., stream uploads)
+ * @param global - The global object for custom type serialization
+ * @param v1Compat - Whether to use legacy v1 serialization format
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
-export function dehydrateStepReturnValue(
+export async function dehydrateStepReturnValue(
   value: unknown,
-  ops: Promise<any>[],
   runId: string,
+  _key: Uint8Array | undefined,
+  ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   v1Compat = false
-): Uint8Array | unknown {
+): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId));
     if (v1Compat) {
@@ -1606,12 +1632,16 @@ export function dehydrateStepReturnValue(
  * Hydrates the return value of a step from the database.
  *
  * @param value - Binary serialized data (Uint8Array) with format prefix
- * @param global
- * @param extraRevivers
+ * @param _runId - The workflow run ID (reserved for future encryption use)
+ * @param _key - Per-run AES-256 encryption key, or undefined to skip decryption
+ * @param global - The global object for custom type deserialization
+ * @param extraRevivers - Additional revivers for custom types
  * @returns The hydrated return value of a step, ready to be consumed by the workflow handler
  */
-export function hydrateStepReturnValue(
+export async function hydrateStepReturnValue(
   value: Uint8Array | unknown,
+  _runId: string,
+  _key: Uint8Array | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {

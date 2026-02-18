@@ -23,7 +23,11 @@ export function nullByte(world: string) {
         timeout: 10_000,
       }
     );
-    const output = await hydrateWorkflowReturnValue(run.output!, [], run.runId);
+    const output = await hydrateWorkflowReturnValue(
+      run.output!,
+      run.runId,
+      undefined
+    );
     expect(output).toEqual('null byte \0');
   });
 }

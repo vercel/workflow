@@ -116,6 +116,7 @@ export function TraceViewerTimeline({
     null
   );
   const prevSpanMapRef = useRef<ReturnType<typeof parseTrace>['map']>({});
+  const prevSizeRef = useRef<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     const { root: newRoot, map: newSpanMap } = parseTrace(trace);
@@ -149,17 +150,34 @@ export function TraceViewerTimeline({
       // references) does NOT restart.
       const oldRoot = prevRootRef.current;
       const oldSpanMap = prevSpanMapRef.current;
+      let didChange = false;
 
-      oldRoot.endTime = newRoot.endTime;
-      oldRoot.duration = newRoot.duration;
+      if (
+        oldRoot.endTime !== newRoot.endTime ||
+        oldRoot.duration !== newRoot.duration
+      ) {
+        oldRoot.endTime = newRoot.endTime;
+        oldRoot.duration = newRoot.duration;
+        didChange = true;
+      }
 
       for (const [id, newNode] of Object.entries(newSpanMap)) {
         const oldNode = oldSpanMap[id];
         if (oldNode) {
-          oldNode.endTime = newNode.endTime;
-          oldNode.duration = newNode.duration;
+          if (
+            oldNode.endTime !== newNode.endTime ||
+            oldNode.duration !== newNode.duration
+          ) {
+            oldNode.endTime = newNode.endTime;
+            oldNode.duration = newNode.duration;
+            didChange = true;
+          }
           Object.assign(oldNode.span, newNode.span);
         }
+      }
+
+      if (!didChange) {
+        return;
       }
 
       // Trigger re-render (scale/markers) without restarting the worker.
@@ -193,11 +211,23 @@ export function TraceViewerTimeline({
     const onResize = (): void => {
       const padding = 2 * TIMELINE_PADDING;
       const rect = $el.getBoundingClientRect();
+      const nextWidth = rect.width - padding;
+      const nextHeight = rect.height;
+      const prevSize = prevSizeRef.current;
+
+      if (
+        prevSize &&
+        prevSize.width === nextWidth &&
+        prevSize.height === nextHeight
+      ) {
+        return;
+      }
+      prevSizeRef.current = { width: nextWidth, height: nextHeight };
 
       dispatch({
         type: 'setSize',
-        width: rect.width - padding,
-        height: rect.height,
+        width: nextWidth,
+        height: nextHeight,
       });
     };
 

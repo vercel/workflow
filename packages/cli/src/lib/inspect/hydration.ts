@@ -128,9 +128,20 @@ function getRevivers(): Revivers {
 // Public API
 // ---------------------------------------------------------------------------
 
+/** Resolver function that retrieves the encryption key for a given run ID. */
+export type EncryptionKeyResolver =
+  | ((runId: string) => Promise<Uint8Array | undefined>)
+  | null;
+
 /**
  * Hydrate the serialized data fields of a resource for CLI display.
+ *
+ * The optional `_encryptionKeyResolver` parameter is accepted for forward
+ * compatibility with encryption support but is not yet used.
  */
-export function hydrateResourceIO<T>(resource: T): T {
+export function hydrateResourceIO<T>(
+  resource: T,
+  _encryptionKeyResolver?: EncryptionKeyResolver
+): T {
   return hydrateResourceIOGeneric(resource as any, getRevivers()) as T;
 }

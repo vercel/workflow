@@ -34,7 +34,10 @@ export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
   projectConfig?: {
+    /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;
+    /** The project name/slug (e.g., my-app), used for dashboard URLs */
+    projectName?: string;
     teamId?: string;
     environment?: string;
   };

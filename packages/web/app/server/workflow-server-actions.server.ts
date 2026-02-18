@@ -205,6 +205,7 @@ const WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD: Record<string, string[]> = {
     'WORKFLOW_VERCEL_ENV',
     'WORKFLOW_VERCEL_TEAM',
     'WORKFLOW_VERCEL_PROJECT',
+    'WORKFLOW_VERCEL_PROJECT_NAME',
     'WORKFLOW_VERCEL_AUTH_TOKEN',
   ],
   '@workflow/world-vercel': [
@@ -212,6 +213,7 @@ const WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD: Record<string, string[]> = {
     'WORKFLOW_VERCEL_ENV',
     'WORKFLOW_VERCEL_TEAM',
     'WORKFLOW_VERCEL_PROJECT',
+    'WORKFLOW_VERCEL_PROJECT_NAME',
     'WORKFLOW_VERCEL_AUTH_TOKEN',
   ],
 
@@ -432,6 +434,9 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
         projectId:
           userEnvMap.WORKFLOW_VERCEL_PROJECT ||
           process.env.WORKFLOW_VERCEL_PROJECT,
+        projectName:
+          userEnvMap.WORKFLOW_VERCEL_PROJECT_NAME ||
+          process.env.WORKFLOW_VERCEL_PROJECT_NAME,
         teamId:
           userEnvMap.WORKFLOW_VERCEL_TEAM || process.env.WORKFLOW_VERCEL_TEAM,
       },

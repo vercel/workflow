@@ -202,7 +202,7 @@ describe('createQueue', () => {
   });
 
   describe('createQueueHandler()', () => {
-    it('should call handleCallback with wildcard topic pattern', () => {
+    it('should call handleCallback without topic pattern', () => {
       mockHandleCallback.mockReturnValue(async () => new Response('ok'));
 
       const queue = createQueue();
@@ -210,7 +210,6 @@ describe('createQueue', () => {
 
       expect(mockHandleCallback).toHaveBeenCalledTimes(1);
       expect(mockHandleCallback).toHaveBeenCalledWith(
-        '__wkf_workflow_*',
         expect.any(Function),
         expect.objectContaining({ client: expect.any(Object) })
       );
@@ -223,7 +222,7 @@ describe('createQueue', () => {
         message: unknown,
         metadata: unknown
       ) => Promise<void>;
-      mockHandleCallback.mockImplementation((topic, handler) => {
+      mockHandleCallback.mockImplementation((handler) => {
         capturedHandler = handler;
         return async () => new Response('ok');
       });
@@ -271,7 +270,7 @@ describe('createQueue', () => {
         message: unknown,
         metadata: unknown
       ) => Promise<void>;
-      mockHandleCallback.mockImplementation((topic, handler) => {
+      mockHandleCallback.mockImplementation((handler) => {
         capturedHandler = handler;
         return async () => new Response('ok');
       });
@@ -317,7 +316,7 @@ describe('createQueue', () => {
         message: unknown,
         metadata: unknown
       ) => Promise<void>;
-      mockHandleCallback.mockImplementation((topic, handler) => {
+      mockHandleCallback.mockImplementation((handler) => {
         capturedHandler = handler;
         return async () => new Response('ok');
       });
@@ -347,7 +346,7 @@ describe('createQueue', () => {
         message: unknown,
         metadata: unknown
       ) => Promise<void>;
-      mockHandleCallback.mockImplementation((topic, handler) => {
+      mockHandleCallback.mockImplementation((handler) => {
         capturedHandler = handler;
         return async () => new Response('ok');
       });
@@ -367,7 +366,7 @@ describe('createQueue', () => {
         message: unknown,
         metadata: unknown
       ) => Promise<void>;
-      mockHandleCallback.mockImplementation((topic, handler) => {
+      mockHandleCallback.mockImplementation((handler) => {
         capturedHandler = handler;
         return async () => new Response('ok');
       });
