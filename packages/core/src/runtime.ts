@@ -273,15 +273,16 @@ export function workflowEntrypoint(
                     } catch (err) {
                       if (WorkflowAPIError.is(err) && err.status === 409) {
                         runtimeLogger.warn(
-                          'Tried completing workflow run, but was already completed.',
+                          'Tried completing workflow run, but run has already finished.',
                           {
                             workflowRunId: runId,
                             message: err.message,
                           }
                         );
-                        return;
+                        // Continue
+                      } else {
+                        throw err;
                       }
-                      throw err;
                     }
 
                     span?.setAttributes({
@@ -386,18 +387,34 @@ export function workflowEntrypoint(
                         errorName,
                         errorStack,
                       });
+
                       // Fail the workflow run via event (event-sourced architecture)
-                      await world.events.create(runId, {
-                        eventType: 'run_failed',
-                        specVersion: SPEC_VERSION_CURRENT,
-                        eventData: {
-                          error: {
-                            message: errorMessage,
-                            stack: errorStack,
+                      try {
+                        await world.events.create(runId, {
+                          eventType: 'run_failed',
+                          specVersion: SPEC_VERSION_CURRENT,
+                          eventData: {
+                            error: {
+                              message: errorMessage,
+                              stack: errorStack,
+                            },
+                            // TODO: include error codes when we define them
                           },
-                          // TODO: include error codes when we define them
-                        },
-                      });
+                        });
+                      } catch (err) {
+                        if (WorkflowAPIError.is(err) && err.status === 409) {
+                          runtimeLogger.warn(
+                            'Tried failing workflow run, but run has already finished.',
+                            {
+                              workflowRunId: runId,
+                              message: err.message,
+                            }
+                          );
+                          // Continue
+                        } else {
+                          throw err;
+                        }
+                      }
 
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('failed'),
