@@ -176,7 +176,7 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
 export async function hydrateDataWithKey(
   value: unknown,
   revivers: Revivers,
-  key: Uint8Array | undefined
+  key: import('./encryption.js').CryptoKey | undefined
 ): Promise<unknown> {
   if (value instanceof Uint8Array && isEncryptedData(value) && key) {
     // Decrypt: strip 'encr' prefix, AES-GCM decrypt, then hydrate the result
