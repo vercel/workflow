@@ -195,9 +195,13 @@ export interface World extends Queue, Storage, Streamer {
    * (e.g., HKDF from a deployment key). The core encryption module uses
    * this key directly for AES-GCM encrypt/decrypt operations.
    *
-   * Accepts either a full `WorkflowRun` (preferred, avoids redundant
-   * lookups) or a plain `runId` string (used by `start()` before the
-   * run entity exists — the World assumes the current deployment).
+   * Accepts either a full `WorkflowRun` object or a plain `runId` string:
+   * - `WorkflowRun` — Used by the o11y/CLI path when the run entity is
+   *   already available. Provides `deploymentId` for cross-deployment key
+   *   resolution without a redundant lookup.
+   * - `string` (runId) — Used by `start()` and `step-handler` in the
+   *   runtime path where the run entity may not exist yet or isn't needed.
+   *   The World assumes the current deployment for key resolution.
    *
    * When not implemented, encryption is disabled — data is stored unencrypted.
    *

@@ -117,9 +117,10 @@ export async function start<TArgs extends unknown[], TResult>(
       const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
       const v1Compat = isLegacySpecVersion(specVersion);
 
-      // Resolve encryption key for the new run. Since start() always runs on the
-      // current deployment, we can use a placeholder runId — the implementation
-      // will resolve to the local deployment's key regardless.
+      // Resolve encryption key for the new run. The runId has already been
+      // generated above (client-generated ULID) and will be used for both
+      // key derivation and the run_created event. The World implementation
+      // uses the runId for per-run HKDF key derivation.
       const encryptionKey = await world.getEncryptionKeyForRun?.(runId);
 
       // Create run via run_created event (event-sourced architecture)

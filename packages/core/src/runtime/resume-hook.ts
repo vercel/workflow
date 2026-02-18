@@ -18,17 +18,6 @@ import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
 
 /**
- * Resolve the encryption key for a given run ID.
- * Returns undefined if the World doesn't support encryption.
- */
-async function resolveEncryptionKeyForRun(
-  runId: string
-): Promise<Uint8Array | undefined> {
-  const world = getWorld();
-  return world.getEncryptionKeyForRun?.(runId);
-}
-
-/**
  * Internal helper that returns both the hook and the resolved encryption key.
  */
 async function getHookByTokenWithKey(
@@ -36,7 +25,7 @@ async function getHookByTokenWithKey(
 ): Promise<{ hook: Hook; encryptionKey: Uint8Array | undefined }> {
   const world = getWorld();
   const hook = await world.hooks.getByToken(token);
-  const encryptionKey = await resolveEncryptionKeyForRun(hook.runId);
+  const encryptionKey = await world.getEncryptionKeyForRun?.(hook.runId);
   if (typeof hook.metadata !== 'undefined') {
     hook.metadata = await hydrateStepArguments(
       hook.metadata as any,
@@ -91,7 +80,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
-  _encryptionKey?: Uint8Array | undefined
+  encryptionKeyOverride?: Uint8Array | undefined
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -103,11 +92,12 @@ export async function resumeHook<T = any>(
         if (typeof tokenOrHook === 'string') {
           const result = await getHookByTokenWithKey(tokenOrHook);
           hook = result.hook;
-          encryptionKey = _encryptionKey ?? result.encryptionKey;
+          encryptionKey = encryptionKeyOverride ?? result.encryptionKey;
         } else {
           hook = tokenOrHook;
           encryptionKey =
-            _encryptionKey ?? (await resolveEncryptionKeyForRun(hook.runId));
+            encryptionKeyOverride ??
+            (await world.getEncryptionKeyForRun?.(hook.runId));
         }
 
         span?.setAttributes({
