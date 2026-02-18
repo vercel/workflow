@@ -14,6 +14,10 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
   queueName: ValidQueueName,
+  /**
+   * The deployment ID to use when re-enqueueing the message.
+   * This ensures the message is processed by the same deployment.
+   */
   deploymentId: z.string().optional(),
 });
 
@@ -92,6 +96,7 @@ export function createQueue(config?: APIConfig): Queue {
     payload,
     opts?: QueueOptions
   ) => {
+    // Check if we have a deployment ID either from options or environment
     const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
       throw new Error(
@@ -121,6 +126,7 @@ export function createQueue(config?: APIConfig): Queue {
     const encoded = encoder({
       payload,
       queueName,
+      // Store deploymentId in the message so it can be preserved when re-enqueueing
       deploymentId: opts?.deploymentId,
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
@@ -137,7 +143,11 @@ export function createQueue(config?: APIConfig): Queue {
       });
       return { messageId: MessageId.parse(messageId) };
     } catch (error) {
+      // Silently handle idempotency key conflicts - the message was already queued.
+      // This matches the behavior of world-local and world-postgres.
       if (error instanceof DuplicateMessageError) {
+        // Return a placeholder messageId since the original is not available from the error.
+        // Callers using idempotency keys shouldn't depend on the returned messageId.
         return {
           messageId: MessageId.parse(
             `msg_duplicate_${error.idempotencyKey ?? opts?.idempotencyKey ?? 'unknown'}`
@@ -168,10 +178,17 @@ export function createQueue(config?: APIConfig): Queue {
         });
 
         if (typeof result?.timeoutSeconds === 'number') {
+          // Send new message with delay, then acknowledge the current one.
+          // Clamp to max delay (23h) - for longer sleeps, the workflow will chain
+          // multiple delayed messages until the full sleep duration has elapsed.
           const delaySeconds = Math.min(
             result.timeoutSeconds,
             MAX_DELAY_SECONDS
           );
+
+          // Send new message with delay BEFORE acknowledging current message.
+          // This ensures crash safety: if process dies after send but before ack,
+          // we may get a duplicate invocation but won't lose the scheduled wakeup.
           await queue(queueName, payload, { deploymentId, delaySeconds });
         }
       },
