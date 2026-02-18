@@ -9,6 +9,7 @@ import {
 } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 import {
+  Logger,
   makeWorkerUtils,
   run,
   type Runner,
@@ -17,6 +18,9 @@ import {
 import { monotonicFactory } from 'ulid';
 import { MessageData } from './message.js';
 import type { PostgresWorldConfig } from './config.js';
+
+// Silent logger so graphile-worker does not write to stdout (keeps CLI --json output clean).
+const silentLogger = new Logger(() => () => {});
 
 /**
  * The Postgres queue works by creating two job types in graphile-worker:
@@ -57,16 +61,29 @@ export function createQueue(
 
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
+  let startPromise: Promise<void> | null = null;
+
+  async function start(): Promise<void> {
+    if (!startPromise) {
+      startPromise = (async () => {
+        workerUtils = await makeWorkerUtils({
+          connectionString,
+          logger: silentLogger,
+        });
+        await workerUtils.migrate();
+        await setupListeners();
+      })();
+    }
+    await startPromise;
+  }
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
-    if (!workerUtils) {
-      throw new Error('Queue not started. Call start() first.');
-    }
+    await start();
     const [prefix, queueId] = parseQueueName(queue);
     const jobName = Queues[prefix];
     const body = transport.serialize(message);
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
-    await workerUtils.addJob(
+    await workerUtils!.addJob(
       jobName,
       MessageData.encode({
         id: queueId,
@@ -115,6 +132,7 @@ export function createQueue(
     runner = await run({
       connectionString,
       concurrency: config.queueConcurrency || 10,
+      logger: silentLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
       taskList,
     });
@@ -124,14 +142,7 @@ export function createQueue(
     createQueueHandler,
     getDeploymentId,
     queue,
-    async start() {
-      workerUtils = await makeWorkerUtils({
-        connectionString,
-      });
-      // Ensure the graphile-worker schema is installed before we start processing jobs
-      await workerUtils.migrate();
-      await setupListeners();
-    },
+    start,
     async close() {
       if (runner) {
         await runner.stop();
