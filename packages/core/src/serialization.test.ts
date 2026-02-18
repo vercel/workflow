@@ -3,6 +3,7 @@ import type { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { describe, expect, it } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
+import { decrypt, encrypt } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import {
   decodeFormatPrefix,
@@ -19,6 +20,9 @@ import {
   hydrateStepReturnValue,
   hydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
+  isEncrypted,
+  maybeDecrypt,
+  maybeEncrypt,
   SerializationFormat,
 } from './serialization.js';
 import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
@@ -3762,5 +3766,306 @@ describe('encryption integration', () => {
     );
 
     expect(decrypted).toEqual(testValue);
+  });
+
+  it('should produce different ciphertext for same plaintext (nonce randomness)', async () => {
+    const testRunId = 'wrun_test123';
+    const testValue = { message: 'same data' };
+
+    const encrypted1 = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testKey,
+      [],
+      globalThis,
+      false
+    );
+
+    const encrypted2 = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testKey,
+      [],
+      globalThis,
+      false
+    );
+
+    // Both should decrypt to the same value
+    const decrypted1 = await hydrateWorkflowArguments(
+      encrypted1,
+      testRunId,
+      testKey,
+      globalThis
+    );
+    const decrypted2 = await hydrateWorkflowArguments(
+      encrypted2,
+      testRunId,
+      testKey,
+      globalThis
+    );
+    expect(decrypted1).toEqual(testValue);
+    expect(decrypted2).toEqual(testValue);
+
+    // But the ciphertext should differ due to random nonce
+    expect(encrypted1).not.toEqual(encrypted2);
+  });
+
+  it('should throw when decrypting encrypted data without a key', async () => {
+    const testRunId = 'wrun_test123';
+    const testValue = { message: 'secret' };
+
+    const encrypted = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testKey,
+      [],
+      globalThis,
+      false
+    );
+
+    await expect(
+      hydrateWorkflowArguments(encrypted, testRunId, undefined, globalThis)
+    ).rejects.toThrow('Encrypted data encountered but no encryption key');
+  });
+
+  it('should round-trip Date through encryption', async () => {
+    const testRunId = 'wrun_test123';
+    const testValue = new Date('2025-07-17T04:30:34.824Z');
+
+    const encrypted = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testKey,
+      []
+    );
+    const decrypted = await hydrateWorkflowArguments(
+      encrypted,
+      testRunId,
+      testKey
+    );
+
+    expect(decrypted).toBeInstanceOf(Date);
+    expect((decrypted as Date).toISOString()).toBe('2025-07-17T04:30:34.824Z');
+  });
+
+  it('should round-trip Map through encryption', async () => {
+    const testRunId = 'wrun_test123';
+    const testValue = new Map([
+      ['key1', 'value1'],
+      ['key2', 42],
+    ]);
+
+    const encrypted = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testKey,
+      []
+    );
+    const decrypted = (await hydrateWorkflowArguments(
+      encrypted,
+      testRunId,
+      testKey
+    )) as Map<string, unknown>;
+
+    expect(decrypted).toBeInstanceOf(Map);
+    expect(decrypted.get('key1')).toBe('value1');
+    expect(decrypted.get('key2')).toBe(42);
+  });
+
+  it('should round-trip Set through encryption', async () => {
+    const testRunId = 'wrun_test123';
+    const testValue = new Set([1, 'two', true]);
+
+    const encrypted = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testKey,
+      []
+    );
+    const decrypted = (await hydrateWorkflowArguments(
+      encrypted,
+      testRunId,
+      testKey
+    )) as Set<unknown>;
+
+    expect(decrypted).toBeInstanceOf(Set);
+    expect(decrypted.has(1)).toBe(true);
+    expect(decrypted.has('two')).toBe(true);
+    expect(decrypted.has(true)).toBe(true);
+  });
+
+  it('should round-trip BigInt through encryption', async () => {
+    const testRunId = 'wrun_test123';
+    const testValue = BigInt('9007199254740992');
+
+    const encrypted = await dehydrateWorkflowArguments(
+      testValue,
+      testRunId,
+      testKey,
+      []
+    );
+    const decrypted = await hydrateWorkflowArguments(
+      encrypted,
+      testRunId,
+      testKey
+    );
+
+    expect(decrypted).toBe(BigInt('9007199254740992'));
+  });
+});
+
+describe('encrypt/decrypt primitives', () => {
+  const testKey = new Uint8Array([
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+  ]);
+
+  it('should round-trip arbitrary data', async () => {
+    const data = new TextEncoder().encode('hello world');
+    const encrypted = await encrypt(testKey, data);
+    const decrypted = await decrypt(testKey, encrypted);
+    expect(decrypted).toEqual(data);
+  });
+
+  it('should round-trip empty data', async () => {
+    const data = new Uint8Array(0);
+    const encrypted = await encrypt(testKey, data);
+    const decrypted = await decrypt(testKey, encrypted);
+    expect(decrypted).toEqual(data);
+  });
+
+  it('should produce nonce + ciphertext output', async () => {
+    const data = new TextEncoder().encode('test');
+    const encrypted = await encrypt(testKey, data);
+    // Output should be: 12 bytes nonce + ciphertext (at least 16 bytes for GCM auth tag)
+    expect(encrypted.byteLength).toBeGreaterThanOrEqual(12 + 16);
+  });
+
+  it('should produce different ciphertext each time (random nonce)', async () => {
+    const data = new TextEncoder().encode('same input');
+    const enc1 = await encrypt(testKey, data);
+    const enc2 = await encrypt(testKey, data);
+    // Different nonces → different ciphertext
+    expect(enc1).not.toEqual(enc2);
+    // But both decrypt to the same plaintext
+    expect(await decrypt(testKey, enc1)).toEqual(data);
+    expect(await decrypt(testKey, enc2)).toEqual(data);
+  });
+
+  it('should reject keys that are not 32 bytes', async () => {
+    const shortKey = new Uint8Array(16);
+    const data = new TextEncoder().encode('test');
+    await expect(encrypt(shortKey, data)).rejects.toThrow(
+      'Encryption key must be exactly 32 bytes'
+    );
+    await expect(decrypt(shortKey, data)).rejects.toThrow(
+      'Encryption key must be exactly 32 bytes'
+    );
+  });
+
+  it('should reject truncated ciphertext', async () => {
+    const tooShort = new Uint8Array(10); // Less than nonce (12) + auth tag (16)
+    await expect(decrypt(testKey, tooShort)).rejects.toThrow(
+      'Encrypted data too short'
+    );
+  });
+
+  it('should fail with wrong key (auth tag mismatch)', async () => {
+    const data = new TextEncoder().encode('secret');
+    const encrypted = await encrypt(testKey, data);
+    const wrongKey = new Uint8Array(32);
+    wrongKey.fill(0xff);
+    await expect(decrypt(wrongKey, encrypted)).rejects.toThrow();
+  });
+
+  it('should fail with tampered ciphertext', async () => {
+    const data = new TextEncoder().encode('integrity check');
+    const encrypted = await encrypt(testKey, data);
+    // Flip a byte in the ciphertext (past the nonce)
+    encrypted[15] ^= 0xff;
+    await expect(decrypt(testKey, encrypted)).rejects.toThrow();
+  });
+});
+
+describe('maybeEncrypt / maybeDecrypt', () => {
+  const testKey = new Uint8Array([
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+  ]);
+
+  it('should pass through data unchanged when key is undefined', async () => {
+    const data = new Uint8Array([1, 2, 3, 4]);
+    const result = await maybeEncrypt(data, undefined);
+    expect(result).toBe(data); // Same reference
+  });
+
+  it('should encrypt and add "encr" prefix when key is provided', async () => {
+    const data = new Uint8Array([1, 2, 3, 4]);
+    const result = await maybeEncrypt(data, testKey);
+    expect(result).not.toBe(data);
+    expect(isEncrypted(result)).toBe(true);
+  });
+
+  it('should round-trip through maybeEncrypt/maybeDecrypt', async () => {
+    const data = new Uint8Array([10, 20, 30, 40, 50]);
+    const encrypted = await maybeEncrypt(data, testKey);
+    const decrypted = await maybeDecrypt(encrypted, testKey);
+    expect(decrypted).toEqual(data);
+  });
+
+  it('should pass through non-Uint8Array values in maybeDecrypt', async () => {
+    const legacyData = [1, 'hello', { key: 'value' }];
+    const result = await maybeDecrypt(legacyData, testKey);
+    expect(result).toBe(legacyData); // Same reference
+  });
+
+  it('should pass through unencrypted Uint8Array in maybeDecrypt', async () => {
+    // Data with 'devl' prefix (not encrypted)
+    const prefix = new TextEncoder().encode('devl');
+    const payload = new TextEncoder().encode('test');
+    const data = new Uint8Array(prefix.length + payload.length);
+    data.set(prefix, 0);
+    data.set(payload, prefix.length);
+
+    const result = await maybeDecrypt(data, testKey);
+    expect(result).toBe(data); // Same reference — not encrypted, passed through
+  });
+
+  it('should throw when encrypted data has no key', async () => {
+    const data = new Uint8Array([1, 2, 3]);
+    const encrypted = await maybeEncrypt(data, testKey);
+    await expect(maybeDecrypt(encrypted, undefined)).rejects.toThrow(
+      'Encrypted data encountered but no encryption key'
+    );
+  });
+});
+
+describe('isEncrypted', () => {
+  it('should return true for data with "encr" prefix', () => {
+    const prefix = new TextEncoder().encode('encr');
+    const data = new Uint8Array(prefix.length + 10);
+    data.set(prefix, 0);
+    expect(isEncrypted(data)).toBe(true);
+  });
+
+  it('should return false for data with "devl" prefix', () => {
+    const prefix = new TextEncoder().encode('devl');
+    const data = new Uint8Array(prefix.length + 10);
+    data.set(prefix, 0);
+    expect(isEncrypted(data)).toBe(false);
+  });
+
+  it('should return false for non-Uint8Array values', () => {
+    expect(isEncrypted('hello')).toBe(false);
+    expect(isEncrypted(42)).toBe(false);
+    expect(isEncrypted(null)).toBe(false);
+    expect(isEncrypted(undefined)).toBe(false);
+    expect(isEncrypted([1, 2, 3])).toBe(false);
+  });
+
+  it('should return false for data shorter than prefix length', () => {
+    expect(isEncrypted(new Uint8Array(2))).toBe(false);
   });
 });
