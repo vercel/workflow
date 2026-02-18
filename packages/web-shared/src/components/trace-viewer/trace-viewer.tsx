@@ -116,20 +116,28 @@ export function TraceViewerTimeline({
     null
   );
   const prevSpanMapRef = useRef<ReturnType<typeof parseTrace>['map']>({});
+  const prevSizeRef = useRef<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     const { root: newRoot, map: newSpanMap } = parseTrace(trace);
     const isInitial = !hasInitializedRef.current;
     hasInitializedRef.current = true;
 
-    // Build a structural key from span IDs + event counts.
-    // When only timing changes (same spans, same events), we can skip the
+    // Build a structural key from span IDs + lightweight event signatures.
+    // When only timing changes (same spans and boundary events), we can skip the
     // worker restart. When events change (step completed, etc.) we need a
     // full update because the VisibleSpan objects rendered by React hold
     // copies of the events from the worker — in-place mutation won't reach them.
     const spanKey = Object.keys(newSpanMap)
       .sort()
-      .map((id) => `${id}:${newSpanMap[id].events?.length ?? 0}`)
+      .map((id) => {
+        const events = newSpanMap[id].events;
+        const count = events?.length ?? 0;
+        const first = count ? events?.[0] : undefined;
+        const last = count ? events?.[count - 1] : undefined;
+        const eventSignature = `${first?.event.name ?? 'none'}@${first?.timestamp ?? 0}|${last?.event.name ?? 'none'}@${last?.timestamp ?? 0}`;
+        return `${id}:${count}:${eventSignature}`;
+      })
       .join(',');
 
     if (
@@ -142,17 +150,34 @@ export function TraceViewerTimeline({
       // references) does NOT restart.
       const oldRoot = prevRootRef.current;
       const oldSpanMap = prevSpanMapRef.current;
+      let didChange = false;
 
-      oldRoot.endTime = newRoot.endTime;
-      oldRoot.duration = newRoot.duration;
+      if (
+        oldRoot.endTime !== newRoot.endTime ||
+        oldRoot.duration !== newRoot.duration
+      ) {
+        oldRoot.endTime = newRoot.endTime;
+        oldRoot.duration = newRoot.duration;
+        didChange = true;
+      }
 
       for (const [id, newNode] of Object.entries(newSpanMap)) {
         const oldNode = oldSpanMap[id];
         if (oldNode) {
-          oldNode.endTime = newNode.endTime;
-          oldNode.duration = newNode.duration;
+          if (
+            oldNode.endTime !== newNode.endTime ||
+            oldNode.duration !== newNode.duration
+          ) {
+            oldNode.endTime = newNode.endTime;
+            oldNode.duration = newNode.duration;
+            didChange = true;
+          }
           Object.assign(oldNode.span, newNode.span);
         }
+      }
+
+      if (!didChange) {
+        return;
       }
 
       // Trigger re-render (scale/markers) without restarting the worker.
@@ -186,11 +211,23 @@ export function TraceViewerTimeline({
     const onResize = (): void => {
       const padding = 2 * TIMELINE_PADDING;
       const rect = $el.getBoundingClientRect();
+      const nextWidth = rect.width - padding;
+      const nextHeight = rect.height;
+      const prevSize = prevSizeRef.current;
+
+      if (
+        prevSize &&
+        prevSize.width === nextWidth &&
+        prevSize.height === nextHeight
+      ) {
+        return;
+      }
+      prevSizeRef.current = { width: nextWidth, height: nextHeight };
 
       dispatch({
         type: 'setSize',
-        width: rect.width - padding,
-        height: rect.height,
+        width: nextWidth,
+        height: nextHeight,
       });
     };
 
@@ -444,6 +481,7 @@ export function TraceViewerTimeline({
                 customSpanEventClassNameFunc={
                   state.customSpanEventClassNameFunc
                 }
+                isLive={isLive}
                 root={state.root}
                 scale={scale}
                 scrollSnapshotRef={scrollSnapshotRef}

@@ -1,10 +1,11 @@
-import { hydrateWorkflowArguments } from '../serialization.js';
+import { WorkflowAPIError } from '@workflow/errors';
 import {
   type Event,
   isLegacySpecVersion,
   SPEC_VERSION_LEGACY,
   type World,
 } from '@workflow/world';
+import { hydrateWorkflowArguments } from '../serialization.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { start } from './start.js';
 
@@ -48,8 +49,14 @@ export async function recreateRunFromExisting(
 ): Promise<string> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
+    const encryptionKey = await world.getEncryptionKeyForRun?.(runId);
     const workflowArgs = normalizeWorkflowArgs(
-      hydrateWorkflowArguments(run.input, globalThis)
+      await hydrateWorkflowArguments(
+        run.input,
+        runId,
+        encryptionKey,
+        globalThis
+      )
     );
     const specVersion =
       options.specVersion ?? run.specVersion ?? SPEC_VERSION_LEGACY;
@@ -183,7 +190,11 @@ export async function wakeUpRun(
         await world.events.create(runId, eventData, { v1Compat: compatMode });
         stoppedCount++;
       } catch (err) {
-        errors.push(err instanceof Error ? err : new Error(String(err)));
+        if (WorkflowAPIError.is(err) && err.status === 409) {
+          stoppedCount++;
+        } else {
+          errors.push(err instanceof Error ? err : new Error(String(err)));
+        }
       }
     }
 

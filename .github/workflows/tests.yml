@@ -335,8 +335,8 @@ jobs:
       - name: Setup canary
         if: ${{ matrix.app.canary }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
+          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="canary"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -403,8 +403,8 @@ jobs:
       - name: Setup canary
         if: ${{ matrix.app.canary }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
+          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="canary"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -491,8 +491,8 @@ jobs:
       - name: Setup canary
         if: ${{ matrix.app.canary }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="16.2.0-canary.42"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
+          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat workbench/${{ matrix.app.name }}/package.json | jq '.dependencies.next|="canary"' > workbench/${{ matrix.app.name }}/package.json.new && mv workbench/${{ matrix.app.name }}/package.json.new workbench/${{ matrix.app.name }}/package.json
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies

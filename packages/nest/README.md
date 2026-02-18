@@ -113,6 +113,15 @@ WorkflowModule.forRoot({
 
   // Skip building in production when bundles are pre-built
   skipBuild: false,
+
+  // SWC module type: 'es6' (default) or 'commonjs'
+  // Set to 'commonjs' if your NestJS project compiles to CJS via SWC
+  moduleType: 'es6',
+
+  // Directory where NestJS compiles .ts to .js (default: 'dist')
+  // Only used when moduleType is 'commonjs'
+  // Should match the outDir in your tsconfig.json
+  distDir: 'dist',
 });
 ```
 
@@ -164,6 +173,8 @@ WorkflowModule.forRoot({
   dirs: ['src/workflows'],
   outDir: '.nestjs/workflow',
   skipBuild: process.env.NODE_ENV === 'production',
+  moduleType: 'commonjs',  // if using SWC CommonJS compilation
+  distDir: 'dist',          // where compiled .js files live
 })
 ```
 

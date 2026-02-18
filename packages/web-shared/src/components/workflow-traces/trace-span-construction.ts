@@ -123,7 +123,8 @@ export function waitToSpan(
 export function stepToSpan(
   step: Step,
   stepEvents: Event[],
-  nowTime?: Date
+  nowTime?: Date,
+  maxEndTime?: Date
 ): Span {
   const now = nowTime ?? new Date();
   const parsedName = parseStepName(String(step.stepName));
@@ -138,7 +139,7 @@ export function stepToSpan(
   };
 
   const resource = 'step';
-  const endTime = new Date(step.completedAt ?? now);
+  const endTime = new Date(step.completedAt ?? maxEndTime ?? now);
 
   // Include ALL correlated events on the span so the sidebar detail view
   // can display them. The timeline uses the `showVerticalLine` flag to

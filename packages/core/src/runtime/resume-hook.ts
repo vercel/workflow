@@ -18,6 +18,25 @@ import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
 
 /**
+ * Internal helper that returns both the hook and the resolved encryption key.
+ */
+async function getHookByTokenWithKey(
+  token: string
+): Promise<{ hook: Hook; encryptionKey: Uint8Array | undefined }> {
+  const world = getWorld();
+  const hook = await world.hooks.getByToken(token);
+  const encryptionKey = await world.getEncryptionKeyForRun?.(hook.runId);
+  if (typeof hook.metadata !== 'undefined') {
+    hook.metadata = await hydrateStepArguments(
+      hook.metadata as any,
+      hook.runId,
+      encryptionKey
+    );
+  }
+  return { hook, encryptionKey };
+}
+
+/**
  * Get the hook by token to find the associated workflow run,
  * and hydrate the `metadata` property if it was set from within
  * the workflow run.
@@ -25,11 +44,7 @@ import { getWorld } from './world.js';
  * @param token - The unique token identifying the hook
  */
 export async function getHookByToken(token: string): Promise<Hook> {
-  const world = getWorld();
-  const hook = await world.hooks.getByToken(token);
-  if (typeof hook.metadata !== 'undefined') {
-    hook.metadata = hydrateStepArguments(hook.metadata as any, [], hook.runId);
-  }
+  const { hook } = await getHookByTokenWithKey(token);
   return hook;
 }
 
@@ -64,17 +79,26 @@ export async function getHookByToken(token: string): Promise<Hook> {
  */
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
-  payload: T
+  payload: T,
+  encryptionKeyOverride?: Uint8Array | undefined
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
       const world = getWorld();
 
       try {
-        const hook =
-          typeof tokenOrHook === 'string'
-            ? await getHookByToken(tokenOrHook)
-            : tokenOrHook;
+        let hook: Hook;
+        let encryptionKey: Uint8Array | undefined;
+        if (typeof tokenOrHook === 'string') {
+          const result = await getHookByTokenWithKey(tokenOrHook);
+          hook = result.hook;
+          encryptionKey = encryptionKeyOverride ?? result.encryptionKey;
+        } else {
+          hook = tokenOrHook;
+          encryptionKey =
+            encryptionKeyOverride ??
+            (await world.getEncryptionKeyForRun?.(hook.runId));
+        }
 
         span?.setAttributes({
           ...Attribute.HookToken(hook.token),
@@ -85,10 +109,11 @@ export async function resumeHook<T = any>(
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
         const v1Compat = isLegacySpecVersion(hook.specVersion);
-        const dehydratedPayload = dehydrateStepReturnValue(
+        const dehydratedPayload = await dehydrateStepReturnValue(
           payload,
-          ops,
           hook.runId,
+          encryptionKey,
+          ops,
           globalThis,
           v1Compat
         );
@@ -196,7 +221,7 @@ export async function resumeWebhook(
   token: string,
   request: Request
 ): Promise<Response> {
-  const hook = await getHookByToken(token);
+  const { hook, encryptionKey } = await getHookByTokenWithKey(token);
 
   let response: Response | undefined;
   let responseReadable: ReadableStream<Response> | undefined;
@@ -225,7 +250,7 @@ export async function resumeWebhook(
     response = new Response(null, { status: 202 });
   }
 
-  await resumeHook(hook, request);
+  await resumeHook(hook, request, encryptionKey);
 
   if (responseReadable) {
     // Wait for the readable stream to emit one chunk,

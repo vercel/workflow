@@ -2,7 +2,7 @@
 
 import { clsx } from 'clsx';
 import type { CSSProperties, MutableRefObject, ReactNode } from 'react';
-import { memo, useEffect, useRef } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import styles from '../trace-viewer.module.css';
 import type {
   MemoCache,
@@ -14,10 +14,11 @@ import type {
   VisibleSpanEvent,
 } from '../types';
 import { MARKER_HEIGHT, ROW_HEIGHT, ROW_PADDING } from '../util/constants';
-import { formatDuration } from '../util/timing';
+import { formatDuration, getHighResInMs } from '../util/timing';
 import { SpanContent } from './span-content';
 import { computeSegments } from './span-segments';
 import {
+  type ResourceType,
   type SpanLayout,
   getResourceType,
   getSpanLayout,
@@ -28,10 +29,61 @@ export const getSpanColorClassName = (node: SpanNode): string => {
   return String(styles[`color${node.resourceIndex % 5}` as 'color0']);
 };
 
+function getTerminalTimestamp(
+  resourceType: ResourceType,
+  node: VisibleSpan
+): number | undefined {
+  const events = node.events;
+  if (!events?.length) return undefined;
+
+  switch (resourceType) {
+    case 'hook':
+      for (let i = events.length; i--; ) {
+        if (events[i].event.name === 'hook_disposed') {
+          return events[i].timestamp;
+        }
+      }
+      return undefined;
+    case 'sleep':
+      for (let i = events.length; i--; ) {
+        if (events[i].event.name === 'wait_completed') {
+          return events[i].timestamp;
+        }
+      }
+      return undefined;
+    case 'run':
+      for (let i = events.length; i--; ) {
+        const name = events[i].event.name;
+        if (
+          name === 'run_completed' ||
+          name === 'run_failed' ||
+          name === 'run_cancelled'
+        ) {
+          return events[i].timestamp;
+        }
+      }
+      return undefined;
+    case 'step':
+      for (let i = events.length; i--; ) {
+        const name = events[i].event.name;
+        if (name === 'step_completed' || name === 'step_failed') {
+          return events[i].timestamp;
+        }
+        if (name === 'step_started' || name === 'step_retrying') {
+          return undefined;
+        }
+      }
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
 export const SpanNodes = memo(function SpanNodes({
   root,
   scale,
   spans,
+  isLive = false,
   scrollSnapshotRef,
   cache,
   customSpanClassNameFunc,
@@ -40,6 +92,7 @@ export const SpanNodes = memo(function SpanNodes({
   root: RootNode;
   scale: number;
   spans: VisibleSpan[];
+  isLive?: boolean;
   scrollSnapshotRef: MutableRefObject<ScrollSnapshot | undefined>;
   /** Not used in the body — exists solely to bust React.memo when the global memo cache changes. */
   cacheKey?: MemoCacheKey;
@@ -56,6 +109,7 @@ export const SpanNodes = memo(function SpanNodes({
       node={x}
       root={root}
       scale={scale}
+      traceIsLive={isLive}
       scrollSnapshotRef={scrollSnapshotRef}
     />
   ));
@@ -102,6 +156,7 @@ export const SpanComponent = memo(function SpanComponent({
   node,
   root,
   scale,
+  traceIsLive = false,
   scrollSnapshotRef,
   customSpanClassNameFunc,
   customSpanEventClassNameFunc,
@@ -109,6 +164,7 @@ export const SpanComponent = memo(function SpanComponent({
   node: VisibleSpan;
   root: RootNode;
   scale: number;
+  traceIsLive?: boolean;
   scrollSnapshotRef: MutableRefObject<ScrollSnapshot | undefined>;
   /** Not used in the body — exists solely to bust React.memo for this span. */
   cacheKey?: MemoCacheKey;
@@ -126,17 +182,7 @@ export const SpanComponent = memo(function SpanComponent({
 
   const { span } = node;
   const resourceType = getResourceType(node);
-  const layout = getSpanLayout(
-    resourceType,
-    node,
-    root,
-    scale,
-    scrollSnapshotRef
-  );
-
-  const duration = node.isInstrumentationHint
-    ? 'Get Started'
-    : formatDuration(node.duration);
+  const [liveNow, setLiveNow] = useState(0);
 
   // Get custom class name from callback if provided
   const customClassName = customSpanClassNameFunc
@@ -146,23 +192,69 @@ export const SpanComponent = memo(function SpanComponent({
   // Workflow span types use colored segments + boundary line markers
   // Generic OTEL spans use diamond event markers
   const isWorkflowSpan = resourceType !== 'default';
-  const hasSegments =
-    isWorkflowSpan && computeSegments(resourceType, node).segments.length > 0;
 
-  // Determine if this span is still active (live).
-  // A span is only "live" when the overall trace is still growing, i.e. the
-  // root's endTime is being advanced by useLiveTick (within a few seconds of
-  // now).  For completed runs root.endTime is a past timestamp, so no span
-  // receives the live-growth animation — this prevents hooks that were never
-  // explicitly disposed from expanding to infinity.
+  // Determine if this span is still active (live). We require the parent run
+  // to be explicitly live to avoid completed/cancelled traces continuing to
+  // grow due to timing heuristics.
   const data = span.attributes?.data as Record<string, unknown> | undefined;
-  const rootIsLive = root.endTime >= Date.now() - 10_000;
-  const isLive =
-    rootIsLive && isWorkflowSpan && data
-      ? resourceType === 'hook'
-        ? !data.disposedAt
-        : !data.completedAt
-      : false;
+  const terminalTimestamp = getTerminalTimestamp(resourceType, node);
+  const hasTerminalEvent = terminalTimestamp != null;
+  const isCompletedByData =
+    resourceType === 'hook'
+      ? Boolean(data?.disposedAt)
+      : Boolean(data?.completedAt);
+  const isCompleted = isCompletedByData || hasTerminalEvent;
+  const isLive = traceIsLive && isWorkflowSpan && !isCompleted;
+
+  useEffect(() => {
+    if (!isLive) return;
+    setLiveNow(Date.now());
+    const interval = setInterval(() => {
+      setLiveNow(Date.now());
+    }, 250);
+    return () => clearInterval(interval);
+  }, [isLive]);
+
+  const canonicalStartTime = getHighResInMs(span.startTime);
+  const canonicalEndTime = getHighResInMs(span.endTime);
+  const canonicalDuration = getHighResInMs(span.duration);
+  const canonicalActiveStartTime = span.activeStartTime
+    ? getHighResInMs(span.activeStartTime)
+    : undefined;
+
+  const durationMs =
+    terminalTimestamp != null
+      ? Math.max(0, terminalTimestamp - canonicalStartTime)
+      : isLive
+        ? Math.max(0, (liveNow || Date.now()) - canonicalStartTime)
+        : canonicalDuration;
+  const duration = node.isInstrumentationHint
+    ? 'Get Started'
+    : formatDuration(durationMs);
+  const baseNode = {
+    ...node,
+    startTime: canonicalStartTime,
+    endTime: canonicalEndTime,
+    duration: canonicalDuration,
+    activeStartTime: canonicalActiveStartTime,
+  } as VisibleSpan;
+  const segmentNode = isLive
+    ? ({
+        ...baseNode,
+        duration: durationMs,
+        endTime: canonicalStartTime + durationMs,
+      } as VisibleSpan)
+    : baseNode;
+  const hasSegments =
+    isWorkflowSpan &&
+    computeSegments(resourceType, segmentNode).segments.length > 0;
+  const layout = getSpanLayout(
+    resourceType,
+    segmentNode,
+    root,
+    scale,
+    scrollSnapshotRef
+  );
 
   // For live spans the data-level `node.duration` can be stale (from the last
   // fetch) while the visual width is growing via rAF. Recompute from real
@@ -171,7 +263,7 @@ export const SpanComponent = memo(function SpanComponent({
   //  - React-rendered width matches the rAF-driven width, preventing a brief
   //    shrink→expand flash on re-render that breaks cursor hit-testing
   if (isLive) {
-    const elapsed = Date.now() - node.startTime;
+    const elapsed = durationMs;
     const liveActualWidth = elapsed * scale;
     const liveWidth = Math.max(liveActualWidth, 4);
     layout.actualWidth = liveActualWidth;
@@ -180,7 +272,7 @@ export const SpanComponent = memo(function SpanComponent({
     layout.isHuge = liveActualWidth >= 500;
     if (!layout.isSmall) {
       layout.height = ROW_HEIGHT;
-      layout.top = MARKER_HEIGHT + (ROW_HEIGHT + ROW_PADDING) * node.row;
+      layout.top = MARKER_HEIGHT + (ROW_HEIGHT + ROW_PADDING) * segmentNode.row;
     }
   }
 
@@ -192,7 +284,7 @@ export const SpanComponent = memo(function SpanComponent({
     const tick = (): void => {
       const $el = ref.current;
       if (!$el) return;
-      const elapsed = Date.now() - node.startTime;
+      const elapsed = Date.now() - canonicalStartTime;
       const w = Math.max(elapsed * scale, 2);
       $el.style.width = `${w}px`;
       $el.style.setProperty('--span-width', `${w}px`);
@@ -200,7 +292,9 @@ export const SpanComponent = memo(function SpanComponent({
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [isLive, node.startTime, scale]);
+  }, [isLive, canonicalStartTime, scale]);
+
+  const renderNode = segmentNode;
 
   return (
     <>
@@ -219,22 +313,27 @@ export const SpanComponent = memo(function SpanComponent({
           hasSegments && styles.hasSegments
         )}
         data-span-id={span.spanId}
-        data-start-time={node.startTime - root.startTime}
+        data-start-time={segmentNode.startTime - root.startTime}
         data-right-side={layout.isNearRightSide}
         data-selected={node.isSelected ? '' : undefined}
         ref={ref}
-        style={getSpanStyle(layout, node, root, scale)}
+        style={getSpanStyle(layout, segmentNode, root, scale)}
         type="button"
       >
-        <SpanContent resourceType={resourceType} node={node} layout={layout} />
+        <SpanContent
+          durationMs={durationMs}
+          resourceType={resourceType}
+          node={renderNode}
+          layout={layout}
+        />
       </button>
-      {node.events && !layout.isSmall
-        ? node.events.map((x) => (
+      {segmentNode.events && !layout.isSmall
+        ? segmentNode.events.map((x) => (
             <SpanEventComponent
               customSpanEventClassNameFunc={customSpanEventClassNameFunc}
               event={x}
               key={x.key}
-              node={node}
+              node={segmentNode}
               root={root}
               scale={scale}
               asBoundary={isWorkflowSpan}
