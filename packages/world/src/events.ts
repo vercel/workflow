@@ -315,6 +315,8 @@ export interface EventResult {
   step?: import('./steps.js').Step;
   /** The hook entity (for hook_created events) */
   hook?: import('./hooks.js').Hook;
+  /** The wait entity (for wait_created/wait_completed events) */
+  wait?: import('./waits.js').Wait;
 }
 
 export interface ListEventsParams {

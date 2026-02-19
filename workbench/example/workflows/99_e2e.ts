@@ -194,10 +194,10 @@ export async function webhookWorkflow(
 
 //////////////////////////////////////////////////////////
 
-export async function sleepingWorkflow() {
+export async function sleepingWorkflow(durationMs = 10_000) {
   'use workflow';
   const startTime = Date.now();
-  await sleep('10s');
+  await sleep(durationMs);
   const endTime = Date.now();
   return { startTime, endTime };
 }

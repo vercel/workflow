@@ -8,7 +8,7 @@
  * and expand behavior.
  */
 
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   ObjectInspector,
   ObjectLabel,
@@ -208,20 +208,28 @@ export function DataInspector({
   name,
   onStreamClick,
 }: DataInspectorProps) {
+  const stableData = useStableInspectorData(data);
+  const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
   const isDark = useDarkMode();
   const extendedTheme = isDark
     ? inspectorThemeExtendedDark
     : inspectorThemeExtendedLight;
 
+  useEffect(() => {
+    // react-inspector reapplies expandLevel on every data change, which can
+    // reopen paths the user manually collapsed. Apply it only on mount.
+    setInitialExpandLevel(0);
+  }, []);
+
   const content = (
     <ExtendedThemeContext.Provider value={extendedTheme}>
       <ObjectInspector
-        data={data}
+        data={stableData}
         name={name}
         // @ts-expect-error react-inspector accepts theme objects at runtime despite
         // types declaring string only — see https://github.com/storybookjs/react-inspector/blob/main/README.md#theme
         theme={isDark ? inspectorThemeDark : inspectorThemeLight}
-        expandLevel={expandLevel}
+        expandLevel={initialExpandLevel}
         nodeRenderer={NodeRenderer}
       />
     </ExtendedThemeContext.Provider>
@@ -237,4 +245,74 @@ export function DataInspector({
   }
 
   return content;
+}
+
+function useStableInspectorData<T>(next: T): T {
+  const previousRef = useRef<T>(next);
+  if (!isDeepEqual(previousRef.current, next)) {
+    previousRef.current = next;
+  }
+  return previousRef.current;
+}
+
+function isObjectLike(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
+  if (Object.is(a, b)) return true;
+
+  if (a instanceof Date && b instanceof Date) {
+    return a.getTime() === b.getTime();
+  }
+
+  if (a instanceof RegExp && b instanceof RegExp) {
+    return a.source === b.source && a.flags === b.flags;
+  }
+
+  if (a instanceof Map && b instanceof Map) {
+    if (a.size !== b.size) return false;
+    for (const [key, value] of a.entries()) {
+      if (!b.has(key) || !isDeepEqual(value, b.get(key), seen)) return false;
+    }
+    return true;
+  }
+
+  if (a instanceof Set && b instanceof Set) {
+    if (a.size !== b.size) return false;
+    for (const value of a.values()) {
+      if (!b.has(value)) return false;
+    }
+    return true;
+  }
+
+  if (!isObjectLike(a) || !isObjectLike(b)) {
+    return false;
+  }
+
+  if (seen.get(a) === b) return true;
+  seen.set(a, b);
+
+  const aIsArray = Array.isArray(a);
+  const bIsArray = Array.isArray(b);
+  if (aIsArray !== bIsArray) return false;
+
+  if (aIsArray && bIsArray) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (!isDeepEqual(a[i], b[i], seen)) return false;
+    }
+    return true;
+  }
+
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+
+  for (const key of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    if (!isDeepEqual(a[key], b[key], seen)) return false;
+  }
+
+  return true;
 }

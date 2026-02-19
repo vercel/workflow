@@ -7,6 +7,7 @@ import type {
   SerializedData,
   Step,
   Storage,
+  Wait,
   WorkflowRun,
 } from '@workflow/world';
 import {
@@ -16,6 +17,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
@@ -30,6 +32,25 @@ import { filterEventData } from './filters.js';
 import { getObjectCreatedAt, monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+
+/**
+ * Helper function to delete all waits associated with a workflow run.
+ * Called when a run reaches a terminal state.
+ */
+async function deleteAllWaitsForRun(
+  basedir: string,
+  runId: string
+): Promise<void> {
+  const waitsDir = path.join(basedir, 'waits');
+  const files = await listJSONFiles(waitsDir);
+
+  for (const file of files) {
+    if (file.startsWith(`${runId}-`)) {
+      const waitPath = path.join(waitsDir, `${file}.json`);
+      await deleteJSON(waitPath);
+    }
+  }
+}
 
 /**
  * Creates the events storage implementation using the filesystem.
@@ -156,7 +177,8 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         // Creating new entities on terminal runs is not allowed
         if (
           data.eventType === 'step_created' ||
-          data.eventType === 'hook_created'
+          data.eventType === 'hook_created' ||
+          data.eventType === 'wait_created'
         ) {
           throw new WorkflowAPIError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`,
@@ -240,6 +262,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       let run: WorkflowRun | undefined;
       let step: Step | undefined;
       let hook: Hook | undefined;
+      let wait: Wait | undefined;
 
       // Create/update entity based on event type (event-sourced architecture)
       // Run lifecycle events
@@ -312,7 +335,10 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             updatedAt: now,
           };
           await writeJSON(runPath, run, { overwrite: true });
-          await deleteAllHooksForRun(basedir, effectiveRunId);
+          await Promise.all([
+            deleteAllHooksForRun(basedir, effectiveRunId),
+            deleteAllWaitsForRun(basedir, effectiveRunId),
+          ]);
         }
       } else if (data.eventType === 'run_failed' && 'eventData' in data) {
         const failedData = data.eventData as {
@@ -346,7 +372,10 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             updatedAt: now,
           };
           await writeJSON(runPath, run, { overwrite: true });
-          await deleteAllHooksForRun(basedir, effectiveRunId);
+          await Promise.all([
+            deleteAllHooksForRun(basedir, effectiveRunId),
+            deleteAllWaitsForRun(basedir, effectiveRunId),
+          ]);
         }
       } else if (data.eventType === 'run_cancelled') {
         // Reuse currentRun from validation (already read above)
@@ -369,7 +398,10 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             updatedAt: now,
           };
           await writeJSON(runPath, run, { overwrite: true });
-          await deleteAllHooksForRun(basedir, effectiveRunId);
+          await Promise.all([
+            deleteAllHooksForRun(basedir, effectiveRunId),
+            deleteAllWaitsForRun(basedir, effectiveRunId),
+          ]);
         }
       } else if (
         // Step lifecycle events
@@ -611,6 +643,62 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           `${data.correlationId}.json`
         );
         await deleteJSON(hookPath);
+      } else if (data.eventType === 'wait_created' && 'eventData' in data) {
+        // wait_created: Creates wait entity with status 'waiting'
+        const waitData = data.eventData as {
+          resumeAt?: Date;
+        };
+        const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+        const waitPath = path.join(
+          basedir,
+          'waits',
+          `${waitCompositeKey}.json`
+        );
+        const existingWait = await readJSON(waitPath, WaitSchema);
+        if (existingWait) {
+          throw new WorkflowAPIError(
+            `Wait "${data.correlationId}" already exists`,
+            { status: 409 }
+          );
+        }
+        wait = {
+          waitId: waitCompositeKey,
+          runId: effectiveRunId,
+          status: 'waiting',
+          resumeAt: waitData.resumeAt,
+          completedAt: undefined,
+          createdAt: now,
+          updatedAt: now,
+          specVersion: effectiveSpecVersion,
+        };
+        await writeJSON(waitPath, wait);
+      } else if (data.eventType === 'wait_completed') {
+        // wait_completed: Transitions wait to 'completed', rejects duplicates
+        const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+        const waitPath = path.join(
+          basedir,
+          'waits',
+          `${waitCompositeKey}.json`
+        );
+        const existingWait = await readJSON(waitPath, WaitSchema);
+        if (!existingWait) {
+          throw new WorkflowAPIError(`Wait "${data.correlationId}" not found`, {
+            status: 404,
+          });
+        }
+        if (existingWait.status === 'completed') {
+          throw new WorkflowAPIError(
+            `Wait "${data.correlationId}" already completed`,
+            { status: 409 }
+          );
+        }
+        wait = {
+          ...existingWait,
+          status: 'completed',
+          completedAt: now,
+          updatedAt: now,
+        };
+        await writeJSON(waitPath, wait, { overwrite: true });
       }
       // Note: hook_received events are stored in the event log but don't
       // modify the Hook entity (which doesn't have a payload field)
@@ -629,6 +717,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         run,
         step,
         hook,
+        wait,
       };
     },
 

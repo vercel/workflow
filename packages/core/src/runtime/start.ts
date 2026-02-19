@@ -117,12 +117,19 @@ export async function start<TArgs extends unknown[], TResult>(
       const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
       const v1Compat = isLegacySpecVersion(specVersion);
 
+      // Resolve encryption key for the new run. The runId has already been
+      // generated above (client-generated ULID) and will be used for both
+      // key derivation and the run_created event. The World implementation
+      // uses the runId for per-run HKDF key derivation.
+      const encryptionKey = await world.getEncryptionKeyForRun?.(runId);
+
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
-      const workflowArguments = dehydrateWorkflowArguments(
+      const workflowArguments = await dehydrateWorkflowArguments(
         args,
-        ops,
         runId,
+        encryptionKey,
+        ops,
         globalThis,
         v1Compat
       );

@@ -117,11 +117,14 @@ function getSegmentTags(
 function TextContent({
   node,
   layout,
+  durationMs,
   segmentTags,
 }: SpanContentProps & {
   segmentTags?: { label: string; duration: string }[];
 }): ReactNode {
-  const duration = getDuration(node);
+  const duration = node.isInstrumentationHint
+    ? getDuration(node)
+    : formatDuration(durationMs ?? node.duration);
 
   if (layout.isSmall && !layout.isHovered) {
     return null;
@@ -160,6 +163,7 @@ function TextContent({
 export interface SpanContentProps {
   node: SpanNode;
   layout: SpanLayout;
+  durationMs?: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -178,14 +182,21 @@ function WorkflowContent({
   resourceType,
   node,
   layout,
+  durationMs,
 }: SpanContentProps & { resourceType: ResourceType }): ReactNode {
+  const spanDuration = durationMs ?? node.duration;
   const { segments } = computeSegments(resourceType, node);
-  const segmentTags = getSegmentTags(segments, node.duration);
+  const segmentTags = getSegmentTags(segments, spanDuration);
 
   return (
     <>
-      <SegmentLayer segments={segments} spanDuration={node.duration} />
-      <TextContent node={node} layout={layout} segmentTags={segmentTags} />
+      <SegmentLayer segments={segments} spanDuration={spanDuration} />
+      <TextContent
+        durationMs={spanDuration}
+        node={node}
+        layout={layout}
+        segmentTags={segmentTags}
+      />
     </>
   );
 }

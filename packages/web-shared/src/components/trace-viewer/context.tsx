@@ -255,12 +255,7 @@ export const initialState: TraceViewerState = {
 };
 
 const getMinScale = (state: TraceViewerState): number => {
-  return (
-    (state.width -
-      state.scrollbarWidth -
-      Number(Boolean(state.selected && state.withPanel)) * state.panelWidth) /
-    state.root.duration
-  );
+  return (state.timelineWidth - state.scrollbarWidth) / state.root.duration;
 };
 
 export const TraceViewerContext = createContext<TraceViewerContextProps>({
@@ -324,11 +319,20 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
         240,
         Math.min(action.width, state.width - 240)
       );
-      return {
-        ...state,
-        timelineWidth: state.width - panelWidth,
-        panelWidth,
-      };
+      const timelineWidth =
+        state.withPanel && state.selected && !state.isMobile
+          ? state.width - panelWidth
+          : state.width;
+      return reducer(
+        {
+          ...state,
+          timelineWidth,
+          panelWidth,
+        },
+        {
+          type: 'detectBaseScale',
+        }
+      );
     }
     case 'setFilter':
       return {
@@ -343,7 +347,7 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
           timelineWidth: state.width,
         },
         {
-          type: 'minScale',
+          type: 'detectBaseScale',
         }
       );
     case 'select': {
@@ -352,13 +356,18 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
         return state;
       }
 
-      return {
-        ...state,
-        selected: node,
-        timelineWidth:
-          state.width -
-          (state.withPanel && !state.isMobile ? state.panelWidth : 0),
-      };
+      return reducer(
+        {
+          ...state,
+          selected: node,
+          timelineWidth:
+            state.width -
+            (state.withPanel && !state.isMobile ? state.panelWidth : 0),
+        },
+        {
+          type: 'detectBaseScale',
+        }
+      );
     }
     case 'escape': {
       if (state.selected) {
@@ -387,13 +396,18 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
     }
     case 'detectBaseScale': {
       const baseScale =
-        (state.width - state.scrollbarWidth) / state.root.duration;
+        (state.timelineWidth - state.scrollbarWidth) / state.root.duration;
 
-      return {
-        ...state,
-        baseScale,
-        scale: baseScale * state.scaleRatio,
-      };
+      return reducer(
+        {
+          ...state,
+          baseScale,
+          scale: baseScale * state.scaleRatio,
+        },
+        {
+          type: 'minScale',
+        }
+      );
     }
     case 'setScale':
       return {
@@ -552,10 +566,20 @@ const reducer: Reducer<TraceViewerState, TraceViewerAction> = (
     }
     case 'setWithPanel': {
       if (state.withPanel === action.withPanel) return state;
-      return {
-        ...state,
-        withPanel: action.withPanel,
-      };
+      const timelineWidth =
+        action.withPanel && state.selected && !state.isMobile
+          ? state.width - state.panelWidth
+          : state.width;
+      return reducer(
+        {
+          ...state,
+          withPanel: action.withPanel,
+          timelineWidth,
+        },
+        {
+          type: 'detectBaseScale',
+        }
+      );
     }
     case 'forceRender':
       state.memoCacheRef.current.set('', {});

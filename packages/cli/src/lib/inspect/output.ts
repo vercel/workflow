@@ -16,6 +16,18 @@ import type {
   World,
 } from '@workflow/world';
 import chalk from 'chalk';
+
+/** A function that resolves an encryption key for a given runId. */
+export type EncryptionKeyResolver =
+  | ((runId: string) => Promise<Uint8Array | undefined>)
+  | null;
+
+/** Create an EncryptionKeyResolver from a World instance */
+function createResolver(world: World): EncryptionKeyResolver {
+  if (!world.getEncryptionKeyForRun) return null;
+  return (runId: string) => world.getEncryptionKeyForRun!(runId);
+}
+
 import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
@@ -507,6 +519,7 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
 };
 
 export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
+  const resolveKey = createResolver(world);
   if (opts.stepId || opts.runId) {
     logger.warn(
       'Filtering by step-id or run-id is not supported in list calls, ignoring filter.'
@@ -534,7 +547,9 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         },
         resolveData,
       });
-      const runsWithHydratedIO = runs.data.map(hydrateResourceIO);
+      const runsWithHydratedIO = await Promise.all(
+        runs.data.map((r) => hydrateResourceIO(r, resolveKey))
+      );
       showJson({ ...runs, data: runsWithHydratedIO });
       return;
     } catch (error) {
@@ -572,7 +587,9 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (runs) => {
-      const runsWithHydratedIO = runs.map(hydrateResourceIO);
+      const runsWithHydratedIO = await Promise.all(
+        runs.map((r) => hydrateResourceIO(r, resolveKey))
+      );
       logger.log(showTable(runsWithHydratedIO, props, opts));
     },
   });
@@ -582,13 +599,16 @@ export const getRecentRun = async (
   world: World,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world);
   logger.warn(`No runId provided, fetching data for latest run instead.`);
   try {
     const runs = await world.runs.list({
       pagination: { limit: 1, sortOrder: opts.sort || 'desc' },
       resolveData: 'none', // Don't need data for just getting the ID
     });
-    runs.data = runs.data.map(hydrateResourceIO);
+    runs.data = await Promise.all(
+      runs.data.map((r) => hydrateResourceIO(r, resolveKey))
+    );
     return runs.data[0];
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
@@ -603,12 +623,13 @@ export const showRun = async (
   runId: string,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world);
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
-    const runWithHydratedIO = hydrateResourceIO(run);
+    const runWithHydratedIO = await hydrateResourceIO(run, resolveKey);
     if (opts.json) {
       showJson(runWithHydratedIO);
       return;
@@ -634,6 +655,7 @@ export const listSteps = async (
     runId: undefined,
   }
 ) => {
+  const resolveKey = createResolver(world);
   if (opts.stepId) {
     logger.warn(
       'Filtering by step-id is not supported in list calls, ignoring filter.'
@@ -711,7 +733,9 @@ export const listSteps = async (
       }
     },
     displayPage: async (steps) => {
-      const stepsWithHydratedIO = steps.map(hydrateResourceIO);
+      const stepsWithHydratedIO = await Promise.all(
+        steps.map((s) => hydrateResourceIO(s, resolveKey))
+      );
       logger.log(showTable(stepsWithHydratedIO, props, opts));
       showInspectInfoBox('step');
     },
@@ -723,6 +747,7 @@ export const showStep = async (
   stepId: string,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world);
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
@@ -735,7 +760,7 @@ export const showStep = async (
     const step = await world.steps.get(opts.runId, stepId, {
       resolveData: 'all',
     });
-    const stepWithHydratedIO = hydrateResourceIO(step);
+    const stepWithHydratedIO = await hydrateResourceIO(step, resolveKey);
     if (opts.json) {
       showJson(stepWithHydratedIO);
       return;
@@ -919,6 +944,7 @@ export const listEvents = async (
 };
 
 export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
+  const resolveKey = createResolver(world);
   if (opts.workflowName) {
     logger.warn(
       'Filtering by workflow-name is not supported for hooks, ignoring filter.'
@@ -950,7 +976,9 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
         },
         resolveData,
       });
-      const hydratedHooks = hooks.data.map(hydrateResourceIO);
+      const hydratedHooks = await Promise.all(
+        hooks.data.map((h) => hydrateResourceIO(h, resolveKey))
+      );
       showJson({ ...hooks, data: hydratedHooks });
       return;
     } catch (error) {
@@ -994,7 +1022,9 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (hooks) => {
-      const hydratedHooks = hooks.map(hydrateResourceIO);
+      const hydratedHooks = await Promise.all(
+        hooks.map((h) => hydrateResourceIO(h, resolveKey))
+      );
       logger.log(showTable(hydratedHooks, HOOK_LISTED_PROPS, opts));
       showInspectInfoBox('hook');
     },
@@ -1006,6 +1036,7 @@ export const showHook = async (
   hookId: string,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world);
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
@@ -1013,7 +1044,7 @@ export const showHook = async (
     const hook = await world.hooks.get(hookId, {
       resolveData: 'all',
     });
-    const hydratedHook = hydrateResourceIO(hook);
+    const hydratedHook = await hydrateResourceIO(hook, resolveKey);
     if (opts.json) {
       showJson(hydratedHook);
       return;

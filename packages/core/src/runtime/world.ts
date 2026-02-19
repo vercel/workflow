@@ -35,7 +35,8 @@ export const createWorld = (): World => {
       token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
       projectConfig: {
         environment: process.env.WORKFLOW_VERCEL_ENV,
-        projectId: process.env.WORKFLOW_VERCEL_PROJECT,
+        projectId: process.env.WORKFLOW_VERCEL_PROJECT, // real ID (prj_xxx)
+        projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME, // slug (my-app)
         teamId: process.env.WORKFLOW_VERCEL_TEAM,
       },
     });

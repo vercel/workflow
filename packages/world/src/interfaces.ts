@@ -177,4 +177,38 @@ export interface World extends Queue, Storage, Streamer {
    * For example, in the case of a queue backed World, this would start the queue processing.
    */
   start?(): Promise<void>;
+
+  /**
+   * Release any resources held by the World implementation (connection pools, listeners, etc.).
+   * After calling `close()`, the World instance should not be used again.
+   *
+   * This is important for CLI commands and short-lived processes that need to exit cleanly
+   * without relying on `process.exit()`.
+   */
+  close?(): Promise<void>;
+
+  /**
+   * Retrieve the AES-256 encryption key for a specific workflow run.
+   *
+   * The returned key is a ready-to-use 32-byte AES-256 key. The World
+   * implementation handles all key retrieval and derivation internally
+   * (e.g., HKDF from a deployment key). The core encryption module uses
+   * this key directly for AES-GCM encrypt/decrypt operations.
+   *
+   * Accepts either a full `WorkflowRun` object or a plain `runId` string:
+   * - `WorkflowRun` — Used by the o11y/CLI path when the run entity is
+   *   already available. Provides `deploymentId` for cross-deployment key
+   *   resolution without a redundant lookup.
+   * - `string` (runId) — Used by `start()` and `step-handler` in the
+   *   runtime path where the run entity may not exist yet or isn't needed.
+   *   The World assumes the current deployment for key resolution.
+   *
+   * When not implemented, encryption is disabled — data is stored unencrypted.
+   *
+   * @param run - A WorkflowRun entity or a runId string
+   * @returns The per-run AES-256 key, or undefined if encryption is not configured
+   */
+  getEncryptionKeyForRun?(
+    run: WorkflowRun | string
+  ): Promise<Uint8Array | undefined>;
 }

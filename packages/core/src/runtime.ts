@@ -220,12 +220,26 @@ export function workflowEntrypoint(
 
                     // Create all wait_completed events
                     for (const waitEvent of waitsToComplete) {
-                      const result = await world.events.create(
-                        runId,
-                        waitEvent
-                      );
-                      // Add the event to the events array so the workflow can see it
-                      events.push(result.event!);
+                      try {
+                        const result = await world.events.create(
+                          runId,
+                          waitEvent
+                        );
+                        // Add the event to the events array so the workflow can see it
+                        events.push(result.event!);
+                      } catch (err) {
+                        if (WorkflowAPIError.is(err) && err.status === 409) {
+                          runtimeLogger.info(
+                            'Wait already completed, skipping',
+                            {
+                              workflowRunId: runId,
+                              correlationId: waitEvent.correlationId,
+                            }
+                          );
+                          continue;
+                        }
+                        throw err;
+                      }
                     }
 
                     const result = await trace(
@@ -235,22 +249,41 @@ export function workflowEntrypoint(
                         replaySpan?.setAttributes({
                           ...Attribute.WorkflowEventsCount(events.length),
                         });
+                        // Resolve the encryption key for this run's deployment
+                        const encryptionKey =
+                          await world.getEncryptionKeyForRun?.(runId);
                         return await runWorkflow(
                           workflowCode,
                           workflowRun,
-                          events
+                          events,
+                          encryptionKey
                         );
                       }
                     );
 
                     // Complete the workflow run via event (event-sourced architecture)
-                    await world.events.create(runId, {
-                      eventType: 'run_completed',
-                      specVersion: SPEC_VERSION_CURRENT,
-                      eventData: {
-                        output: result,
-                      },
-                    });
+                    try {
+                      await world.events.create(runId, {
+                        eventType: 'run_completed',
+                        specVersion: SPEC_VERSION_CURRENT,
+                        eventData: {
+                          output: result,
+                        },
+                      });
+                    } catch (err) {
+                      if (WorkflowAPIError.is(err) && err.status === 409) {
+                        runtimeLogger.warn(
+                          'Tried completing workflow run, but run has already finished.',
+                          {
+                            workflowRunId: runId,
+                            message: err.message,
+                          }
+                        );
+                        return;
+                      } else {
+                        throw err;
+                      }
+                    }
 
                     span?.setAttributes({
                       ...Attribute.WorkflowRunStatus('completed'),
@@ -354,18 +387,39 @@ export function workflowEntrypoint(
                         errorName,
                         errorStack,
                       });
+
                       // Fail the workflow run via event (event-sourced architecture)
-                      await world.events.create(runId, {
-                        eventType: 'run_failed',
-                        specVersion: SPEC_VERSION_CURRENT,
-                        eventData: {
-                          error: {
-                            message: errorMessage,
-                            stack: errorStack,
+                      try {
+                        await world.events.create(runId, {
+                          eventType: 'run_failed',
+                          specVersion: SPEC_VERSION_CURRENT,
+                          eventData: {
+                            error: {
+                              message: errorMessage,
+                              stack: errorStack,
+                            },
+                            // TODO: include error codes when we define them
                           },
-                          // TODO: include error codes when we define them
-                        },
-                      });
+                        });
+                      } catch (err) {
+                        if (WorkflowAPIError.is(err) && err.status === 409) {
+                          runtimeLogger.warn(
+                            'Tried failing workflow run, but run has already finished.',
+                            {
+                              workflowRunId: runId,
+                              message: err.message,
+                            }
+                          );
+                          span?.setAttributes({
+                            ...Attribute.WorkflowErrorName(errorName),
+                            ...Attribute.WorkflowErrorMessage(errorMessage),
+                            ...Attribute.ErrorType(errorName),
+                          });
+                          return;
+                        } else {
+                          throw err;
+                        }
+                      }
 
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('failed'),
