@@ -120,5 +120,5 @@ export async function fetchRunKey(
   }
 
   const data = (await response.json()) as { key: string };
-  return Uint8Array.from(Buffer.from(data.key, 'base64'));
+  return Buffer.from(data.key, 'base64');
 }
