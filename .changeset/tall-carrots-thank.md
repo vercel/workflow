@@ -1,6 +1,6 @@
 ---
 "@workflow/web": patch
-"@workflow/world-postgres": patch
+"@workflow/world-postgres": minor
 "@workflow/world-testing": patch
 "docs": patch
 ---
