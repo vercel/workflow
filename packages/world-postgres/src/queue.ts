@@ -43,10 +43,7 @@ export type PostgresQueue = Queue & {
   close(): Promise<void>;
 };
 
-export function createQueue(
-  connectionString: string,
-  config: PostgresWorldConfig
-): PostgresQueue {
+export function createQueue(config: PostgresWorldConfig): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
 
@@ -73,7 +70,7 @@ export function createQueue(
     if (!startPromise) {
       startPromise = (async () => {
         workerUtils = await makeWorkerUtils({
-          connectionString,
+          connectionString: config.connectionString,
           logger: stderrLogger,
         });
         await workerUtils.migrate();
@@ -136,7 +133,7 @@ export function createQueue(
     }
 
     runner = await run({
-      connectionString,
+      connectionString: config.connectionString,
       concurrency: config.queueConcurrency || 10,
       logger: stderrLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
