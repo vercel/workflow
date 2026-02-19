@@ -303,29 +303,33 @@ import { getWritable } from "workflow";
 
 export async function myWorkflow() {
   "use workflow";
-  const writable = getWritable<UIMessageChunk>();
-  // Pass to DurableAgent (which uses it inside steps internally)
-  await agent.stream({ messages, writable });
-  // Or pass to your own step
-  await writeData(writable);
+  const writable = getWritable();
+  await writeData(writable, "hello world");
 }
 
-async function writeData(writable: WritableStream) {
+async function writeData(writable: WritableStream, chunk: string) {
   "use step";
   const writer = writable.getWriter();
-  await writer.write(data);
-  writer.releaseLock();
+  try {
+    await writer.write(chunk);
+  } finally {
+    writer.releaseLock();
+  }
 }
 ```
 
 **Call `getWritable()` directly inside a step (no need to pass it):**
 ```typescript
-async function streamData() {
+import { getWritable } from "workflow";
+
+async function streamData(chunk: string) {
   "use step";
-  const writable = getWritable();  // gets the same workflow-scoped stream
-  const writer = writable.getWriter();
-  await writer.write(data);
-  writer.releaseLock();
+  const writer = getWritable().getWriter();
+  try {
+    await writer.write(chunk);
+  } finally {
+    writer.releaseLock();
+  }
 }
 ```
 
