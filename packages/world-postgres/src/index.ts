@@ -34,7 +34,7 @@ export function createWorld(
 ): World & { start(): Promise<void> } {
   const postgres = createPostgres(config.connectionString);
   const drizzle = createClient(postgres);
-  const queue = createQueue(config.connectionString, config);
+  const queue = createQueue(postgres, config);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(postgres, drizzle);
 

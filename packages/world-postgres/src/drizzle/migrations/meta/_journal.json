@@ -57,6 +57,13 @@
       "when": 1769500000000,
       "tag": "0007_add_waits_table",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1770000000000,
+      "tag": "0008_migrate_pgboss_to_graphile",
+      "breakpoints": true
     }
   ]
 }
