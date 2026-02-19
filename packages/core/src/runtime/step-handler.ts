@@ -293,15 +293,18 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // operations (e.g., stream loading) are added to `ops` and executed later
             // via Promise.all(ops) - their timing is not included in this measurement.
             const ops: Promise<void>[] = [];
+            const encryptionKey =
+              await world.getEncryptionKeyForRun?.(workflowRunId);
             const hydratedInput = await trace(
               'step.hydrate',
               {},
               async (hydrateSpan) => {
                 const startTime = Date.now();
-                const result = hydrateStepArguments(
+                const result = await hydrateStepArguments(
                   step.input,
-                  ops,
-                  workflowRunId
+                  workflowRunId,
+                  encryptionKey,
+                  ops
                 );
                 const durationMs = Date.now() - startTime;
                 hydrateSpan?.setAttributes({
@@ -354,10 +357,11 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               {},
               async (dehydrateSpan) => {
                 const startTime = Date.now();
-                const dehydrated = dehydrateStepReturnValue(
+                const dehydrated = await dehydrateStepReturnValue(
                   result,
-                  ops,
-                  workflowRunId
+                  workflowRunId,
+                  encryptionKey,
+                  ops
                 );
                 const durationMs = Date.now() - startTime;
                 dehydrateSpan?.setAttributes({

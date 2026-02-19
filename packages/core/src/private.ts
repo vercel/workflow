@@ -88,6 +88,8 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
 export { __private_getClosureVars } from './step/get-closure-vars.js';
 
 export interface WorkflowOrchestratorContext {
+  runId: string;
+  encryptionKey: Uint8Array | undefined;
   globalThis: typeof globalThis;
   eventsConsumer: EventsConsumer;
   /**
