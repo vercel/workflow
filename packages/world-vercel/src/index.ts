@@ -37,15 +37,19 @@ export function createVercelWorld(config?: APIConfig): World {
     ...createStreamer(config),
 
     async getEncryptionKeyForRun(
-      run: WorkflowRun | string
+      run: WorkflowRun | string,
+      context?: Record<string, unknown>
     ): Promise<Uint8Array | undefined> {
       if (!projectId) return undefined;
 
       const runId = typeof run === 'string' ? run : run.runId;
       const deploymentId =
-        typeof run === 'string' ? undefined : run.deploymentId;
+        typeof run === 'string'
+          ? (context?.deploymentId as string | undefined)
+          : run.deploymentId;
 
-      // Same deployment (or run is just a string, i.e., from start())
+      // Same deployment, or no deploymentId provided (e.g., start() on
+      // current deployment, or step-handler during same-deployment execution)
       // → use local deployment key + local HKDF derivation
       if (!deploymentId || deploymentId === currentDeploymentId) {
         const localKey = getLocalDeploymentKey();
@@ -58,7 +62,6 @@ export function createVercelWorld(config?: APIConfig): World {
       // raw deployment key never leaves the API boundary.
       // Covers cross-deployment resumeHook() (OIDC auth) and o11y
       // tooling reading data from other deployments (VERCEL_TOKEN).
-      // No caching needed here — callers (CLI/web) cache at a higher level.
       return fetchRunKey(deploymentId, projectId, runId, {
         token: config?.token,
       });
