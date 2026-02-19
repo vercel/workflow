@@ -10,6 +10,7 @@
  * for HKDF and the Vercel API for key retrieval).
  */
 
+import * as z from 'zod';
 import { webcrypto } from 'node:crypto';
 import { getVercelOidcToken } from '@vercel/oidc';
 
@@ -119,6 +120,10 @@ export async function fetchRunKey(
     );
   }
 
-  const data = (await response.json()) as { key: string };
-  return Buffer.from(data.key, 'base64');
+  const data = await response.json();
+  const result = z.object({ key: z.string() }).safeParse(data);
+  if (!result.success) {
+    throw new Error('Invalid response from Vercel API, missing "key" field');
+  }
+  return Buffer.from(result.data.key, 'base64');
 }
