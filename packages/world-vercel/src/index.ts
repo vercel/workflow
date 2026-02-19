@@ -27,7 +27,8 @@ export function createVercelWorld(config?: APIConfig): World {
     ...createStreamer(config),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
-      config?.token
+      config?.token,
+      config?.projectConfig?.teamId
     ),
   };
 }

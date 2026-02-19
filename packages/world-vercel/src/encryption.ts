@@ -94,6 +94,8 @@ export async function fetchRunKey(
   options?: {
     /** Auth token (from config). Falls back to OIDC or VERCEL_TOKEN. */
     token?: string;
+    /** Team ID for team-scoped API requests. */
+    teamId?: string;
   }
 ): Promise<Uint8Array | undefined> {
   // Authenticate via provided token (CLI/config), OIDC token (runtime),
@@ -107,6 +109,9 @@ export async function fetchRunKey(
   }
 
   const params = new URLSearchParams({ projectId, runId });
+  if (options?.teamId) {
+    params.set('teamId', options.teamId);
+  }
   const response = await fetch(
     `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
     {
@@ -144,11 +149,13 @@ export async function fetchRunKey(
  *
  * @param projectId - Vercel project ID for HKDF context isolation
  * @param token - Optional auth token from config
+ * @param teamId - Optional team ID for team-scoped API requests
  * @returns The `getEncryptionKeyForRun` function, or `undefined` if no projectId
  */
 export function createGetEncryptionKeyForRun(
   projectId: string | undefined,
-  token?: string
+  token?: string,
+  teamId?: string
 ): World['getEncryptionKeyForRun'] {
   if (!projectId) return undefined;
 
@@ -188,6 +195,6 @@ export function createGetEncryptionKeyForRun(
     // raw deployment key never leaves the API boundary.
     // Covers cross-deployment resumeHook() (OIDC auth) and o11y
     // tooling reading data from other deployments (VERCEL_TOKEN).
-    return fetchRunKey(deploymentId, projectId, runId, { token });
+    return fetchRunKey(deploymentId, projectId, runId, { token, teamId });
   };
 }
