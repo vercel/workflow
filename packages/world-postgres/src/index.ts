@@ -1,3 +1,4 @@
+import type { Socket } from 'node:net';
 import type { Storage, World } from '@workflow/world';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
@@ -48,6 +49,17 @@ export function createWorld(
       await streamer.close();
       await queue.close();
       await postgres.end();
+      // Force-destroy any TCP sockets that survived postgres.end().
+      // postgres.js's terminate() calls socket.end() (graceful TCP FIN)
+      // rather than socket.destroy(), leaving sockets in FIN_WAIT state
+      // that prevent the process from exiting on slower networks (e.g.
+      // CI Docker containers).
+      // See: https://github.com/porsager/postgres/issues/1022
+      for (const h of (process as any)._getActiveHandles?.() ?? []) {
+        if (h?.constructor?.name === 'Socket' && !h._type && !h.destroyed) {
+          (h as Socket).destroy();
+        }
+      }
     },
   };
 }
