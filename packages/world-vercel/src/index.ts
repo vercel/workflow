@@ -25,9 +25,7 @@ export function createVercelWorld(config?: APIConfig): World {
     if (localDeploymentKey) return localDeploymentKey;
     const deploymentKeyBase64 = process.env.VERCEL_DEPLOYMENT_KEY;
     if (!deploymentKeyBase64) return undefined;
-    localDeploymentKey = Uint8Array.from(
-      Buffer.from(deploymentKeyBase64, 'base64')
-    );
+    localDeploymentKey = Buffer.from(deploymentKeyBase64, 'base64');
     return localDeploymentKey;
   }
 
