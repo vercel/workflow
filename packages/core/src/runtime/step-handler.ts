@@ -8,6 +8,7 @@ import {
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
+import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
@@ -309,8 +310,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // operations (e.g., stream loading) are added to `ops` and executed later
             // via Promise.all(ops) - their timing is not included in this measurement.
             const ops: Promise<void>[] = [];
-            const encryptionKey =
-              await world.getEncryptionKeyForRun?.(workflowRunId);
+            const rawKey = await world.getEncryptionKeyForRun?.(workflowRunId);
+            const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
             const hydratedInput = await trace(
               'step.hydrate',
               {},
