@@ -102,8 +102,9 @@ export const generateMetadata = async ({
       images: getPageImage(page).url,
     },
     alternates: {
+      canonical: page.url,
       types: {
-        'text/markdown': slug ? `/docs/${slug.join('/')}.md` : '/docs.md',
+        'text/markdown': `${page.url}.md`,
       },
     },
   };

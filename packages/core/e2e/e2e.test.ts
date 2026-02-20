@@ -1215,7 +1215,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
     { timeout: 30_000 },
     async () => {

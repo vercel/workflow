@@ -1060,7 +1060,7 @@ export const OPTIONS = handler;`;
       shouldAddHelpers?: boolean;
       shouldAddSourcemapSupport?: boolean;
       experimentalTriggers?: Array<{
-        type: string;
+        type: 'queue/v2beta';
         topic: string;
         consumer: string;
         maxDeliveries?: number;

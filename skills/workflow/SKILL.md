@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.0'
+  version: '1.1'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -65,6 +65,9 @@ import { withWorkflow } from "workflow/next";
 import { workflow } from "workflow/vite";
 import { workflow } from "workflow/astro";
 // Or use modules: ["workflow/nitro"] for Nitro/Nuxt
+
+// AI agent
+import { DurableAgent } from "@workflow/ai/agent";
 ```
 
 ## Prefer Step Functions to Avoid Sandbox Errors
@@ -123,6 +126,150 @@ export async function myWorkflow() {
 
 **Note:** `DurableAgent` from `@workflow/ai` handles the fetch assignment automatically.
 
+## DurableAgent — AI Agents in Workflows
+
+Use `DurableAgent` to build AI agents that maintain state and survive interruptions. It handles the workflow sandbox automatically (no manual `globalThis.fetch` needed).
+
+```typescript
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
+
+async function lookupData({ query }: { query: string }) {
+  "use step";
+  // Step functions have full Node.js access
+  return `Results for "${query}"`;
+}
+
+export async function myAgentWorkflow(userMessage: string) {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-sonnet-4-5",
+    system: "You are a helpful assistant.",
+    tools: {
+      lookupData: {
+        description: "Search for information",
+        inputSchema: z.object({ query: z.string() }),
+        execute: lookupData,
+      },
+    },
+  });
+
+  const result = await agent.stream({
+    messages: [{ role: "user", content: userMessage }],
+    writable: getWritable<UIMessageChunk>(),
+    maxSteps: 10,
+  });
+
+  return result.messages;
+}
+```
+
+**Key points:**
+- `getWritable<UIMessageChunk>()` streams output to the workflow run's default stream
+- Tool `execute` functions that need Node.js/npm access should use `"use step"`
+- Tool `execute` functions that use workflow primitives (`sleep()`, `createHook()`) should **NOT** use `"use step"` — they run at the workflow level
+- `maxSteps` limits the number of LLM calls (default is unlimited)
+- Multi-turn: pass `result.messages` plus new user messages to subsequent `agent.stream()` calls
+
+**For more details on `DurableAgent`, check the AI docs in `node_modules/@workflow/ai/docs/`.**
+
+## Starting Workflows & Child Workflows
+
+Use `start()` to launch workflows from API routes. **`start()` cannot be called directly in workflow context** — wrap it in a step function.
+
+```typescript
+import { start } from "workflow/api";
+
+// From an API route — works directly
+export async function POST() {
+  const run = await start(myWorkflow, [arg1, arg2]);
+  return Response.json({ runId: run.runId });
+}
+
+// No-args workflow
+const run = await start(noArgWorkflow);
+```
+
+**Starting child workflows from inside a workflow — must use a step:**
+
+```typescript
+import { start } from "workflow/api";
+
+// Wrap start() in a step function
+async function triggerChild(data: string) {
+  "use step";
+  const run = await start(childWorkflow, [data]);
+  return run.runId;
+}
+
+export async function parentWorkflow() {
+  "use workflow";
+  const childRunId = await triggerChild("some data");  // Fire-and-forget via step
+  await sleep("1h");
+}
+```
+
+`start()` returns immediately — it doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
+
+## Hooks — Pause & Resume with External Events
+
+Hooks let workflows wait for external data. Use `createHook()` inside a workflow and `resumeHook()` from API routes.
+
+### Single event
+
+```typescript
+import { createHook } from "workflow";
+
+export async function approvalWorkflow() {
+  "use workflow";
+
+  const hook = createHook<{ approved: boolean }>({
+    token: "approval-123",  // deterministic token for external systems
+  });
+
+  const result = await hook;  // Workflow suspends here
+  return result.approved;
+}
+```
+
+### Multiple events (iterable hooks)
+
+Hooks implement `AsyncIterable` — use `for await...of` to receive multiple events:
+
+```typescript
+import { createHook } from "workflow";
+
+export async function chatWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = createHook<{ text: string; done?: boolean }>({
+    token: `chat-${channelId}`,
+  });
+
+  for await (const event of hook) {
+    await processMessage(event.text);
+    if (event.done) break;
+  }
+}
+```
+
+Each `resumeHook(token, payload)` call delivers the next value to the loop.
+
+### Resuming from API routes
+
+```typescript
+import { resumeHook } from "workflow/api";
+
+export async function POST(req: Request) {
+  const { token, data } = await req.json();
+  await resumeHook(token, data);
+  return new Response("ok");
+}
+```
+
 ## Error Handling
 
 Use `FatalError` for permanent failures (no retry), `RetryableError` for transient failures:
@@ -148,18 +295,42 @@ All data passed to/from workflows and steps must be serializable.
 
 ## Streaming
 
-Use `getWritable()` in step functions to stream data:
+Use `getWritable()` to stream data from workflows. `getWritable()` can be called in **both** workflow and step contexts, but you **cannot interact with the stream** (call `getWriter()`, `write()`, `close()`) directly in a workflow function. The stream must be passed to step functions for actual I/O, or steps can call `getWritable()` themselves.
 
+**Get the stream in a workflow, pass it to a step:**
 ```typescript
-async function streamData() {
-  "use step";  // Required - streaming only works in steps
-  const writer = getWritable();
-  await writer.write(data);
-  writer.releaseLock();  // Always release the lock
+import { getWritable } from "workflow";
+
+export async function myWorkflow() {
+  "use workflow";
+  const writable = getWritable();
+  await writeData(writable, "hello world");
 }
 
-// Close when done
-await getWritable().close();
+async function writeData(writable: WritableStream, chunk: string) {
+  "use step";
+  const writer = writable.getWriter();
+  try {
+    await writer.write(chunk);
+  } finally {
+    writer.releaseLock();
+  }
+}
+```
+
+**Call `getWritable()` directly inside a step (no need to pass it):**
+```typescript
+import { getWritable } from "workflow";
+
+async function streamData(chunk: string) {
+  "use step";
+  const writer = getWritable().getWriter();
+  try {
+    await writer.write(chunk);
+  } finally {
+    writer.releaseLock();
+  }
+}
 ```
 
 ## Debugging
@@ -171,11 +342,28 @@ npx workflow health --port 3001  # Non-default port
 
 # Visual dashboard for runs
 npx workflow web
-npx workflow web --app-url http://localhost:3001
+npx workflow web <run_id>
 
-# CLI inspection (for agents)
+# CLI inspection (use --json for machine-readable output, --help for full usage)
 npx workflow inspect runs
 npx workflow inspect run <run_id>
+
+# For Vercel-deployed projects, specify backend and project
+npx workflow inspect runs --backend vercel --project <project-name> --team <team-slug>
+npx workflow inspect run <run_id> --backend vercel --project <project-name> --team <team-slug>
+
+# Open Vercel dashboard in browser for a specific run
+npx workflow inspect run <run_id> --web
+npx workflow web <run_id> --backend vercel --project <project-name> --team <team-slug>
+
+# Cancel a running workflow
+npx workflow cancel <run_id>
+npx workflow cancel <run_id> --backend vercel --project <project-name> --team <team-slug>
+# --env defaults to "production"; use --env preview for preview deployments
 ```
 
-**Tip:** Only import workflow APIs you actually use. Unused imports can cause 500 errors.
+**Debugging tips:**
+- Use `--json` (`-j`) on any command for machine-readable output
+- Use `--web` to open the Vercel Observability dashboard in your browser
+- Use `--help` on any command for full usage details
+- Only import workflow APIs you actually use. Unused imports can cause 500 errors.
