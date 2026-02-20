@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 4.1.0-beta.59
+
+### Patch Changes
+
+- [#1120](https://github.com/vercel/workflow/pull/1120) [`c75de97`](https://github.com/vercel/workflow/commit/c75de973fd41d2a1d0391d965b61210a9fb7c86c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Handle 409 errors gracefully for step_completed, step_failed, and step_retrying events
+
+- [#956](https://github.com/vercel/workflow/pull/956) [`b65bb07`](https://github.com/vercel/workflow/commit/b65bb072b540e9e5fb6bc3f72c4132667cc60277) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add browser-compatible AES-256-GCM encryption module with `importKey`, `encrypt`, and `decrypt` functions; update all runtime callers to resolve `CryptoKey` once per run via `importKey()`
+
+- Updated dependencies [[`b65bb07`](https://github.com/vercel/workflow/commit/b65bb072b540e9e5fb6bc3f72c4132667cc60277), [`b65bb07`](https://github.com/vercel/workflow/commit/b65bb072b540e9e5fb6bc3f72c4132667cc60277)]:
+  - @workflow/world-vercel@4.1.0-beta.34
+  - @workflow/world@4.1.0-beta.6
+  - @workflow/errors@4.1.0-beta.16
+  - @workflow/world-local@4.1.0-beta.34
+
 ## 4.1.0-beta.58
 
 ### Patch Changes

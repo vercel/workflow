@@ -1,5 +1,24 @@
 # workflow
 
+## 4.1.0-beta.59
+
+### Patch Changes
+
+- [#1077](https://github.com/vercel/workflow/pull/1077) [`14863bf`](https://github.com/vercel/workflow/commit/14863bf62210be3c43794bb5877751f6441958a5) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve error message when runtime APIs (start, getRun, etc.) are called in workflow context
+
+- Updated dependencies [[`c75de97`](https://github.com/vercel/workflow/commit/c75de973fd41d2a1d0391d965b61210a9fb7c86c), [`b65bb07`](https://github.com/vercel/workflow/commit/b65bb072b540e9e5fb6bc3f72c4132667cc60277)]:
+  - @workflow/core@4.1.0-beta.59
+  - @workflow/cli@4.1.0-beta.59
+  - @workflow/next@4.0.1-beta.55
+  - @workflow/nitro@4.0.1-beta.54
+  - @workflow/typescript-plugin@4.0.1-beta.4
+  - @workflow/errors@4.1.0-beta.16
+  - @workflow/astro@4.0.0-beta.33
+  - @workflow/nest@0.0.0-beta.8
+  - @workflow/rollup@4.0.0-beta.16
+  - @workflow/sveltekit@4.0.0-beta.48
+  - @workflow/nuxt@4.0.1-beta.43
+
 ## 4.1.0-beta.58
 
 ### Patch Changes

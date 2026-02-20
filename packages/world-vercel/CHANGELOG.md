@@ -1,5 +1,15 @@
 # @workflow/world-vercel
 
+## 4.1.0-beta.34
+
+### Patch Changes
+
+- [#956](https://github.com/vercel/workflow/pull/956) [`b65bb07`](https://github.com/vercel/workflow/commit/b65bb072b540e9e5fb6bc3f72c4132667cc60277) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Implement `getEncryptionKeyForRun` with HKDF-SHA256 per-run key derivation and cross-deployment key resolution via `fetchRunKey` API
+
+- Updated dependencies [[`b65bb07`](https://github.com/vercel/workflow/commit/b65bb072b540e9e5fb6bc3f72c4132667cc60277)]:
+  - @workflow/world@4.1.0-beta.6
+  - @workflow/errors@4.1.0-beta.16
+
 ## 4.1.0-beta.33
 
 ### Patch Changes
