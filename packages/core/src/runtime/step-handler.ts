@@ -148,7 +148,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               }
               // 410 Gone: Workflow has already completed
               if (err.status === 410) {
-                console.warn(
+                runtimeLogger.info(
                   `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
                 );
                 return;
