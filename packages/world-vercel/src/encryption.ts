@@ -10,9 +10,10 @@
  * for HKDF and the Vercel API for key retrieval).
  */
 
-import * as z from 'zod';
 import { webcrypto } from 'node:crypto';
 import { getVercelOidcToken } from '@vercel/oidc';
+import type { WorkflowRun, World } from '@workflow/world';
+import * as z from 'zod';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
@@ -126,4 +127,61 @@ export async function fetchRunKey(
     throw new Error('Invalid response from Vercel API, missing "key" field');
   }
   return Buffer.from(result.data.key, 'base64');
+}
+
+/**
+ * Create the `getEncryptionKeyForRun` implementation for a Vercel World.
+ *
+ * Resolves the per-run AES-256 key by either:
+ * - Deriving it locally via HKDF when the run belongs to the current deployment
+ * - Fetching it from the Vercel API when the run belongs to a different deployment
+ *
+ * @param projectId - Vercel project ID for HKDF context isolation
+ * @param token - Optional auth token from config
+ * @returns The `getEncryptionKeyForRun` function, or `undefined` if no projectId
+ */
+export function createGetEncryptionKeyForRun(
+  projectId: string | undefined,
+  token?: string
+): World['getEncryptionKeyForRun'] {
+  if (!projectId) return undefined;
+
+  const currentDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+
+  // Parse the local deployment key from env (lazy, only when encryption is used)
+  let localDeploymentKey: Uint8Array | undefined;
+  function getLocalDeploymentKey(): Uint8Array | undefined {
+    if (localDeploymentKey) return localDeploymentKey;
+    const deploymentKeyBase64 = process.env.VERCEL_DEPLOYMENT_KEY;
+    if (!deploymentKeyBase64) return undefined;
+    localDeploymentKey = Buffer.from(deploymentKeyBase64, 'base64');
+    return localDeploymentKey;
+  }
+
+  return async function getEncryptionKeyForRun(
+    run: WorkflowRun | string,
+    context?: Record<string, unknown>
+  ): Promise<Uint8Array | undefined> {
+    const runId = typeof run === 'string' ? run : run.runId;
+    const deploymentId =
+      typeof run === 'string'
+        ? (context?.deploymentId as string | undefined)
+        : run.deploymentId;
+
+    // Same deployment, or no deploymentId provided (e.g., start() on
+    // current deployment, or step-handler during same-deployment execution)
+    // → use local deployment key + local HKDF derivation
+    if (!deploymentId || deploymentId === currentDeploymentId) {
+      const localKey = getLocalDeploymentKey();
+      if (!localKey) return undefined;
+      return deriveRunKey(localKey, projectId, runId);
+    }
+
+    // Different deployment — fetch the derived per-run key from the
+    // Vercel API. The API performs HKDF derivation server-side so the
+    // raw deployment key never leaves the API boundary.
+    // Covers cross-deployment resumeHook() (OIDC auth) and o11y
+    // tooling reading data from other deployments (VERCEL_TOKEN).
+    return fetchRunKey(deploymentId, projectId, runId, { token });
+  };
 }
