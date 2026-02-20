@@ -249,15 +249,31 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               retryCount,
             });
             // Fail the step via event (event-sourced architecture)
-            await world.events.create(workflowRunId, {
-              eventType: 'step_failed',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-              eventData: {
-                error: errorMessage,
-                stack: step.error?.stack,
-              },
-            });
+            try {
+              await world.events.create(workflowRunId, {
+                eventType: 'step_failed',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: stepId,
+                eventData: {
+                  error: errorMessage,
+                  stack: step.error?.stack,
+                },
+              });
+            } catch (err) {
+              if (WorkflowAPIError.is(err) && err.status === 409) {
+                runtimeLogger.warn(
+                  'Tried failing step, but step has already finished.',
+                  {
+                    workflowRunId,
+                    stepId,
+                    stepName,
+                    message: err.message,
+                  }
+                );
+                return;
+              }
+              throw err;
+            }
 
             span?.setAttributes({
               ...Attribute.StepStatus('failed'),
@@ -383,6 +399,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
             // Run step_completed and trace serialization concurrently;
             // the trace carrier is used in the final queueMessage call below
+            let stepCompleted409 = false;
             const [, traceCarrier] = await Promise.all([
               withServerErrorRetry(() =>
                 world.events.create(workflowRunId, {
@@ -393,9 +410,28 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     result: result as Uint8Array,
                   },
                 })
-              ),
+              ).catch((err) => {
+                if (WorkflowAPIError.is(err) && err.status === 409) {
+                  runtimeLogger.warn(
+                    'Tried completing step, but step has already finished.',
+                    {
+                      workflowRunId,
+                      stepId,
+                      stepName,
+                      message: err.message,
+                    }
+                  );
+                  stepCompleted409 = true;
+                  return;
+                }
+                throw err;
+              }),
               serializeTraceCarrier(),
             ]);
+
+            if (stepCompleted409) {
+              return;
+            }
 
             span?.setAttributes({
               ...Attribute.StepStatus('completed'),
@@ -484,17 +520,36 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 }
               );
               // Fail the step via event (event-sourced architecture)
-              await withServerErrorRetry(() =>
-                world.events.create(workflowRunId, {
-                  eventType: 'step_failed',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  correlationId: stepId,
-                  eventData: {
-                    error: normalizedError.message,
-                    stack: normalizedStack,
-                  },
-                })
-              );
+              try {
+                await withServerErrorRetry(() =>
+                  world.events.create(workflowRunId, {
+                    eventType: 'step_failed',
+                    specVersion: SPEC_VERSION_CURRENT,
+                    correlationId: stepId,
+                    eventData: {
+                      error: normalizedError.message,
+                      stack: normalizedStack,
+                    },
+                  })
+                );
+              } catch (stepFailErr) {
+                if (
+                  WorkflowAPIError.is(stepFailErr) &&
+                  stepFailErr.status === 409
+                ) {
+                  runtimeLogger.warn(
+                    'Tried failing step, but step has already finished.',
+                    {
+                      workflowRunId,
+                      stepId,
+                      stepName,
+                      message: stepFailErr.message,
+                    }
+                  );
+                  return;
+                }
+                throw stepFailErr;
+              }
 
               span?.setAttributes({
                 ...Attribute.StepStatus('failed'),
@@ -526,17 +581,36 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 );
                 const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
                 // Fail the step via event (event-sourced architecture)
-                await withServerErrorRetry(() =>
-                  world.events.create(workflowRunId, {
-                    eventType: 'step_failed',
-                    specVersion: SPEC_VERSION_CURRENT,
-                    correlationId: stepId,
-                    eventData: {
-                      error: errorMessage,
-                      stack: normalizedStack,
-                    },
-                  })
-                );
+                try {
+                  await withServerErrorRetry(() =>
+                    world.events.create(workflowRunId, {
+                      eventType: 'step_failed',
+                      specVersion: SPEC_VERSION_CURRENT,
+                      correlationId: stepId,
+                      eventData: {
+                        error: errorMessage,
+                        stack: normalizedStack,
+                      },
+                    })
+                  );
+                } catch (stepFailErr) {
+                  if (
+                    WorkflowAPIError.is(stepFailErr) &&
+                    stepFailErr.status === 409
+                  ) {
+                    runtimeLogger.warn(
+                      'Tried failing step, but step has already finished.',
+                      {
+                        workflowRunId,
+                        stepId,
+                        stepName,
+                        message: stepFailErr.message,
+                      }
+                    );
+                    return;
+                  }
+                  throw stepFailErr;
+                }
 
                 span?.setAttributes({
                   ...Attribute.StepStatus('failed'),
@@ -564,20 +638,39 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 }
                 // Set step to pending for retry via event (event-sourced architecture)
                 // step_retrying records the error and sets status to pending
-                await withServerErrorRetry(() =>
-                  world.events.create(workflowRunId, {
-                    eventType: 'step_retrying',
-                    specVersion: SPEC_VERSION_CURRENT,
-                    correlationId: stepId,
-                    eventData: {
-                      error: normalizedError.message,
-                      stack: normalizedStack,
-                      ...(RetryableError.is(err) && {
-                        retryAfter: err.retryAfter,
-                      }),
-                    },
-                  })
-                );
+                try {
+                  await withServerErrorRetry(() =>
+                    world.events.create(workflowRunId, {
+                      eventType: 'step_retrying',
+                      specVersion: SPEC_VERSION_CURRENT,
+                      correlationId: stepId,
+                      eventData: {
+                        error: normalizedError.message,
+                        stack: normalizedStack,
+                        ...(RetryableError.is(err) && {
+                          retryAfter: err.retryAfter,
+                        }),
+                      },
+                    })
+                  );
+                } catch (stepRetryErr) {
+                  if (
+                    WorkflowAPIError.is(stepRetryErr) &&
+                    stepRetryErr.status === 409
+                  ) {
+                    runtimeLogger.warn(
+                      'Tried retrying step, but step has already finished.',
+                      {
+                        workflowRunId,
+                        stepId,
+                        stepName,
+                        message: stepRetryErr.message,
+                      }
+                    );
+                    return;
+                  }
+                  throw stepRetryErr;
+                }
 
                 const timeoutSeconds = Math.max(
                   1,
