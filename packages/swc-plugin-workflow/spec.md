@@ -700,6 +700,52 @@ export class Vector {
 }
 ```
 
+### CommonJS `require()` Patterns
+
+The plugin also detects serialization symbols obtained via CommonJS `require()` calls. This handles code that has been pre-compiled from ESM to CommonJS by tools like TypeScript (`tsc`), esbuild, or tsup.
+
+**Namespace require** — when the entire module is assigned to a variable and symbols are accessed as properties:
+
+```javascript
+const serde_1 = require("@workflow/serde");
+
+class Sandbox {
+  static [serde_1.WORKFLOW_SERIALIZE](instance) {
+    return { sandbox: instance.sandbox };
+  }
+  static [serde_1.WORKFLOW_DESERIALIZE](data) {
+    const instance = Object.create(Sandbox.prototype);
+    instance.sandbox = data.sandbox;
+    return instance;
+  }
+}
+```
+
+**Destructured require** — when symbols are destructured directly from the `require()` call:
+
+```javascript
+const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("@workflow/serde");
+
+class Sandbox {
+  static [WORKFLOW_SERIALIZE](instance) {
+    return { sandbox: instance.sandbox };
+  }
+  static [WORKFLOW_DESERIALIZE](data) {
+    const instance = Object.create(Sandbox.prototype);
+    instance.sandbox = data.sandbox;
+    return instance;
+  }
+}
+```
+
+Both patterns produce the same output as the ESM import version — a `registerSerializationClass()` call is appended and the class is included in the manifest.
+
+Destructured require also supports renaming (analogous to `import { WORKFLOW_SERIALIZE as WS }`):
+
+```javascript
+const { WORKFLOW_SERIALIZE: WS, WORKFLOW_DESERIALIZE: WD } = require("@workflow/serde");
+```
+
 ### Class Expressions with Binding Names
 
 When a class expression is assigned to a variable, the plugin uses the variable name (binding name) for registration, not the internal class name. This is important because the internal class name is only accessible inside the class body.
@@ -800,6 +846,7 @@ Files containing classes with custom serialization are automatically discovered 
 
 1. **Imports from `@workflow/serde`**: Files that import `WORKFLOW_SERIALIZE` or `WORKFLOW_DESERIALIZE` from `@workflow/serde`
 2. **Direct Symbol.for usage**: Files containing `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
+3. **CommonJS `require()` calls**: Files that use `require("@workflow/serde")` (or any module) and access `WORKFLOW_SERIALIZE` or `WORKFLOW_DESERIALIZE` via destructuring or namespace property access
 
 This allows serialization classes to be defined in separate files (such as Next.js API routes or utility modules) and still be registered in the serialization system when the application is built.
 
