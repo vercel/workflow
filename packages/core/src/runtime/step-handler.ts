@@ -49,21 +49,22 @@ const DEFAULT_STEP_MAX_RETRIES = 3;
 
 // Register the built-in __workflow_start step that enables start() inside workflow functions.
 // This step receives the workflowId, args, and options, calls the real start(), and returns the runId.
-registerStepFunction(
-  '__workflow_start',
-  async (
-    workflowId: string,
-    args: unknown[],
-    options?: StartOptions
-  ): Promise<string> => {
-    const run = await start(
-      { workflowId } as { workflowId: string },
-      args as any,
-      options
-    );
-    return run.runId;
-  }
-);
+// maxRetries = 0 because start() generates a new runId on each attempt — retrying would
+// spawn duplicate child workflows instead of retrying the same one.
+const __workflowStartStep = async (
+  workflowId: string,
+  args: unknown[],
+  options?: StartOptions
+): Promise<string> => {
+  const run = await start(
+    { workflowId } as { workflowId: string },
+    args as any,
+    options
+  );
+  return run.runId;
+};
+__workflowStartStep.maxRetries = 0;
+registerStepFunction('__workflow_start', __workflowStartStep);
 
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',

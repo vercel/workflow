@@ -86,7 +86,7 @@ export async function start<TArgs extends unknown[], TResult>(
   // When called inside a workflow function, delegate to the injected start implementation
   // which routes through an internal step for deterministic replay.
   const workflowStartFn = (globalThis as any)[WORKFLOW_START];
-  if (workflowStartFn) {
+  if (typeof workflowStartFn === 'function') {
     return workflowStartFn(workflow, argsOrOptions, options);
   }
 
