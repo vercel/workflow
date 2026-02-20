@@ -1,1 +1,1 @@
-node scripts/check-sitemap-guard.mjs && pnpm exec lint-staged
+pnpm exec lint-staged

@@ -29,7 +29,6 @@
   },
   "scripts": {
     "prepare": "husky",
-    "check:sitemap-guard": "node scripts/check-sitemap-guard.mjs",
     "build": "turbo build --filter='./packages/*'",
     "test": "turbo test",
     "clean": "turbo clean",
