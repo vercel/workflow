@@ -151,6 +151,7 @@ This project uses pnpm with workspace configuration. The required version is spe
 - README.md files in each package must accurately reflect the current functionality and purpose of that package
 - READMEs should not contain outdated or incorrect information about package capabilities
 - When modifying package functionality, ensure corresponding README updates are included
+- When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
 ## Changesets
 

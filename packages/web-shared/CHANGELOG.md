@@ -1,5 +1,27 @@
 # @workflow/web-shared
 
+## 4.1.0-beta.53
+
+### Patch Changes
+
+- [#1086](https://github.com/vercel/workflow/pull/1086) [`8a03a93`](https://github.com/vercel/workflow/commit/8a03a93b62772f3929dcd8192f64006afbcc05c3) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Improve liveness checks and fix bugs around web-shared
+
+- [#1033](https://github.com/vercel/workflow/pull/1033) [`260f77e`](https://github.com/vercel/workflow/commit/260f77e023bf90f979a866e090171ecde08908ca) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Retheme `<DataInspector>` to match Node.js `util.inspect()` colors
+
+- [#1039](https://github.com/vercel/workflow/pull/1039) [`5213309`](https://github.com/vercel/workflow/commit/5213309073440515de5212c61538e73d267461e7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Set `"type": "module"` in package.json
+
+- [#1104](https://github.com/vercel/workflow/pull/1104) [`323da45`](https://github.com/vercel/workflow/commit/323da45b141776e14c8484492c5881ca36b980b3) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Minor perf hardening for trace viewer
+
+- [#1053](https://github.com/vercel/workflow/pull/1053) [`befc01d`](https://github.com/vercel/workflow/commit/befc01d7cb19e163d6b77ebbba54c3c5c122bec0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update sidebar title to have just the workflow / step name
+
+- [#1032](https://github.com/vercel/workflow/pull/1032) [`dbf8434`](https://github.com/vercel/workflow/commit/dbf843490731e799d4f6292e3a931d746e2b019f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Extract reusable `<DataInspector>` component and fix class instance rendering
+
+- [#1031](https://github.com/vercel/workflow/pull/1031) [`1c11573`](https://github.com/vercel/workflow/commit/1c1157340d88c60c7c80c0789c111050b809ab77) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Refactor and enhance web-shared observability UI components and update builders base behavior.
+
+- Updated dependencies [[`0d5323c`](https://github.com/vercel/workflow/commit/0d5323c0a7e760f1fa3741cf249c19f59e9ddfbe), [`7046610`](https://github.com/vercel/workflow/commit/704661078f6d6065f9b5dcd28c0b98ae91034143), [`c2b4fe9`](https://github.com/vercel/workflow/commit/c2b4fe9906fd0845fef646669034cd203d97a18d), [`6e72b29`](https://github.com/vercel/workflow/commit/6e72b295e71c1a9e0a91dbe1137eca7b88227e1f), [`ea3254e`](https://github.com/vercel/workflow/commit/ea3254e7ce28cef6b9b829ac7ad379921dd41ed9), [`1c11573`](https://github.com/vercel/workflow/commit/1c1157340d88c60c7c80c0789c111050b809ab77), [`9f77380`](https://github.com/vercel/workflow/commit/9f773804937cf94fc65a2141c4a45b429771a5cb), [`852e3f1`](https://github.com/vercel/workflow/commit/852e3f1788f7a9aff638b322af4c8b1a7135c17e), [`5e06a7c`](https://github.com/vercel/workflow/commit/5e06a7c8332042a4835fa0e469e1031fec742668), [`5487983`](https://github.com/vercel/workflow/commit/54879835f390299f9249523e0488bbdca708fb68)]:
+  - @workflow/core@4.1.0-beta.58
+  - @workflow/world@4.1.0-beta.5
+
 ## 4.1.0-beta.52
 
 ### Patch Changes

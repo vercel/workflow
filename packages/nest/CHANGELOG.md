@@ -1,5 +1,14 @@
 # @workflow/nest
 
+## 0.0.0-beta.7
+
+### Patch Changes
+
+- [#982](https://github.com/vercel/workflow/pull/982) [`bcbdd02`](https://github.com/vercel/workflow/commit/bcbdd024efc187578d66a4c3e34ab89ab0249db7) Thanks [@boomyao](https://github.com/boomyao)! - [nest] Support CommonJS compilation for NestJS projects
+
+- Updated dependencies [[`1c11573`](https://github.com/vercel/workflow/commit/1c1157340d88c60c7c80c0789c111050b809ab77), [`29347b7`](https://github.com/vercel/workflow/commit/29347b79eae8181d02ed1e52183983adc56425fd)]:
+  - @workflow/builders@4.0.1-beta.49
+
 ## 0.0.0-beta.6
 
 ### Patch Changes
