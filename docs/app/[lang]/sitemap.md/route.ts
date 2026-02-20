@@ -1,11 +1,14 @@
 import type { Node, Root } from 'fumadocs-core/page-tree';
-import { i18n } from '@/lib/geistdocs/i18n';
 import { source } from '@/lib/geistdocs/source';
 
 export const revalidate = false;
 export const dynamic = 'force-static';
 
-export async function GET(_req: Request) {
+export async function GET(
+  _req: Request,
+  { params }: RouteContext<'/[lang]/sitemap.md'>
+) {
+  const { lang } = await params;
   let mdText = '';
 
   function traverseTree(node: Node | Root, depth = 0) {
@@ -34,7 +37,7 @@ export async function GET(_req: Request) {
     }
   }
 
-  const tree = source.getPageTree(i18n.defaultLanguage);
+  const tree = source.getPageTree(lang);
   traverseTree(tree, 0);
 
   return new Response(mdText, {
