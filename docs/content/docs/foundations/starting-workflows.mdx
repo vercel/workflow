@@ -76,6 +76,30 @@ Most `Run` properties are async getters that return promises. You need to `await
 
 ## Common Patterns
 
+### Starting Workflows from Workflow Functions
+
+You can also call `start()` directly inside workflow functions to spawn child workflows:
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { childWorkflow } from "./workflows/child";
+
+export async function parentWorkflow(inputValue: number) {
+  "use workflow";
+
+  const childRun = await start(childWorkflow, [inputValue]); // [!code highlight]
+
+  // childRun.runId is available immediately
+  return { childRunId: childRun.runId };
+}
+```
+
+When `start()` is called inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned object contains a `runId` property that you can use to track the child workflow.
+
+<Callout type="info">
+Inside workflow functions, `start()` returns an object with only the `runId` property (not a full `Run` object). To get full `Run` capabilities like `.returnValue` or `.cancel()`, use `getRun(runId)` inside a step function.
+</Callout>
+
 ### Fire and Forget
 
 The most common pattern is to start a workflow and immediately return, letting it execute in the background:

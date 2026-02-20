@@ -1327,6 +1327,45 @@ describe('e2e', () => {
     }
   );
 
+  test(
+    'startFromWorkflow - calling start() directly inside a workflow function with hook communication',
+    { timeout: 120_000 },
+    async () => {
+      const inputValue = 42;
+      const run = await start(await e2e('startFromWorkflow'), [inputValue]);
+      const returnValue = await run.returnValue;
+
+      // Verify parent workflow completed with expected data
+      expect(returnValue.parentInput).toBe(inputValue);
+
+      // Verify child was spawned (runId returned)
+      expect(typeof returnValue.childRunId).toBe('string');
+      expect(returnValue.childRunId.startsWith('wrun_')).toBe(true);
+
+      // Verify hook signal was received from child
+      expect(returnValue.signalFromChild.processed).toBe(inputValue * 3);
+
+      // Verify the child workflow also completed independently
+      const childRun = getRun(returnValue.childRunId);
+      const childResult = await childRun.returnValue;
+      expect(childResult.processed).toBe(inputValue * 3);
+
+      // Collect run IDs for observability
+      collectedRunIds.push(
+        {
+          testName: 'startFromWorkflow (parent)',
+          runId: run.runId,
+          timestamp: new Date().toISOString(),
+        },
+        {
+          testName: 'startFromWorkflow (child)',
+          runId: returnValue.childRunId,
+          timestamp: new Date().toISOString(),
+        }
+      );
+    }
+  );
+
   // Skipped for Vercel since VQS doesn't support direct HTTP calls
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',

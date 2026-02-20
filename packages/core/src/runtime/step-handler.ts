@@ -14,11 +14,13 @@ import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
-import { getStepFunction } from '../private.js';
+import { getStepFunction, registerStepFunction } from '../private.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
 } from '../serialization.js';
+import type { StartOptions } from './start.js';
+import { start } from './start.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import {
@@ -44,6 +46,24 @@ import {
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
+
+// Register the built-in __workflow_start step that enables start() inside workflow functions.
+// This step receives the workflowId, args, and options, calls the real start(), and returns the runId.
+registerStepFunction(
+  '__workflow_start',
+  async (
+    workflowId: string,
+    args: unknown[],
+    options?: StartOptions
+  ): Promise<string> => {
+    const run = await start(
+      { workflowId } as { workflowId: string },
+      args as any,
+      options
+    );
+    return run.runId;
+  }
+);
 
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',

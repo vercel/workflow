@@ -57,7 +57,7 @@ import { sleep, fetch, createHook, createWebhook, getWritable } from "workflow";
 import { FatalError, RetryableError } from "workflow";
 import { getWorkflowMetadata, getStepMetadata } from "workflow";
 
-// API operations
+// API operations (start() also works inside workflow functions)
 import { start, getRun, resumeHook, resumeWebhook } from "workflow/api";
 
 // Framework integrations
@@ -101,6 +101,22 @@ export async function dataProcessingWorkflow(userId: string) {
 ```
 
 **Benefits:** Steps have automatic retry, results are persisted for replay, and no sandbox restrictions.
+
+## Starting Child Workflows
+
+`start()` from `workflow/api` works in both runtime contexts and directly inside workflow functions:
+
+```typescript
+import { start } from "workflow/api";
+
+export async function parentWorkflow(value: number) {
+  "use workflow";
+  const childRun = await start(childWorkflow, [value]);
+  // childRun.runId is available; use getRun(runId) in a step for full Run access
+}
+```
+
+Inside workflow functions, `start()` returns `{ runId: string }` (not a full `Run` object). For full `Run` capabilities (`.returnValue`, `.cancel()`), use `getRun(runId)` inside a step function.
 
 ## Workflow Sandbox Limitations
 
