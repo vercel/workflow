@@ -2,6 +2,7 @@
 
 **CRITICAL RULES:**
 - NEVER push directly to the `main` branch
+- Do not remove or break agent-discoverable docs sitemap behavior: keep docs/app/sitemap.md/route.ts and docs/app/[lang]/sitemap.md/route.ts, and keep the sitemap link in docs/app/[lang]/llms.mdx/[[...slug]]/route.ts.
 
 ## SWC Plugin
 
