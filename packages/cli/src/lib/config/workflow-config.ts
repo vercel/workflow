@@ -24,6 +24,7 @@ export const getWorkflowConfig = (
 ) => {
   const config: WorkflowConfig = {
     dirs: ['./workflows'],
+    dirsAreEntrypoints: false,
     workingDir: resolveObservabilityCwd(),
     buildTarget: buildTarget as BuildTarget,
     stepsBundlePath: './.well-known/workflow/v1/step.js',

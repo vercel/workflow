@@ -70,6 +70,7 @@ export interface VercelBuildOutputConfig extends BaseWorkflowConfig {
  */
 export interface NextConfig extends BaseWorkflowConfig {
   buildTarget: 'next';
+  dirsAreEntrypoints: boolean;
   // Next.js builder computes paths dynamically, so these are not used
   stepsBundlePath: string;
   workflowsBundlePath: string;

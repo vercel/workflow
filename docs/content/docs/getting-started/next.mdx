@@ -264,6 +264,45 @@ Check the [Deploying](/docs/deploying) section to learn how your workflows can b
 
 ## Troubleshooting
 
+### Out of Memory (OOM) during build
+
+When using `withWorkflow()` in a large Next.js application, the "Discovering workflow directives" phase may consume excessive memory, causing builds to fail with OOM errors on standard build machines (e.g., 16 GB RAM).
+
+**Solution:** Use the `workflows.dirs` option to point directly at the directories containing your workflow files. By default, `withWorkflow` uses entrypoint directories (`pages`, `app`, `src/pages`, `src/app`) as starting points and traces their imports to discover workflows, which in large applications can involve crawling thousands of files.
+
+If your workflows live in a dedicated directory, configure `dirs` to only scan that directory:
+
+```typescript title="next.config.ts" lineNumbers
+import { withWorkflow } from "workflow/next";
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {};
+
+export default withWorkflow(nextConfig, {
+  workflows: {
+    // Only scan the workflows directory instead of the entire app
+    dirs: ['workflows'], // [!code highlight]
+  },
+});
+```
+
+If your workflows are spread across multiple directories:
+
+```typescript title="next.config.ts" lineNumbers
+import { withWorkflow } from "workflow/next";
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {};
+
+export default withWorkflow(nextConfig, {
+  workflows: {
+    dirs: ['workflows', 'src/background-jobs'], // [!code highlight]
+  },
+});
+```
+
+This significantly reduces memory usage and build times by avoiding scanning unrelated application code.
+
 ### Next.js 16.1+ compatibility
 
 If you see this error when upgrading to Next.js 16.1 or later:

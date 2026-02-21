@@ -1,3 +1,4 @@
+import type { NextConfig } from '@workflow/builders';
 import { createHash } from 'node:crypto';
 import { constants, existsSync, realpathSync } from 'node:fs';
 import {
@@ -65,6 +66,8 @@ export async function getNextBuilderDeferred() {
   )) as typeof import('@workflow/builders');
 
   class NextDeferredBuilder extends BaseBuilderClass {
+    protected declare config: NextConfig;
+
     private socketIO?: SocketIO;
     private readonly discoveredWorkflowFiles = new Set<string>();
     private readonly discoveredStepFiles = new Set<string>();
@@ -953,6 +956,9 @@ export async function getNextBuilderDeferred() {
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
+      if (!this.config.dirsAreEntrypoints) {
+        return inputFiles;
+      }
       return inputFiles.filter((item) => {
         // Match App Router entrypoints: route.ts, page.ts, layout.ts in app/ or src/app/ directories
         // Matches: /app/page.ts, /app/dashboard/page.ts, /src/app/route.ts, etc.
