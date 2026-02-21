@@ -11,13 +11,14 @@ import { createLocalWorld } from '@workflow/world-local';
 import {
   Logger,
   makeWorkerUtils,
-  run,
   type Runner,
+  run,
   type WorkerUtils,
 } from 'graphile-worker';
+import postgres from 'postgres';
 import { monotonicFactory } from 'ulid';
-import { MessageData } from './message.js';
 import type { PostgresWorldConfig } from './config.js';
+import { MessageData } from './message.js';
 
 // Redirect graphile-worker logs to stderr so CLI --json on stdout stays clean.
 // TODO: When CI=1 suppresses logging, replace with conditional stdout (e.g. log to stdout when not in JSON/CI mode).
@@ -186,7 +187,7 @@ export function createQueue(config: PostgresWorldConfig): PostgresQueue {
     }
 
     runner = await run({
-      connectionString,
+      connectionString: config.connectionString,
       concurrency: config.queueConcurrency || 10,
       logger: stderrLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
