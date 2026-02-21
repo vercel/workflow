@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.1.0-beta.60
+
+### Patch Changes
+
+- [#1147](https://github.com/vercel/workflow/pull/1147) [`c1cd9a3`](https://github.com/vercel/workflow/commit/c1cd9a3bc7a0ef953d588c8fe4f21a32f80711b3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Handle 410s gracefully for run completion/failure
+
 ## 4.1.0-beta.59
 
 ### Patch Changes
