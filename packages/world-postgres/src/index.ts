@@ -1,6 +1,5 @@
 import type { Socket } from 'node:net';
 import type { Storage, World } from '@workflow/world';
-import PgBoss from 'pg-boss';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
@@ -33,12 +32,9 @@ export function createWorld(
       10,
   }
 ): World & { start(): Promise<void> } {
-  const boss = new PgBoss({
-    connectionString: config.connectionString,
-  });
   const postgres = createPostgres(config.connectionString);
   const drizzle = createClient(postgres);
-  const queue = createQueue(boss, config);
+  const queue = createQueue(config, postgres);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(postgres, drizzle);
 
@@ -50,12 +46,6 @@ export function createWorld(
       await queue.start();
     },
     async close() {
-      await boss.stop();
-      const bossDb = boss.getDb() as {
-        opened?: boolean;
-        close?: () => Promise<void>;
-      };
-      if (bossDb.opened) await bossDb.close?.();
       await streamer.close();
       await queue.close();
       await postgres.end();

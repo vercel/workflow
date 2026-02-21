@@ -110,12 +110,12 @@ export function getVercelDashboardUrl(
   resource: string,
   id?: string
 ): string {
-  let url = `https://vercel.com/${teamSlug}/${projectName}/ai/workflows`;
+  let url = `https://vercel.com/${teamSlug}/${projectName}/observability/workflows`;
 
-  // Add resource-specific path segments if needed
-  if (id) {
-    // For specific resources with IDs, we can add them to the URL
-    // The dashboard should handle these
+  // Add resource-specific path segments
+  if (resource === 'run' && id) {
+    url += `/runs/${id}?environment=production`;
+  } else if (id) {
     url += `?${resource}Id=${id}`;
   }
 

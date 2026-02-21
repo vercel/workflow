@@ -195,20 +195,23 @@ export interface World extends Queue, Storage, Streamer {
    * (e.g., HKDF from a deployment key). The core encryption module uses
    * this key directly for AES-GCM encrypt/decrypt operations.
    *
-   * Accepts either a full `WorkflowRun` object or a plain `runId` string:
-   * - `WorkflowRun` — Used by the o11y/CLI path when the run entity is
-   *   already available. Provides `deploymentId` for cross-deployment key
-   *   resolution without a redundant lookup.
-   * - `string` (runId) — Used by `start()` and `step-handler` in the
-   *   runtime path where the run entity may not exist yet or isn't needed.
-   *   The World assumes the current deployment for key resolution.
+   * Two overloads:
+   *
+   * - `getEncryptionKeyForRun(run)` — Preferred. Pass a `WorkflowRun` when
+   *   the run entity already exists. The World reads any context it needs
+   *   (e.g., `deploymentId`) directly from the run.
+   *
+   * - `getEncryptionKeyForRun(runId, context?)` — Used only by `start()`
+   *   when the run entity has not yet been created. The `context` parameter
+   *   carries opaque world-specific data (e.g., `{ deploymentId }` for
+   *   world-vercel) that the World needs to resolve the correct key.
+   *   When `context` is omitted, the World assumes the current deployment.
    *
    * When not implemented, encryption is disabled — data is stored unencrypted.
-   *
-   * @param run - A WorkflowRun entity or a runId string
-   * @returns The per-run AES-256 key, or undefined if encryption is not configured
    */
+  getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
   getEncryptionKeyForRun?(
-    run: WorkflowRun | string
+    runId: string,
+    context?: Record<string, unknown>
   ): Promise<Uint8Array | undefined>;
 }

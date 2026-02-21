@@ -1,5 +1,34 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.49
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.51
+  - @workflow/rollup@4.0.0-beta.17
+  - @workflow/vite@4.0.0-beta.10
+
+## 4.0.0-beta.48
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.50
+  - @workflow/rollup@4.0.0-beta.16
+  - @workflow/vite@4.0.0-beta.9
+
+## 4.0.0-beta.47
+
+### Patch Changes
+
+- [#1096](https://github.com/vercel/workflow/pull/1096) [`29347b7`](https://github.com/vercel/workflow/commit/29347b79eae8181d02ed1e52183983adc56425fd) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use new Vercel queue client with v2 message format, simplified callback handling, etc.
+
+- Updated dependencies [[`1c11573`](https://github.com/vercel/workflow/commit/1c1157340d88c60c7c80c0789c111050b809ab77), [`29347b7`](https://github.com/vercel/workflow/commit/29347b79eae8181d02ed1e52183983adc56425fd)]:
+  - @workflow/builders@4.0.1-beta.49
+  - @workflow/rollup@4.0.0-beta.15
+  - @workflow/vite@4.0.0-beta.8
+
 ## 4.0.0-beta.46
 
 ### Patch Changes

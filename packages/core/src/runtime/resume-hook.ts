@@ -5,7 +5,9 @@ import {
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
   type WorkflowInvokePayload,
+  type WorkflowRun,
 } from '@workflow/world';
+import { type CryptoKey, importKey } from '../encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -18,14 +20,19 @@ import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
 
 /**
- * Internal helper that returns both the hook and the resolved encryption key.
+ * Internal helper that returns the hook, the associated workflow run,
+ * and the resolved encryption key.
  */
-async function getHookByTokenWithKey(
-  token: string
-): Promise<{ hook: Hook; encryptionKey: Uint8Array | undefined }> {
+async function getHookByTokenWithKey(token: string): Promise<{
+  hook: Hook;
+  run: WorkflowRun;
+  encryptionKey: CryptoKey | undefined;
+}> {
   const world = getWorld();
   const hook = await world.hooks.getByToken(token);
-  const encryptionKey = await world.getEncryptionKeyForRun?.(hook.runId);
+  const run = await world.runs.get(hook.runId);
+  const rawKey = await world.getEncryptionKeyForRun?.(run);
+  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
   if (typeof hook.metadata !== 'undefined') {
     hook.metadata = await hydrateStepArguments(
       hook.metadata as any,
@@ -33,7 +40,7 @@ async function getHookByTokenWithKey(
       encryptionKey
     );
   }
-  return { hook, encryptionKey };
+  return { hook, run, encryptionKey };
 }
 
 /**
@@ -80,7 +87,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
-  encryptionKeyOverride?: Uint8Array | undefined
+  encryptionKeyOverride?: CryptoKey
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -88,16 +95,22 @@ export async function resumeHook<T = any>(
 
       try {
         let hook: Hook;
-        let encryptionKey: Uint8Array | undefined;
+        let workflowRun: WorkflowRun;
+        let encryptionKey: CryptoKey | undefined;
         if (typeof tokenOrHook === 'string') {
           const result = await getHookByTokenWithKey(tokenOrHook);
           hook = result.hook;
+          workflowRun = result.run;
           encryptionKey = encryptionKeyOverride ?? result.encryptionKey;
         } else {
           hook = tokenOrHook;
-          encryptionKey =
-            encryptionKeyOverride ??
-            (await world.getEncryptionKeyForRun?.(hook.runId));
+          workflowRun = await world.runs.get(hook.runId);
+          if (encryptionKeyOverride) {
+            encryptionKey = encryptionKeyOverride;
+          } else {
+            const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
+            encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+          }
         }
 
         span?.setAttributes({
@@ -137,8 +150,6 @@ export async function resumeHook<T = any>(
           },
           { v1Compat }
         );
-
-        const workflowRun = await world.runs.get(hook.runId);
 
         span?.setAttributes({
           ...Attribute.WorkflowName(workflowRun.workflowName),
