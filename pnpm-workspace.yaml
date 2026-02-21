@@ -10,7 +10,7 @@ catalog:
   "@types/node": 22.19.0
   "@vercel/functions": ^3.1.4
   "@vercel/oidc": 3.0.5
-  "@vercel/queue": 0.0.0-alpha.36
+  "@vercel/queue": 0.0.0-alpha.38
   "@vitest/coverage-v8": ^3.2.4
   ai: 5.0.104
   esbuild: ^0.25.11

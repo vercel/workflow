@@ -21,7 +21,7 @@ process.on('beforeExit', () => {
       config: {
         experimentalTriggers: [
           {
-            type: 'queue/v1beta',
+            type: 'queue/v2beta',
             topic: '__wkf_workflow_*',
             consumer: 'default',
             maxDeliveries: 64,
@@ -36,7 +36,7 @@ process.on('beforeExit', () => {
       config: {
         experimentalTriggers: [
           {
-            type: 'queue/v1beta',
+            type: 'queue/v2beta',
             topic: '__wkf_step_*',
             consumer: 'default',
             maxDeliveries: 64,

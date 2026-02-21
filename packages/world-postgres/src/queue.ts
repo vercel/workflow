@@ -15,7 +15,6 @@ import {
   type Runner,
   type WorkerUtils,
 } from 'graphile-worker';
-import type Postgres from 'postgres';
 import { monotonicFactory } from 'ulid';
 import { MessageData } from './message.js';
 import type { PostgresWorldConfig } from './config.js';
@@ -44,11 +43,7 @@ export type PostgresQueue = Queue & {
   close(): Promise<void>;
 };
 
-export function createQueue(
-  postgres: Postgres.Sql,
-  config: PostgresWorldConfig
-): PostgresQueue {
-  const connectionString = config.connectionString;
+export function createQueue(config: PostgresWorldConfig): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
 

@@ -1,4 +1,5 @@
 import type { Node, Root } from 'fumadocs-core/page-tree';
+import { i18n } from '@/lib/geistdocs/i18n';
 import { source } from '@/lib/geistdocs/source';
 
 export const revalidate = false;
@@ -25,17 +26,15 @@ export async function GET(_req: Request) {
           }
         }
       }
-    } else {
+    } else if (node.children.length > 0) {
       // Root node
-      if (node.children.length > 0) {
-        for (const child of node.children) {
-          traverseTree(child, depth);
-        }
+      for (const child of node.children) {
+        traverseTree(child, depth);
       }
     }
   }
 
-  const tree = source.getPageTree();
+  const tree = source.getPageTree(i18n.defaultLanguage);
   traverseTree(tree, 0);
 
   return new Response(mdText, {
