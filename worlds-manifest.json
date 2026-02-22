@@ -15,7 +15,7 @@
       "type": "official",
       "package": "@workflow/world-postgres",
       "name": "Postgres",
-      "description": "Production-ready, self-hosted world using PostgreSQL for durable storage and pg-boss for reliable job processing.",
+      "description": "Production-ready, self-hosted world using PostgreSQL for durable storage and graphile-worker for reliable job processing.",
       "docs": "/docs/deploying/world/postgres-world",
       "example": "https://github.com/vercel/workflow-examples/tree/main/postgres",
       "env": {

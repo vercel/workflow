@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.1.0-beta.6
+
+### Patch Changes
+
+- [#956](https://github.com/vercel/workflow/pull/956) [`b65bb07`](https://github.com/vercel/workflow/commit/b65bb072b540e9e5fb6bc3f72c4132667cc60277) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Overload `getEncryptionKeyForRun` interface: accept `WorkflowRun` (preferred) or `runId` string with optional opaque world-specific context for `start()`
+
 ## 4.1.0-beta.5
 
 ### Patch Changes

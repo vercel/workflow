@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.1.0-beta.58",
+  "version": "4.1.0-beta.60",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -63,6 +63,10 @@
     "./serialization-format": {
       "types": "./dist/serialization-format.d.ts",
       "default": "./dist/serialization-format.js"
+    },
+    "./encryption": {
+      "types": "./dist/encryption.d.ts",
+      "default": "./dist/encryption.js"
     },
     "./_workflow": "./dist/workflow/index.js"
   },

@@ -1,8 +1,8 @@
 ---
 title: Postgres World
-description: Production-ready, self-hosted world using PostgreSQL for storage and pg-boss for job processing.
+description: Production-ready, self-hosted world using PostgreSQL for storage and graphile-worker for job processing.
 type: integration
-summary: Deploy workflows to your own infrastructure using PostgreSQL and pg-boss.
+summary: Deploy workflows to your own infrastructure using PostgreSQL and graphile-worker.
 prerequisites:
   - /docs/deploying
 related:
@@ -10,7 +10,7 @@ related:
   - /docs/deploying/world/vercel-world
 ---
 
-The Postgres World is a production-ready backend for self-hosted deployments. It uses PostgreSQL for durable storage and [pg-boss](https://github.com/timgit/pg-boss) for reliable job processing.
+The Postgres World is a production-ready backend for self-hosted deployments. It uses PostgreSQL for durable storage and [graphile-worker](https://github.com/graphile/worker) for reliable job processing.
 
 Use the Postgres World when you need to deploy workflows on your own infrastructure outside of Vercel - such as a Docker container, Kubernetes cluster, or any cloud that supports long-running servers.
 
@@ -41,7 +41,7 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 ## Starting the World
 
-To subscribe to the pg-boss queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
+To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
 
 <Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
 
@@ -154,7 +154,7 @@ Default: `postgres://world:world@localhost:5432/world`
 
 ### `WORKFLOW_POSTGRES_JOB_PREFIX`
 
-Prefix for pg-boss queue job names. Useful when sharing a database between multiple applications.
+Prefix for graphile-worker queue job names. Useful when sharing a database between multiple applications.
 
 ### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 
@@ -178,7 +178,7 @@ const world = createWorld({
 The Postgres World uses PostgreSQL as a durable backend:
 
 - **Storage** - Workflow runs, events, steps, and hooks are stored in PostgreSQL tables
-- **Job Queue** - [pg-boss](https://github.com/timgit/pg-boss) handles reliable job processing with retries
+- **Job Queue** - [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries
 - **Streaming** - PostgreSQL NOTIFY/LISTEN enables real-time event distribution
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).

@@ -19,7 +19,7 @@ A **World** is the abstraction that allows workflows to run on any infrastructur
 </Callout>
 
 <Callout type="info">
-  **Reference Implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of how to implement the World interface with a database backend and pg-boss for queuing.
+  **Reference Implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of how to implement the World interface with a database backend and graphile-worker for queuing.
 </Callout>
 
 ## What is a World?
@@ -190,7 +190,7 @@ Streams are identified by a combination of `runId` and `name`. Each workflow run
 Study these implementations for guidance:
 
 - **[Local World](https://github.com/vercel/workflow/tree/main/packages/world-local)** — Filesystem-based, great for understanding the basics
-- **[Postgres World](https://github.com/vercel/workflow/tree/main/packages/world-postgres)** — Database-backed with pg-boss for queuing
+- **[Postgres World](https://github.com/vercel/workflow/tree/main/packages/world-postgres)** — Database-backed with graphile-worker for queuing
 
 ## Testing Your World
 

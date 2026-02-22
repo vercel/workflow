@@ -5,8 +5,10 @@ import {
   type CreateEventRequest,
   type SerializedData,
   SPEC_VERSION_CURRENT,
+  type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { importKey } from '../encryption.js';
 import type {
   HookInvocationQueueItem,
   StepInvocationQueueItem,
@@ -39,9 +41,7 @@ function extractTraceHeaders(
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
   world: World;
-  runId: string;
-  workflowName: string;
-  workflowStartedAt: number;
+  run: WorkflowRun;
   span?: Span;
 }
 
@@ -61,11 +61,12 @@ export interface SuspensionHandlerResult {
 export async function handleSuspension({
   suspension,
   world,
-  runId,
-  workflowName,
-  workflowStartedAt,
+  run,
   span,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
+  const runId = run.runId;
+  const workflowName = run.workflowName;
+  const workflowStartedAt = run.startedAt ? +run.startedAt : Date.now();
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -78,7 +79,8 @@ export async function handleSuspension({
   );
 
   // Resolve encryption key for this run
-  const encryptionKey = await world.getEncryptionKeyForRun?.(runId);
+  const rawKey = await world.getEncryptionKeyForRun?.(run);
+  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
   // Build hook_created events (World will atomically create hook entities)
   const hookEvents: CreateEventRequest[] = await Promise.all(

@@ -1,5 +1,19 @@
 # @workflow/nest
 
+## 0.0.0-beta.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.51
+
+## 0.0.0-beta.8
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.50
+
 ## 0.0.0-beta.7
 
 ### Patch Changes

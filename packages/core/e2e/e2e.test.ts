@@ -1215,14 +1215,13 @@ describe('e2e', () => {
     }
   );
 
+  // Skipped for Vercel since VQS doesn't support direct HTTP calls
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
     { timeout: 30_000 },
     async () => {
       // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
-      // This approach requires direct HTTP access and works when:
-      // - Running locally (for port detection)
-      // - Vercel Deployment Protection bypass headers are available
+      // This approach requires direct HTTP access and works when running locally (for port detection)
       //
       // For production use on Vercel with Deployment Protection enabled, use the
       // queue-based `healthCheck(world, endpoint, options)` function instead, which

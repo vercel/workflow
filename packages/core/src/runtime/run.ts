@@ -8,6 +8,7 @@ import {
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
+import { importKey } from '../encryption.js';
 import {
   getExternalRevivers,
   hydrateWorkflowReturnValue,
@@ -153,9 +154,8 @@ export class Run<TResult> {
         const run = await this.world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          const encryptionKey = await this.world.getEncryptionKeyForRun?.(
-            this.runId
-          );
+          const rawKey = await this.world.getEncryptionKeyForRun?.(run);
+          const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
           return await hydrateWorkflowReturnValue(
             run.output,
             this.runId,

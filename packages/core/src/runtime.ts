@@ -6,6 +6,7 @@ import {
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
+import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
@@ -137,9 +138,8 @@ export function workflowEntrypoint(
 
                 return await withThrottleRetry(async () => {
                   let workflowStartedAt = -1;
+                  let workflowRun = await world.runs.get(runId);
                   try {
-                    let workflowRun = await world.runs.get(runId);
-
                     if (workflowRun.status === 'pending') {
                       // Transition run to 'running' via event (event-sourced architecture)
                       const result = await world.events.create(runId, {
@@ -250,8 +250,11 @@ export function workflowEntrypoint(
                           ...Attribute.WorkflowEventsCount(events.length),
                         });
                         // Resolve the encryption key for this run's deployment
-                        const encryptionKey =
-                          await world.getEncryptionKeyForRun?.(runId);
+                        const rawKey =
+                          await world.getEncryptionKeyForRun?.(workflowRun);
+                        const encryptionKey = rawKey
+                          ? await importKey(rawKey)
+                          : undefined;
                         return await runWorkflow(
                           workflowCode,
                           workflowRun,
@@ -271,7 +274,10 @@ export function workflowEntrypoint(
                         },
                       });
                     } catch (err) {
-                      if (WorkflowAPIError.is(err) && err.status === 409) {
+                      if (
+                        WorkflowAPIError.is(err) &&
+                        (err.status === 409 || err.status === 410)
+                      ) {
                         runtimeLogger.warn(
                           'Tried completing workflow run, but run has already finished.',
                           {
@@ -304,9 +310,7 @@ export function workflowEntrypoint(
                       const result = await handleSuspension({
                         suspension: err,
                         world,
-                        runId,
-                        workflowName,
-                        workflowStartedAt,
+                        run: workflowRun,
                         span,
                       });
 
@@ -402,7 +406,10 @@ export function workflowEntrypoint(
                           },
                         });
                       } catch (err) {
-                        if (WorkflowAPIError.is(err) && err.status === 409) {
+                        if (
+                          WorkflowAPIError.is(err) &&
+                          (err.status === 409 || err.status === 410)
+                        ) {
                           runtimeLogger.warn(
                             'Tried failing workflow run, but run has already finished.',
                             {
