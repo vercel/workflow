@@ -2,7 +2,17 @@
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
-import { Clock, Copy, Info, Send, Type, X, XCircle } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Copy,
+  Info,
+  Send,
+  Type,
+  X,
+  XCircle,
+} from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -89,7 +99,7 @@ function useLiveTick(isLive: boolean): void {
   }, [isLive, dispatch]);
 }
 
-const DEFAULT_PANEL_WIDTH = 380;
+const DEFAULT_PANEL_WIDTH = 450;
 const MIN_PANEL_WIDTH = 240;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -768,6 +778,25 @@ function DeselectBridge({ triggerDeselect }: { triggerDeselect: number }) {
   return null;
 }
 
+/**
+ * Bridge component to select a span from outside the context.
+ */
+function SelectBridge({
+  selectRequest,
+}: {
+  selectRequest: { id: string; token: number } | null;
+}) {
+  const { dispatch } = useTraceViewer();
+
+  useEffect(() => {
+    if (selectRequest?.id) {
+      dispatch({ type: 'select', id: selectRequest.id });
+    }
+  }, [dispatch, selectRequest]);
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Panel chrome (header with name/duration, close button)
 // ---------------------------------------------------------------------------
@@ -860,6 +889,10 @@ export const WorkflowTraceViewer = ({
   );
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [deselectTrigger, setDeselectTrigger] = useState(0);
+  const [selectRequest, setSelectRequest] = useState<{
+    id: string;
+    token: number;
+  } | null>(null);
 
   const isLive = Boolean(run && !run.completedAt);
 
@@ -944,6 +977,27 @@ export const WorkflowTraceViewer = ({
   const handleResize = useCallback((deltaX: number) => {
     setPanelWidth((w) => Math.max(MIN_PANEL_WIDTH, w + deltaX));
   }, []);
+  const selectedSpanIndex = useMemo(() => {
+    if (!selectedSpan?.spanId || !trace) return -1;
+    return trace.spans.findIndex((span) => span.spanId === selectedSpan.spanId);
+  }, [selectedSpan?.spanId, trace]);
+  const canSelectPrevSpan = selectedSpanIndex > 0;
+  const canSelectNextSpan =
+    selectedSpanIndex >= 0 &&
+    trace != null &&
+    selectedSpanIndex < trace.spans.length - 1;
+  const handleSelectPrevSpan = useCallback(() => {
+    if (!trace || selectedSpanIndex <= 0) return;
+    const targetId = trace.spans[selectedSpanIndex - 1]?.spanId;
+    if (!targetId) return;
+    setSelectRequest({ id: targetId, token: Date.now() });
+  }, [selectedSpanIndex, trace]);
+  const handleSelectNextSpan = useCallback(() => {
+    if (!trace || selectedSpanIndex < 0) return;
+    const targetId = trace.spans[selectedSpanIndex + 1]?.spanId;
+    if (!targetId) return;
+    setSelectRequest({ id: targetId, token: Date.now() });
+  }, [selectedSpanIndex, trace]);
 
   // Get the selected span name for the panel header
   const selectedSpanName = useMemo(() => {
@@ -986,6 +1040,7 @@ export const WorkflowTraceViewer = ({
         >
           <SelectionBridge onSelectionChange={handleSelectionChange} />
           <DeselectBridge triggerDeselect={deselectTrigger} />
+          <SelectBridge selectRequest={selectRequest} />
           <TraceViewerWithContextMenu
             trace={trace}
             run={run}
@@ -1018,7 +1073,7 @@ export const WorkflowTraceViewer = ({
           <PanelResizeHandle onResize={handleResize} />
           {/* Panel header */}
           <div
-            className="flex items-center justify-between px-3 py-2 border-b flex-shrink-0"
+            className="flex items-center justify-between px-3 py-2 border-y flex-shrink-0"
             style={{ borderColor: 'var(--ds-gray-200)' }}
           >
             <div className="min-w-0 flex-1">
@@ -1030,33 +1085,109 @@ export const WorkflowTraceViewer = ({
                 {selectedSpanName}
               </div>
             </div>
-            <button
-              type="button"
-              aria-label="Close panel"
-              onClick={handleClose}
+            <div className="flex items-center">
+              <button
+                type="button"
+                aria-label="Previous span"
+                onClick={handleSelectPrevSpan}
+                disabled={!canSelectPrevSpan}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginLeft: 6,
+                  width: 24,
+                  height: 24,
+                  padding: 0,
+                  borderRadius: 6,
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--ds-gray-700)',
+                  cursor: canSelectPrevSpan ? 'pointer' : 'not-allowed',
+                  opacity: canSelectPrevSpan ? 1 : 0.45,
+                  flexShrink: 0,
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  if (!canSelectPrevSpan) return;
+                  e.currentTarget.style.background = 'var(--ds-gray-alpha-100)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                <ChevronUp size={16} />
+              </button>
+              <button
+                type="button"
+                aria-label="Next span"
+                onClick={handleSelectNextSpan}
+                disabled={!canSelectNextSpan}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginLeft: 2,
+                  width: 24,
+                  height: 24,
+                  padding: 0,
+                  borderRadius: 6,
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--ds-gray-700)',
+                  cursor: canSelectNextSpan ? 'pointer' : 'not-allowed',
+                  opacity: canSelectNextSpan ? 1 : 0.45,
+                  flexShrink: 0,
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  if (!canSelectNextSpan) return;
+                  e.currentTarget.style.background = 'var(--ds-gray-alpha-100)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                <ChevronDown size={16} />
+              </button>
+            </div>
+            <div
+              className="flex items-center"
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginLeft: 8,
-                padding: 4,
-                borderRadius: 6,
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--ds-gray-900)',
-                cursor: 'pointer',
-                flexShrink: 0,
-                transition: 'background 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'var(--ds-gray-alpha-200)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent';
+                borderLeft: '1px solid var(--ds-gray-300)',
+                marginLeft: 6,
               }}
             >
-              <X size={16} />
-            </button>
+              <button
+                type="button"
+                aria-label="Close panel"
+                onClick={handleClose}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginLeft: 6,
+                  width: 24,
+                  height: 24,
+                  padding: 0,
+                  borderRadius: 6,
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--ds-gray-700)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--ds-gray-alpha-100)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                <X size={16} />
+              </button>
+            </div>
           </div>
           {/* Panel body */}
           <div className="flex-1 overflow-y-auto">
