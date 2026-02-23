@@ -702,9 +702,10 @@ export const AttributePanel = ({
                 attribute as keyof typeof attributeToDisplayFn
               ]?.(displayData[attribute as keyof typeof displayData]);
               const isModuleSpecifier = attribute === 'moduleSpecifier';
-              const moduleSpecifierValue = String(
-                displayData.moduleSpecifier ?? displayValue ?? ''
-              );
+              const moduleSpecifierValue =
+                typeof displayValue === 'string'
+                  ? displayValue
+                  : String(displayValue ?? displayData.moduleSpecifier ?? '');
               const showDivider = index < orderedBasicAttributes.length - 1;
 
               return (
