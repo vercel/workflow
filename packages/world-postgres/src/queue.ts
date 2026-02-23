@@ -29,9 +29,9 @@ function createGraphileLogger() {
     if (level === 'debug' && !isVerbose()) return;
     const pipe = level === 'error' ? process.stderr : process.stdout;
     if (meta) {
-      pipe.write(JSON.stringify(meta, null, 2));
+      pipe.write(`[Graphile Worker] ${message} ${JSON.stringify(meta, null, 2)}\n`);
     } else {
-      pipe.write(`[Graphile Worker] ${message}`);
+      pipe.write(`[Graphile Worker] ${message}\n`);
     }
   });
 }
