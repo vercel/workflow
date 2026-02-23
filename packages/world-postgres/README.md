@@ -68,6 +68,7 @@ const world = createWorld({
 | `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `'postgres://world:world@localhost:5432/world'` |
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `10`                                            |
+| `GRAPHILE_LOGGER_DEBUG`                | Set to `1` to enable graphile-worker debug logging                                            | -                                               |
 
 ## Database Setup
 
