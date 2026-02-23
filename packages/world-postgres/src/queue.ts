@@ -26,7 +26,7 @@ function createGraphileLogger() {
 
   return new Logger(() => (level: string, message: string, meta?: unknown) => {
     if (isJsonMode()) return;
-    if (level === 'debug' && !isVerbose()) return;
+    if ((level === 'debug' || level === 'info') && !isVerbose()) return;
     const pipe = level === 'error' ? process.stderr : process.stdout;
     if (meta) {
       pipe.write(`[Graphile Worker] ${message} ${JSON.stringify(meta, null, 2)}\n`);
