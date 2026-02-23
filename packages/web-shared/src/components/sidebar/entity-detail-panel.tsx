@@ -156,20 +156,14 @@ export function EntityDetailPanel({
     if (resource !== 'sleep' || !rawEvents) return false;
     const terminalStates = ['completed', 'failed', 'cancelled'];
     if (terminalStates.includes(run.status)) return false;
+    const hasWaitCreated = rawEvents.some(
+      (e) => e.eventType === 'wait_created'
+    );
+    if (!hasWaitCreated) return false;
     const hasWaitCompleted = rawEvents.some(
       (e) => e.eventType === 'wait_completed'
     );
-    if (hasWaitCompleted) return false;
-    const waitCreatedEvent = rawEvents.find(
-      (e) => e.eventType === 'wait_created'
-    );
-    const eventData = (waitCreatedEvent as any)?.eventData as
-      | { resumeAt?: string | Date }
-      | undefined;
-    const resumeAt = eventData?.resumeAt;
-    if (!resumeAt) return false;
-    const resumeAtDate = new Date(resumeAt);
-    return resumeAtDate.getTime() > Date.now();
+    return !hasWaitCompleted;
   }, [resource, rawEvents, rawEventsLength, run.status]);
 
   // Check if this hook can be resolved
