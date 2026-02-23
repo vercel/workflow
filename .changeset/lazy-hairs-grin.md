@@ -2,4 +2,4 @@
 "@workflow/ai": patch
 ---
 
-Pass requestMetadata to `prepareSendMessagesRequest()`
+Pass optional request metadata through `WorkflowChatTransport`
