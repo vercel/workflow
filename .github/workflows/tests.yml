@@ -15,7 +15,7 @@ on:
 concurrency:
   # Unique group for this workflow and branch
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Phase 0: Update PR comment to show tests are running
