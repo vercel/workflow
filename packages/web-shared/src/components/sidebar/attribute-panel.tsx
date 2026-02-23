@@ -396,65 +396,13 @@ const attributeToDisplayFn: Record<
   },
   error: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    // Handle structured error format
-    if (value && typeof value === 'object' && 'message' in value) {
-      const error = value as {
-        message: string;
-        stack?: string;
-        code?: string;
-      };
-
-      return (
-        <DetailCard summary="Error">
-          <div className="flex flex-col gap-2">
-            {/* Show code if it exists */}
-            {error.code && (
-              <div>
-                <span
-                  className="text-[11px] font-medium"
-                  style={{ color: 'var(--ds-gray-700)' }}
-                >
-                  Error Code:{' '}
-                </span>
-                <code
-                  className="text-[11px]"
-                  style={{ color: 'var(--ds-gray-1000)' }}
-                >
-                  {error.code}
-                </code>
-              </div>
-            )}
-            {/* Show stack if available, otherwise just the message */}
-            <pre
-              className="text-[11px] overflow-x-auto rounded-md border p-3"
-              style={{
-                borderColor: 'var(--ds-gray-300)',
-                backgroundColor: 'var(--ds-gray-100)',
-                color: 'var(--ds-gray-1000)',
-                whiteSpace: 'pre-wrap',
-              }}
-            >
-              <code>{error.stack || error.message}</code>
-            </pre>
-          </div>
-        </DetailCard>
-      );
-    }
-
-    // Fallback for plain string errors
     return (
-      <DetailCard summary="Error">
-        <pre
-          className="text-[11px] overflow-x-auto rounded-md border p-3"
-          style={{
-            borderColor: 'var(--ds-gray-300)',
-            backgroundColor: 'var(--ds-gray-100)',
-            color: 'var(--ds-gray-1000)',
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          <code>{String(value)}</code>
-        </pre>
+      <DetailCard
+        summary="Error"
+        summaryClassName="text-base py-2"
+        contentClassName="mt-0"
+      >
+        {JsonBlock(value)}
       </DetailCard>
     );
   },
@@ -574,10 +522,10 @@ export const AttributeBlock = ({
       )}
       <div
         key={attribute}
-        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
+        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'gap-2 my-3.5' : 'gap-0'}`}
       >
         <span
-          className={`${attribute === 'input' || attribute === 'output' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
+          className={`${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
           style={{ color: 'var(--ds-gray-700)' }}
         >
           {attribute}
