@@ -1100,6 +1100,87 @@ describe('e2e', () => {
   );
 
   test(
+    'hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      // Start first workflow - it will create a hook, receive one payload, then dispose and sleep
+      const run1 = await start(await e2e('hookDisposeTestWorkflow'), [
+        token,
+        customData,
+      ]);
+
+      // Wait for the hook to be registered by workflow 1
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook exists and belongs to workflow 1
+      let hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run1.runId);
+
+      // Send payload to first workflow - this will trigger it to dispose the hook
+      await resumeHook(hook, {
+        message: 'first-payload',
+        customData: (hook.metadata as any)?.customData,
+      });
+
+      // Wait for workflow 1 to process the payload and dispose the hook
+      // The workflow has a 5s sleep after disposal, so it's still running
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      // Now start workflow 2 with the SAME token while workflow 1 is still running
+      // This should succeed because workflow 1 disposed its hook
+      const run2 = await start(await e2e('hookDisposeTestWorkflow'), [
+        token,
+        customData,
+      ]);
+
+      // Wait for workflow 2's hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook now belongs to workflow 2
+      hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run2.runId);
+
+      // Send payload to workflow 2
+      await resumeHook(hook, {
+        message: 'second-payload',
+        customData: (hook.metadata as any)?.customData,
+      });
+
+      // Wait for both workflows to complete
+      const [run1Result, run2Result] = await Promise.all([
+        run1.returnValue,
+        run2.returnValue,
+      ]);
+
+      // Verify workflow 1 completed with its payload
+      expect(run1Result).toMatchObject({
+        message: 'first-payload',
+        customData,
+        disposed: true,
+        hookDisposeTestData: 'workflow_completed',
+      });
+
+      // Verify workflow 2 completed with its payload
+      expect(run2Result).toMatchObject({
+        message: 'second-payload',
+        customData,
+        disposed: true,
+        hookDisposeTestData: 'workflow_completed',
+      });
+
+      // Verify both runs completed successfully
+      const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
+      expect(run1Data.status).toBe('completed');
+
+      const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
+      expect(run2Data.status).toBe('completed');
+    }
+  );
+
+  test(
     'stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)',
     { timeout: 60_000 },
     async () => {

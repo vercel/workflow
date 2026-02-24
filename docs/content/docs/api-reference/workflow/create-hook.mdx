@@ -134,6 +134,35 @@ export async function collectHookWorkflow() {
 }
 ```
 
+### Disposing Hooks Early
+
+You can dispose a hook early to release its token for reuse by another workflow. This is useful for handoff patterns where one workflow needs to transfer a hook token to another workflow while still running.
+
+```typescript lineNumbers
+import { createHook } from "workflow"
+
+export async function handoffWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = createHook<{ message: string; handoff?: boolean }>({
+    token: `channel:${channelId}`
+  });
+
+  for await (const payload of hook) {
+    console.log("Received:", payload.message);
+
+    if (payload.handoff) {
+      hook.dispose(); // [!code highlight] Release the token for another workflow
+      break;
+    }
+  }
+
+  // Continue with other work while another workflow uses the token
+}
+```
+
+After calling `dispose()`, the hook will no longer receive events and its token becomes available for other workflows to use.
+
 ## Related Functions
 
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper

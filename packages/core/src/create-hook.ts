@@ -24,6 +24,28 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * The token used to identify this hook.
    */
   token: string;
+
+  /**
+   * Disposes the hook, releasing its token for reuse by other workflows.
+   *
+   * After calling `dispose()`, the hook will no longer receive any events.
+   * This is useful when you want to explicitly release a hook token before
+   * the workflow completes, allowing another workflow to register a hook
+   * with the same token.
+   *
+   * @example
+   * ```ts
+   * const hook = createHook<{ message: string }>({ token: 'my-token' });
+   *
+   * for await (const payload of hook) {
+   *   if (payload.message === 'done') {
+   *     hook.dispose(); // Release the token early
+   *     break;
+   *   }
+   * }
+   * ```
+   */
+  dispose(): void;
 }
 
 /**

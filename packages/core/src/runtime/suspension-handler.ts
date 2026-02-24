@@ -10,6 +10,7 @@ import {
 } from '@workflow/world';
 import { importKey } from '../encryption.js';
 import type {
+  HookDisposedInvocationQueueItem,
   HookInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
@@ -77,6 +78,10 @@ export async function handleSuspension({
   const waitItems = suspension.steps.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
   );
+  const hookDisposedItems = suspension.steps.filter(
+    (item): item is HookDisposedInvocationQueueItem =>
+      item.type === 'hook_disposed'
+  );
 
   // Resolve encryption key for this run
   const rawKey = await world.getEncryptionKeyForRun?.(run);
@@ -133,6 +138,46 @@ export async function handleSuspension({
                   message: err.message,
                 }
               );
+            } else {
+              throw err;
+            }
+          } else {
+            throw err;
+          }
+        }
+      })
+    );
+  }
+
+  // Process hook disposals - these release hook tokens for reuse by other workflows
+  if (hookDisposedItems.length > 0) {
+    await Promise.all(
+      hookDisposedItems.map(async (queueItem) => {
+        const hookDisposedEvent: CreateEventRequest = {
+          eventType: 'hook_disposed' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+        };
+        try {
+          await world.events.create(runId, hookDisposedEvent);
+        } catch (err) {
+          if (WorkflowAPIError.is(err)) {
+            if (err.status === 410) {
+              runtimeLogger.info(
+                'Workflow run already completed, skipping hook disposal',
+                {
+                  workflowRunId: runId,
+                  correlationId: queueItem.correlationId,
+                  message: err.message,
+                }
+              );
+            } else if (err.status === 404) {
+              // Hook may have already been disposed or never created
+              runtimeLogger.info('Hook not found for disposal, continuing', {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              });
             } else {
               throw err;
             }

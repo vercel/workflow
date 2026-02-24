@@ -131,6 +131,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       return EventConsumerResult.Finished;
     });
 
+    // Track if the hook has been disposed
+    let isDisposed = false;
+
     // Helper function to create a new promise that waits for the next hook payload
     function createHookPromise(): Promise<T> {
       const resolvers = withResolvers<T>();
@@ -176,6 +179,22 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       return resolvers.promise;
     }
 
+    // Helper function to dispose the hook
+    function disposeHook(): void {
+      if (isDisposed) {
+        return; // Already disposed, nothing to do
+      }
+      isDisposed = true;
+
+      // Add a hook_disposed invocation to the queue
+      ctx.invocationsQueue.set(`${correlationId}_disposed`, {
+        type: 'hook_disposed',
+        correlationId,
+      });
+
+      webhookLogger.debug('Hook disposed', { correlationId, token });
+    }
+
     const hook: Hook<T> = {
       token,
 
@@ -189,10 +208,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
       // Support `for await (const payload of hook) { … }` syntax
       async *[Symbol.asyncIterator]() {
-        while (true) {
+        while (!isDisposed) {
           yield await this;
         }
       },
+
+      dispose: disposeHook,
     };
 
     return hook;

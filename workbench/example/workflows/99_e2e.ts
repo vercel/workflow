@@ -539,6 +539,50 @@ export async function hookCleanupTestWorkflow(
 
 //////////////////////////////////////////////////////////
 
+/**
+ * Workflow for testing hook.dispose() - allows another workflow to reuse the token
+ * while this workflow is still running.
+ *
+ * Flow:
+ * 1. Creates a hook with a custom token
+ * 2. Waits for the first payload
+ * 3. Disposes the hook (releases the token)
+ * 4. Waits for a sleep before completing (to keep workflow running)
+ */
+export async function hookDisposeTestWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  type Payload = { message: string; customData: string };
+
+  const hook = createHook<Payload>({
+    token,
+    metadata: { customData },
+  });
+
+  // Wait for the first payload
+  const payload = await hook;
+
+  // Dispose the hook - this should release the token for reuse
+  hook.dispose();
+
+  // Sleep for a short time to keep the workflow running
+  // This ensures we can test that another workflow can claim the token
+  // while this workflow is still active
+  await sleep('5s');
+
+  return {
+    message: payload.message,
+    customData: payload.customData,
+    disposed: true,
+    hookDisposeTestData: 'workflow_completed',
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function stepFunctionPassingWorkflow() {
   'use workflow';
   // Pass a step function reference to another step (without closure vars)

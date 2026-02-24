@@ -168,6 +168,43 @@ export async function dataCollectionWorkflow() {
 
 Each time you call `resumeHook()` with the same token, the loop receives another value.
 
+### Disposing Hooks Early
+
+You can dispose a hook early using the `dispose()` method. This releases the hook token so it can be reused by another workflow, even while the current workflow is still running. This is useful when:
+
+- You want to release a custom token for another workflow to use
+- You're done receiving events and want to clean up resources
+- You're implementing a handoff pattern between workflows
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+export async function handoffWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = createHook<{ message: string; handoff?: boolean }>({
+    token: `channel:${channelId}`
+  });
+
+  for await (const payload of hook) {
+    console.log("Received:", payload.message);
+
+    if (payload.handoff) {
+      // Release the token so another workflow can use it
+      hook.dispose();
+      break;
+    }
+  }
+
+  // Continue with other work...
+  console.log("Hook disposed, token is now available for reuse");
+}
+```
+
+<Callout type="info">
+After calling `dispose()`, the hook will no longer receive any events. The async iterator will stop yielding values.
+</Callout>
+
 ## Understanding Webhooks
 
 While hooks are powerful, they require you to manually handle HTTP requests and route them to workflows. **Webhooks** solve this by providing a higher-level abstraction built on top of hooks that:
