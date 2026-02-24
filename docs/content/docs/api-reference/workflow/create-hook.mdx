@@ -14,13 +14,16 @@ Creates a low-level hook primitive that can be used to resume a workflow run wit
 
 Hooks allow external systems to send data to a paused workflow without the HTTP-specific constraints of webhooks. They're identified by a token and can receive any serializable payload.
 
+We recommend using the `using` keyword for automatic disposal when the hook goes out of scope:
+
 ```ts lineNumbers
 import { createHook } from "workflow"
 
 export async function hookWorkflow() {
   "use workflow";
-  const hook = createHook();  // [!code highlight]
+  using hook = createHook();  // [!code highlight]
   const result = await hook; // Suspends the workflow until the hook is resumed
+  // Hook is automatically disposed when it goes out of scope
 }
 ```
 
@@ -68,7 +71,7 @@ The returned `Hook` object also implements `AsyncIterable<T>`, which allows you 
 
 ### Basic Usage
 
-When creating a hook, you can specify a payload type to be used for automatic type safety.
+When creating a hook, you can specify a payload type for automatic type safety. Use the `using` keyword for automatic disposal:
 
 ```typescript lineNumbers
 import { createHook } from "workflow"
@@ -76,7 +79,7 @@ import { createHook } from "workflow"
 export async function approvalWorkflow() {
   "use workflow";
 
-  const hook = createHook<{ approved: boolean; comment: string }>(); // [!code highlight]
+  using hook = createHook<{ approved: boolean; comment: string }>(); // [!code highlight]
   console.log("Send approval to token:", hook.token);
 
   const result = await hook;
@@ -84,6 +87,7 @@ export async function approvalWorkflow() {
   if (result.approved) {
     console.log("Approved with comment:", result.comment);
   }
+  // Hook is automatically disposed when the function exits
 }
 ```
 
@@ -98,9 +102,9 @@ export async function slackBotWorkflow(channelId: string) {
   "use workflow";
 
   // Token constructed from channel ID
-  const hook = createHook<SlackMessage>({ // [!code highlight]
-    token: `slack_webhook:${channelId}`, // [!code highlight]
-  }); // [!code highlight]
+  using hook = createHook<SlackMessage>({ // [!code highlight]
+    token: `slack_webhook:${channelId}`,
+  });
 
   for await (const message of hook) {
     if (message.text === "/stop") {
@@ -108,6 +112,7 @@ export async function slackBotWorkflow(channelId: string) {
     }
     await processMessage(message);
   }
+  // Hook is automatically disposed when the function exits
 }
 ```
 
@@ -121,16 +126,17 @@ import { createHook } from "workflow"
 export async function collectHookWorkflow() {
   "use workflow";
 
-  const hook = createHook<{ message: string; done?: boolean }>();
+  using hook = createHook<{ message: string; done?: boolean }>(); // [!code highlight]
 
   const payloads = [];
-  for await (const payload of hook) { // [!code highlight]
+  for await (const payload of hook) {
     payloads.push(payload);
 
     if (payload.done) break;
   }
 
   return payloads;
+  // Hook is automatically disposed when the function exits
 }
 ```
 

@@ -119,18 +119,22 @@ export async function hookWorkflow(token: string, customData: string) {
 
   type Payload = { message: string; customData: string; done?: boolean };
 
-  const hook = createHook<Payload>({
-    token,
-    metadata: { customData },
-  });
-
   const payloads: Payload[] = [];
-  for await (const payload of hook) {
-    payloads.push(payload);
 
-    if (payload.done) {
-      break;
+  {
+    using hook = createHook<Payload>({
+      token,
+      metadata: { customData },
+    });
+
+    for await (const payload of hook) {
+      payloads.push(payload);
+
+      if (payload.done) {
+        break;
+      }
     }
+    // hook is automatically disposed when the block exits
   }
 
   return payloads;
@@ -155,36 +159,33 @@ export async function webhookWorkflow(
   type Payload = { url: string; method: string; body: string };
   const payloads: Payload[] = [];
 
-  const webhookWithDefaultResponse = createWebhook({ token });
-
-  const res = new Response('Hello from static response!', { status: 402 });
-  console.log('res', res);
-  const webhookWithStaticResponse = createWebhook({
-    token: token2,
-    respondWith: res,
-  });
-  const webhookWithManualResponse = createWebhook({
-    token: token3,
-    respondWith: 'manual',
-  });
-
-  // Webhook with default response
+  // Webhook with default response - using `using` for automatic disposal
   {
-    const req = await webhookWithDefaultResponse;
+    using webhook = createWebhook({ token });
+    const req = await webhook;
     const body = await req.text();
     payloads.push({ url: req.url, method: req.method, body });
   }
 
-  // Webhook with static response
+  // Webhook with static response - using `using` for automatic disposal
   {
-    const req = await webhookWithStaticResponse;
+    const res = new Response('Hello from static response!', { status: 402 });
+    using webhook = createWebhook({
+      token: token2,
+      respondWith: res,
+    });
+    const req = await webhook;
     const body = await req.text();
     payloads.push({ url: req.url, method: req.method, body });
   }
 
-  // Webhook with manual response
+  // Webhook with manual response - using `using` for automatic disposal
   {
-    const req = await webhookWithManualResponse;
+    using webhook = createWebhook({
+      token: token3,
+      respondWith: 'manual',
+    });
+    const req = await webhook;
     const body = await sendWebhookResponse(req);
     payloads.push({ url: req.url, method: req.method, body });
   }
@@ -522,17 +523,26 @@ export async function hookCleanupTestWorkflow(
 
   type Payload = { message: string; customData: string };
 
-  const hook = createHook<Payload>({
-    token,
-    metadata: { customData },
-  });
+  let message: string;
+  let customDataResult: string;
 
-  // Wait for exactly one payload
-  const payload = await hook;
+  {
+    // Use `using` for automatic hook disposal
+    using hook = createHook<Payload>({
+      token,
+      metadata: { customData },
+    });
+
+    // Wait for exactly one payload
+    const payload = await hook;
+    message = payload.message;
+    customDataResult = payload.customData;
+    // hook is automatically disposed when the block exits
+  }
 
   return {
-    message: payload.message,
-    customData: payload.customData,
+    message,
+    customData: customDataResult,
     hookCleanupTestData: 'workflow_completed',
   };
 }
@@ -540,13 +550,13 @@ export async function hookCleanupTestWorkflow(
 //////////////////////////////////////////////////////////
 
 /**
- * Workflow for testing hook.dispose() - allows another workflow to reuse the token
- * while this workflow is still running.
+ * Workflow for testing hook disposal with `using` - allows another workflow
+ * to reuse the token while this workflow is still running.
  *
  * Flow:
- * 1. Creates a hook with a custom token
+ * 1. Creates a hook with a custom token using `using` for automatic disposal
  * 2. Waits for the first payload
- * 3. Disposes the hook (releases the token)
+ * 3. Hook is automatically disposed when the block exits (releases the token)
  * 4. Waits for a sleep before completing (to keep workflow running)
  */
 export async function hookDisposeTestWorkflow(
@@ -557,16 +567,22 @@ export async function hookDisposeTestWorkflow(
 
   type Payload = { message: string; customData: string };
 
-  const hook = createHook<Payload>({
-    token,
-    metadata: { customData },
-  });
+  let message: string;
+  let customDataResult: string;
 
-  // Wait for the first payload
-  const payload = await hook;
+  {
+    // Use `using` for automatic disposal - hook is released when block exits
+    using hook = createHook<Payload>({
+      token,
+      metadata: { customData },
+    });
 
-  // Dispose the hook - this should release the token for reuse
-  hook.dispose();
+    // Wait for the first payload
+    const payload = await hook;
+    message = payload.message;
+    customDataResult = payload.customData;
+    // Hook is automatically disposed when the block exits
+  }
 
   // Sleep for a short time to keep the workflow running
   // This ensures we can test that another workflow can claim the token
@@ -574,8 +590,8 @@ export async function hookDisposeTestWorkflow(
   await sleep('5s');
 
   return {
-    message: payload.message,
-    customData: payload.customData,
+    message,
+    customData: customDataResult,
     disposed: true,
     hookDisposeTestData: 'workflow_completed',
   };

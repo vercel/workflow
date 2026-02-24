@@ -13,16 +13,19 @@ Creates a webhook that can be used to suspend and resume a workflow run upon rec
 
 Webhooks provide a way for external systems to send HTTP requests directly to your workflow. Unlike hooks which accept arbitrary payloads, webhooks work with standard HTTP `Request` objects and can return HTTP `Response` objects.
 
+We recommend using the `using` keyword for automatic disposal when the webhook goes out of scope:
+
 ```ts lineNumbers
 import { createWebhook } from "workflow"
 
 export async function webhookWorkflow() {
   "use workflow";
-  const webhook = createWebhook();  // [!code highlight]
+  using webhook = createWebhook();  // [!code highlight]
   console.log("Webhook URL:", webhook.url);
 
   const request = await webhook; // Suspends until HTTP request received
   console.log("Received request:", request.method, request.url);
+  // Webhook is automatically disposed when it goes out of scope
 }
 ```
 
@@ -58,7 +61,7 @@ The `RequestWithResponse` type extends the standard `Request` interface with a `
 
 ### Basic Usage
 
-Create a webhook that receives HTTP requests and logs the request details:
+Create a webhook that receives HTTP requests and logs the request details. Use the `using` keyword for automatic disposal:
 
 ```typescript lineNumbers
 import { createWebhook } from "workflow"
@@ -66,7 +69,7 @@ import { createWebhook } from "workflow"
 export async function basicWebhookWorkflow() {
   "use workflow";
 
-  const webhook = createWebhook(); // [!code highlight]
+  using webhook = createWebhook(); // [!code highlight]
   console.log("Send requests to:", webhook.url);
 
   const request = await webhook;
@@ -76,6 +79,7 @@ export async function basicWebhookWorkflow() {
 
   const body = await request.text();
   console.log("Body:", body);
+  // Webhook is automatically disposed when the function exits
 }
 ```
 
@@ -86,20 +90,20 @@ Use the `respondWith()` method to send custom HTTP responses. Note that `respond
 ```typescript lineNumbers
 import { createWebhook, type RequestWithResponse } from "workflow"
 
-async function sendResponse(request: RequestWithResponse) { // [!code highlight]
-  "use step"; // [!code highlight]
-  await request.respondWith( // [!code highlight]
-    new Response(JSON.stringify({ success: true, message: "Received!" }), { // [!code highlight]
-      status: 200, // [!code highlight]
-      headers: { "Content-Type": "application/json" } // [!code highlight]
-    }) // [!code highlight]
-  ); // [!code highlight]
-} // [!code highlight]
+async function sendResponse(request: RequestWithResponse) {
+  "use step";
+  await request.respondWith(
+    new Response(JSON.stringify({ success: true, message: "Received!" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    })
+  );
+}
 
 export async function respondingWebhookWorkflow() {
   "use workflow";
 
-  const webhook = createWebhook();
+  using webhook = createWebhook(); // [!code highlight]
   console.log("Webhook URL:", webhook.url);
 
   const request = await webhook;
@@ -110,6 +114,7 @@ export async function respondingWebhookWorkflow() {
   // Continue workflow processing
   const data = await request.json();
   await processData(data);
+  // Webhook is automatically disposed when the function exits
 }
 
 async function processData(data: any) {
@@ -124,7 +129,7 @@ async function processData(data: any) {
 Tokens are used to identify a specific webhook. You can customize the token to be more specific to a use case.
 
 ```typescript lineNumbers
-import { type RequestWithResponse } from "workflow"
+import { createWebhook, type RequestWithResponse } from "workflow"
 
 async function sendAck(request: RequestWithResponse) {
   "use step";
@@ -139,9 +144,9 @@ export async function githubWebhookWorkflow(repoName: string) {
   "use workflow";
 
   // Use a deterministic token based on the repository
-  const webhook = createWebhook({ // [!code highlight]
-    token: `github_webhook:${repoName}`, // [!code highlight]
-  }); // [!code highlight]
+  using webhook = createWebhook({ // [!code highlight]
+    token: `github_webhook:${repoName}`,
+  });
 
   console.log("Configure GitHub webhook:", webhook.url);
 
@@ -151,6 +156,7 @@ export async function githubWebhookWorkflow(repoName: string) {
   await sendAck(request);
 
   await deployCommit(event);
+  // Webhook is automatically disposed when the function exits
 }
 
 async function deployCommit(event: any) {
@@ -189,11 +195,11 @@ async function sendStopResponse(request: RequestWithResponse) {
 export async function slackCommandWorkflow(channelId: string) {
   "use workflow";
 
-  const webhook = createWebhook({
+  using webhook = createWebhook({ // [!code highlight]
     token: `slack_command:${channelId}`,
   });
 
-  for await (const request of webhook) { // [!code highlight]
+  for await (const request of webhook) {
     const formData = await request.formData();
     const command = formData.get("command");
     const text = formData.get("text");
@@ -212,6 +218,7 @@ export async function slackCommandWorkflow(channelId: string) {
       break;
     }
   }
+  // Webhook is automatically disposed when the function exits // [!code highlight]
 }
 
 async function checkSystemStatus() {

@@ -56,6 +56,8 @@ async function getOpenAIResponse(respId: string): Promise<string> {
  * for human-in-the-loop workflows by, for example, including in an email.
  *
  * The workflow run will be suspended until the hook is invoked.
+ *
+ * We use the `using` keyword for automatic disposal when the hook goes out of scope.
  */
 export async function withCreateHook() {
   'use workflow';
@@ -66,7 +68,8 @@ export async function withCreateHook() {
 
   // Register the hook with the token that is specific
   // to the response ID that we are interested in.
-  const hook = createHook<{ type: string; data: { id: string } }>({
+  // Use `using` for automatic disposal when the workflow ends.
+  using hook = createHook<{ type: string; data: { id: string } }>({
     token: `openai:${respId}`,
   });
   console.log('Registered hook:', hook.token);
@@ -81,4 +84,5 @@ export async function withCreateHook() {
   }
 
   console.log('Hook demo workflow completed');
+  // Hook is automatically disposed when the function exits
 }
