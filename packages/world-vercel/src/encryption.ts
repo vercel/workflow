@@ -125,7 +125,9 @@ export async function fetchRunKey(
   const data = await response.json();
   const result = z.object({ key: z.string().nullable() }).safeParse(data);
   if (!result.success) {
-    throw new Error('Invalid response from Vercel API, missing "key" field');
+    throw new Error(
+      `Invalid response from Vercel API: expected { key: string | null }. Zod error: ${result.error.message}`
+    );
   }
   if (result.data.key === null) {
     return undefined;
