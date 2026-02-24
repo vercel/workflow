@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
-import { listStreams } from '~/lib/workflow-streams';
+import { listStreams } from '~/lib/client/workflow-streams';
 
 const STREAMS_REFRESH_INTERVAL_MS = 10000;
 

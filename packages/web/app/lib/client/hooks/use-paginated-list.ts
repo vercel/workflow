@@ -1,9 +1,12 @@
 import type { Hook, WorkflowRun, WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  unwrapOrThrow,
+  WorkflowWebAPIError,
+} from '~/lib/client/workflow-errors';
 import { fetchHooks, fetchRuns } from '~/lib/rpc-client';
 import type { EnvMap, PaginatedResult } from '~/lib/types';
 import { getPaginationDisplay } from '~/lib/utils';
-import { unwrapOrThrow, WorkflowWebAPIError } from '~/lib/workflow-errors';
 
 export interface PageResult<T> {
   data: T[] | null;

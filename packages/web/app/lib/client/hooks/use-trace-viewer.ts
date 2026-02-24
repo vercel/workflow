@@ -8,8 +8,11 @@ import {
   fetchSteps,
 } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
-import { unwrapServerActionResult } from '~/lib/workflow-errors';
-import { fetchAllPaginated, pollResource } from '~/lib/workflow-primitives';
+import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
+import {
+  fetchAllPaginated,
+  pollResource,
+} from '~/lib/client/workflow-primitives';
 
 const LIVE_POLL_LIMIT = 10;
 const LIVE_STEP_UPDATE_INTERVAL_MS = 2000;

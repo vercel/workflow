@@ -5,17 +5,17 @@ import {
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import { useCallback, useEffect, useState } from 'react';
 import {
+  unwrapOrThrow,
+  unwrapServerActionResult,
+  WorkflowWebAPIError,
+} from '~/lib/client/workflow-errors';
+import {
   fetchEventsByCorrelationId,
   fetchHook,
   fetchRun,
   fetchStep,
 } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
-import {
-  unwrapOrThrow,
-  unwrapServerActionResult,
-  WorkflowWebAPIError,
-} from '~/lib/workflow-errors';
 
 // Helper function to fetch resource and get correlation ID
 async function fetchResourceWithCorrelationId(
