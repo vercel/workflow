@@ -106,7 +106,7 @@ export async function fetchRunKey(
     );
   }
 
-  const params = new URLSearchParams({ projectId, runId });
+  const params = new URLSearchParams({ projectId, runId, deploymentId });
   const response = await fetch(
     `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
     {
