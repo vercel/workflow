@@ -40,7 +40,7 @@ const WORKFLOW_RUN: WorkflowRun = {
   startedAt: undefined,
 };
 
-function emptyPaginatedResult() {
+function emptyPage() {
   return Promise.resolve({
     success: true as const,
     data: { data: [], cursor: undefined, hasMore: false },
@@ -52,14 +52,14 @@ describe('useWorkflowTraceViewerData', () => {
     vi.clearAllMocks();
   });
 
-  it('fetches run, steps, hooks, and events on mount', async () => {
+  it('shows complete trace data on load', async () => {
     vi.mocked(fetchRun).mockResolvedValue({
       success: true,
       data: WORKFLOW_RUN,
     });
-    vi.mocked(fetchSteps).mockReturnValue(emptyPaginatedResult());
-    vi.mocked(fetchHooks).mockReturnValue(emptyPaginatedResult());
-    vi.mocked(fetchEvents).mockReturnValue(emptyPaginatedResult());
+    vi.mocked(fetchSteps).mockReturnValue(emptyPage());
+    vi.mocked(fetchHooks).mockReturnValue(emptyPage());
+    vi.mocked(fetchEvents).mockReturnValue(emptyPage());
 
     const { result } = renderHook(() =>
       useWorkflowTraceViewerData(env, 'run-1')
@@ -76,7 +76,7 @@ describe('useWorkflowTraceViewerData', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('sets error when fetchRun fails', async () => {
+  it('shows error when run cannot be loaded', async () => {
     vi.mocked(fetchRun).mockResolvedValue({
       success: false,
       error: {
@@ -86,9 +86,9 @@ describe('useWorkflowTraceViewerData', () => {
         request: { operation: 'fetchRun', params: {} },
       },
     });
-    vi.mocked(fetchSteps).mockReturnValue(emptyPaginatedResult());
-    vi.mocked(fetchHooks).mockReturnValue(emptyPaginatedResult());
-    vi.mocked(fetchEvents).mockReturnValue(emptyPaginatedResult());
+    vi.mocked(fetchSteps).mockReturnValue(emptyPage());
+    vi.mocked(fetchHooks).mockReturnValue(emptyPage());
+    vi.mocked(fetchEvents).mockReturnValue(emptyPage());
 
     const { result } = renderHook(() =>
       useWorkflowTraceViewerData(env, 'run-1')
@@ -98,11 +98,10 @@ describe('useWorkflowTraceViewerData', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.error).not.toBeNull();
-    expect(result.current.error!.message).toBe('run not found');
+    expect(result.current.error?.message).toBe('run not found');
   });
 
-  it('populates steps from paginated fetch', async () => {
+  it('shows steps associated with the run', async () => {
     vi.mocked(fetchRun).mockResolvedValue({
       success: true,
       data: WORKFLOW_RUN,
@@ -123,8 +122,8 @@ describe('useWorkflowTraceViewerData', () => {
         hasMore: false,
       },
     });
-    vi.mocked(fetchHooks).mockReturnValue(emptyPaginatedResult());
-    vi.mocked(fetchEvents).mockReturnValue(emptyPaginatedResult());
+    vi.mocked(fetchHooks).mockReturnValue(emptyPage());
+    vi.mocked(fetchEvents).mockReturnValue(emptyPage());
 
     const { result } = renderHook(() =>
       useWorkflowTraceViewerData(env, 'run-1')
@@ -136,5 +135,43 @@ describe('useWorkflowTraceViewerData', () => {
 
     expect(result.current.steps).toHaveLength(1);
     expect(result.current.steps[0]).toMatchObject({ stepId: 'step-1' });
+  });
+
+  it('shows hooks associated with the run', async () => {
+    vi.mocked(fetchRun).mockResolvedValue({
+      success: true,
+      data: WORKFLOW_RUN,
+    });
+    vi.mocked(fetchSteps).mockReturnValue(emptyPage());
+    vi.mocked(fetchHooks).mockResolvedValue({
+      success: true,
+      data: {
+        data: [
+          {
+            hookId: 'hook-1',
+            runId: 'run-1',
+            createdAt: new Date(),
+            token: 'tok-1',
+            ownerId: 'owner-1',
+            projectId: 'proj-1',
+            environment: 'development',
+          },
+        ] as any,
+        cursor: undefined,
+        hasMore: false,
+      },
+    });
+    vi.mocked(fetchEvents).mockReturnValue(emptyPage());
+
+    const { result } = renderHook(() =>
+      useWorkflowTraceViewerData(env, 'run-1')
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.hooks).toHaveLength(1);
+    expect(result.current.hooks[0]).toMatchObject({ hookId: 'hook-1' });
   });
 });

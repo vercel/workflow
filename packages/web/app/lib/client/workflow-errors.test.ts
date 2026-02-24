@@ -9,51 +9,35 @@ describe('unwrapOrThrow', () => {
     expect(result).toEqual({ id: '1' });
   });
 
-  it('throws WorkflowWebAPIError on failure', async () => {
-    await expect(
-      unwrapOrThrow(
-        Promise.resolve({
-          success: false,
-          error: {
-            message: 'not found',
-            layer: 'API' as const,
-            cause: 'missing',
-            request: {
-              operation: 'fetchRun',
-              params: { id: '1' },
-              status: 404,
-            },
-          },
-        })
-      )
-    ).rejects.toThrow(WorkflowWebAPIError);
+  it('throws WorkflowWebAPIError with the server error message on failure', async () => {
+    const err = await unwrapOrThrow(
+      Promise.resolve({
+        success: false,
+        error: {
+          message: 'not found',
+          layer: 'API' as const,
+          cause: 'missing',
+          request: { operation: 'fetchRun', params: { id: '1' }, status: 404 },
+        },
+      })
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(WorkflowWebAPIError);
+    expect((err as WorkflowWebAPIError).message).toBe('not found');
   });
 
-  it('throws WorkflowWebAPIError with correct message', async () => {
-    await expect(
-      unwrapOrThrow(
-        Promise.resolve({
-          success: false,
-          error: {
-            message: 'server down',
-            layer: 'server' as const,
-            cause: 'timeout',
-            request: { operation: 'fetchRun', params: {} },
-          },
-        })
-      )
-    ).rejects.toThrow('server down');
-  });
-
-  it('throws on unknown error when failure has no error details', async () => {
+  it('throws with a generic message when failure has no error details', async () => {
     await expect(
       unwrapOrThrow(Promise.resolve({ success: false }))
     ).rejects.toThrow('Unknown error occurred');
   });
 
-  it('throws on promise rejection', async () => {
-    await expect(
-      unwrapOrThrow(Promise.reject(new Error('network error')))
-    ).rejects.toThrow(WorkflowWebAPIError);
+  it('wraps unexpected promise rejections in WorkflowWebAPIError', async () => {
+    const err = await unwrapOrThrow(
+      Promise.reject(new Error('network error'))
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(WorkflowWebAPIError);
+    expect(err.message).toBe('network error');
   });
 });

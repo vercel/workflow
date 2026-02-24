@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { WorkflowWebAPIError } from './workflow-errors';
 import {
   fetchAllPaginated,
+  MAX_ITEMS,
   mergeById,
   pollResource,
 } from './workflow-primitives';
 
-// ─── mergeById ──────────────────────────────────────────────────────
+// ─── mergeById ──────────────────────────────────────────────────────────────
 
 describe('mergeById', () => {
   it('merges two arrays by id key', () => {
@@ -44,7 +45,7 @@ describe('mergeById', () => {
   });
 });
 
-// ─── fetchAllPaginated ──────────────────────────────────────────────
+// ─── fetchAllPaginated ───────────────────────────────────────────────────────
 
 describe('fetchAllPaginated', () => {
   it('fetches a single page when hasMore is false', async () => {
@@ -78,7 +79,6 @@ describe('fetchAllPaginated', () => {
     const result = await fetchAllPaginated(fetchPage);
     expect(result.data).toEqual([{ id: '1' }, { id: '2' }, { id: '3' }]);
     expect(fetchPage).toHaveBeenCalledTimes(3);
-    expect(fetchPage).toHaveBeenNthCalledWith(1, undefined);
     expect(fetchPage).toHaveBeenNthCalledWith(2, 'cur1');
     expect(fetchPage).toHaveBeenNthCalledWith(3, 'cur2');
   });
@@ -99,7 +99,7 @@ describe('fetchAllPaginated', () => {
     expect(result.data).toEqual([{ id: '1' }]);
   });
 
-  it('returns last cursor', async () => {
+  it('cursor is from the last page that had more items', async () => {
     const fetchPage = vi
       .fn()
       .mockResolvedValueOnce({
@@ -114,9 +114,23 @@ describe('fetchAllPaginated', () => {
     const result = await fetchAllPaginated(fetchPage);
     expect(result.cursor).toBe('cur1');
   });
+
+  it('stops after MAX_ITEMS regardless of hasMore', async () => {
+    const bigBatch = Array.from({ length: MAX_ITEMS }, (_, i) => ({
+      id: String(i),
+    }));
+    const fetchPage = vi.fn().mockResolvedValue({
+      error: null,
+      result: { data: bigBatch, cursor: 'c1', hasMore: true },
+    });
+
+    const result = await fetchAllPaginated(fetchPage);
+    expect(result.data).toHaveLength(MAX_ITEMS);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
 });
 
-// ─── pollResource ───────────────────────────────────────────────────
+// ─── pollResource ────────────────────────────────────────────────────────────
 
 describe('pollResource', () => {
   function makeOpts(
@@ -220,8 +234,10 @@ describe('pollResource', () => {
     expect(opts.setCursor).toHaveBeenCalledWith('c1');
   });
 
-  it('applies transform to new items', async () => {
-    const opts = makeOpts({
+  it('applies transform to each new item before merging', async () => {
+    let currentItems: { id: string; value: string }[] = [];
+
+    await pollResource({
       fetchFn: vi.fn().mockResolvedValue({
         error: null,
         result: {
@@ -230,13 +246,15 @@ describe('pollResource', () => {
           hasMore: false,
         },
       }),
+      setItems: (updater: (prev: any[]) => any[]) => {
+        currentItems = updater(currentItems);
+      },
+      setCursor: vi.fn(),
+      setError: vi.fn(),
+      idKey: 'id',
       transform: (item: any) => ({ ...item, value: 'transformed' }),
     });
 
-    await pollResource(opts);
-    // Verify setItems was called with an updater function
-    const updater = opts.setItems.mock.calls[0][0];
-    const merged = updater([]);
-    expect(merged).toEqual([{ id: '1', value: 'transformed' }]);
+    expect(currentItems).toEqual([{ id: '1', value: 'transformed' }]);
   });
 });

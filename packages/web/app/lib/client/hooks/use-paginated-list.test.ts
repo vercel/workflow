@@ -1,6 +1,10 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useWorkflowHooks, useWorkflowRuns } from './use-paginated-list';
+import {
+  usePaginatedList,
+  useWorkflowHooks,
+  useWorkflowRuns,
+} from './use-paginated-list';
 
 vi.mock('~/lib/rpc-client', () => ({
   fetchHooks: vi.fn(),
@@ -10,23 +14,14 @@ vi.mock('~/lib/rpc-client', () => ({
 import type { Hook, WorkflowRun } from '@workflow/world';
 import { fetchHooks, fetchRuns } from '~/lib/rpc-client';
 
-const mockFetchHooks = vi.mocked(fetchHooks);
-const mockFetchRuns = vi.mocked(fetchRuns);
+// ─── Fixtures ──────────────────────────────────────────────────────────────
 
-const HOOK: Hook = {
-  hookId: 'hook-1',
-  runId: 'run-1',
-  createdAt: new Date(),
-  token: 'tok-1',
-  ownerId: 'owner-1',
-  projectId: 'proj-1',
-  environment: 'development',
-};
+const env = { SOME_VAR: 'test' };
 
-const WORKFLOW_RUN: WorkflowRun = {
+const RUN: WorkflowRun = {
   runId: 'run-1',
-  deploymentId: 'deployment-1',
-  workflowName: 'workflow-1',
+  deploymentId: 'dep-1',
+  workflowName: 'wf-1',
   input: {},
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -40,229 +35,361 @@ const WORKFLOW_RUN: WorkflowRun = {
   startedAt: undefined,
 };
 
-const env = { SOME_VAR: 'test' };
+const HOOK: Hook = {
+  hookId: 'hook-1',
+  runId: 'run-1',
+  createdAt: new Date(),
+  token: 'tok-1',
+  ownerId: 'owner-1',
+  projectId: 'proj-1',
+  environment: 'development',
+};
 
-function makeHooksResponse(
-  hooks: Hook[],
+/** Resolved PaginatedResult for usePaginatedList's fetchFn */
+function page<T>(data: T[], opts: { cursor?: string; hasMore?: boolean } = {}) {
+  return Promise.resolve({
+    data,
+    cursor: opts.cursor,
+    hasMore: opts.hasMore ?? false,
+  });
+}
+
+/** Resolved rpc-client result for useWorkflowRuns/useWorkflowHooks mocks */
+function rpcPage<T>(
+  data: T[],
   opts: { cursor?: string; hasMore?: boolean } = {}
 ) {
   return Promise.resolve({
     success: true as const,
-    data: {
-      data: hooks,
-      cursor: opts.cursor,
-      hasMore: opts.hasMore ?? false,
-    },
+    data: { data, cursor: opts.cursor, hasMore: opts.hasMore ?? false },
   });
 }
 
-function makeRunsResponse(
-  runs: WorkflowRun[],
-  opts: { cursor?: string; hasMore?: boolean } = {}
-) {
+function rpcError(message: string) {
   return Promise.resolve({
-    success: true as const,
-    data: {
-      data: runs,
-      cursor: opts.cursor,
-      hasMore: opts.hasMore ?? false,
+    success: false as const,
+    error: {
+      message,
+      layer: 'API' as const,
+      cause: 'test',
+      request: { operation: 'test', params: {} },
     },
   });
 }
 
-describe('useWorkflowHooks', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+// ─── usePaginatedList ───────────────────────────────────────────────────────
 
-  it('fetches initial page on mount', async () => {
-    mockFetchHooks.mockReturnValue(makeHooksResponse([HOOK]));
+describe('usePaginatedList', () => {
+  it('shows first page data after loading', async () => {
+    const fetchFn = vi.fn().mockReturnValue(page(['a', 'b']));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
 
-    const { result } = renderHook(() =>
-      useWorkflowHooks(env, { runId: 'run-1', limit: 10 })
-    );
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
 
-    await waitFor(() => {
-      expect(result.current.data.isLoading).toBe(false);
-    });
-
-    expect(result.current.data.data).toEqual([HOOK]);
+    expect(result.current.data.data).toEqual(['a', 'b']);
     expect(result.current.error).toBeNull();
-    expect(result.current.hasNextPage).toBe(false);
   });
 
-  it('handles fetch error', async () => {
-    mockFetchHooks.mockReturnValue(
-      Promise.resolve({
-        success: false,
-        error: {
-          message: 'fetch failed',
-          layer: 'API' as const,
-          cause: 'timeout',
-          request: { operation: 'fetchHooks', params: {} },
-        },
-      })
-    );
+  it('shows error when fetch throws', async () => {
+    const fetchFn = vi.fn().mockRejectedValue(new Error('network error'));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
 
-    const { result } = renderHook(() =>
-      useWorkflowHooks(env, { runId: 'run-1', limit: 10 })
-    );
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
 
-    await waitFor(() => {
-      expect(result.current.data.isLoading).toBe(false);
-    });
-
-    expect(result.current.error).not.toBeNull();
+    expect(result.current.error?.message).toBe('network error');
     expect(result.current.data.data).toBeNull();
   });
 
-  it('passes runId to fetchHooks', async () => {
-    mockFetchHooks.mockReturnValue(makeHooksResponse([]));
+  it('has no next or previous page when server returns a single page', async () => {
+    const fetchFn = vi.fn().mockReturnValue(page(['a'], { hasMore: false }));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
 
-    renderHook(() => useWorkflowHooks(env, { runId: 'run-42', limit: 5 }));
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
 
-    await waitFor(() => {
-      expect(mockFetchHooks).toHaveBeenCalled();
+    expect(result.current.hasNextPage).toBe(false);
+    expect(result.current.hasPreviousPage).toBe(false);
+  });
+
+  it('signals next page available when server returns hasMore', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockReturnValue(page(['a'], { cursor: 'c1', hasMore: true }));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    expect(result.current.hasNextPage).toBe(true);
+  });
+
+  it('shows second page data and enables back navigation after nextPage()', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockReturnValueOnce(page(['page-1'], { cursor: 'c1', hasMore: true }))
+      .mockReturnValueOnce(page(['page-2'], { hasMore: false }));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    act(() => {
+      result.current.nextPage();
     });
 
-    expect(mockFetchHooks).toHaveBeenCalledWith(
-      env,
-      expect.objectContaining({ runId: 'run-42', limit: 5 })
+    await waitFor(() => expect(result.current.data.data).toEqual(['page-2']));
+
+    expect(result.current.hasPreviousPage).toBe(true);
+    expect(result.current.hasNextPage).toBe(false);
+    expect(result.current.currentPage).toBe(1);
+  });
+
+  it('returns to first page after previousPage()', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockReturnValueOnce(page(['page-1'], { cursor: 'c1', hasMore: true }))
+      .mockReturnValue(page(['page-2'], { hasMore: false }));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    act(() => {
+      result.current.nextPage();
+    });
+    await waitFor(() => expect(result.current.data.data).toEqual(['page-2']));
+
+    act(() => {
+      result.current.previousPage();
+    });
+    await waitFor(() => expect(result.current.data.data).toEqual(['page-1']));
+
+    expect(result.current.hasPreviousPage).toBe(false);
+    expect(result.current.currentPage).toBe(0);
+  });
+
+  it('back navigation returns the original page data even if server state has changed', async () => {
+    // fetchFn returns different data on each call — cache should serve the original
+    const fetchFn = vi
+      .fn()
+      .mockReturnValueOnce(page(['original'], { cursor: 'c1', hasMore: true }))
+      .mockReturnValueOnce(page(['page-2'], { hasMore: false }))
+      .mockReturnValue(page(['would-overwrite-if-refetched']));
+
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    act(() => {
+      result.current.nextPage();
+    });
+    await waitFor(() => expect(result.current.data.data).toEqual(['page-2']));
+
+    act(() => {
+      result.current.previousPage();
+    });
+    await waitFor(() => expect(result.current.data.data).toEqual(['original']));
+  });
+
+  it('reload resets to page 1 with fresh data', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockReturnValueOnce(page(['page-1'], { cursor: 'c1', hasMore: true }))
+      .mockReturnValueOnce(page(['page-2'], { hasMore: false }))
+      .mockReturnValue(page(['refreshed'], { hasMore: false }));
+
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    act(() => {
+      result.current.nextPage();
+    });
+    await waitFor(() => expect(result.current.data.data).toEqual(['page-2']));
+
+    act(() => {
+      result.current.reload();
+    });
+    await waitFor(() =>
+      expect(result.current.data.data).toEqual(['refreshed'])
     );
+
+    expect(result.current.currentPage).toBe(0);
+    expect(result.current.hasPreviousPage).toBe(false);
+  });
+
+  it('refresh reloads current page with fresh data without resetting to page 1', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockReturnValueOnce(page(['page-1'], { cursor: 'c1', hasMore: true }))
+      .mockReturnValueOnce(page(['page-2'], { hasMore: false }))
+      .mockReturnValue(page(['page-2-refreshed'], { hasMore: false }));
+
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    act(() => {
+      result.current.nextPage();
+    });
+    await waitFor(() => expect(result.current.data.data).toEqual(['page-2']));
+
+    act(() => {
+      result.current.refresh();
+    });
+    await waitFor(() =>
+      expect(result.current.data.data).toEqual(['page-2-refreshed'])
+    );
+
+    expect(result.current.currentPage).toBe(1);
+  });
+
+  it('nextPage() is a no-op when there is no next page', async () => {
+    const fetchFn = vi.fn().mockReturnValue(page(['a'], { hasMore: false }));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    act(() => {
+      result.current.nextPage();
+    });
+
+    // Data and page position are unchanged
+    expect(result.current.data.data).toEqual(['a']);
+    expect(result.current.currentPage).toBe(0);
+  });
+
+  it('previousPage() is a no-op when already on the first page', async () => {
+    const fetchFn = vi.fn().mockReturnValue(page(['a'], { hasMore: false }));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+
+    act(() => {
+      result.current.previousPage();
+    });
+
+    expect(result.current.data.data).toEqual(['a']);
+    expect(result.current.currentPage).toBe(0);
+  });
+
+  it('tracks currentPage as the user navigates forward', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockReturnValueOnce(page(['a'], { cursor: 'c1', hasMore: true }))
+      .mockReturnValueOnce(page(['b'], { cursor: 'c2', hasMore: true }))
+      .mockReturnValue(page(['c'], { hasMore: false }));
+    const { result } = renderHook(() => usePaginatedList(fetchFn));
+
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+    expect(result.current.currentPage).toBe(0);
+
+    act(() => {
+      result.current.nextPage();
+    });
+    await waitFor(() => expect(result.current.currentPage).toBe(1));
+
+    act(() => {
+      result.current.nextPage();
+    });
+    await waitFor(() => expect(result.current.currentPage).toBe(2));
   });
 });
+
+// ─── useWorkflowRuns ───────────────────────────────────────────────────────
 
 describe('useWorkflowRuns', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('fetches initial page on mount', async () => {
-    mockFetchRuns.mockReturnValue(makeRunsResponse([WORKFLOW_RUN]));
+  it('shows runs from the server', async () => {
+    vi.mocked(fetchRuns).mockReturnValue(rpcPage([RUN]));
 
     const { result } = renderHook(() => useWorkflowRuns(env, { limit: 10 }));
 
-    await waitFor(() => {
-      expect(result.current.data.isLoading).toBe(false);
-    });
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
 
-    expect(result.current.data.data).toEqual([WORKFLOW_RUN]);
+    expect(result.current.data.data).toEqual([RUN]);
     expect(result.current.error).toBeNull();
-    expect(result.current.hasNextPage).toBe(false);
-    expect(result.current.hasPreviousPage).toBe(false);
   });
 
-  it('handles fetch error', async () => {
-    mockFetchRuns.mockReturnValue(
-      Promise.resolve({
-        success: false,
-        error: {
-          message: 'fetch failed',
-          layer: 'API' as const,
-          cause: 'timeout',
-          request: { operation: 'fetchRuns', params: {} },
-        },
-      })
-    );
+  it('shows error when server returns failure', async () => {
+    vi.mocked(fetchRuns).mockReturnValue(rpcError('fetch failed'));
 
     const { result } = renderHook(() => useWorkflowRuns(env, { limit: 10 }));
 
-    await waitFor(() => {
-      expect(result.current.data.isLoading).toBe(false);
-    });
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
 
     expect(result.current.error).not.toBeNull();
     expect(result.current.data.data).toBeNull();
   });
 
-  it('nextPage fetches with cursor', async () => {
-    mockFetchRuns.mockReturnValueOnce(
-      makeRunsResponse([WORKFLOW_RUN], { cursor: 'cursor-1', hasMore: true })
+  it('refetches when the workflowName filter changes', async () => {
+    vi.mocked(fetchRuns)
+      .mockReturnValueOnce(rpcPage([RUN]))
+      .mockReturnValue(rpcPage([]));
+
+    const { result, rerender } = renderHook(
+      ({ workflowName }: { workflowName?: string }) =>
+        useWorkflowRuns(env, { workflowName, limit: 10 }),
+      { initialProps: { workflowName: undefined as string | undefined } }
     );
 
-    const { result } = renderHook(() => useWorkflowRuns(env, { limit: 1 }));
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+    expect(result.current.data.data).toEqual([RUN]);
 
-    await waitFor(() => {
-      expect(result.current.data.isLoading).toBe(false);
-    });
+    rerender({ workflowName: 'other-workflow' });
 
-    expect(result.current.hasNextPage).toBe(true);
+    await waitFor(() => expect(result.current.data.data).toEqual([]));
+  });
+});
 
-    mockFetchRuns.mockReturnValueOnce(
-      makeRunsResponse([WORKFLOW_RUN], { hasMore: false })
-    );
+// ─── useWorkflowHooks ─────────────────────────────────────────────────────
 
-    act(() => {
-      result.current.nextPage();
-    });
-
-    await waitFor(() => {
-      expect(result.current.data.data).toEqual([WORKFLOW_RUN]);
-    });
-
-    expect(mockFetchRuns).toHaveBeenLastCalledWith(
-      env,
-      expect.objectContaining({ cursor: 'cursor-1' })
-    );
+describe('useWorkflowHooks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('previousPage returns to cached page without refetching', async () => {
-    mockFetchRuns.mockReturnValueOnce(
-      makeRunsResponse([WORKFLOW_RUN], { cursor: 'cursor-1', hasMore: true })
+  it('shows hooks from the server', async () => {
+    vi.mocked(fetchHooks).mockReturnValue(rpcPage([HOOK]));
+
+    const { result } = renderHook(() =>
+      useWorkflowHooks(env, { runId: 'run-1', limit: 10 })
     );
 
-    const { result } = renderHook(() => useWorkflowRuns(env, { limit: 1 }));
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
 
-    await waitFor(() => {
-      expect(result.current.data.isLoading).toBe(false);
-    });
-
-    mockFetchRuns.mockReturnValueOnce(
-      makeRunsResponse([WORKFLOW_RUN], { hasMore: false })
-    );
-
-    act(() => {
-      result.current.nextPage();
-    });
-
-    await waitFor(() => {
-      expect(result.current.data.data).toEqual([WORKFLOW_RUN]);
-    });
-
-    const callsBefore = mockFetchRuns.mock.calls.length;
-
-    act(() => {
-      result.current.previousPage();
-    });
-
-    await waitFor(() => {
-      expect(result.current.data.data).toEqual([WORKFLOW_RUN]);
-    });
-
-    expect(mockFetchRuns.mock.calls.length).toBe(callsBefore);
+    expect(result.current.data.data).toEqual([HOOK]);
+    expect(result.current.error).toBeNull();
   });
 
-  it('reload clears cache and refetches', async () => {
-    mockFetchRuns.mockReturnValue(makeRunsResponse([WORKFLOW_RUN]));
+  it('shows error when server returns failure', async () => {
+    vi.mocked(fetchHooks).mockReturnValue(rpcError('fetch failed'));
 
-    const { result } = renderHook(() => useWorkflowRuns(env, { limit: 10 }));
+    const { result } = renderHook(() =>
+      useWorkflowHooks(env, { runId: 'run-1', limit: 10 })
+    );
 
-    await waitFor(() => {
-      expect(result.current.data.isLoading).toBe(false);
-    });
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
 
-    const callsBefore = mockFetchRuns.mock.calls.length;
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.data.data).toBeNull();
+  });
 
-    mockFetchRuns.mockReturnValue(makeRunsResponse([WORKFLOW_RUN]));
+  it('refetches when the runId filter changes', async () => {
+    vi.mocked(fetchHooks)
+      .mockReturnValueOnce(rpcPage([HOOK]))
+      .mockReturnValue(rpcPage([]));
 
-    act(() => {
-      result.current.reload();
-    });
+    const { result, rerender } = renderHook(
+      ({ runId }: { runId: string }) =>
+        useWorkflowHooks(env, { runId, limit: 10 }),
+      { initialProps: { runId: 'run-1' } }
+    );
 
-    await waitFor(() => {
-      expect(result.current.data.data).toEqual([WORKFLOW_RUN]);
-    });
+    await waitFor(() => expect(result.current.data.isLoading).toBe(false));
+    expect(result.current.data.data).toEqual([HOOK]);
 
-    expect(mockFetchRuns.mock.calls.length).toBeGreaterThan(callsBefore);
+    rerender({ runId: 'run-2' });
+
+    await waitFor(() => expect(result.current.data.data).toEqual([]));
   });
 });

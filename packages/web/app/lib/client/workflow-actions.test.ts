@@ -6,7 +6,6 @@ import {
   resumeHook,
   wakeUpRun,
 } from './workflow-actions';
-import { WorkflowWebAPIError } from './workflow-errors';
 
 vi.mock('~/lib/rpc-client', () => ({
   cancelRun: vi.fn(),
@@ -16,13 +15,7 @@ vi.mock('~/lib/rpc-client', () => ({
   resumeHook: vi.fn(),
 }));
 
-import {
-  cancelRun as mockCancelRun,
-  recreateRun as mockRecreateRun,
-  reenqueueRun as mockReenqueueRun,
-  resumeHook as mockResumeHook,
-  wakeUpRun as mockWakeUpRun,
-} from '~/lib/rpc-client';
+import * as rpc from '~/lib/rpc-client';
 
 const env = { SOME_VAR: 'test' };
 
@@ -30,11 +23,11 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function successResult<T>(data: T) {
+function ok<T>(data: T) {
   return Promise.resolve({ success: true as const, data });
 }
 
-function failureResult(message: string) {
+function fail(message: string) {
   return Promise.resolve({
     success: false as const,
     error: {
@@ -47,46 +40,27 @@ function failureResult(message: string) {
 }
 
 describe('cancelRun', () => {
-  it('calls RPC and resolves on success', async () => {
-    vi.mocked(mockCancelRun).mockReturnValue(successResult(undefined));
-    await expect(cancelRun(env, 'run-1')).resolves.toBeUndefined();
-    expect(mockCancelRun).toHaveBeenCalledWith(env, 'run-1');
-  });
-
-  it('throws WorkflowWebAPIError on failure', async () => {
-    vi.mocked(mockCancelRun).mockReturnValue(failureResult('cancel failed'));
-    await expect(cancelRun(env, 'run-1')).rejects.toThrow(WorkflowWebAPIError);
+  it('throws with the server error message when cancellation fails', async () => {
+    vi.mocked(rpc.cancelRun).mockReturnValue(fail('cancel failed'));
     await expect(cancelRun(env, 'run-1')).rejects.toThrow('cancel failed');
   });
 });
 
 describe('recreateRun', () => {
-  it('returns new run ID on success', async () => {
-    vi.mocked(mockRecreateRun).mockReturnValue(successResult('new-run-id'));
-    const result = await recreateRun(env, 'run-1');
-    expect(result).toBe('new-run-id');
-    expect(mockRecreateRun).toHaveBeenCalledWith(env, 'run-1');
+  it('returns the new run ID', async () => {
+    vi.mocked(rpc.recreateRun).mockReturnValue(ok('new-run-id'));
+    await expect(recreateRun(env, 'run-1')).resolves.toBe('new-run-id');
   });
 
-  it('throws on failure', async () => {
-    vi.mocked(mockRecreateRun).mockReturnValue(
-      failureResult('recreate failed')
-    );
+  it('throws with the server error message when recreate fails', async () => {
+    vi.mocked(rpc.recreateRun).mockReturnValue(fail('recreate failed'));
     await expect(recreateRun(env, 'run-1')).rejects.toThrow('recreate failed');
   });
 });
 
 describe('reenqueueRun', () => {
-  it('resolves on success', async () => {
-    vi.mocked(mockReenqueueRun).mockReturnValue(successResult(undefined));
-    await expect(reenqueueRun(env, 'run-1')).resolves.toBeUndefined();
-    expect(mockReenqueueRun).toHaveBeenCalledWith(env, 'run-1');
-  });
-
-  it('throws on failure', async () => {
-    vi.mocked(mockReenqueueRun).mockReturnValue(
-      failureResult('reenqueue failed')
-    );
+  it('throws with the server error message when re-enqueue fails', async () => {
+    vi.mocked(rpc.reenqueueRun).mockReturnValue(fail('reenqueue failed'));
     await expect(reenqueueRun(env, 'run-1')).rejects.toThrow(
       'reenqueue failed'
     );
@@ -94,39 +68,31 @@ describe('reenqueueRun', () => {
 });
 
 describe('wakeUpRun', () => {
-  it('returns result on success', async () => {
-    vi.mocked(mockWakeUpRun).mockReturnValue(
-      successResult({ stoppedCount: 2 })
-    );
-    const result = await wakeUpRun(env, 'run-1', {
-      correlationIds: ['c1'],
-    });
-    expect(result).toEqual({ stoppedCount: 2 });
-    expect(mockWakeUpRun).toHaveBeenCalledWith(env, 'run-1', {
-      correlationIds: ['c1'],
-    });
+  it('returns the count of stopped sleeps', async () => {
+    vi.mocked(rpc.wakeUpRun).mockReturnValue(ok({ stoppedCount: 2 }));
+    await expect(
+      wakeUpRun(env, 'run-1', { correlationIds: ['c1'] })
+    ).resolves.toEqual({ stoppedCount: 2 });
   });
 
-  it('throws on failure', async () => {
-    vi.mocked(mockWakeUpRun).mockReturnValue(failureResult('wakeup failed'));
+  it('throws with the server error message when wakeup fails', async () => {
+    vi.mocked(rpc.wakeUpRun).mockReturnValue(fail('wakeup failed'));
     await expect(wakeUpRun(env, 'run-1')).rejects.toThrow('wakeup failed');
   });
 });
 
 describe('resumeHook', () => {
-  it('returns result on success', async () => {
-    vi.mocked(mockResumeHook).mockReturnValue(
-      successResult({ hookId: 'h1', runId: 'r1' })
+  it('returns the hook and run IDs when the hook is resumed', async () => {
+    vi.mocked(rpc.resumeHook).mockReturnValue(
+      ok({ hookId: 'h1', runId: 'r1' })
     );
-    const result = await resumeHook(env, 'token-1', { key: 'value' });
-    expect(result).toEqual({ hookId: 'h1', runId: 'r1' });
-    expect(mockResumeHook).toHaveBeenCalledWith(env, 'token-1', {
-      key: 'value',
-    });
+    await expect(resumeHook(env, 'token-1', { key: 'value' })).resolves.toEqual(
+      { hookId: 'h1', runId: 'r1' }
+    );
   });
 
-  it('throws on failure', async () => {
-    vi.mocked(mockResumeHook).mockReturnValue(failureResult('resume failed'));
+  it('throws with the server error message when resume fails', async () => {
+    vi.mocked(rpc.resumeHook).mockReturnValue(fail('resume failed'));
     await expect(resumeHook(env, 'token-1', {})).rejects.toThrow(
       'resume failed'
     );

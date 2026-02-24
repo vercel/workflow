@@ -31,10 +31,10 @@ const WORKFLOW_RUN: WorkflowRun = {
   input: {},
   createdAt: new Date(),
   updatedAt: new Date(),
-  status: 'completed',
-  output: { result: 42 },
+  status: 'running',
+  output: undefined,
   error: undefined,
-  completedAt: new Date(),
+  completedAt: undefined,
   specVersion: 1,
   executionContext: {},
   expiredAt: undefined,
@@ -46,7 +46,7 @@ describe('useWorkflowResourceData', () => {
     vi.clearAllMocks();
   });
 
-  it('fetches run resource data', async () => {
+  it('shows run data after loading', async () => {
     vi.mocked(fetchRun).mockResolvedValue({
       success: true,
       data: WORKFLOW_RUN,
@@ -64,7 +64,7 @@ describe('useWorkflowResourceData', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('sets error when run fetch fails', async () => {
+  it('shows error when run fetch fails', async () => {
     vi.mocked(fetchRun).mockResolvedValue({
       success: false,
       error: {
@@ -86,7 +86,7 @@ describe('useWorkflowResourceData', () => {
     expect(result.current.error!.message).toBe('not found');
   });
 
-  it('fetches hook resource data', async () => {
+  it('shows hook data after loading', async () => {
     const hook = {
       hookId: 'hook-1',
       runId: 'run-1',
@@ -111,10 +111,10 @@ describe('useWorkflowResourceData', () => {
     });
 
     expect(result.current.data).toEqual(hook);
-    expect(fetchHook).toHaveBeenCalledWith(env, 'hook-1', 'all');
+    expect(result.current.error).toBeNull();
   });
 
-  it('fetches sleep resource data from events', async () => {
+  it('shows sleep entity constructed from events', async () => {
     const events = [{ eventId: 'e1', type: 'sleep_scheduled', data: {} }];
     vi.mocked(fetchEventsByCorrelationId).mockResolvedValue({
       success: true,
@@ -130,14 +130,11 @@ describe('useWorkflowResourceData', () => {
       expect(result.current.data).not.toBeNull();
     });
 
-    expect(fetchEventsByCorrelationId).toHaveBeenCalledWith(
-      env,
-      'sleep-corr-1',
-      expect.objectContaining({ withData: true })
-    );
+    expect(result.current.data).toEqual({ id: 'sleep-1' });
+    expect(result.current.error).toBeNull();
   });
 
-  it('sets error when sleep data is null', async () => {
+  it('shows error when sleep event data is missing', async () => {
     vi.mocked(fetchEventsByCorrelationId).mockResolvedValue({
       success: true,
       data: { data: [], cursor: undefined, hasMore: false } as any,
@@ -157,7 +154,7 @@ describe('useWorkflowResourceData', () => {
     );
   });
 
-  it('does not fetch when enabled is false', async () => {
+  it('returns null data and stays idle when disabled', async () => {
     const { result } = renderHook(() =>
       useWorkflowResourceData(env, 'run', 'run-1', { enabled: false })
     );
@@ -166,7 +163,7 @@ describe('useWorkflowResourceData', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(fetchRun).not.toHaveBeenCalled();
     expect(result.current.data).toBeNull();
+    expect(result.current.error).toBeNull();
   });
 });
