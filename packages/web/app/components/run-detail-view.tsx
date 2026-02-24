@@ -357,6 +357,9 @@ export function RunDetailView({
     auxiliaryDataLoading,
     error,
     update,
+    loadMoreTraceData,
+    hasMoreTraceData,
+    isLoadingMoreTraceData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
   const run = runData ?? ({} as WorkflowRun);
 
@@ -723,6 +726,9 @@ export function RunDetailView({
                     onWakeUpSleep={handleWakeUpSleep}
                     onResolveHook={handleResolveHook}
                     onLoadEventData={handleLoadSidebarEventData}
+                    onLoadMoreSpans={loadMoreTraceData}
+                    hasMoreSpans={hasMoreTraceData}
+                    isLoadingMoreSpans={isLoadingMoreTraceData}
                   />
                 </div>
               </ErrorBoundary>

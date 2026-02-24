@@ -278,6 +278,9 @@ function TraceViewerWithContextMenu({
   onWakeUpSleep,
   onCancelRun,
   onResolveHook,
+  onLoadMoreSpans,
+  hasMoreSpans = false,
+  isLoadingMoreSpans = false,
   children,
 }: {
   trace: { spans: Span[] };
@@ -294,9 +297,12 @@ function TraceViewerWithContextMenu({
     payload: unknown,
     hook?: Hook
   ) => Promise<void>;
+  onLoadMoreSpans?: () => void | Promise<void>;
+  hasMoreSpans?: boolean;
+  isLoadingMoreSpans?: boolean;
   children: ReactNode;
 }): ReactNode {
-  const { dispatch } = useTraceViewer();
+  const { state, dispatch } = useTraceViewer();
 
   // Drive active span widths at 60fps without React re-renders
   useLiveTick(isLive);
@@ -412,6 +418,37 @@ function TraceViewerWithContextMenu({
       $container.removeEventListener('contextmenu', onContextMenu);
     };
   }, [handleContextMenu]);
+
+  const loadingMoreRef = useRef(false);
+  useEffect(() => {
+    const timeline = state.timelineRef.current;
+    if (!timeline || !onLoadMoreSpans || !hasMoreSpans) {
+      return;
+    }
+
+    const thresholdPx = 200;
+    const maybeLoadMore = () => {
+      if (loadingMoreRef.current || isLoadingMoreSpans || !hasMoreSpans) {
+        return;
+      }
+      const remaining =
+        timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+      if (remaining > thresholdPx) {
+        return;
+      }
+
+      loadingMoreRef.current = true;
+      Promise.resolve(onLoadMoreSpans()).finally(() => {
+        loadingMoreRef.current = false;
+      });
+    };
+
+    timeline.addEventListener('scroll', maybeLoadMore);
+    maybeLoadMore();
+    return () => {
+      timeline.removeEventListener('scroll', maybeLoadMore);
+    };
+  }, [state.timelineRef, onLoadMoreSpans, hasMoreSpans, isLoadingMoreSpans]);
 
   const closeMenu = useCallback(() => {
     setContextMenu(null);
@@ -853,6 +890,9 @@ export const WorkflowTraceViewer = ({
   onStreamClick,
   onSpanSelect,
   onLoadEventData,
+  onLoadMoreSpans,
+  hasMoreSpans = false,
+  isLoadingMoreSpans = false,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -883,6 +923,12 @@ export const WorkflowTraceViewer = ({
     correlationId: string,
     eventId: string
   ) => Promise<unknown | null>;
+  /** Load next trace page when vertical scroll reaches bottom. */
+  onLoadMoreSpans?: () => void | Promise<void>;
+  /** Whether trace pagination has more data to load. */
+  hasMoreSpans?: boolean;
+  /** Whether trace pagination is currently fetching another page. */
+  isLoadingMoreSpans?: boolean;
 }) => {
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
     null
@@ -1049,6 +1095,9 @@ export const WorkflowTraceViewer = ({
             onWakeUpSleep={onWakeUpSleep}
             onCancelRun={onCancelRun}
             onResolveHook={onResolveHook}
+            onLoadMoreSpans={onLoadMoreSpans}
+            hasMoreSpans={hasMoreSpans}
+            isLoadingMoreSpans={isLoadingMoreSpans}
           >
             <TraceViewerTimeline
               eagerRender

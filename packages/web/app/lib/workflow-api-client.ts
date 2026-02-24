@@ -37,6 +37,7 @@ import type {
 import { getPaginationDisplay } from './utils';
 
 const MAX_ITEMS = 1000;
+const TRACE_VIEWER_BATCH_SIZE = 50;
 const LIVE_POLL_LIMIT = 10;
 const LIVE_STEP_UPDATE_INTERVAL_MS = 2000;
 const LIVE_UPDATE_INTERVAL_MS = 5000;
@@ -616,82 +617,21 @@ export function useWorkflowHooks(
   };
 }
 
-// Helper function to exhaustively fetch steps
-async function fetchAllSteps(
+async function fetchAllEventsForCorrelationId(
   env: EnvMap,
-  runId: string
-): Promise<{ data: Step[]; cursor?: string }> {
-  let stepsData: Step[] = [];
-  let stepsCursor: string | undefined;
-  while (true) {
-    const { error, result } = await unwrapServerActionResult(
-      fetchSteps(env, runId, {
-        cursor: stepsCursor,
-        sortOrder: 'asc',
-        limit: 100,
-      })
-    );
-    // TODO: We're not handling errors well for infinite fetches
-    if (error) {
-      break;
-    }
-
-    stepsData = [...stepsData, ...result.data];
-    if (!result.hasMore || !result.cursor || stepsData.length >= MAX_ITEMS) {
-      break;
-    }
-    stepsCursor = result.cursor;
-  }
-
-  return { data: stepsData, cursor: stepsCursor };
-}
-
-// Helper function to exhaustively fetch hooks
-async function fetchAllHooks(
-  env: EnvMap,
-  runId: string
-): Promise<{ data: Hook[]; cursor?: string }> {
-  let hooksData: Hook[] = [];
-  let hooksCursor: string | undefined;
-  while (true) {
-    const { error, result } = await unwrapServerActionResult(
-      fetchHooks(env, {
-        runId,
-        cursor: hooksCursor,
-        sortOrder: 'asc',
-        limit: 100,
-      })
-    );
-    if (error) {
-      break;
-    }
-
-    hooksData = [...hooksData, ...result.data];
-    if (!result.hasMore || !result.cursor || hooksData.length >= MAX_ITEMS) {
-      break;
-    }
-    hooksCursor = result.cursor;
-  }
-
-  return { data: hooksData, cursor: hooksCursor };
-}
-
-// Helper function to exhaustively fetch events
-async function fetchAllEvents(
-  env: EnvMap,
-  runId: string
-): Promise<{ data: Event[]; cursor?: string }> {
+  correlationId: string
+): Promise<Event[]> {
   let eventsData: Event[] = [];
-  let eventsCursor: string | undefined;
+  let cursor: string | undefined;
+
   while (true) {
     const { error, result } = await unwrapServerActionResult(
-      fetchEvents(env, runId, {
-        cursor: eventsCursor,
+      fetchEventsByCorrelationId(env, correlationId, {
+        cursor,
         sortOrder: 'asc',
         limit: 1000,
       })
     );
-
     if (error) {
       break;
     }
@@ -700,10 +640,25 @@ async function fetchAllEvents(
     if (!result.hasMore || !result.cursor || eventsData.length >= MAX_ITEMS) {
       break;
     }
-    eventsCursor = result.cursor;
+    cursor = result.cursor;
   }
 
-  return { data: eventsData, cursor: eventsCursor };
+  return eventsData;
+}
+
+async function fetchEventsForCorrelationIds(
+  env: EnvMap,
+  correlationIds: string[]
+): Promise<Event[]> {
+  if (correlationIds.length === 0) {
+    return [];
+  }
+  const results = await Promise.all(
+    correlationIds.map((correlationId) =>
+      fetchAllEventsForCorrelationId(env, correlationId)
+    )
+  );
+  return results.flat();
 }
 
 /**
@@ -728,11 +683,15 @@ export function useWorkflowTraceViewerData(
   const [stepsCursor, setStepsCursor] = useState<string | undefined>();
   const [hooksCursor, setHooksCursor] = useState<string | undefined>();
   const [eventsCursor, setEventsCursor] = useState<string | undefined>();
+  const [stepsHasMore, setStepsHasMore] = useState(false);
+  const [hooksHasMore, setHooksHasMore] = useState(false);
+  const [eventsHasMore, setEventsHasMore] = useState(false);
+  const [isLoadingMoreTraceData, setIsLoadingMoreTraceData] = useState(false);
 
   const isFetchingRef = useRef(false);
   const [initialLoadCompleted, setInitialLoadCompleted] = useState(false);
 
-  // Fetch all data for a run
+  // Fetch first trace page and related events for visible spans.
   const fetchAllData = useCallback(async () => {
     if (isFetchingRef.current) {
       return;
@@ -743,42 +702,99 @@ export function useWorkflowTraceViewerData(
     setAuxiliaryDataLoading(true);
     setError(null);
 
-    const promises = [
-      unwrapServerActionResult(fetchRun(env, runId)).then(
-        ({ error, result }) => {
-          if (error) {
-            setError(error);
-            return;
-          }
-          setRun(hydrateResourceIO(result));
-          return result;
-        }
-      ),
-      fetchAllSteps(env, runId).then((result) => {
-        setSteps(result.data.map(hydrateResourceIO));
-        setStepsCursor(result.cursor);
-      }),
-      fetchAllHooks(env, runId).then((result) => {
-        setHooks(result.data.map(hydrateResourceIO));
-        setHooksCursor(result.cursor);
-      }),
-      fetchAllEvents(env, runId).then((result) => {
-        setEvents(result.data.map(hydrateResourceIO));
-        setEventsCursor(result.cursor);
-      }),
-    ];
+    const [runResult, stepsResult, hooksResult, eventsResult] =
+      await Promise.all([
+        unwrapServerActionResult(fetchRun(env, runId)),
+        unwrapServerActionResult(
+          fetchSteps(env, runId, {
+            sortOrder: 'asc',
+            limit: TRACE_VIEWER_BATCH_SIZE,
+          })
+        ),
+        unwrapServerActionResult(
+          fetchHooks(env, {
+            runId,
+            sortOrder: 'asc',
+            limit: TRACE_VIEWER_BATCH_SIZE,
+          })
+        ),
+        unwrapServerActionResult(
+          fetchEvents(env, runId, {
+            sortOrder: 'asc',
+            limit: TRACE_VIEWER_BATCH_SIZE,
+          })
+        ),
+      ]);
 
-    const results = await Promise.allSettled(promises);
+    if (runResult.error) {
+      setError(runResult.error);
+    } else {
+      setRun(hydrateResourceIO(runResult.result));
+    }
+
+    const nextSteps = stepsResult.error
+      ? []
+      : stepsResult.result.data.map(hydrateResourceIO);
+    const nextHooks = hooksResult.error
+      ? []
+      : hooksResult.result.data.map(hydrateResourceIO);
+    const initialEvents = eventsResult.error
+      ? []
+      : eventsResult.result.data.map(hydrateResourceIO);
+
+    const correlationIds = [
+      ...nextSteps.map((step) => step.stepId),
+      ...nextHooks.map((hook) => hook.hookId),
+    ];
+    const correlationEventsRaw = await fetchEventsForCorrelationIds(
+      env,
+      correlationIds
+    );
+    const correlationEvents = correlationEventsRaw.map(hydrateResourceIO);
+
+    setSteps(nextSteps);
+    setHooks(nextHooks);
+    const initialCombinedEvents = [...initialEvents, ...correlationEvents];
+    setEvents(
+      Array.from(
+        new Map(
+          initialCombinedEvents.map((event) => [String(event.eventId), event])
+        ).values()
+      )
+    );
+
+    setStepsCursor(
+      stepsResult.error || !stepsResult.result.hasMore
+        ? undefined
+        : stepsResult.result.cursor
+    );
+    setHooksCursor(
+      hooksResult.error || !hooksResult.result.hasMore
+        ? undefined
+        : hooksResult.result.cursor
+    );
+    setEventsCursor(
+      eventsResult.error || !eventsResult.result.hasMore
+        ? undefined
+        : eventsResult.result.cursor
+    );
+    setStepsHasMore(Boolean(!stepsResult.error && stepsResult.result.hasMore));
+    setHooksHasMore(Boolean(!hooksResult.error && hooksResult.result.hasMore));
+    setEventsHasMore(
+      Boolean(!eventsResult.error && eventsResult.result.hasMore)
+    );
+
+    const settledResults = [runResult, stepsResult, hooksResult, eventsResult];
     setLoading(false);
     setAuxiliaryDataLoading(false);
     setInitialLoadCompleted(true);
     isFetchingRef.current = false;
-    // Just doing the first error, but would be nice to show multiple
-    const error = results.find((result) => result.status === 'rejected')
-      ?.reason as Error;
-    if (error) {
-      setError(error);
-      return;
+
+    if (!runResult.error) {
+      const firstError = settledResults.find((result) => result.error)?.error;
+      if (firstError) {
+        setError(firstError);
+      }
     }
   }, [env, runId]);
 
@@ -805,6 +821,144 @@ export function useWorkflowTraceViewerData(
     },
     []
   );
+
+  const loadMoreTraceData = useCallback(async () => {
+    if (
+      isFetchingRef.current ||
+      !initialLoadCompleted ||
+      isLoadingMoreTraceData
+    ) {
+      return;
+    }
+    if (!stepsHasMore && !hooksHasMore && !eventsHasMore) {
+      return;
+    }
+
+    setIsLoadingMoreTraceData(true);
+    try {
+      const [nextStepsResult, nextHooksResult, nextEventsResult] =
+        await Promise.all([
+          stepsHasMore
+            ? unwrapServerActionResult(
+                fetchSteps(env, runId, {
+                  cursor: stepsCursor,
+                  sortOrder: 'asc',
+                  limit: TRACE_VIEWER_BATCH_SIZE,
+                })
+              )
+            : Promise.resolve({ error: null, result: null }),
+          hooksHasMore
+            ? unwrapServerActionResult(
+                fetchHooks(env, {
+                  runId,
+                  cursor: hooksCursor,
+                  sortOrder: 'asc',
+                  limit: TRACE_VIEWER_BATCH_SIZE,
+                })
+              )
+            : Promise.resolve({ error: null, result: null }),
+          eventsHasMore
+            ? unwrapServerActionResult(
+                fetchEvents(env, runId, {
+                  cursor: eventsCursor,
+                  sortOrder: 'asc',
+                  limit: TRACE_VIEWER_BATCH_SIZE,
+                })
+              )
+            : Promise.resolve({ error: null, result: null }),
+        ]);
+
+      if (nextStepsResult.error) {
+        setError(nextStepsResult.error);
+      }
+      if (nextHooksResult.error) {
+        setError(nextHooksResult.error);
+      }
+      if (nextEventsResult.error) {
+        setError(nextEventsResult.error);
+      }
+
+      const nextSteps =
+        nextStepsResult.result?.data.map(hydrateResourceIO) ?? [];
+      const nextHooks =
+        nextHooksResult.result?.data.map(hydrateResourceIO) ?? [];
+      const nextEvents =
+        nextEventsResult.result?.data.map(hydrateResourceIO) ?? [];
+
+      if (nextSteps.length > 0) {
+        setSteps((prev) => mergeSteps(prev, nextSteps));
+      }
+      if (nextHooks.length > 0) {
+        setHooks((prev) => mergeHooks(prev, nextHooks));
+      }
+
+      const newCorrelationIds = [
+        ...nextSteps.map((step) => step.stepId),
+        ...nextHooks.map((hook) => hook.hookId),
+      ];
+      const correlationEventsRaw = await fetchEventsForCorrelationIds(
+        env,
+        newCorrelationIds
+      );
+      const correlationEvents = correlationEventsRaw.map(hydrateResourceIO);
+      const allNewEvents = [...nextEvents, ...correlationEvents];
+      if (allNewEvents.length > 0) {
+        setEvents((prev) => mergeEvents(prev, allNewEvents));
+      }
+
+      const nextStepsHasMore = nextStepsResult.error
+        ? stepsHasMore
+        : Boolean(nextStepsResult.result && nextStepsResult.result.hasMore);
+      const nextHooksHasMore = nextHooksResult.error
+        ? hooksHasMore
+        : Boolean(nextHooksResult.result && nextHooksResult.result.hasMore);
+      const nextEventsHasMore = nextEventsResult.error
+        ? eventsHasMore
+        : Boolean(nextEventsResult.result && nextEventsResult.result.hasMore);
+
+      setStepsHasMore(nextStepsHasMore);
+      setHooksHasMore(nextHooksHasMore);
+      setEventsHasMore(nextEventsHasMore);
+
+      if (!nextStepsResult.error) {
+        setStepsCursor(
+          nextStepsResult.result?.hasMore
+            ? nextStepsResult.result.cursor
+            : undefined
+        );
+      }
+      if (!nextHooksResult.error) {
+        setHooksCursor(
+          nextHooksResult.result?.hasMore
+            ? nextHooksResult.result.cursor
+            : undefined
+        );
+      }
+      if (!nextEventsResult.error) {
+        setEventsCursor(
+          nextEventsResult.result?.hasMore
+            ? nextEventsResult.result.cursor
+            : undefined
+        );
+      }
+    } finally {
+      setIsLoadingMoreTraceData(false);
+    }
+  }, [
+    env,
+    runId,
+    initialLoadCompleted,
+    isLoadingMoreTraceData,
+    stepsHasMore,
+    hooksHasMore,
+    eventsHasMore,
+    stepsCursor,
+    hooksCursor,
+    eventsCursor,
+    mergeEvents,
+    mergeHooks,
+    mergeSteps,
+  ]);
 
   const pollRun = useCallback(async (): Promise<boolean> => {
     if (run?.completedAt) {
@@ -959,6 +1113,9 @@ export function useWorkflowTraceViewerData(
     auxiliaryDataLoading,
     error,
     update,
+    loadMoreTraceData,
+    hasMoreTraceData: stepsHasMore || hooksHasMore || eventsHasMore,
+    isLoadingMoreTraceData,
   };
 }
 
