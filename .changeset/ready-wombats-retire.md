@@ -2,4 +2,4 @@
 "@workflow/web": patch
 ---
 
-Decompose workflow-api-client.ts into focused modules and add test infrastructure
+Decompose `workflow-api-client.ts` into focused modules with unit tests
