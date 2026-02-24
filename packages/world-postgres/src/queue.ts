@@ -20,14 +20,23 @@ import { monotonicFactory } from 'ulid';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 
-// Redirect graphile-worker logs to stderr so CLI --json on stdout stays clean.
-// TODO: When CI=1 suppresses logging, replace with conditional stdout (e.g. log to stdout when not in JSON/CI mode).
-const stderrLogger = new Logger(
-  () => (level: string, message: string, meta?: unknown) => {
-    const line = [level, message, meta].filter(Boolean).join(' ') + '\n';
-    process.stderr.write(line);
-  }
-);
+function createGraphileLogger() {
+  const isJsonMode = () => process.env.WORKFLOW_JSON_MODE === '1';
+  const isVerbose = () => Boolean(process.env.DEBUG);
+
+  return new Logger(() => (level: string, message: string, meta?: unknown) => {
+    if (isJsonMode()) return;
+    if (level === 'debug' && !isVerbose()) return;
+    const pipe = level === 'error' ? process.stderr : process.stdout;
+    if (meta) {
+      pipe.write(`[Graphile Worker] ${message} ${JSON.stringify(meta, null, 2)}\n`);
+    } else {
+      pipe.write(`[Graphile Worker] ${message}\n`);
+    }
+  });
+}
+
+const graphileLogger = createGraphileLogger();
 
 /**
  * The Postgres queue works by creating two job types in graphile-worker:
@@ -123,7 +132,7 @@ export function createQueue(
         try {
           workerUtils = await makeWorkerUtils({
             connectionString: config.connectionString,
-            logger: stderrLogger,
+            logger: graphileLogger,
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
@@ -192,7 +201,7 @@ export function createQueue(
     runner = await run({
       connectionString: config.connectionString,
       concurrency: config.queueConcurrency || 10,
-      logger: stderrLogger,
+      logger: graphileLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
       taskList,
     });

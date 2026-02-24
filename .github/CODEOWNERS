@@ -1,0 +1,4 @@
+# Default owners for the entire repository
+* @vercel/workflow
+
+packages/next/ @ijjk @vercel/workflow
