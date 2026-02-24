@@ -32,7 +32,8 @@
     "clean": "rm -rf build .react-router",
     "start": "node server.js",
     "lint": "biome check",
-    "format": "biome format --write"
+    "format": "biome format --write",
+    "test": "vitest run"
   },
   "dependencies": {
     "@react-router/node": "7.13.0",
@@ -40,6 +41,7 @@
     "isbot": "^5"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.0",
     "@biomejs/biome": "catalog:",
     "@radix-ui/react-alert-dialog": "1.1.5",
     "@radix-ui/react-checkbox": "1.1.4",
@@ -83,6 +85,8 @@
     "tailwind-merge": "2.5.5",
     "tailwindcss": "4",
     "typescript": "catalog:",
-    "vite": "^6"
+    "vite": "^6",
+    "vitest": "^3",
+    "jsdom": "^26"
   }
 }
