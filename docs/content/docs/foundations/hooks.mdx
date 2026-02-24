@@ -25,7 +25,7 @@ When you create a hook, it generates a unique token that external systems can us
 
 ### Creating Your First Hook
 
-Let's start with a simple example. Here's a workflow that creates a hook and waits for external data. We recommend using the `using` keyword which automatically disposes the hook when it goes out of scope:
+Let's start with a simple example. Here's a workflow that creates a hook and waits for external data:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -33,8 +33,7 @@ import { createHook } from "workflow";
 export async function approvalWorkflow() {
   "use workflow";
 
-  // Create a hook with `using` for automatic disposal
-  using hook = createHook<{ approved: boolean; comment: string }>(); // [!code highlight]
+  using hook = createHook<{ approved: boolean; comment: string }>();
 
   console.log("Waiting for approval...");
   console.log("Send approval to token:", hook.token);
@@ -44,19 +43,16 @@ export async function approvalWorkflow() {
 
   if (result.approved) {
     console.log("Approved with comment:", result.comment);
-    // Continue with approved workflow...
   } else {
     console.log("Rejected:", result.comment);
-    // Handle rejection...
   }
-  // Hook is automatically disposed when the block/function exits // [!code highlight]
 }
 ```
 
 The workflow will pause at `await hook` until external code sends data to resume it.
 
 <Callout type="info">
-Hooks implement the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal, so they can be used with the `using` keyword for automatic cleanup. This is the recommended approach.
+We recommend using the `using` keyword which implements the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal for automatic cleanup.
 </Callout>
 
 <Callout type="info">
@@ -102,7 +98,7 @@ export async function slackChannelBot(channelId: string) {
   "use workflow";
 
   // Use channel ID in the token so Slack webhooks can find this workflow
-  using hook = createHook<SlackMessage>({ // [!code highlight]
+  using hook = createHook<SlackMessage>({
     token: `slack_messages:${channelId}`
   });
 
@@ -115,7 +111,6 @@ export async function slackChannelBot(channelId: string) {
 
     await processMessage(message);
   }
-  // Hook is automatically disposed when the function exits // [!code highlight]
 }
 
 async function processMessage(message: SlackMessage) {
@@ -154,7 +149,7 @@ import { createHook } from "workflow";
 export async function dataCollectionWorkflow() {
   "use workflow";
 
-  using hook = createHook<{ value: number; done?: boolean }>(); // [!code highlight]
+  using hook = createHook<{ value: number; done?: boolean }>();
 
   const values: number[] = [];
 
@@ -169,15 +164,14 @@ export async function dataCollectionWorkflow() {
 
   console.log("Collected values:", values);
   return values;
-  // Hook is automatically disposed when the function exits // [!code highlight]
 }
 ```
 
 Each time you call `resumeHook()` with the same token, the loop receives another value.
 
-### Disposing Hooks
+### Disposing Hooks Early
 
-Hooks implement the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal, which means you can use the `using` keyword for automatic disposal. This is the **recommended approach** as it ensures hooks are always cleaned up, even if an error occurs:
+When a workflow ends, hooks are automatically disposed. However, you may want to release a hook token early so another workflow can use it while your workflow continues running. Use a block scope with `using` to control when disposal happens:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -186,7 +180,7 @@ export async function handoffWorkflow(channelId: string) {
   "use workflow";
 
   {
-    using hook = createHook<{ message: string; handoff?: boolean }>({ // [!code highlight]
+    using hook = createHook<{ message: string; handoff?: boolean }>({
       token: `channel:${channelId}`
     });
 
@@ -197,27 +191,23 @@ export async function handoffWorkflow(channelId: string) {
         break;
       }
     }
-    // Hook is automatically disposed when the block exits // [!code highlight]
-  }
+  } // Hook token released here
 
-  // Continue with other work - token is now available for reuse
-  console.log("Hook disposed, token is now available for reuse");
+  // Token is now available for another workflow
+  console.log("Continuing with other work...");
 }
 ```
 
-You can also manually dispose a hook using the `dispose()` method if you need more control:
+You can also manually dispose using the `dispose()` method:
 
 ```typescript lineNumbers
 const hook = createHook<{ message: string }>({ token: `channel:${channelId}` });
-
 const payload = await hook;
 hook.dispose(); // Manually release the token
-
-// Continue with other work...
 ```
 
 <Callout type="info">
-After disposal (automatic or manual), the hook will no longer receive any events. The async iterator will stop yielding values.
+After disposal, the hook will no longer receive events and the async iterator will stop yielding values.
 </Callout>
 
 ## Understanding Webhooks
@@ -236,7 +226,7 @@ See the full API reference for [`createWebhook()`](/docs/api-reference/workflow/
 
 ### Creating Your First Webhook
 
-Here's a simple webhook that receives HTTP requests. Like hooks, we recommend using the `using` keyword for automatic disposal:
+Here's a simple webhook that receives HTTP requests:
 
 ```typescript lineNumbers
 import { createWebhook } from "workflow";
@@ -244,7 +234,7 @@ import { createWebhook } from "workflow";
 export async function webhookWorkflow() {
   "use workflow";
 
-  using webhook = createWebhook(); // [!code highlight]
+  using webhook = createWebhook();
 
   // The webhook is automatically available at this URL
   console.log("Send HTTP requests to:", webhook.url);
@@ -255,10 +245,8 @@ export async function webhookWorkflow() {
 
   console.log("Received request:", request.method, request.url);
 
-  // Access the request body
   const data = await request.json();
   console.log("Data:", data);
-  // Webhook is automatically disposed when the function exits // [!code highlight]
 }
 ```
 
@@ -278,7 +266,7 @@ import { createWebhook } from "workflow";
 export async function webhookWithStaticResponse() {
   "use workflow";
 
-  using webhook = createWebhook({ // [!code highlight]
+  using webhook = createWebhook({
     respondWith: Response.json({
       success: true, message: "Webhook received"
     }),
@@ -287,7 +275,6 @@ export async function webhookWithStaticResponse() {
   const request = await webhook;
 
   // The response was already sent automatically
-  // Continue processing the request asynchronously
   const data = await request.json();
   await processData(data);
 }
@@ -324,7 +311,7 @@ export async function webhookWithDynamicResponse() {
   "use workflow";
 
   // Set respondWith to "manual" to handle responses yourself
-  using webhook = createWebhook({ respondWith: "manual" }); // [!code highlight]
+  using webhook = createWebhook({ respondWith: "manual" });
 
   const request = await webhook;
   const data = await request.json();
@@ -365,7 +352,7 @@ async function respondToSlack(request: RequestWithResponse, text: string) {
 export async function slackCommandWorkflow(channelId: string) {
   "use workflow";
 
-  using webhook = createWebhook({ // [!code highlight]
+  using webhook = createWebhook({
     token: `slack_command:${channelId}`,
     respondWith: "manual"
   });
@@ -388,7 +375,6 @@ export async function slackCommandWorkflow(channelId: string) {
       break;
     }
   }
-  // Webhook is automatically disposed when the function exits // [!code highlight]
 }
 
 async function checkSystemStatus() {
@@ -446,7 +432,7 @@ const approvalHook = defineHook({ // [!code highlight]
 export async function documentApprovalWorkflow(documentId: string) {
   "use workflow";
 
-  using hook = approvalHook.create({ // [!code highlight]
+  using hook = approvalHook.create({
     token: `approval:${documentId}`
   });
 
@@ -491,11 +477,11 @@ When using custom tokens:
 
 ### Iterating Over Events
 
-Both hooks and webhooks support iteration, making them perfect for long-running event loops. Use the `using` keyword to ensure automatic cleanup:
+Both hooks and webhooks support iteration, making them perfect for long-running event loops:
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript
-using hook = createHook<Event>(); // [!code highlight]
+using hook = createHook<Event>();
 
 for await (const event of hook) {
   await processEvent(event);
@@ -504,7 +490,6 @@ for await (const event of hook) {
     break;
   }
 }
-// Hook is automatically disposed when it goes out of scope // [!code highlight]
 ```
 
 This pattern allows a single workflow instance to handle multiple events over time, maintaining state between events.
