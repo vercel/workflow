@@ -94,6 +94,34 @@ const checks = [
     run: () => assertPngResponse('/og/foundations/idempotency/image.png'),
   },
   {
+    name: 'OG docs root image',
+    run: () => assertPngResponse('/og/getting-started/image.png'),
+  },
+  {
+    name: 'OG docs foundations image',
+    run: () => assertPngResponse('/og/foundations/common-patterns/image.png'),
+  },
+  {
+    name: 'OG docs reference image',
+    run: () => assertPngResponse('/og/api-reference/workflow/get-writable/image.png'),
+  },
+  {
+    name: 'OG worlds index image',
+    run: () => assertPngResponse('/og/worlds'),
+  },
+  {
+    name: 'OG world image (local)',
+    run: () => assertPngResponse('/og/worlds/local'),
+  },
+  {
+    name: 'OG world image (postgres)',
+    run: () => assertPngResponse('/og/worlds/postgres'),
+  },
+  {
+    name: 'OG world image (vercel)',
+    run: () => assertPngResponse('/og/worlds/vercel'),
+  },
+  {
     name: 'Sitemap',
     run: () => assertXmlResponse('/sitemap.xml'),
   },
