@@ -32,6 +32,23 @@ const getHeaders = () => {
   return {};
 };
 
+const assertNoProtection = async (path) => {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    redirect: 'manual',
+    headers: getHeaders(),
+  });
+  const location = res.headers.get('location') || '';
+  if (
+    res.status === 307 &&
+    (location.includes('vercel.com/login') ||
+      location.includes('/_vercel/login'))
+  ) {
+    throw new Error(
+      `${path} redirected to Vercel login; check deployment protection/bypass`
+    );
+  }
+};
+
 const waitForServer = async (url, timeoutMs = 30_000) => {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -64,6 +81,10 @@ const assertPngResponse = async (path) => {
 };
 
 const checks = [
+  {
+    name: 'Deployment protection',
+    run: () => assertNoProtection('/og'),
+  },
   {
     name: 'OG default image',
     run: () => assertPngResponse('/og'),
