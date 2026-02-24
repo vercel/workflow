@@ -42,5 +42,11 @@ jobs:
       - name: Build packages
         run: pnpm build
 
+      - name: Build docs
+        run: pnpm --filter docs build
+
       - name: Type-check documentation code samples
         run: pnpm test:docs
+
+      - name: Verify OpenGraph images
+        run: pnpm --filter docs test:og
