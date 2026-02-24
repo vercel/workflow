@@ -1817,6 +1817,118 @@ describe('step arguments', () => {
   });
 });
 
+describe('cross-VM Error serialization', () => {
+  // Create a VM context that mimics the real workflow VM setup (with
+  // Request/Response/ReadableStream/WritableStream from the host context)
+  const { context, globalThis: vmGlobalThis } = createContext({
+    seed: 'test-error',
+    fixedTimestamp: 1714857600000,
+  });
+  // The real workflow VM (workflow.ts) sets these on vmGlobalThis.
+  // Without them, other reducers would throw on `instanceof` checks.
+  vmGlobalThis.Request = globalThis.Request;
+  vmGlobalThis.Response = globalThis.Response;
+  vmGlobalThis.ReadableStream = globalThis.ReadableStream;
+  vmGlobalThis.WritableStream = globalThis.WritableStream;
+
+  it('should serialize a host-context Error when using VM globalThis', async () => {
+    // This simulates the scenario where a FatalError (created in the host
+    // context) is passed as an argument to a step function. The serialization
+    // uses VM's globalThis, so `instanceof vmGlobal.Error` would fail for
+    // host-context errors. Using types.isNativeError() fixes this.
+    const hostError = new Error('host error');
+    hostError.name = 'FatalError';
+
+    const serialized = await dehydrateStepArguments(
+      [hostError],
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+
+    const ops: Promise<void>[] = [];
+    const hydrated = await hydrateStepArguments(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      ops,
+      vmGlobalThis
+    );
+
+    // The reviver creates errors with `new global.Error()` (VM's Error),
+    // so `instanceof` against the host Error fails. Check duck-type instead.
+    expect((hydrated[0] as Error).name).toBe('FatalError');
+    expect((hydrated[0] as Error).message).toBe('host error');
+    // Verify it's an instance of the VM's Error
+    vmGlobalThis.__testVal = hydrated[0];
+    expect(runInContext('__testVal instanceof Error', context)).toBe(true);
+  });
+
+  it('should serialize a VM-context Error when using VM globalThis', async () => {
+    const vmError = runInContext(
+      '(() => { const e = new Error("vm error"); e.name = "FatalError"; return e; })()',
+      context
+    );
+
+    const serialized = await dehydrateStepArguments(
+      [vmError],
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+
+    const ops: Promise<void>[] = [];
+    const hydrated = await hydrateStepArguments(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      ops,
+      vmGlobalThis
+    );
+
+    // The reviver creates errors with `new global.Error()` (VM's Error),
+    // so `instanceof` against the host Error fails. Check duck-type instead.
+    expect((hydrated[0] as Error).name).toBe('FatalError');
+    expect((hydrated[0] as Error).message).toBe('vm error');
+    // Verify it's an instance of the VM's Error
+    vmGlobalThis.__testVal = hydrated[0];
+    expect(runInContext('__testVal instanceof Error', context)).toBe(true);
+  });
+
+  it('should serialize Error subclass from host context through workflow reducers', async () => {
+    class FatalError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'FatalError';
+      }
+    }
+    const error = new FatalError('step failed');
+
+    const serialized = await dehydrateStepArguments(
+      { error },
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+
+    const ops: Promise<void>[] = [];
+    const hydrated = (await hydrateStepArguments(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      ops,
+      vmGlobalThis
+    )) as { error: Error };
+
+    // The reviver creates errors with `new global.Error()` (VM's Error)
+    expect(hydrated.error.name).toBe('FatalError');
+    expect(hydrated.error.message).toBe('step failed');
+    // Verify it's an instance of the VM's Error
+    vmGlobalThis.__testVal = hydrated.error;
+    expect(runInContext('__testVal instanceof Error', context)).toBe(true);
+  });
+});
+
 describe('step return value', () => {
   it('should throw error for an unsupported type', async () => {
     class Foo {}

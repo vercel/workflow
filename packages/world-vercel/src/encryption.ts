@@ -84,7 +84,8 @@ export async function deriveRunKey(
  * @param projectId - The project ID for HKDF context isolation
  * @param runId - The workflow run ID for per-run key derivation
  * @param options.token - Auth token (from config). Falls back to OIDC or VERCEL_TOKEN.
- * @returns Derived 32-byte per-run AES-256 key
+ * @returns Derived 32-byte per-run AES-256 key, or `undefined` when the
+ *          deployment has no key (encryption disabled for that run)
  */
 export async function fetchRunKey(
   deploymentId: string,
@@ -94,7 +95,7 @@ export async function fetchRunKey(
     /** Auth token (from config). Falls back to OIDC or VERCEL_TOKEN. */
     token?: string;
   }
-): Promise<Uint8Array> {
+): Promise<Uint8Array | undefined> {
   // Authenticate via provided token (CLI/config), OIDC token (runtime),
   // or VERCEL_TOKEN env var (external tooling)
   const oidcToken = await getVercelOidcToken().catch(() => null);
@@ -122,9 +123,14 @@ export async function fetchRunKey(
   }
 
   const data = await response.json();
-  const result = z.object({ key: z.string() }).safeParse(data);
+  const result = z.object({ key: z.string().nullable() }).safeParse(data);
   if (!result.success) {
-    throw new Error('Invalid response from Vercel API, missing "key" field');
+    throw new Error(
+      `Invalid response from Vercel API: expected { key: string | null }. Zod error: ${result.error.message}`
+    );
+  }
+  if (result.data.key === null) {
+    return undefined;
   }
   return Buffer.from(result.data.key, 'base64');
 }

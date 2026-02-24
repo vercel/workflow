@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { deriveRunKey } from './encryption.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { deriveRunKey, fetchRunKey } from './encryption.js';
 
 const testProjectId = 'prj_test123';
 const testRunId = 'wrun_abc123';
@@ -82,5 +82,51 @@ describe('deriveRunKey', () => {
     await expect(
       deriveRunKey(testDeploymentKey, '', testRunId)
     ).rejects.toThrow('projectId must be a non-empty string');
+  });
+});
+
+describe('fetchRunKey', () => {
+  const deploymentId = 'dpl_test123';
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('should return undefined when API returns null key', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ key: null }), { status: 200 })
+    );
+
+    const result = await fetchRunKey(deploymentId, testProjectId, testRunId, {
+      token: 'test-token',
+    });
+
+    expect(result).toBeUndefined();
+  });
+
+  it('should return a Uint8Array when API returns a valid key', async () => {
+    const keyBase64 = Buffer.from(testDeploymentKey).toString('base64');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ key: keyBase64 }), { status: 200 })
+    );
+
+    const result = await fetchRunKey(deploymentId, testProjectId, testRunId, {
+      token: 'test-token',
+    });
+
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect(result).toEqual(Buffer.from(keyBase64, 'base64'));
+  });
+
+  it('should throw on non-ok response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('Not found', { status: 404 })
+    );
+
+    await expect(
+      fetchRunKey(deploymentId, testProjectId, testRunId, {
+        token: 'test-token',
+      })
+    ).rejects.toThrow('HTTP 404');
   });
 });

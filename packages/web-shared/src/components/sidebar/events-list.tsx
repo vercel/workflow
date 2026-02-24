@@ -2,8 +2,9 @@
 
 import type { Event } from '@workflow/world';
 import { useCallback, useMemo, useState } from 'react';
-import { DataInspector } from '../ui/data-inspector';
+import { Skeleton } from '../ui/skeleton';
 import { localMillisecondTime } from './attribute-panel';
+import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
 /**
@@ -69,6 +70,7 @@ function EventItem({
 
   return (
     <DetailCard
+      summaryClassName="text-base py-2"
       summary={
         <>
           <span
@@ -100,36 +102,35 @@ function EventItem({
         }}
       >
         <div
-          className="flex items-center justify-between px-2.5 py-1.5"
+          className="flex min-h-[32px] items-center justify-between gap-4 px-2.5 py-1.5"
           style={{ borderColor: 'var(--ds-gray-300)' }}
         >
-          <span
-            className="text-[11px] font-medium"
-            style={{ color: 'var(--ds-gray-700)' }}
-          >
+          <span className="text-[14px]" style={{ color: 'var(--ds-gray-700)' }}>
             eventId
           </span>
           <span
-            className="text-[11px] font-mono"
+            className="max-w-[70%] truncate text-right text-[13px] font-mono"
             style={{ color: 'var(--ds-gray-1000)' }}
+            title={event.eventId}
           >
             {event.eventId}
           </span>
         </div>
         {event.correlationId && (
           <div
-            className="flex items-center justify-between px-2.5 py-1.5"
+            className="flex min-h-[32px] items-center justify-between gap-4 px-2.5 py-1.5"
             style={{ borderColor: 'var(--ds-gray-300)' }}
           >
             <span
-              className="text-[11px] font-medium"
+              className="text-[14px]"
               style={{ color: 'var(--ds-gray-700)' }}
             >
               correlationId
             </span>
             <span
-              className="text-[11px] font-mono"
+              className="max-w-[70%] truncate text-right text-[13px] font-mono"
               style={{ color: 'var(--ds-gray-1000)' }}
+              title={event.correlationId}
             >
               {event.correlationId}
             </span>
@@ -140,20 +141,21 @@ function EventItem({
       {/* Loading state */}
       {isLoading && (
         <div
-          className="mt-2 text-xs rounded-md border p-2"
+          className="mt-2 rounded-md border p-3"
           style={{
             borderColor: 'var(--ds-gray-300)',
-            color: 'var(--ds-gray-600)',
           }}
         >
-          Loading event data...
+          <Skeleton className="h-4 w-[35%]" />
+          <Skeleton className="mt-2 h-4 w-[90%]" />
+          <Skeleton className="mt-2 h-4 w-[75%]" />
         </div>
       )}
 
       {/* Error state */}
       {loadError && (
         <div
-          className="mt-2 text-xs rounded-md border p-2"
+          className="mt-2 rounded-md border p-2 text-sm"
           style={{
             borderColor: 'var(--ds-red-300)',
             color: 'var(--ds-red-700)',
@@ -165,11 +167,8 @@ function EventItem({
 
       {/* Event data */}
       {displayData != null && (
-        <div
-          className="mt-2 overflow-x-auto rounded-md border p-3"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
-        >
-          <DataInspector data={displayData} />
+        <div className="mt-2">
+          <CopyableDataBlock data={displayData} />
         </div>
       )}
     </DetailCard>
@@ -208,12 +207,18 @@ export function EventsList({
       >
         Events {!isLoading && `(${sortedEvents.length})`}
       </h3>
-      {isLoading ? <div>Loading events...</div> : null}
+      {isLoading ? (
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-[48px] w-full rounded-lg border" />
+          <Skeleton className="h-[48px] w-full rounded-lg border" />
+          <Skeleton className="h-[48px] w-full rounded-lg border" />
+        </div>
+      ) : null}
       {!isLoading && !error && sortedEvents.length === 0 && (
         <div className="text-sm">No events found</div>
       )}
       {sortedEvents.length > 0 && !error ? (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-4">
           {sortedEvents.map((event) => (
             <EventItem
               key={event.eventId}
