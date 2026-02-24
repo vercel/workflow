@@ -14,14 +14,13 @@ Creates a low-level hook primitive that can be used to resume a workflow run wit
 
 Hooks allow external systems to send data to a paused workflow without the HTTP-specific constraints of webhooks. They're identified by a token and can receive any serializable payload.
 
-The `using` keyword automatically disposes the hook when it goes out of scope (see [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management)).
-
 ```ts lineNumbers
 import { createHook } from "workflow"
 
 export async function hookWorkflow() {
   "use workflow";
-  using hook = createHook();
+  // `using` automatically disposes the hook when it goes out of scope
+  using hook = createHook();  // [!code highlight]
   const result = await hook; // Suspends the workflow until the hook is resumed
 }
 ```
@@ -78,7 +77,7 @@ import { createHook } from "workflow"
 export async function approvalWorkflow() {
   "use workflow";
 
-  using hook = createHook<{ approved: boolean; comment: string }>();
+  using hook = createHook<{ approved: boolean; comment: string }>(); // [!code highlight]
   console.log("Send approval to token:", hook.token);
 
   const result = await hook;
@@ -100,9 +99,9 @@ export async function slackBotWorkflow(channelId: string) {
   "use workflow";
 
   // Token constructed from channel ID
-  using hook = createHook<SlackMessage>({
-    token: `slack_webhook:${channelId}`,
-  });
+  using hook = createHook<SlackMessage>({ // [!code highlight]
+    token: `slack_webhook:${channelId}`, // [!code highlight]
+  }); // [!code highlight]
 
   for await (const message of hook) {
     if (message.text === "/stop") {
@@ -126,7 +125,7 @@ export async function collectHookWorkflow() {
   using hook = createHook<{ message: string; done?: boolean }>();
 
   const payloads = [];
-  for await (const payload of hook) {
+  for await (const payload of hook) { // [!code highlight]
     payloads.push(payload);
 
     if (payload.done) break;
@@ -182,9 +181,7 @@ export async function scopedHookWorkflow(channelId: string) {
 
     const payload = await hook;
     console.log("Received:", payload.message);
-
-    // hook is automatically disposed when the block exits // [!code highlight]
-  }
+  } // hook is automatically disposed here // [!code highlight]
 
   // Token is now available for other workflows to use
   console.log("Hook disposed, continuing with other work...");

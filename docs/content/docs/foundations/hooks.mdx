@@ -200,6 +200,7 @@ export async function handoffWorkflow(channelId: string) {
 
 You can also manually dispose using the `dispose()` method:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
 const hook = createHook<{ message: string }>({ token: `channel:${channelId}` });
 const payload = await hook;
