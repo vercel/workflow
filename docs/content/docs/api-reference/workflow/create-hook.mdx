@@ -14,6 +14,8 @@ Creates a low-level hook primitive that can be used to resume a workflow run wit
 
 Hooks allow external systems to send data to a paused workflow without the HTTP-specific constraints of webhooks. They're identified by a token and can receive any serializable payload.
 
+The `using` keyword automatically disposes the hook when it goes out of scope (see [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management)).
+
 ```ts lineNumbers
 import { createHook } from "workflow"
 

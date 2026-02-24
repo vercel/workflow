@@ -226,7 +226,7 @@ See the full API reference for [`createWebhook()`](/docs/api-reference/workflow/
 
 ### Creating Your First Webhook
 
-Here's a simple webhook that receives HTTP requests:
+Here's a simple webhook that receives HTTP requests. Like hooks, webhooks support the `using` keyword for automatic cleanup:
 
 ```typescript lineNumbers
 import { createWebhook } from "workflow";

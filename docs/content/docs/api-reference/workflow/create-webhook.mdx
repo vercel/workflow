@@ -13,6 +13,8 @@ Creates a webhook that can be used to suspend and resume a workflow run upon rec
 
 Webhooks provide a way for external systems to send HTTP requests directly to your workflow. Unlike hooks which accept arbitrary payloads, webhooks work with standard HTTP `Request` objects and can return HTTP `Response` objects.
 
+The `using` keyword automatically disposes the webhook when it goes out of scope (see [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management)).
+
 ```ts lineNumbers
 import { createWebhook } from "workflow"
 
