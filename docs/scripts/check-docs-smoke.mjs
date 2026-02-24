@@ -80,6 +80,62 @@ const assertPngResponse = async (path) => {
   }
 };
 
+const assertHtmlMeta = async (path, expectedOgImagePath) => {
+  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('text/html')) {
+    throw new Error(`${path} content-type was ${contentType}`);
+  }
+  const html = await res.text();
+  const ogImage = html.match(
+    /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*>/i
+  )?.[1];
+  if (!ogImage) {
+    throw new Error(`${path} missing og:image meta tag`);
+  }
+  if (expectedOgImagePath) {
+    const normalized = ogImage.startsWith('http')
+      ? new URL(ogImage).pathname
+      : ogImage;
+    if (normalized !== expectedOgImagePath) {
+      throw new Error(
+        `${path} og:image was ${ogImage}, expected ${expectedOgImagePath}`
+      );
+    }
+  }
+  const twitterImage = html.match(
+    /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["'][^>]*>/i
+  )?.[1];
+  if (!twitterImage) {
+    throw new Error(`${path} missing twitter:image meta tag`);
+  }
+  if (expectedOgImagePath) {
+    const normalized = twitterImage.startsWith('http')
+      ? new URL(twitterImage).pathname
+      : twitterImage;
+    if (normalized !== expectedOgImagePath) {
+      throw new Error(
+        `${path} twitter:image was ${twitterImage}, expected ${expectedOgImagePath}`
+      );
+    }
+  }
+  const ogTitle = html.match(
+    /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i
+  )?.[1];
+  if (!ogTitle) {
+    throw new Error(`${path} missing og:title meta tag`);
+  }
+  const ogDescription = html.match(
+    /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["'][^>]*>/i
+  )?.[1];
+  if (!ogDescription) {
+    throw new Error(`${path} missing og:description meta tag`);
+  }
+};
+
 const checks = [
   {
     name: 'Deployment protection',
@@ -88,6 +144,50 @@ const checks = [
   {
     name: 'OG default image',
     run: () => assertPngResponse('/og'),
+  },
+  {
+    name: 'HTML meta - docs root',
+    run: () => assertHtmlMeta('/docs', '/og/getting-started/image.png'),
+  },
+  {
+    name: 'HTML meta - docs idempotency',
+    run: () =>
+      assertHtmlMeta(
+        '/docs/foundations/idempotency',
+        '/og/foundations/idempotency/image.png'
+      ),
+  },
+  {
+    name: 'HTML meta - docs common patterns',
+    run: () =>
+      assertHtmlMeta(
+        '/docs/foundations/common-patterns',
+        '/og/foundations/common-patterns/image.png'
+      ),
+  },
+  {
+    name: 'HTML meta - docs get-writable',
+    run: () =>
+      assertHtmlMeta(
+        '/docs/api-reference/workflow/get-writable',
+        '/og/api-reference/workflow/get-writable/image.png'
+      ),
+  },
+  {
+    name: 'HTML meta - worlds index',
+    run: () => assertHtmlMeta('/worlds', '/og/worlds'),
+  },
+  {
+    name: 'HTML meta - world local',
+    run: () => assertHtmlMeta('/worlds/local', '/og/worlds/local'),
+  },
+  {
+    name: 'HTML meta - world postgres',
+    run: () => assertHtmlMeta('/worlds/postgres', '/og/worlds/postgres'),
+  },
+  {
+    name: 'HTML meta - world vercel',
+    run: () => assertHtmlMeta('/worlds/vercel', '/og/worlds/vercel'),
   },
   {
     name: 'OG docs page image',
