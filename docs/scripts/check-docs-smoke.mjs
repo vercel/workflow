@@ -1,5 +1,16 @@
 import { spawn } from 'node:child_process';
 
+/**
+ * Docs smoke checks.
+ *
+ * This script is intentionally small and dependency-free so it can run in CI.
+ * It validates critical public endpoints (OG images and sitemap) and can be
+ * extended with more lightweight checks over time.
+ *
+ * When DEPLOYMENT_URL or OG_BASE_URL is set, it targets a remote deployment.
+ * Otherwise it starts the local docs server and tests against localhost.
+ */
+
 const PORT = process.env.OG_TEST_PORT || '3100';
 const HOST = '127.0.0.1';
 const rawBaseUrl = process.env.DEPLOYMENT_URL || process.env.OG_BASE_URL || '';
@@ -51,6 +62,21 @@ const assertPngResponse = async (path) => {
     }
   }
 };
+
+const checks = [
+  {
+    name: 'OG default image',
+    run: () => assertPngResponse('/og'),
+  },
+  {
+    name: 'OG docs page image',
+    run: () => assertPngResponse('/og/foundations/idempotency/image.png'),
+  },
+  {
+    name: 'Sitemap',
+    run: () => assertXmlResponse('/sitemap.xml'),
+  },
+];
 
 const assertXmlResponse = async (path) => {
   const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
@@ -111,9 +137,10 @@ const run = async () => {
 
   try {
     await waitForServer(`${BASE_URL}/og`);
-    await assertPngResponse('/og');
-    await assertPngResponse('/og/foundations/idempotency/image.png');
-    await assertXmlResponse('/sitemap.xml');
+    for (const check of checks) {
+      console.log(`Running docs smoke check: ${check.name}`);
+      await check.run();
+    }
     await stopServer();
   } catch (error) {
     await stopServer();
