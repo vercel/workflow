@@ -214,6 +214,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       },
 
       dispose: disposeHook,
+
+      // TC39 Explicit Resource Management - enables `using hook = createHook()`
+      [Symbol.dispose]: disposeHook,
     };
 
     return hook;

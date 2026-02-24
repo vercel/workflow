@@ -163,6 +163,34 @@ export async function handoffWorkflow(channelId: string) {
 
 After calling `dispose()`, the hook will no longer receive events and its token becomes available for other workflows to use.
 
+### Automatic Disposal with `using`
+
+Hooks implement the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal, allowing automatic disposal with the `using` keyword:
+
+```typescript lineNumbers
+import { createHook } from "workflow"
+
+export async function scopedHookWorkflow(channelId: string) {
+  "use workflow";
+
+  {
+    using hook = createHook<{ message: string }>({ // [!code highlight]
+      token: `channel:${channelId}`
+    });
+
+    const payload = await hook;
+    console.log("Received:", payload.message);
+
+    // hook is automatically disposed when the block exits // [!code highlight]
+  }
+
+  // Token is now available for other workflows to use
+  console.log("Hook disposed, continuing with other work...");
+}
+```
+
+This is equivalent to manually calling `dispose()` but ensures the hook is always cleaned up, even if an error occurs.
+
 ## Related Functions
 
 - [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper
