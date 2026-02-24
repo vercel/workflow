@@ -2,16 +2,30 @@ import { spawn } from 'node:child_process';
 
 const PORT = process.env.OG_TEST_PORT || '3100';
 const HOST = '127.0.0.1';
-const BASE_URL = `http://${HOST}:${PORT}`;
+const rawBaseUrl = process.env.DEPLOYMENT_URL || process.env.OG_BASE_URL || '';
+const BASE_URL = rawBaseUrl
+  ? rawBaseUrl.startsWith('http')
+    ? rawBaseUrl
+    : `https://${rawBaseUrl}`
+  : `http://${HOST}:${PORT}`;
+const USE_REMOTE = Boolean(rawBaseUrl);
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getHeaders = () => {
+  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  if (bypassSecret) {
+    return { 'x-vercel-protection-bypass': bypassSecret };
+  }
+  return {};
+};
 
 const waitForServer = async (url, timeoutMs = 30_000) => {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: getHeaders() });
       if (res.ok) return;
     } catch {
       // ignore until server is ready
@@ -22,7 +36,7 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
 };
 
 const assertPngResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`);
+  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -39,7 +53,7 @@ const assertPngResponse = async (path) => {
 };
 
 const assertXmlResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`);
+  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -54,40 +68,46 @@ const assertXmlResponse = async (path) => {
 };
 
 const run = async () => {
-  const child = spawn('pnpm', ['-C', 'docs', 'start'], {
-    env: {
-      ...process.env,
-      PORT,
-      HOSTNAME: HOST,
-    },
-    stdio: 'inherit',
-  });
+  let child = null;
+  let stopServer = async () => {};
+  let cleanup = async () => {};
 
-  let shuttingDown = false;
-  const stopServer = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    child.kill('SIGTERM');
-    await Promise.race([
-      new Promise((resolve) => child.once('exit', resolve)),
-      wait(5_000),
-    ]);
-    if (!child.killed) {
-      child.kill('SIGKILL');
-    }
-  };
+  if (!USE_REMOTE) {
+    child = spawn('pnpm', ['-C', 'docs', 'start'], {
+      env: {
+        ...process.env,
+        PORT,
+        HOSTNAME: HOST,
+      },
+      stdio: 'inherit',
+    });
 
-  const cleanup = async () => {
-    try {
-      await stopServer();
-    } catch {
-      // ignore cleanup errors
-    }
-  };
+    let shuttingDown = false;
+    stopServer = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      child.kill('SIGTERM');
+      await Promise.race([
+        new Promise((resolve) => child.once('exit', resolve)),
+        wait(5_000),
+      ]);
+      if (!child.killed) {
+        child.kill('SIGKILL');
+      }
+    };
 
-  process.on('SIGINT', cleanup);
-  process.on('SIGTERM', cleanup);
-  process.on('exit', cleanup);
+    cleanup = async () => {
+      try {
+        await stopServer();
+      } catch {
+        // ignore cleanup errors
+      }
+    };
+
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
+    process.on('exit', cleanup);
+  }
 
   try {
     await waitForServer(`${BASE_URL}/og`);
