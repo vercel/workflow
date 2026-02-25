@@ -14,6 +14,11 @@ import {
   WorkflowRunSchema,
 } from '@workflow/world';
 import z from 'zod';
+import {
+  isRefDescriptor,
+  type RefDescriptor,
+  resolveRefDescriptors,
+} from './refs.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import type { APIConfig } from './utils.js';
@@ -37,18 +42,35 @@ const EventResultWireSchema = z.object({
   hook: HookSchema.optional(),
 });
 
-// Would usually "EventSchema.omit({ eventData: true })" but that doesn't work
-// on zod unions. Re-creating the schema manually.
-// specVersion defaults to 1 (legacy) when parsing responses from storage
+// Schema for events returned with `remoteRefBehavior=lazy`.
+// Includes both `eventDataRef` (legacy, specVersion=1) and `eventData`
+// (v2, specVersion=2 — may contain nested RefDescriptor values).
+// specVersion defaults to 1 (legacy) when parsing responses from storage.
 const EventWithRefsSchema = z.object({
   eventId: z.string(),
   runId: z.string(),
   eventType: EventTypeSchema,
   correlationId: z.string().optional(),
   eventDataRef: z.any().optional(),
+  eventData: z.any().optional(),
   createdAt: z.coerce.date(),
   specVersion: z.number().default(1),
 });
+
+/**
+ * Maps event types to the field name within `eventData` that may contain
+ * a ref descriptor. Mirrors the server-side `resolveEventDataRefs()` mapping.
+ */
+const eventDataRefFieldMap: Record<string, string> = {
+  run_created: 'input',
+  run_completed: 'output',
+  run_failed: 'error',
+  step_created: 'input',
+  step_completed: 'result',
+  step_failed: 'error',
+  step_retrying: 'error',
+  hook_created: 'metadata',
+};
 
 // Events where the client uses the response entity data need 'resolve' (default).
 // Events where the client discards the response can use 'lazy' to skip expensive
@@ -58,6 +80,93 @@ const eventsNeedingResolve = new Set([
   'run_started', // client reads result.run (checks startedAt, status)
   'step_started', // client reads result.step (checks attempt, state)
 ]);
+
+/**
+ * Collect all ref descriptors from a list of lazy-loaded events.
+ * Returns a flat array of { eventIndex, refType, fieldName?, descriptor }
+ * entries that can be resolved in bulk.
+ */
+interface PendingRef {
+  eventIndex: number;
+  /**
+   * 'entity' = top-level eventDataRef (legacy specVersion=1 events)
+   * 'nested' = nested ref descriptor within eventData (v2 events)
+   */
+  refType: 'entity' | 'nested';
+  /** The field name within eventData containing the ref (only for 'nested') */
+  fieldName?: string;
+  descriptor: RefDescriptor;
+}
+
+function collectPendingRefs(events: any[]): PendingRef[] {
+  const pending: PendingRef[] = [];
+
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i];
+
+    // Legacy events (specVersion=1): eventDataRef is a RefDescriptor
+    if (event.eventDataRef && isRefDescriptor(event.eventDataRef)) {
+      pending.push({
+        eventIndex: i,
+        refType: 'entity',
+        descriptor: event.eventDataRef,
+      });
+    }
+
+    // V2 events: eventData may contain a nested RefDescriptor
+    if (event.eventData && typeof event.eventData === 'object') {
+      const fieldName = eventDataRefFieldMap[event.eventType as string];
+      if (fieldName) {
+        const fieldValue = event.eventData[fieldName];
+        if (isRefDescriptor(fieldValue)) {
+          pending.push({
+            eventIndex: i,
+            refType: 'nested',
+            fieldName,
+            descriptor: fieldValue,
+          });
+        }
+      }
+    }
+  }
+
+  return pending;
+}
+
+/**
+ * Hydrate lazy-loaded events by resolving all ref descriptors client-side.
+ * For entity-level refs (eventDataRef), the resolved value becomes eventData.
+ * For nested refs (eventData[field]), the resolved value replaces the descriptor.
+ */
+async function hydrateEventRefs(
+  events: any[],
+  config?: APIConfig
+): Promise<any[]> {
+  const pending = collectPendingRefs(events);
+  if (pending.length === 0) return events;
+
+  // Resolve all descriptors in parallel with bounded concurrency
+  const descriptors = pending.map((p) => p.descriptor);
+  const resolvedValues = await resolveRefDescriptors(descriptors, config);
+
+  // Apply resolved values back to the events
+  for (let i = 0; i < pending.length; i++) {
+    const { eventIndex, refType, fieldName } = pending[i];
+    const event = events[eventIndex];
+    const resolved = resolvedValues[i];
+
+    if (refType === 'entity') {
+      // Legacy: eventDataRef → eventData, remove the ref field
+      event.eventData = resolved;
+      delete event.eventDataRef;
+    } else if (refType === 'nested' && fieldName) {
+      // V2: replace the nested ref descriptor with resolved value
+      event.eventData[fieldName] = resolved;
+    }
+  }
+
+  return events;
+}
 
 // Functions
 export async function getWorkflowRunEvents(
@@ -84,8 +193,11 @@ export async function getWorkflowRunEvents(
   if (pagination?.sortOrder)
     searchParams.set('sortOrder', pagination.sortOrder);
   if (correlationId) searchParams.set('correlationId', correlationId);
-  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
-  searchParams.set('remoteRefBehavior', remoteRefBehavior);
+
+  // Always send 'lazy' to the server to avoid server-side OOM from resolving
+  // all refs in memory. When resolveData is 'all', we hydrate refs client-side
+  // via individual ref resolution requests.
+  searchParams.set('remoteRefBehavior', 'lazy');
 
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';
@@ -97,11 +209,19 @@ export async function getWorkflowRunEvents(
     endpoint,
     options: { method: 'GET' },
     config,
-    schema: PaginatedResponseSchema(
-      remoteRefBehavior === 'lazy' ? EventWithRefsSchema : EventSchema
-    ),
+    schema: PaginatedResponseSchema(EventWithRefsSchema),
   })) as PaginatedResponse<Event>;
 
+  if (resolveData === 'all') {
+    // Hydrate refs client-side: resolve all ref descriptors in parallel
+    const hydratedEvents = await hydrateEventRefs(response.data, config);
+    return {
+      ...response,
+      data: hydratedEvents,
+    };
+  }
+
+  // resolveData === 'none': strip eventData and eventDataRef
   return {
     ...response,
     data: response.data.map((event: any) =>
