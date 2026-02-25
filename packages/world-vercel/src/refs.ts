@@ -60,7 +60,8 @@ export async function resolveRefDescriptor(
     const contentType = descriptor._ct ?? 'application/cbor';
     const binaryData = Buffer.from(descriptor._data, 'base64');
     if (contentType === 'application/octet-stream') {
-      return new Uint8Array(binaryData);
+      // Buffer is a Uint8Array subclass — return directly to avoid a copy.
+      return binaryData;
     }
     // CBOR-encoded data — decode it. Buffer is accepted by cbor-x directly.
     return decode(binaryData);
@@ -112,8 +113,9 @@ export async function resolveRefDescriptors(
       );
     }
 
-    // Batch with bounded concurrency. If a batch fails entirely,
-    // abort remaining batches to avoid cascading failures.
+    // Batch with bounded concurrency. If any ref in a batch fails,
+    // the batch rejects and remaining batches are aborted to avoid
+    // cascading failures.
     const results: unknown[] = new Array(descriptors.length);
     for (let i = 0; i < descriptors.length; i += REF_RESOLVE_CONCURRENCY) {
       const batch = descriptors.slice(i, i + REF_RESOLVE_CONCURRENCY);

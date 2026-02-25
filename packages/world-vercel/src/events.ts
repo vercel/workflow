@@ -158,23 +158,38 @@ async function hydrateEventRefs(
   return trace('world.refs.hydrate', async (span) => {
     span?.setAttribute('workflow.refs.hydrated_count', pending.length);
 
-    // Resolve all descriptors in parallel with bounded concurrency
-    const descriptors = pending.map((p) => p.descriptor);
-    const resolvedValues = await resolveRefDescriptors(
-      descriptors,
-      config
-    ).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
-      );
-    });
+    // Deduplicate descriptors by _ref key to avoid redundant resolutions.
+    // Multiple events may reference the same ref (e.g., shared input).
+    const uniqueDescriptors = new Map<string, RefDescriptor>();
+    for (const p of pending) {
+      if (!uniqueDescriptors.has(p.descriptor._ref)) {
+        uniqueDescriptors.set(p.descriptor._ref, p.descriptor);
+      }
+    }
+    const deduped = Array.from(uniqueDescriptors.values());
+
+    // Resolve unique descriptors in parallel with bounded concurrency
+    const dedupedResults = await resolveRefDescriptors(deduped, config).catch(
+      (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
+        );
+      }
+    );
+
+    // Build a map from ref key → resolved value for fast lookup
+    const resolvedMap = new Map<string, unknown>();
+    const dedupedKeys = Array.from(uniqueDescriptors.keys());
+    for (let i = 0; i < dedupedKeys.length; i++) {
+      resolvedMap.set(dedupedKeys[i], dedupedResults[i]);
+    }
 
     // Shallow-clone events that need modification, then apply resolved values
     const result = [...events];
     for (let i = 0; i < pending.length; i++) {
-      const { eventIndex, refType, fieldName } = pending[i];
-      const resolved = resolvedValues[i];
+      const { eventIndex, refType, fieldName, descriptor } = pending[i];
+      const resolved = resolvedMap.get(descriptor._ref);
 
       // Shallow-clone the event (and eventData if nested) before mutating
       if (result[eventIndex] === events[eventIndex]) {
