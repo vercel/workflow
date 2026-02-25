@@ -1,5 +1,6 @@
 import { decode } from 'cbor-x';
 import z from 'zod';
+import { trace } from './telemetry.js';
 import type { APIConfig } from './utils.js';
 import { makeRequest } from './utils.js';
 
@@ -25,6 +26,7 @@ export function isRefDescriptor(value: unknown): value is RefDescriptor {
     value !== null &&
     '_type' in value &&
     '_ref' in value &&
+    typeof (value as { _ref: unknown })._ref === 'string' &&
     (value as { _type: string })._type === 'RemoteRef'
   );
 }
@@ -42,7 +44,7 @@ const REF_RESOLVE_CONCURRENCY = 10;
  * descriptor's `_data` field — no network request is needed.
  *
  * For S3 refs (s3rf:) and Redis refs (kvrf:), a request is made to the
- * `GET /v2/refs` endpoint on workflow-server.
+ * `GET /v2/refs` endpoint on workflow-server which returns raw CBOR bytes.
  */
 export async function resolveRefDescriptor(
   descriptor: RefDescriptor,
@@ -51,29 +53,35 @@ export async function resolveRefDescriptor(
   const ref = descriptor._ref;
 
   // Inline refs (dbrf:) carry their data in the descriptor — decode locally
-  if (ref.startsWith('dbrf:') && descriptor._data) {
+  if (ref.startsWith('dbrf:')) {
+    if (!descriptor._data) {
+      throw new Error(`Inline ref descriptor missing _data field: ${ref}`);
+    }
     const contentType = descriptor._ct ?? 'application/cbor';
     const binaryData = Buffer.from(descriptor._data, 'base64');
     if (contentType === 'application/octet-stream') {
       return new Uint8Array(binaryData);
     }
-    // CBOR-encoded data — decode it
-    return decode(new Uint8Array(binaryData));
+    // CBOR-encoded data — decode it. Buffer is accepted by cbor-x directly.
+    return decode(binaryData);
   }
 
-  // Remote refs (s3rf:, kvrf:) — fetch from the server
-  const response = await makeRequest({
+  // Remote refs (s3rf:, kvrf:) — fetch raw CBOR bytes from the server.
+  // The server returns the raw stored bytes directly (not wrapped in a
+  // JSON/CBOR envelope), so makeRequest decodes them into the JS value.
+  return makeRequest({
     endpoint: `/v2/refs?ref=${encodeURIComponent(ref)}`,
     options: { method: 'GET' },
     config,
-    schema: z.object({ data: z.any() }),
+    schema: z.any(),
   });
-
-  return response.data;
 }
 
 /**
  * Resolve multiple ref descriptors in parallel with bounded concurrency.
+ *
+ * If an entire batch fails (e.g., /v2/refs endpoint is down), remaining
+ * batches are aborted to avoid sending doomed requests.
  *
  * @param descriptors - Array of ref descriptors to resolve
  * @param config - API configuration
@@ -85,22 +93,38 @@ export async function resolveRefDescriptors(
 ): Promise<unknown[]> {
   if (descriptors.length === 0) return [];
 
-  // Simple case: if under concurrency limit, resolve all at once
-  if (descriptors.length <= REF_RESOLVE_CONCURRENCY) {
-    return Promise.all(descriptors.map((d) => resolveRefDescriptor(d, config)));
-  }
+  return trace('world.refs.resolve', async (span) => {
+    const inlineCount = descriptors.filter((d) =>
+      d._ref.startsWith('dbrf:')
+    ).length;
+    const remoteCount = descriptors.length - inlineCount;
 
-  // Batch with bounded concurrency
-  const results: unknown[] = new Array(descriptors.length);
-  for (let i = 0; i < descriptors.length; i += REF_RESOLVE_CONCURRENCY) {
-    const batch = descriptors.slice(i, i + REF_RESOLVE_CONCURRENCY);
-    const batchResults = await Promise.all(
-      batch.map((d) => resolveRefDescriptor(d, config))
-    );
-    for (let j = 0; j < batchResults.length; j++) {
-      results[i + j] = batchResults[j];
+    span?.setAttributes({
+      'workflow.refs.total_count': descriptors.length,
+      'workflow.refs.inline_count': inlineCount,
+      'workflow.refs.remote_count': remoteCount,
+    });
+
+    // Simple case: if under concurrency limit, resolve all at once
+    if (descriptors.length <= REF_RESOLVE_CONCURRENCY) {
+      return Promise.all(
+        descriptors.map((d) => resolveRefDescriptor(d, config))
+      );
     }
-  }
 
-  return results;
+    // Batch with bounded concurrency. If a batch fails entirely,
+    // abort remaining batches to avoid cascading failures.
+    const results: unknown[] = new Array(descriptors.length);
+    for (let i = 0; i < descriptors.length; i += REF_RESOLVE_CONCURRENCY) {
+      const batch = descriptors.slice(i, i + REF_RESOLVE_CONCURRENCY);
+      const batchResults = await Promise.all(
+        batch.map((d) => resolveRefDescriptor(d, config))
+      );
+      for (let j = 0; j < batchResults.length; j++) {
+        results[i + j] = batchResults[j];
+      }
+    }
+
+    return results;
+  });
 }

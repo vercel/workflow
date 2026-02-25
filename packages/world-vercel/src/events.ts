@@ -21,13 +21,20 @@ import {
 } from './refs.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
+import { trace } from './telemetry.js';
 import type { APIConfig } from './utils.js';
 import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
 
-// Helper to filter event data based on resolveData setting
+// Helper to filter event data based on resolveData setting.
+// Strips both eventData and eventDataRef since the server always returns
+// lazy refs now, and callers with resolveData='none' should not see either.
 function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
   if (resolveData === 'none') {
-    const { eventData: _eventData, ...rest } = event;
+    const {
+      eventData: _eventData,
+      eventDataRef: _eventDataRef,
+      ...rest
+    } = event;
     return rest;
   }
   return event;
@@ -137,6 +144,9 @@ function collectPendingRefs(events: any[]): PendingRef[] {
  * Hydrate lazy-loaded events by resolving all ref descriptors client-side.
  * For entity-level refs (eventDataRef), the resolved value becomes eventData.
  * For nested refs (eventData[field]), the resolved value replaces the descriptor.
+ *
+ * Events are shallow-cloned before mutation to avoid corrupting any upstream
+ * caches (SWR, React cache, etc.) that might hold references to the originals.
  */
 async function hydrateEventRefs(
   events: any[],
@@ -145,27 +155,49 @@ async function hydrateEventRefs(
   const pending = collectPendingRefs(events);
   if (pending.length === 0) return events;
 
-  // Resolve all descriptors in parallel with bounded concurrency
-  const descriptors = pending.map((p) => p.descriptor);
-  const resolvedValues = await resolveRefDescriptors(descriptors, config);
+  return trace('world.refs.hydrate', async (span) => {
+    span?.setAttribute('workflow.refs.hydrated_count', pending.length);
 
-  // Apply resolved values back to the events
-  for (let i = 0; i < pending.length; i++) {
-    const { eventIndex, refType, fieldName } = pending[i];
-    const event = events[eventIndex];
-    const resolved = resolvedValues[i];
+    // Resolve all descriptors in parallel with bounded concurrency
+    const descriptors = pending.map((p) => p.descriptor);
+    const resolvedValues = await resolveRefDescriptors(
+      descriptors,
+      config
+    ).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
+      );
+    });
 
-    if (refType === 'entity') {
-      // Legacy: eventDataRef → eventData, remove the ref field
-      event.eventData = resolved;
-      delete event.eventDataRef;
-    } else if (refType === 'nested' && fieldName) {
-      // V2: replace the nested ref descriptor with resolved value
-      event.eventData[fieldName] = resolved;
+    // Shallow-clone events that need modification, then apply resolved values
+    const result = [...events];
+    for (let i = 0; i < pending.length; i++) {
+      const { eventIndex, refType, fieldName } = pending[i];
+      const resolved = resolvedValues[i];
+
+      // Shallow-clone the event (and eventData if nested) before mutating
+      if (result[eventIndex] === events[eventIndex]) {
+        result[eventIndex] = { ...events[eventIndex] };
+      }
+      const event = result[eventIndex];
+
+      if (refType === 'entity') {
+        // Legacy: eventDataRef → eventData, remove the ref field
+        event.eventData = resolved;
+        delete event.eventDataRef;
+      } else if (refType === 'nested' && fieldName) {
+        // Shallow-clone eventData before mutating if not yet cloned
+        if (event.eventData === events[eventIndex].eventData) {
+          event.eventData = { ...event.eventData };
+        }
+        // V2: replace the nested ref descriptor with resolved value
+        event.eventData[fieldName] = resolved;
+      }
     }
-  }
 
-  return events;
+    return result;
+  });
 }
 
 // Functions
@@ -194,7 +226,7 @@ export async function getWorkflowRunEvents(
     searchParams.set('sortOrder', pagination.sortOrder);
   if (correlationId) searchParams.set('correlationId', correlationId);
 
-  // Always send 'lazy' to the server to avoid server-side OOM from resolving
+  // Always send 'lazy' to the server to avoid memory pressure from resolving
   // all refs in memory. When resolveData is 'all', we hydrate refs client-side
   // via individual ref resolution requests.
   searchParams.set('remoteRefBehavior', 'lazy');
