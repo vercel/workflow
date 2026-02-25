@@ -262,9 +262,19 @@ export async function getWorkflowRunEvents(
   if (resolveData === 'all') {
     // Hydrate refs client-side: resolve all ref descriptors in parallel
     const hydratedEvents = await hydrateEventRefs(response.data, config);
+
+    // Re-parse hydrated events through EventSchema to apply type coercions
+    // (e.g., z.coerce.date() for resumeAt) that EventWithRefsSchema skips.
+    // Use safeParse to gracefully handle any events that don't match a known
+    // type — pass them through as-is rather than failing the entire request.
+    const validatedEvents = hydratedEvents.map((event: any) => {
+      const result = EventSchema.safeParse(event);
+      return result.success ? result.data : event;
+    });
+
     return {
       ...response,
-      data: hydratedEvents,
+      data: validatedEvents,
     };
   }
 

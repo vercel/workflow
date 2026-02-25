@@ -1,8 +1,6 @@
 import { decode } from 'cbor-x';
-import z from 'zod';
 import { trace } from './telemetry.js';
-import type { APIConfig } from './utils.js';
-import { makeRequest } from './utils.js';
+import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
  * A ref descriptor as returned by workflow-server when `remoteRefBehavior=lazy`.
@@ -67,15 +65,32 @@ export async function resolveRefDescriptor(
     return decode(binaryData);
   }
 
-  // Remote refs (s3rf:, kvrf:) — fetch raw CBOR bytes from the server.
+  // Remote refs (s3rf:, kvrf:) — fetch raw bytes from the server.
   // The server returns the raw stored bytes directly (not wrapped in a
-  // JSON/CBOR envelope), so makeRequest decodes them into the JS value.
-  return makeRequest({
-    endpoint: `/v2/refs?ref=${encodeURIComponent(ref)}`,
-    options: { method: 'GET' },
-    config,
-    schema: z.any(),
-  });
+  // JSON/CBOR envelope). The Content-Type may be 'application/cbor' (for
+  // CBOR-encoded data) or 'application/octet-stream' (for raw binary like
+  // Uint8Array). We handle both content types directly rather than going
+  // through makeRequest, which only handles JSON/CBOR API responses.
+  const { baseUrl, headers } = await getHttpConfig(config);
+  const url = `${baseUrl}/v2/refs?ref=${encodeURIComponent(ref)}`;
+
+  const response = await fetch(new Request(url, { method: 'GET', headers }));
+  if (!response.ok) {
+    throw new Error(
+      `Failed to resolve ref ${ref}: HTTP ${response.status} ${response.statusText}`
+    );
+  }
+
+  const contentType = response.headers.get('Content-Type') || '';
+  const buffer = await response.arrayBuffer();
+
+  if (contentType.includes('application/octet-stream')) {
+    // Raw binary data (e.g., Uint8Array stored by the workflow)
+    return new Uint8Array(buffer);
+  }
+
+  // CBOR-encoded data (the common case for structured values)
+  return decode(new Uint8Array(buffer));
 }
 
 /**
