@@ -77,18 +77,13 @@ type QueueFunction = (
 ) => ReturnType<Queue['queue']>;
 
 export function createQueue(config?: APIConfig): Queue {
-  const { baseUrl, usingProxy } = getHttpUrl(config);
+  const { usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
-  const region = process.env.VERCEL_REGION || 'iad1';
+  const region = 'iad1';
 
   const clientOptions = {
     region,
-    // When using the proxy, override the base URL resolver so requests go through
-    // api.vercel.com. The proxy strips `/queues` from the path and adds `/api`,
-    // so this ends up being `/api/v3/topic` when arriving at the queue server.
-    ...(usingProxy ? { resolveBaseUrl: () => `${baseUrl}/queues` } : {}),
-    token: usingProxy ? config?.token : undefined,
     headers: Object.fromEntries(headers.entries()),
   };
 
@@ -141,9 +136,7 @@ export function createQueue(config?: APIConfig): Queue {
         },
       });
       return {
-        messageId: MessageId.parse(
-          messageId ?? `msg_deferred_${sanitizedQueueName}`
-        ),
+        messageId: messageId ? MessageId.parse(messageId) : null,
       };
     } catch (error) {
       // Silently handle idempotency key conflicts - the message was already queued.
