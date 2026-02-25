@@ -155,30 +155,40 @@ export async function webhookWorkflow(
   type Payload = { url: string; method: string; body: string };
   const payloads: Payload[] = [];
 
-  // Webhook with default response
-  using webhookWithDefaultResponse = createWebhook({ token });
-  const req1 = await webhookWithDefaultResponse;
-  const body1 = await req1.text();
-  payloads.push({ url: req1.url, method: req1.method, body: body1 });
+  // All webhooks must be created upfront so they're all registered
+  // before the test sends HTTP requests to them
+  const webhookWithDefaultResponse = createWebhook({ token });
 
-  // Webhook with static response
   const res = new Response('Hello from static response!', { status: 402 });
-  using webhookWithStaticResponse = createWebhook({
+  const webhookWithStaticResponse = createWebhook({
     token: token2,
     respondWith: res,
   });
-  const req2 = await webhookWithStaticResponse;
-  const body2 = await req2.text();
-  payloads.push({ url: req2.url, method: req2.method, body: body2 });
-
-  // Webhook with manual response
-  using webhookWithManualResponse = createWebhook({
+  const webhookWithManualResponse = createWebhook({
     token: token3,
     respondWith: 'manual',
   });
-  const req3 = await webhookWithManualResponse;
-  const body3 = await sendWebhookResponse(req3);
-  payloads.push({ url: req3.url, method: req3.method, body: body3 });
+
+  // Webhook with default response
+  {
+    const req = await webhookWithDefaultResponse;
+    const body = await req.text();
+    payloads.push({ url: req.url, method: req.method, body });
+  }
+
+  // Webhook with static response
+  {
+    const req = await webhookWithStaticResponse;
+    const body = await req.text();
+    payloads.push({ url: req.url, method: req.method, body });
+  }
+
+  // Webhook with manual response
+  {
+    const req = await webhookWithManualResponse;
+    const body = await sendWebhookResponse(req);
+    payloads.push({ url: req.url, method: req.method, body });
+  }
 
   return payloads;
 }
