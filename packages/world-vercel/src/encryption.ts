@@ -148,14 +148,14 @@ export async function fetchRunKey(
  * - Fetching it from the Vercel API when the run belongs to a different deployment
  *
  * @param projectId - Vercel project ID for HKDF context isolation
- * @param token - Optional auth token from config
  * @param teamId - Optional team ID for team-scoped API requests
+ * @param token - Optional auth token from config
  * @returns The `getEncryptionKeyForRun` function, or `undefined` if no projectId
  */
 export function createGetEncryptionKeyForRun(
   projectId: string | undefined,
-  token?: string,
-  teamId?: string
+  teamId?: string,
+  token?: string
 ): World['getEncryptionKeyForRun'] {
   if (!projectId) return undefined;
 
