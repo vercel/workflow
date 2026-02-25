@@ -1,5 +1,4 @@
 import { QueueClient, DuplicateMessageError } from '@vercel/queue';
-import { handleCallback } from '@vercel/queue/web';
 import {
   MessageId,
   type Queue,
@@ -81,12 +80,14 @@ export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
+  const region = process.env.VERCEL_REGION || 'iad1';
+
   const clientOptions = {
-    baseUrl: usingProxy ? baseUrl : undefined,
-    // The proxy will strip `/queues` from the path, and add `/api` in front,
-    // so this ends up being `/api/v3/topic` when arriving at the queue server,
-    // which is the same as the default basePath in VQS client.
-    basePath: usingProxy ? '/queues/v3/topic' : undefined,
+    region,
+    // When using the proxy, override the base URL resolver so requests go through
+    // api.vercel.com. The proxy strips `/queues` from the path and adds `/api`,
+    // so this ends up being `/api/v3/topic` when arriving at the queue server.
+    ...(usingProxy ? { resolveBaseUrl: () => `${baseUrl}/queues` } : {}),
     token: usingProxy ? config?.token : undefined,
     headers: Object.fromEntries(headers.entries()),
   };
@@ -131,9 +132,7 @@ export function createQueue(config?: APIConfig): Queue {
     });
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     try {
-      const { messageId } = await client.sendMessage({
-        queueName: sanitizedQueueName,
-        payload: encoded,
+      const { messageId } = await client.send(sanitizedQueueName, encoded, {
         idempotencyKey: opts?.idempotencyKey,
         delaySeconds: opts?.delaySeconds,
         headers: {
@@ -141,7 +140,11 @@ export function createQueue(config?: APIConfig): Queue {
           ...opts?.headers,
         },
       });
-      return { messageId: MessageId.parse(messageId) };
+      return {
+        messageId: MessageId.parse(
+          messageId ?? `msg_deferred_${sanitizedQueueName}`
+        ),
+      };
     } catch (error) {
       // Silently handle idempotency key conflicts - the message was already queued.
       // This matches the behavior of world-local and world-postgres.
@@ -162,38 +165,33 @@ export function createQueue(config?: APIConfig): Queue {
     _prefix,
     handler
   ) => {
-    return handleCallback(
-      async (message, metadata) => {
-        if (!message || !metadata) {
-          return;
-        }
+    const client = new QueueClient(clientOptions);
+    return client.handleCallback(async (message: unknown, metadata) => {
+      if (!message || !metadata) {
+        return;
+      }
 
-        const { payload, queueName, deploymentId } =
-          MessageWrapper.parse(message);
+      const { payload, queueName, deploymentId } =
+        MessageWrapper.parse(message);
 
-        const result = await handler(payload, {
-          queueName,
-          messageId: MessageId.parse(metadata.messageId),
-          attempt: metadata.deliveryCount,
-        });
+      const result = await handler(payload, {
+        queueName,
+        messageId: MessageId.parse(metadata.messageId),
+        attempt: metadata.deliveryCount,
+      });
 
-        if (typeof result?.timeoutSeconds === 'number') {
-          // Send new message with delay, then acknowledge the current one.
-          // Clamp to max delay (23h) - for longer sleeps, the workflow will chain
-          // multiple delayed messages until the full sleep duration has elapsed.
-          const delaySeconds = Math.min(
-            result.timeoutSeconds,
-            MAX_DELAY_SECONDS
-          );
+      if (typeof result?.timeoutSeconds === 'number') {
+        // Send new message with delay, then acknowledge the current one.
+        // Clamp to max delay (23h) - for longer sleeps, the workflow will chain
+        // multiple delayed messages until the full sleep duration has elapsed.
+        const delaySeconds = Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS);
 
-          // Send new message with delay BEFORE acknowledging current message.
-          // This ensures crash safety: if process dies after send but before ack,
-          // we may get a duplicate invocation but won't lose the scheduled wakeup.
-          await queue(queueName, payload, { deploymentId, delaySeconds });
-        }
-      },
-      { client: new QueueClient(clientOptions) }
-    );
+        // Send new message with delay BEFORE acknowledging current message.
+        // This ensures crash safety: if process dies after send but before ack,
+        // we may get a duplicate invocation but won't lose the scheduled wakeup.
+        await queue(queueName, payload, { deploymentId, delaySeconds });
+      }
+    });
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
