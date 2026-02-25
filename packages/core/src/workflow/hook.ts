@@ -195,7 +195,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       webhookLogger.debug('Hook disposed', { correlationId, token });
     }
 
-    const hook: Hook<T> = {
+    // Cast needed because [Symbol.dispose] is set dynamically below using the VM's symbol
+    const hook = {
       token,
 
       // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
@@ -214,11 +215,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       },
 
       dispose: disposeHook,
-
-      // TC39 Explicit Resource Management - enables `using hook = createHook()`
-      [Symbol.dispose]: disposeHook,
     };
 
-    return hook;
+    // Use the VM's Symbol.dispose so `using` works inside the workflow sandbox.
+    // The VM may have a polyfilled Symbol.dispose that differs from the host's.
+    const vmDispose = ctx.globalThis.Symbol.dispose;
+    if (vmDispose) {
+      (hook as any)[vmDispose] = disposeHook;
+    }
+
+    return hook as unknown as Hook<T>;
   };
 }
