@@ -8,7 +8,9 @@ import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
-import { ENOTSUP } from './global.js';
+import type { QueueItem } from './global.js';
+import { ENOTSUP, WorkflowSuspension } from './global.js';
+import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -31,6 +33,41 @@ import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
+
+/**
+ * Logs a warning when a workflow run completes or fails with uncommitted
+ * operations still in the invocations queue. This typically indicates the
+ * user forgot to `await` a step, hook, or sleep call.
+ */
+function warnPendingQueueItems(
+  runId: string,
+  pendingQueue: Map<string, QueueItem>,
+  outcome: 'completed' | 'failed'
+): void {
+  // Filter out hook_disposed items — these are benign since the backend
+  // auto-disposes all hooks when a run reaches a terminal state
+  const items = [...pendingQueue.values()].filter(
+    (item) => item.type !== 'hook_disposed'
+  );
+  if (items.length === 0) return;
+
+  const details = items.map((item) => {
+    switch (item.type) {
+      case 'step':
+        return `step "${item.stepName}"`;
+      case 'hook':
+        return `hook (token: "${item.token}")`;
+      case 'wait':
+        return 'sleep';
+    }
+  });
+
+  runtimeLogger.warn(
+    `Workflow run ${outcome} with ${items.length} uncommitted operation(s): ${details.join(', ')}. ` +
+      'Did you forget to `await` a step, hook, or sleep call?',
+    { workflowRunId: runId }
+  );
+}
 
 export async function runWorkflow(
   workflowCode: string,
@@ -651,22 +688,43 @@ export async function runWorkflow(
     });
 
     // Invoke user workflow
-    const result = await Promise.race([
-      workflowFn(...args),
-      workflowDiscontinuation.promise,
-    ]);
+    try {
+      const result = await Promise.race([
+        workflowFn(...args),
+        workflowDiscontinuation.promise,
+      ]);
 
-    const dehydrated = await dehydrateWorkflowReturnValue(
-      result,
-      workflowRun.runId,
-      encryptionKey,
-      vmGlobalThis
-    );
+      const dehydrated = await dehydrateWorkflowReturnValue(
+        result,
+        workflowRun.runId,
+        encryptionKey,
+        vmGlobalThis
+      );
 
-    span?.setAttributes({
-      ...Attribute.WorkflowResultType(typeof result),
-    });
+      span?.setAttributes({
+        ...Attribute.WorkflowResultType(typeof result),
+      });
 
-    return dehydrated;
+      warnPendingQueueItems(
+        workflowRun.runId,
+        workflowContext.invocationsQueue,
+        'completed'
+      );
+
+      return dehydrated;
+    } catch (err) {
+      // Let WorkflowSuspension propagate — handled separately by the runtime
+      if (WorkflowSuspension.is(err)) {
+        throw err;
+      }
+
+      warnPendingQueueItems(
+        workflowRun.runId,
+        workflowContext.invocationsQueue,
+        'failed'
+      );
+
+      throw err;
+    }
   });
 }
