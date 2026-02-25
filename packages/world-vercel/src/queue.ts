@@ -136,6 +136,8 @@ export function createQueue(config?: APIConfig): Queue {
         },
       });
       return {
+        // messageId may be null when VQS fails over to a different region —
+        // the event is ingested but the responding region cannot return an ID.
         messageId: messageId ? MessageId.parse(messageId) : null,
       };
     } catch (error) {
