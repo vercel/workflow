@@ -3,15 +3,19 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import type { ReactNode } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
+import {
+  ErrorStackBlock,
+  isStructuredErrorWithStack,
+} from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
-import { CopyableDataBlock } from './copyable-data-block';
 import { ConversationView } from './conversation-view';
+import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
 /**
@@ -29,6 +33,9 @@ function TabButton({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
+      tabIndex={active ? 0 : -1}
       onClick={onClick}
       className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
       style={{
@@ -52,6 +59,76 @@ function TabButton({
 }
 
 /**
+ * Shared tabbed container with accessible ARIA roles and keyboard navigation.
+ * Used by ConversationWithTabs for the conversation/JSON toggle.
+ */
+function TabbedContainer<T extends string>({
+  tabs,
+  activeTab,
+  onTabChange,
+  ariaLabel,
+  children,
+}: {
+  tabs: { id: T; label: string }[];
+  activeTab: T;
+  onTabChange: (tab: T) => void;
+  ariaLabel: string;
+  children: ReactNode;
+}) {
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+      event.preventDefault();
+      const currentIndex = tabs.findIndex((t) => t.id === activeTab);
+      const nextIndex =
+        event.key === 'ArrowRight'
+          ? (currentIndex + 1) % tabs.length
+          : (currentIndex - 1 + tabs.length) % tabs.length;
+      onTabChange(tabs[nextIndex].id);
+    },
+    [tabs, activeTab, onTabChange]
+  );
+
+  return (
+    <div
+      className="rounded-md border"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'transparent',
+      }}
+    >
+      <div
+        className="flex gap-1 border-b"
+        role="tablist"
+        aria-label={ariaLabel}
+        onKeyDown={handleKeyDown}
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'transparent',
+        }}
+      >
+        {tabs.map((tab) => (
+          <TabButton
+            key={tab.id}
+            active={activeTab === tab.id}
+            onClick={() => onTabChange(tab.id)}
+          >
+            {tab.label}
+          </TabButton>
+        ))}
+      </div>
+
+      <div role="tabpanel">{children}</div>
+    </div>
+  );
+}
+
+const conversationTabs = [
+  { id: 'conversation' as const, label: 'Conversation' },
+  { id: 'json' as const, label: 'Raw JSON' },
+];
+
+/**
  * Tabbed view for conversation and raw JSON
  */
 function ConversationWithTabs({
@@ -67,34 +144,12 @@ function ConversationWithTabs({
 
   return (
     <DetailCard summary={`Input (${conversation.length} messages)`}>
-      <div
-        className="rounded-md border"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'transparent',
-        }}
+      <TabbedContainer
+        tabs={conversationTabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        ariaLabel="Conversation view"
       >
-        <div
-          className="flex gap-1 border-b"
-          style={{
-            borderColor: 'var(--ds-gray-300)',
-            backgroundColor: 'transparent',
-          }}
-        >
-          <TabButton
-            active={activeTab === 'conversation'}
-            onClick={() => setActiveTab('conversation')}
-          >
-            Conversation
-          </TabButton>
-          <TabButton
-            active={activeTab === 'json'}
-            onClick={() => setActiveTab('json')}
-          >
-            Raw JSON
-          </TabButton>
-        </div>
-
         {activeTab === 'conversation' ? (
           <ConversationView messages={conversation} />
         ) : (
@@ -108,7 +163,7 @@ function ConversationWithTabs({
               : JsonBlock(args)}
           </div>
         )}
-      </div>
+      </TabbedContainer>
     </DetailCard>
   );
 }
@@ -396,6 +451,21 @@ const attributeToDisplayFn: Record<
   },
   error: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
+
+    // If the error object has a `stack` field, render it as readable
+    // pre-formatted text. Otherwise fall back to the raw JSON viewer.
+    if (isStructuredErrorWithStack(value)) {
+      return (
+        <DetailCard
+          summary="Error"
+          summaryClassName="text-base py-2"
+          contentClassName="mt-0"
+        >
+          <ErrorStackBlock value={value} />
+        </DetailCard>
+      );
+    }
+
     return (
       <DetailCard
         summary="Error"
