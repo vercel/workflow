@@ -254,20 +254,6 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
-      - name: Pull OIDC token
-        run: |
-          npx vercel env pull .env.vercel-oidc \
-            --token "${{ secrets.VERCEL_LABS_TOKEN }}" \
-            --environment "${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}" \
-            --yes
-          OIDC_TOKEN=$(grep '^VERCEL_OIDC_TOKEN=' .env.vercel-oidc | cut -d= -f2- | tr -d '"')
-          echo "::add-mask::$OIDC_TOKEN"
-          echo "VERCEL_OIDC_TOKEN=$OIDC_TOKEN" >> "$GITHUB_ENV"
-          rm .env.vercel-oidc
-        env:
-          VERCEL_ORG_ID: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
-          VERCEL_PROJECT_ID: ${{ matrix.app.project-id }}
-
       - name: Run E2E Tests
         run: pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-vercel-prod-${{ matrix.app.name }}.json
         env:
