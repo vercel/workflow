@@ -17,6 +17,7 @@ import z from 'zod';
 import {
   isRefDescriptor,
   type RefDescriptor,
+  type RefWithRunId,
   resolveRefDescriptors,
 } from './refs.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
@@ -160,13 +161,17 @@ async function hydrateEventRefs(
 
     // Deduplicate descriptors by _ref key to avoid redundant resolutions.
     // Multiple events may reference the same ref (e.g., shared input).
-    const uniqueDescriptors = new Map<string, RefDescriptor>();
+    const uniqueRefs = new Map<string, RefWithRunId>();
     for (const p of pending) {
-      if (!uniqueDescriptors.has(p.descriptor._ref)) {
-        uniqueDescriptors.set(p.descriptor._ref, p.descriptor);
+      if (!uniqueRefs.has(p.descriptor._ref)) {
+        const eventRunId = events[p.eventIndex].runId as string;
+        uniqueRefs.set(p.descriptor._ref, {
+          descriptor: p.descriptor,
+          runId: eventRunId,
+        });
       }
     }
-    const deduped = Array.from(uniqueDescriptors.values());
+    const deduped = Array.from(uniqueRefs.values());
 
     // Resolve unique descriptors in parallel with bounded concurrency
     const dedupedResults = await resolveRefDescriptors(deduped, config).catch(
@@ -180,7 +185,7 @@ async function hydrateEventRefs(
 
     // Build a map from ref key → resolved value for fast lookup
     const resolvedMap = new Map<string, unknown>();
-    const dedupedKeys = Array.from(uniqueDescriptors.keys());
+    const dedupedKeys = Array.from(uniqueRefs.keys());
     for (let i = 0; i < dedupedKeys.length; i++) {
       resolvedMap.set(dedupedKeys[i], dedupedResults[i]);
     }

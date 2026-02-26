@@ -42,10 +42,16 @@ const REF_RESOLVE_CONCURRENCY = 10;
  * descriptor's `_data` field — no network request is needed.
  *
  * For S3 refs (s3rf:) and Redis refs (kvrf:), a request is made to the
- * `GET /v2/refs` endpoint on workflow-server which returns raw CBOR bytes.
+ * `GET /v2/runs/:runId/refs` endpoint on workflow-server which returns
+ * raw CBOR or binary bytes.
+ *
+ * @param descriptor - The ref descriptor to resolve
+ * @param runId - The runId that owns this ref (used in the URL path)
+ * @param config - API configuration
  */
 export async function resolveRefDescriptor(
   descriptor: RefDescriptor,
+  runId: string,
   config?: APIConfig
 ): Promise<unknown> {
   const ref = descriptor._ref;
@@ -72,7 +78,7 @@ export async function resolveRefDescriptor(
   // Uint8Array). We handle both content types directly rather than going
   // through makeRequest, which only handles JSON/CBOR API responses.
   const { baseUrl, headers } = await getHttpConfig(config);
-  const url = `${baseUrl}/v2/refs?ref=${encodeURIComponent(ref)}`;
+  const url = `${baseUrl}/v2/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
 
   const response = await fetch(new Request(url, { method: 'GET', headers }));
   if (!response.ok) {
@@ -94,48 +100,56 @@ export async function resolveRefDescriptor(
 }
 
 /**
+ * A ref descriptor paired with the runId that owns it, for resolution.
+ */
+export interface RefWithRunId {
+  descriptor: RefDescriptor;
+  runId: string;
+}
+
+/**
  * Resolve multiple ref descriptors in parallel with bounded concurrency.
  *
- * If an entire batch fails (e.g., /v2/refs endpoint is down), remaining
- * batches are aborted to avoid sending doomed requests.
+ * If any ref in a batch fails, the batch rejects and remaining batches
+ * are aborted to avoid cascading failures.
  *
- * @param descriptors - Array of ref descriptors to resolve
+ * @param refs - Array of ref descriptors with their owning runIds
  * @param config - API configuration
  * @returns Array of resolved values in the same order as input
  */
 export async function resolveRefDescriptors(
-  descriptors: RefDescriptor[],
+  refs: RefWithRunId[],
   config?: APIConfig
 ): Promise<unknown[]> {
-  if (descriptors.length === 0) return [];
+  if (refs.length === 0) return [];
 
   return trace('world.refs.resolve', async (span) => {
-    const inlineCount = descriptors.filter((d) =>
-      d._ref.startsWith('dbrf:')
+    const inlineCount = refs.filter((r) =>
+      r.descriptor._ref.startsWith('dbrf:')
     ).length;
-    const remoteCount = descriptors.length - inlineCount;
+    const remoteCount = refs.length - inlineCount;
 
     span?.setAttributes({
-      'workflow.refs.total_count': descriptors.length,
+      'workflow.refs.total_count': refs.length,
       'workflow.refs.inline_count': inlineCount,
       'workflow.refs.remote_count': remoteCount,
     });
 
     // Simple case: if under concurrency limit, resolve all at once
-    if (descriptors.length <= REF_RESOLVE_CONCURRENCY) {
+    if (refs.length <= REF_RESOLVE_CONCURRENCY) {
       return Promise.all(
-        descriptors.map((d) => resolveRefDescriptor(d, config))
+        refs.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
       );
     }
 
     // Batch with bounded concurrency. If any ref in a batch fails,
     // the batch rejects and remaining batches are aborted to avoid
     // cascading failures.
-    const results: unknown[] = new Array(descriptors.length);
-    for (let i = 0; i < descriptors.length; i += REF_RESOLVE_CONCURRENCY) {
-      const batch = descriptors.slice(i, i + REF_RESOLVE_CONCURRENCY);
+    const results: unknown[] = new Array(refs.length);
+    for (let i = 0; i < refs.length; i += REF_RESOLVE_CONCURRENCY) {
+      const batch = refs.slice(i, i + REF_RESOLVE_CONCURRENCY);
       const batchResults = await Promise.all(
-        batch.map((d) => resolveRefDescriptor(d, config))
+        batch.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
       );
       for (let j = 0; j < batchResults.length; j++) {
         results[i + j] = batchResults[j];
