@@ -1,5 +1,14 @@
+import { WorkflowAPIError } from '@workflow/errors';
 import { decode } from 'cbor-x';
-import { trace } from './telemetry.js';
+import {
+  ErrorType,
+  getSpanKind,
+  HttpRequestMethod,
+  HttpResponseStatusCode,
+  PeerService,
+  trace,
+  UrlFull,
+} from './telemetry.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
@@ -78,25 +87,56 @@ export async function resolveRefDescriptor(
   // Uint8Array). We handle both content types directly rather than going
   // through makeRequest, which only handles JSON/CBOR API responses.
   const { baseUrl, headers } = await getHttpConfig(config);
-  const url = `${baseUrl}/v2/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
+  const url = `${baseUrl}${endpoint}`;
 
-  const response = await fetch(new Request(url, { method: 'GET', headers }));
-  if (!response.ok) {
-    throw new Error(
-      `Failed to resolve ref ${ref}: HTTP ${response.status} ${response.statusText}`
-    );
-  }
+  // Set headers that makeRequest normally adds: Accept for content
+  // negotiation and X-Request-Time to bypass RSC request memoization.
+  headers.set('Accept', 'application/cbor, application/octet-stream');
+  headers.set('X-Request-Time', Date.now().toString());
 
-  const contentType = response.headers.get('Content-Type') || '';
-  const buffer = await response.arrayBuffer();
+  return trace(
+    'http GET',
+    { kind: await getSpanKind('CLIENT') },
+    async (span) => {
+      span?.setAttributes({
+        ...HttpRequestMethod('GET'),
+        ...UrlFull(url),
+        ...PeerService('workflow-server'),
+      });
 
-  if (contentType.includes('application/octet-stream')) {
-    // Raw binary data (e.g., Uint8Array stored by the workflow)
-    return new Uint8Array(buffer);
-  }
+      const response = await fetch(
+        new Request(url, { method: 'GET', headers })
+      );
 
-  // CBOR-encoded data (the common case for structured values)
-  return decode(new Uint8Array(buffer));
+      span?.setAttributes({
+        ...HttpResponseStatusCode(response.status),
+      });
+
+      if (!response.ok) {
+        const error = new WorkflowAPIError(
+          `Failed to resolve ref: HTTP ${response.status} ${response.statusText}`,
+          { url, status: response.status }
+        );
+        span?.setAttributes({
+          ...ErrorType(`HTTP ${response.status}`),
+        });
+        span?.recordException?.(error);
+        throw error;
+      }
+
+      const contentType = response.headers.get('Content-Type') || '';
+      const buffer = await response.arrayBuffer();
+
+      if (contentType.includes('application/octet-stream')) {
+        // Raw binary data (e.g., Uint8Array stored by the workflow)
+        return new Uint8Array(buffer);
+      }
+
+      // CBOR-encoded data (the common case for structured values)
+      return decode(new Uint8Array(buffer));
+    }
+  );
 }
 
 /**

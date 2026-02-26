@@ -272,10 +272,17 @@ export async function getWorkflowRunEvents(
     // (e.g., z.coerce.date() for resumeAt) that EventWithRefsSchema skips.
     // Use safeParse to gracefully handle any events that don't match a known
     // type — pass them through as-is rather than failing the entire request.
+    let coercionFailures = 0;
     const validatedEvents = hydratedEvents.map((event: any) => {
       const result = EventSchema.safeParse(event);
+      if (!result.success) coercionFailures++;
       return result.success ? result.data : event;
     });
+    if (coercionFailures > 0) {
+      console.warn(
+        `[world-vercel] EventSchema coercion failed for ${coercionFailures}/${hydratedEvents.length} events`
+      );
+    }
 
     return {
       ...response,
