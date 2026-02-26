@@ -120,6 +120,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_disposed') {
+        // Terminal state - remove from queue (like step_completed/wait_completed)
+        ctx.invocationsQueue.delete(correlationId);
         // Mark that the event log confirms disposal happened
         hasDisposedEvent = true;
         // We're done processing any more events for this hook

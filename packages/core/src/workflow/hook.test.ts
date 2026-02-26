@@ -377,16 +377,11 @@ describe('createCreateHook', () => {
     const result = await hook;
     expect(result).toEqual({ data: 'test' });
 
-    // Dispose on replay — should be a no-op (no disposed flag on queue item)
+    // Dispose on replay — should be a no-op (item already removed from queue)
     hook.dispose();
 
-    const queueItem = ctx.invocationsQueue.get(
-      'hook_01K11TFZ62YS0YYFDQ3E8B9YCV'
-    );
-    expect(queueItem?.type).toBe('hook');
-    if (queueItem?.type === 'hook') {
-      expect(queueItem.disposed).toBeUndefined();
-    }
+    // hook_disposed is a terminal event, so the item should be removed from the queue
+    expect(ctx.invocationsQueue.size).toBe(0);
   });
 
   it('should set disposed flag on queue item on first invocation', async () => {
@@ -530,14 +525,8 @@ describe('createCreateHook', () => {
     expect(payloads[0]).toEqual({ message: 'first' });
     expect(payloads[1]).toEqual({ message: 'second' });
 
-    // Dispose was called on replay, so no disposed flag should be set
-    const queueItem = ctx.invocationsQueue.get(
-      'hook_01K11TFZ62YS0YYFDQ3E8B9YCV'
-    );
-    expect(queueItem?.type).toBe('hook');
-    if (queueItem?.type === 'hook') {
-      expect(queueItem.disposed).toBeUndefined();
-    }
+    // hook_disposed is a terminal event, so the item should be removed from the queue
+    expect(ctx.invocationsQueue.size).toBe(0);
   });
 
   it('should remove hook from invocations queue when hook_conflict event is received', async () => {
