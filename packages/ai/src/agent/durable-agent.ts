@@ -24,11 +24,41 @@ import {
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { FatalError } from 'workflow';
+import { filterToolSet } from './filter-tools.js';
+import { addUsage, normalizeUsage, type NormalizedUsage } from './normalize.js';
 import { streamTextIterator } from './stream-text-iterator.js';
 import type { CompatibleLanguageModel } from './types.js';
 
+const TOOL_RESULT_OUTPUT_TYPES = new Set([
+  'text',
+  'json',
+  'content',
+  'error-text',
+  'error-json',
+  'execution-denied',
+]);
+
+/**
+ * Duck-type check for typed tool result outputs (text, json, content, etc.).
+ *
+ * **Caveat:** Because this is a runtime shape check, a tool that naturally
+ * returns a plain object with `{ type: 'text', value: '...' }` (or any other
+ * `type` value in {@link TOOL_RESULT_OUTPUT_TYPES}) will be treated as a typed
+ * `ToolResultOutput` instead of being wrapped as `json`. Tools should avoid
+ * returning objects whose `type` field matches these reserved values unless
+ * they intend the result to be a `ToolResultOutput`.
+ */
+function isToolResultOutput(
+  result: unknown
+): result is LanguageModelV2ToolResultPart['output'] {
+  if (typeof result !== 'object' || result === null) return false;
+  const type = (result as Record<string, unknown>).type;
+  return typeof type === 'string' && TOOL_RESULT_OUTPUT_TYPES.has(type);
+}
+
 // Re-export for consumers
 export type { CompatibleLanguageModel } from './types.js';
+export type { NormalizedUsage } from './normalize.js';
 
 /**
  * Re-export the Output helper for structured output specifications.
@@ -127,6 +157,42 @@ export type DownloadFunction = (
 >;
 
 /**
+ * Download a single URL inside a step boundary so that `globalThis.fetch` is
+ * available (the workflow VM replaces it with a throwing stub). Making each
+ * download a step also means results are persisted to the step log and
+ * replayed on workflow resumption rather than re-fetched.
+ */
+async function downloadUrlStep(
+  url: string
+): Promise<{ data: Uint8Array; mediaType: string | undefined } | null> {
+  'use step';
+  const response = await globalThis.fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to download ${url}: ${response.status} ${response.statusText}`
+    );
+  }
+  return {
+    data: new Uint8Array(await response.arrayBuffer()),
+    mediaType: response.headers.get('content-type') ?? undefined,
+  };
+}
+
+/**
+ * Create a workflow-safe {@link DownloadFunction} that delegates each fetch to
+ * {@link downloadUrlStep}. URLs the model already supports natively are skipped
+ * (returned as `null`), matching the AI SDK's default behaviour.
+ */
+function createWorkflowDownload(): DownloadFunction {
+  return (requestedDownloads) =>
+    Promise.all(
+      requestedDownloads.map(({ url, isUrlSupportedByModel }) =>
+        isUrlSupportedByModel ? null : downloadUrlStep(url.toString())
+      )
+    );
+}
+
+/**
  * Generation settings that can be passed to the model.
  * These map directly to LanguageModelV2CallOptions.
  */
@@ -215,8 +281,7 @@ export interface GenerationSettings {
  */
 export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
   /**
-   * The current model configuration (string or function).
-   * The function should return a LanguageModel instance (V2 or V3 depending on AI SDK version).
+   * The current model configuration (string or factory function).
    */
   model: string | (() => Promise<CompatibleLanguageModel>);
 
@@ -249,7 +314,6 @@ export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
 export interface PrepareStepResult extends Partial<GenerationSettings> {
   /**
    * Override the model for this step.
-   * The function should return a LanguageModel instance (V2 or V3 depending on AI SDK version).
    */
   model?: string | (() => Promise<CompatibleLanguageModel>);
 
@@ -314,6 +378,9 @@ export interface DurableAgentOptions extends GenerationSettings {
    */
   system?: string;
 
+  /** Alias for system. If both are provided, instructions takes precedence. */
+  instructions?: string;
+
   /**
    * The tool choice strategy. Default: 'auto'.
    */
@@ -341,6 +408,11 @@ export type StreamTextOnFinishCallback<
    * The final messages including all tool calls and results.
    */
   readonly messages: ModelMessage[];
+
+  /**
+   * Total token usage aggregated across all steps.
+   */
+  readonly totalUsage: NormalizedUsage;
 
   /**
    * Context that is passed into tool execution.
@@ -389,6 +461,9 @@ export interface DurableAgentStreamOptions<
    * Optional system prompt override. If provided, overrides the system prompt from the constructor.
    */
   system?: string;
+
+  /** Alias for system. If both are provided, instructions takes precedence. */
+  instructions?: string;
 
   /**
    * The stream to which the agent writes message chunks. For example, use `getWritable<UIMessageChunk>()` to write to the workflow's default output stream.
@@ -627,7 +702,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   constructor(options: DurableAgentOptions & { tools?: TBaseTools }) {
     this.model = options.model;
     this.tools = (options.tools ?? {}) as TBaseTools;
-    this.system = options.system;
+    this.system = options.instructions ?? options.system;
     this.toolChoice = options.toolChoice as ToolChoice<TBaseTools>;
     this.telemetry = options.experimental_telemetry;
 
@@ -660,14 +735,20 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     options: DurableAgentStreamOptions<TTools, OUTPUT, PARTIAL_OUTPUT>
   ): Promise<DurableAgentStreamResult<TTools, OUTPUT>> {
     const prompt = await standardizePrompt({
-      system: options.system || this.system,
+      // Using ?? (nullish) instead of || (falsy) so empty string '' is a valid system prompt
+      system: options.instructions ?? options.system ?? this.system,
       messages: options.messages,
     });
 
     const modelPrompt = await convertToLanguageModelPrompt({
       prompt,
+      // The model's supportedUrls cannot be resolved here because the model
+      // is instantiated inside the step boundary (doStreamStep). Passing {}
+      // is the safe fallback: all URLs will be downloaded and inlined rather
+      // than passed natively to the provider. This is correct but slightly
+      // less efficient for providers that support native URL handling.
       supportedUrls: {},
-      download: options.experimental_download,
+      download: options.experimental_download ?? createWorkflowDownload(),
     });
 
     // Merge generation settings: constructor defaults < stream options
@@ -709,7 +790,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     // Filter tools if activeTools is specified
     const effectiveTools =
       options.activeTools && options.activeTools.length > 0
-        ? filterTools(this.tools, options.activeTools as string[])
+        ? filterToolSet(this.tools, options.activeTools as string[])
         : this.tools;
 
     // Initialize context
@@ -742,9 +823,17 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       stopConditions: options.stopWhen,
       maxSteps: options.maxSteps,
       sendStart: options.sendStart ?? true,
-      onStepFinish: options.onStepFinish,
+      // streamTextIterator operates on ToolSet (the base type) internally.
+      // TTools extends ToolSet, so the callbacks are compatible at runtime —
+      // the cast bridges the generic parameter variance that TypeScript
+      // cannot verify structurally across the function boundary.
+      onStepFinish: options.onStepFinish as
+        | StreamTextOnStepFinishCallback<ToolSet>
+        | undefined,
       onError: options.onError,
-      prepareStep: options.prepareStep,
+      prepareStep: options.prepareStep as
+        | PrepareStepCallback<ToolSet>
+        | undefined,
       generationSettings: mergedGenerationSettings,
       toolChoice: effectiveToolChoice as ToolChoice<ToolSet>,
       experimental_context: experimentalContext,
@@ -963,9 +1052,14 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
     // Call onFinish callback if provided (always call, even on errors, but not on abort)
     if (options.onFinish && !wasAborted) {
+      const totalUsage = steps.reduce<NormalizedUsage>(
+        (acc, step) => addUsage(acc, normalizeUsage(step.usage)),
+        normalizeUsage(undefined)
+      );
       await options.onFinish({
         steps,
         messages: messages as ModelMessage[],
+        totalUsage,
         experimental_context: experimentalContext,
         experimental_output: experimentalOutput,
       });
@@ -989,22 +1083,6 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       uiMessages,
     };
   }
-}
-
-/**
- * Filter tools to only include the specified active tools.
- */
-function filterTools<TTools extends ToolSet>(
-  tools: TTools,
-  activeTools: string[]
-): ToolSet {
-  const filtered: ToolSet = {};
-  for (const toolName of activeTools) {
-    if (toolName in tools) {
-      filtered[toolName] = tools[toolName];
-    }
-  }
-  return filtered;
 }
 
 async function writeFinishChunk(writable: WritableStream<UIMessageChunk>) {
@@ -1169,6 +1247,16 @@ async function executeTool(
       // Pass experimental context to the tool
       experimental_context: experimentalContext,
     });
+
+    // Pass through typed ToolResultOutput (content, error-text, etc.) without re-wrapping
+    if (isToolResultOutput(toolResult)) {
+      return {
+        type: 'tool-result' as const,
+        toolCallId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+        output: toolResult,
+      };
+    }
 
     // Use the appropriate output type based on the result
     // AI SDK supports 'text' for strings and 'json' for objects

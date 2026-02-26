@@ -20,7 +20,9 @@ vi.mock('./do-stream-step.js', () => ({
 }));
 
 // Import after mocking
-const { streamTextIterator } = await import('./stream-text-iterator.js');
+const { streamTextIterator, getToolOutputForUI } = await import(
+  './stream-text-iterator.js'
+);
 const { doStreamStep } = await import('./do-stream-step.js');
 
 /**
@@ -424,6 +426,56 @@ describe('streamTextIterator', () => {
         (part) => part.toolName === 'toolWithoutMeta'
       );
       expect(toolWithoutMeta?.providerOptions).toBeUndefined();
+    });
+  });
+
+  describe('getToolOutputForUI', () => {
+    it('should extract value from text output', () => {
+      expect(getToolOutputForUI({ type: 'text', value: 'hello' })).toBe(
+        'hello'
+      );
+    });
+
+    it('should extract value from error-text output', () => {
+      expect(getToolOutputForUI({ type: 'error-text', value: 'oops' })).toBe(
+        'oops'
+      );
+    });
+
+    it('should extract value from json output', () => {
+      const val = { answer: 42 };
+      expect(getToolOutputForUI({ type: 'json', value: val })).toBe(val);
+    });
+
+    it('should extract value from error-json output', () => {
+      const val = { code: 500 };
+      expect(getToolOutputForUI({ type: 'error-json', value: val })).toBe(val);
+    });
+
+    it('should extract value from content output', () => {
+      const val = [{ type: 'text', text: 'hi' }];
+      expect(getToolOutputForUI({ type: 'content', value: val })).toBe(val);
+    });
+
+    it('should return reason for execution-denied output', () => {
+      const output = { type: 'execution-denied', reason: 'User said no' };
+      expect(
+        getToolOutputForUI(output as Parameters<typeof getToolOutputForUI>[0])
+      ).toBe('User said no');
+    });
+
+    it('should return default message for execution-denied without reason', () => {
+      const output = { type: 'execution-denied' };
+      expect(
+        getToolOutputForUI(output as Parameters<typeof getToolOutputForUI>[0])
+      ).toBe('Tool execution was denied');
+    });
+
+    it('should return entire output for unknown types', () => {
+      const output = { type: 'future-type', data: 123 };
+      expect(
+        getToolOutputForUI(output as Parameters<typeof getToolOutputForUI>[0])
+      ).toBe(output);
     });
   });
 });

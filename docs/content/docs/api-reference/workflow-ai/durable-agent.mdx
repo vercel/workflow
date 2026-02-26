@@ -207,6 +207,49 @@ export default OutputSpecification;`}
 - **Workflow Native**: Fully integrated with Workflow DevKit for production-grade reliability
 - **AI SDK Parity**: Supports the same options as AI SDK's `streamText` including generation settings, callbacks, and structured output
 
+## Instructions Alias
+
+The `instructions` field is an alias for `system`, available on both the constructor and `stream()` options. When both are provided, `instructions` takes precedence:
+
+```typescript
+const agent = new DurableAgent({
+  model: "anthropic/claude-sonnet-4.5",
+  instructions: "You are a helpful coding assistant.",
+});
+
+// Override per-stream call
+await agent.stream({
+  messages,
+  writable,
+  instructions: "You are a helpful writing assistant.",
+});
+```
+
+### Tool Result Types
+
+Tool `execute` functions can return typed `ToolResultOutput` values that pass through to the model without re-wrapping. Supported output types include `text`, `json`, `content` (for multimodal responses), `error-text`, and `error-json`:
+
+```typescript
+tools: {
+  analyzeImage: {
+    description: "Analyze an image",
+    inputSchema: z.object({ url: z.string() }),
+    execute: async ({ url }) => {
+      // Return typed content — passes through to the model as-is
+      return {
+        type: "content" as const,
+        value: [
+          { type: "text", text: "Analysis complete" },
+          { type: "image", data: imageBuffer, mimeType: "image/png" },
+        ],
+      };
+    },
+  },
+},
+```
+
+If a tool returns a plain string or object without a recognized `type` field, DurableAgent wraps it as `text` or `json` automatically (the existing behavior).
+
 ## Good to Know
 
 - Tools can be implemented as workflow steps (using `"use step"` for automatic retries), or as regular workflow-level logic
@@ -219,6 +262,7 @@ export default OutputSpecification;`}
 - Generation settings (temperature, maxOutputTokens, etc.) can be set on the constructor and overridden per-stream call
 - Use `activeTools` to limit which tools are available for a specific stream call
 - The `onFinish` callback is called when all steps complete; `onAbort` is called if aborted
+- The `instructions` field is an alias for `system` — use whichever name you prefer
 
 ## Examples
 
