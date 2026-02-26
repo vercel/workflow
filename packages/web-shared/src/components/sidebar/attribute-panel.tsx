@@ -10,8 +10,8 @@ import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { Skeleton } from '../ui/skeleton';
-import { CopyableDataBlock } from './copyable-data-block';
 import { ConversationView } from './conversation-view';
+import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
 /**
@@ -118,15 +118,10 @@ function ConversationWithTabs({
  * Shows the stack trace as readable <pre> text by default,
  * with a "Raw" tab to view the full JSON object.
  */
-function ErrorBodyWithTabs({
-  value,
-}: {
-  value: Record<string, unknown>;
-}) {
+function ErrorBodyWithTabs({ value }: { value: Record<string, unknown> }) {
   const [activeTab, setActiveTab] = useState<'stack' | 'raw'>('stack');
   const stack = value.stack as string;
-  const message =
-    typeof value.message === 'string' ? value.message : undefined;
+  const message = typeof value.message === 'string' ? value.message : undefined;
 
   return (
     <div
