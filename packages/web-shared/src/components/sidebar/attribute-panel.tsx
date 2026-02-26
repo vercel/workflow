@@ -5,6 +5,7 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
@@ -460,7 +461,7 @@ const attributeToDisplayFn: Record<
           summaryClassName="text-base py-2"
           contentClassName="mt-0"
         >
-          <ErrorStackBlock value={value as Record<string, unknown>} />
+          <ErrorStackBlock value={value} />
         </DetailCard>
       );
     }
