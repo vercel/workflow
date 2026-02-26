@@ -382,6 +382,10 @@ describe('createCreateHook', () => {
 
     // hook_disposed is a terminal event, so the item should be removed from the queue
     expect(ctx.invocationsQueue.size).toBe(0);
+
+    // Calling dispose again should also be safe (idempotent)
+    hook.dispose();
+    expect(ctx.invocationsQueue.size).toBe(0);
   });
 
   it('should set disposed flag on queue item on first invocation', async () => {
