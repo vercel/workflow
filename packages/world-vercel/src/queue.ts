@@ -87,7 +87,7 @@ export function createQueue(config?: APIConfig): Queue {
     ...(usingProxy && {
       // final path will be /queue-proxy/api/v3/topic/...
       // and the proxy will strip the /queue-proxy prefix before
-      resolveBaseUrl: () => new URL(`${baseUrl}/queue-proxy`),
+      resolveBaseUrl: () => new URL(`${baseUrl}/queues-proxy`),
       token: config?.token,
     }),
     headers: Object.fromEntries(headers.entries()),
