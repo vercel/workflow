@@ -114,6 +114,74 @@ function ConversationWithTabs({
 }
 
 /**
+ * Tabbed view for error bodies that have a `stack` field.
+ * Shows the stack trace as readable <pre> text by default,
+ * with a "Raw" tab to view the full JSON object.
+ */
+function ErrorBodyWithTabs({
+  value,
+}: {
+  value: Record<string, unknown>;
+}) {
+  const [activeTab, setActiveTab] = useState<'stack' | 'raw'>('stack');
+  const stack = value.stack as string;
+  const message =
+    typeof value.message === 'string' ? value.message : undefined;
+
+  return (
+    <div
+      className="rounded-md border"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'transparent',
+      }}
+    >
+      <div
+        className="flex gap-1 border-b"
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'transparent',
+        }}
+      >
+        <TabButton
+          active={activeTab === 'stack'}
+          onClick={() => setActiveTab('stack')}
+        >
+          Stack
+        </TabButton>
+        <TabButton
+          active={activeTab === 'raw'}
+          onClick={() => setActiveTab('raw')}
+        >
+          Raw
+        </TabButton>
+      </div>
+
+      {activeTab === 'stack' ? (
+        <div className="p-3">
+          {message && (
+            <p
+              className="mb-2 text-sm font-medium"
+              style={{ color: 'var(--ds-red-900)' }}
+            >
+              {message}
+            </p>
+          )}
+          <pre
+            className="text-xs font-mono whitespace-pre-wrap break-words overflow-auto"
+            style={{ color: 'var(--ds-gray-1000)' }}
+          >
+            {stack}
+          </pre>
+        </div>
+      ) : (
+        <div className="p-3">{JsonBlock(value)}</div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Render a value with the shared DataInspector (ObjectInspector with
  * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
  */
@@ -396,6 +464,27 @@ const attributeToDisplayFn: Record<
   },
   error: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
+
+    // If the error object has a `stack` field, render it with a Stack/Raw tab
+    // switcher so the stack trace is readable as plain text by default.
+    const hasStack =
+      value != null &&
+      typeof value === 'object' &&
+      'stack' in value &&
+      typeof (value as Record<string, unknown>).stack === 'string';
+
+    if (hasStack) {
+      return (
+        <DetailCard
+          summary="Error"
+          summaryClassName="text-base py-2"
+          contentClassName="mt-0"
+        >
+          <ErrorBodyWithTabs value={value as Record<string, unknown>} />
+        </DetailCard>
+      );
+    }
+
     return (
       <DetailCard
         summary="Error"
