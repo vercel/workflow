@@ -16,6 +16,8 @@ export interface HookInvocationQueueItem {
   correlationId: string;
   token: string;
   metadata?: Serializable;
+  hasCreatedEvent?: boolean;
+  disposed?: boolean;
 }
 
 export interface WaitInvocationQueueItem {
@@ -25,16 +27,10 @@ export interface WaitInvocationQueueItem {
   hasCreatedEvent?: boolean;
 }
 
-export interface HookDisposedInvocationQueueItem {
-  type: 'hook_disposed';
-  correlationId: string;
-}
-
 export type QueueItem =
   | StepInvocationQueueItem
   | HookInvocationQueueItem
-  | WaitInvocationQueueItem
-  | HookDisposedInvocationQueueItem;
+  | WaitInvocationQueueItem;
 
 /**
  * An error that is thrown when one or more operations (steps/hooks/etc.) are called but do
@@ -61,9 +57,10 @@ export class WorkflowSuspension extends Error {
     let hookDisposedCount = 0;
     for (const item of steps) {
       if (item.type === 'step') stepCount++;
-      else if (item.type === 'hook') hookCount++;
-      else if (item.type === 'wait') waitCount++;
-      else if (item.type === 'hook_disposed') hookDisposedCount++;
+      else if (item.type === 'hook') {
+        if (item.disposed) hookDisposedCount++;
+        else hookCount++;
+      } else if (item.type === 'wait') waitCount++;
     }
 
     // Build description parts

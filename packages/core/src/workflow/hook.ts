@@ -30,6 +30,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     let eventLogEmpty = false;
 
+    // Track if the event log confirms disposal happened (replay no-op)
+    let hasDisposedEvent = false;
+
     // Track if we have a conflict so we can reject future awaits
     let hasConflict = false;
     let conflictErrorRef: WorkflowRuntimeError | null = null;
@@ -57,10 +60,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.NotConsumed;
       }
 
-      // Check for hook_created event to remove this hook from the queue if it was already created
+      // Check for hook_created event to mark this hook as already created
       if (event.eventType === 'hook_created') {
-        // Remove this hook from the invocations queue (O(1) delete using Map)
-        ctx.invocationsQueue.delete(correlationId);
+        const queueItem = ctx.invocationsQueue.get(correlationId);
+        if (queueItem && queueItem.type === 'hook') {
+          queueItem.hasCreatedEvent = true;
+        }
         return EventConsumerResult.Consumed;
       }
 
@@ -115,8 +120,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_disposed') {
-        // If a hook is explicitly disposed, we're done processing any more
-        // events for it
+        // Mark that the event log confirms disposal happened
+        hasDisposedEvent = true;
+        // We're done processing any more events for this hook
         return EventConsumerResult.Finished;
       }
 
@@ -186,11 +192,16 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
       isDisposed = true;
 
-      // Add a hook_disposed invocation to the queue
-      ctx.invocationsQueue.set(`${correlationId}_disposed`, {
-        type: 'hook_disposed',
-        correlationId,
-      });
+      // If the event log already contains hook_disposed, this is a replay — no-op
+      if (hasDisposedEvent) {
+        return;
+      }
+
+      // Set disposed flag on the existing queue item
+      const queueItem = ctx.invocationsQueue.get(correlationId);
+      if (queueItem && queueItem.type === 'hook') {
+        queueItem.disposed = true;
+      }
 
       webhookLogger.debug('Hook disposed', { correlationId, token });
     }

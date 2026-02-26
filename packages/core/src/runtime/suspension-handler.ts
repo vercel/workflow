@@ -10,7 +10,6 @@ import {
 } from '@workflow/world';
 import { importKey } from '../encryption.js';
 import type {
-  HookDisposedInvocationQueueItem,
   HookInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
@@ -72,16 +71,20 @@ export async function handleSuspension({
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
   );
-  const hookItems = suspension.steps.filter(
+  const allHookItems = suspension.steps.filter(
     (item): item is HookInvocationQueueItem => item.type === 'hook'
   );
   const waitItems = suspension.steps.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
   );
-  const hookDisposedItems = suspension.steps.filter(
-    (item): item is HookDisposedInvocationQueueItem =>
-      item.type === 'hook_disposed'
+
+  // Split hooks by what actions they need
+  const hooksNeedingCreation = allHookItems.filter(
+    (item) => !item.hasCreatedEvent
   );
+  // Hooks needing disposal: any disposed hook (including those needing creation first)
+  // Hooks are created before disposal in the processing order below
+  const hooksNeedingDisposal = allHookItems.filter((item) => item.disposed);
 
   // Resolve encryption key for this run
   const rawKey = await world.getEncryptionKeyForRun?.(run);
@@ -89,7 +92,7 @@ export async function handleSuspension({
 
   // Build hook_created events (World will atomically create hook entities)
   const hookEvents: CreateEventRequest[] = await Promise.all(
-    hookItems.map(async (queueItem) => {
+    hooksNeedingCreation.map(async (queueItem) => {
       const hookMetadata: SerializedData | undefined =
         typeof queueItem.metadata === 'undefined'
           ? undefined
@@ -150,9 +153,9 @@ export async function handleSuspension({
   }
 
   // Process hook disposals - these release hook tokens for reuse by other workflows
-  if (hookDisposedItems.length > 0) {
+  if (hooksNeedingDisposal.length > 0) {
     await Promise.all(
-      hookDisposedItems.map(async (queueItem) => {
+      hooksNeedingDisposal.map(async (queueItem) => {
         const hookDisposedEvent: CreateEventRequest = {
           eventType: 'hook_disposed' as const,
           specVersion: SPEC_VERSION_CURRENT,
@@ -162,14 +165,7 @@ export async function handleSuspension({
           await world.events.create(runId, hookDisposedEvent);
         } catch (err) {
           if (WorkflowAPIError.is(err)) {
-            if (err.status === 409) {
-              // Hook already disposed (e.g. during workflow re-invocation)
-              runtimeLogger.info('Hook already disposed, continuing', {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              });
-            } else if (err.status === 410) {
+            if (err.status === 410) {
               runtimeLogger.info(
                 'Workflow run already completed, skipping hook disposal',
                 {
@@ -332,7 +328,7 @@ export async function handleSuspension({
   span?.setAttributes({
     ...Attribute.WorkflowRunStatus('workflow_suspended'),
     ...Attribute.WorkflowStepsCreated(stepItems.length),
-    ...Attribute.WorkflowHooksCreated(hookItems.length),
+    ...Attribute.WorkflowHooksCreated(hooksNeedingCreation.length),
     ...Attribute.WorkflowWaitsCreated(waitItems.length),
   });
 

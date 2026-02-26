@@ -153,8 +153,11 @@ describe('createCreateHook', () => {
 
     const result = await hook;
 
-    // After hook_created is processed, the hook should be removed from the queue
-    expect(ctx.invocationsQueue.size).toBe(0);
+    // After hook_created is processed, the hook should remain in the queue with hasCreatedEvent flag
+    expect(ctx.invocationsQueue.size).toBe(1);
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    expect(queueItem?.hasCreatedEvent).toBe(true);
     expect(result).toEqual({ data: 'test' });
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
@@ -330,6 +333,211 @@ describe('createCreateHook', () => {
     // Subsequent awaits should also reject (simulating iterator pattern)
     await expect(hook).rejects.toThrow(WorkflowRuntimeError);
     await expect(hook).rejects.toThrow(WorkflowRuntimeError);
+  });
+
+  it('should be no-op on replay when hook_disposed is in event log', async () => {
+    const ops: Promise<any>[] = [];
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          payload: await dehydrateStepReturnValue(
+            { data: 'test' },
+            'wrun_test',
+            undefined,
+            ops
+          ),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_123',
+        eventType: 'hook_disposed',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook<{ data: string }>();
+
+    const result = await hook;
+    expect(result).toEqual({ data: 'test' });
+
+    // Dispose on replay — should be a no-op (no disposed flag on queue item)
+    hook.dispose();
+
+    const queueItem = ctx.invocationsQueue.get(
+      'hook_01K11TFZ62YS0YYFDQ3E8B9YCV'
+    );
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.disposed).toBeUndefined();
+    }
+  });
+
+  it('should set disposed flag on queue item on first invocation', async () => {
+    const ctx = setupWorkflowContext([]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook();
+
+    // Dispose before any events — should set disposed flag on queue item
+    hook.dispose();
+
+    expect(ctx.invocationsQueue.size).toBe(1);
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.disposed).toBe(true);
+    }
+  });
+
+  it('should be idempotent when dispose is called multiple times', async () => {
+    const ctx = setupWorkflowContext([]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook();
+
+    hook.dispose();
+    hook.dispose();
+    hook.dispose();
+
+    // Queue should still have exactly one item
+    expect(ctx.invocationsQueue.size).toBe(1);
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.disposed).toBe(true);
+    }
+  });
+
+  it('should set disposed flag after hook_created replay but before hook_disposed replay', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    let workflowError: Error | undefined;
+    ctx.onWorkflowError = (err) => {
+      workflowError = err;
+    };
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook();
+
+    // Wait for events to process
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Dispose — hook_created was replayed but no hook_disposed in log
+    hook.dispose();
+
+    const queueItem = ctx.invocationsQueue.get(
+      'hook_01K11TFZ62YS0YYFDQ3E8B9YCV'
+    );
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.hasCreatedEvent).toBe(true);
+      expect(queueItem.disposed).toBe(true);
+    }
+  });
+
+  it('should continue yielding buffered payloads despite hook_disposed in event log', async () => {
+    const ops: Promise<any>[] = [];
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          payload: await dehydrateStepReturnValue(
+            { message: 'first' },
+            'wrun_test',
+            undefined,
+            ops
+          ),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_123',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          payload: await dehydrateStepReturnValue(
+            { message: 'second' },
+            'wrun_test',
+            undefined,
+            ops
+          ),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_3',
+        runId: 'wrun_123',
+        eventType: 'hook_disposed',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook<{ message: string }>();
+
+    // The iterator should yield both payloads even though hook_disposed
+    // was eagerly processed by the event consumer before the iterator consumed them
+    const payloads: { message: string }[] = [];
+    for await (const payload of hook) {
+      payloads.push(payload);
+      // After consuming payloads, dispose to stop the iterator
+      if (payloads.length >= 2) {
+        hook.dispose();
+      }
+    }
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toEqual({ message: 'first' });
+    expect(payloads[1]).toEqual({ message: 'second' });
+
+    // Dispose was called on replay, so no disposed flag should be set
+    const queueItem = ctx.invocationsQueue.get(
+      'hook_01K11TFZ62YS0YYFDQ3E8B9YCV'
+    );
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.disposed).toBeUndefined();
+    }
   });
 
   it('should remove hook from invocations queue when hook_conflict event is received', async () => {
