@@ -77,13 +77,17 @@ type QueueFunction = (
 ) => ReturnType<Queue['queue']>;
 
 export function createQueue(config?: APIConfig): Queue {
-  const { usingProxy } = getHttpUrl(config);
+  const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
   const region = 'iad1';
 
   const clientOptions = {
     region,
+    ...(usingProxy && {
+      resolveBaseUrl: () => `${baseUrl}/queue-proxy`,
+      token: config?.token,
+    }),
     headers: Object.fromEntries(headers.entries()),
   };
 
