@@ -3,8 +3,8 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import type { ReactNode } from 'react';
-import { useCallback, useMemo, useState } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
@@ -21,14 +21,23 @@ function TabButton({
   active,
   onClick,
   children,
+  role,
+  'aria-selected': ariaSelected,
+  tabIndex,
 }: {
   active: boolean;
   onClick: () => void;
   children: ReactNode;
+  role?: string;
+  'aria-selected'?: boolean;
+  tabIndex?: number;
 }) {
   return (
     <button
       type="button"
+      role={role}
+      aria-selected={ariaSelected}
+      tabIndex={tabIndex}
       onClick={onClick}
       className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
       style={{
@@ -52,6 +61,80 @@ function TabButton({
 }
 
 /**
+ * Shared tabbed container with accessible ARIA roles and keyboard navigation.
+ * Used by both ConversationWithTabs and ErrorBodyWithTabs to avoid duplicated
+ * border/header styling.
+ */
+function TabbedContainer<T extends string>({
+  tabs,
+  activeTab,
+  onTabChange,
+  ariaLabel,
+  children,
+}: {
+  tabs: { id: T; label: string }[];
+  activeTab: T;
+  onTabChange: (tab: T) => void;
+  ariaLabel: string;
+  children: ReactNode;
+}) {
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+      event.preventDefault();
+      const currentIndex = tabs.findIndex((t) => t.id === activeTab);
+      const nextIndex =
+        event.key === 'ArrowRight'
+          ? (currentIndex + 1) % tabs.length
+          : (currentIndex - 1 + tabs.length) % tabs.length;
+      onTabChange(tabs[nextIndex].id);
+    },
+    [tabs, activeTab, onTabChange]
+  );
+
+  return (
+    <div
+      className="rounded-md border"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'transparent',
+      }}
+    >
+      <div
+        className="flex gap-1 border-b"
+        role="tablist"
+        aria-label={ariaLabel}
+        onKeyDown={handleKeyDown}
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'transparent',
+        }}
+      >
+        {tabs.map((tab) => (
+          <TabButton
+            key={tab.id}
+            active={activeTab === tab.id}
+            onClick={() => onTabChange(tab.id)}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+          >
+            {tab.label}
+          </TabButton>
+        ))}
+      </div>
+
+      <div role="tabpanel">{children}</div>
+    </div>
+  );
+}
+
+const conversationTabs = [
+  { id: 'conversation' as const, label: 'Conversation' },
+  { id: 'json' as const, label: 'Raw JSON' },
+];
+
+/**
  * Tabbed view for conversation and raw JSON
  */
 function ConversationWithTabs({
@@ -67,34 +150,12 @@ function ConversationWithTabs({
 
   return (
     <DetailCard summary={`Input (${conversation.length} messages)`}>
-      <div
-        className="rounded-md border"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'transparent',
-        }}
+      <TabbedContainer
+        tabs={conversationTabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        ariaLabel="Conversation view"
       >
-        <div
-          className="flex gap-1 border-b"
-          style={{
-            borderColor: 'var(--ds-gray-300)',
-            backgroundColor: 'transparent',
-          }}
-        >
-          <TabButton
-            active={activeTab === 'conversation'}
-            onClick={() => setActiveTab('conversation')}
-          >
-            Conversation
-          </TabButton>
-          <TabButton
-            active={activeTab === 'json'}
-            onClick={() => setActiveTab('json')}
-          >
-            Raw JSON
-          </TabButton>
-        </div>
-
         {activeTab === 'conversation' ? (
           <ConversationView messages={conversation} />
         ) : (
@@ -108,10 +169,15 @@ function ConversationWithTabs({
               : JsonBlock(args)}
           </div>
         )}
-      </div>
+      </TabbedContainer>
     </DetailCard>
   );
 }
+
+const errorTabs = [
+  { id: 'stack' as const, label: 'Stack' },
+  { id: 'raw' as const, label: 'Raw' },
+];
 
 /**
  * Tabbed view for error bodies that have a `stack` field.
@@ -123,35 +189,19 @@ function ErrorBodyWithTabs({ value }: { value: Record<string, unknown> }) {
   const stack = value.stack as string;
   const message = typeof value.message === 'string' ? value.message : undefined;
 
-  return (
-    <div
-      className="rounded-md border"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'transparent',
-      }}
-    >
-      <div
-        className="flex gap-1 border-b"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'transparent',
-        }}
-      >
-        <TabButton
-          active={activeTab === 'stack'}
-          onClick={() => setActiveTab('stack')}
-        >
-          Stack
-        </TabButton>
-        <TabButton
-          active={activeTab === 'raw'}
-          onClick={() => setActiveTab('raw')}
-        >
-          Raw
-        </TabButton>
-      </div>
+  // Reset to "Stack" tab when the error value changes (e.g. selecting a
+  // different run/error) so users always see the stack trace first.
+  useEffect(() => {
+    setActiveTab('stack');
+  }, [stack, message]);
 
+  return (
+    <TabbedContainer
+      tabs={errorTabs}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      ariaLabel="Error details view"
+    >
       {activeTab === 'stack' ? (
         <div className="p-3">
           {message && (
@@ -172,7 +222,7 @@ function ErrorBodyWithTabs({ value }: { value: Record<string, unknown> }) {
       ) : (
         <div className="p-3">{JsonBlock(value)}</div>
       )}
-    </div>
+    </TabbedContainer>
   );
 }
 
