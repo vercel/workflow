@@ -22,13 +22,30 @@ function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      toast.success('Copied to clipboard');
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.clipboard ||
+      typeof navigator.clipboard.writeText !== 'function'
+    ) {
+      toast.error('Clipboard not available');
+      return;
+    }
+
+    try {
+      const writeResult = navigator.clipboard.writeText(text);
+
+      Promise.resolve(writeResult)
+        .then(() => {
+          setCopied(true);
+          toast.success('Copied to clipboard');
+          setTimeout(() => setCopied(false), 2000);
+        })
+        .catch(() => {
+          toast.error('Failed to copy');
+        });
+    } catch {
       toast.error('Failed to copy');
-    });
+    }
   };
 
   return (
