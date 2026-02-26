@@ -33,6 +33,10 @@ const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
 }).extend({
   // Backend returns error as either a JSON string or structured object
   error: z.union([z.string(), StructuredErrorSchema]).optional(),
+  // Storage metrics from the backend - not part of the World interface
+  // but passed through for dashboard consumers (e.g. front)
+  blobStorageBytes: z.number().optional(),
+  streamStorageBytes: z.number().optional(),
 });
 
 // Wire schema for resolved data (full input/output)
@@ -50,8 +54,6 @@ const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
   input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
   output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-  blobStorageBytes: z.number().optional(),
-  streamStorageBytes: z.number().optional(),
 });
 
 // Overloaded function signatures for filterRunData
