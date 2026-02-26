@@ -8,7 +8,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { formatDuration } from '../lib/utils';
 import { DataInspector } from './ui/data-inspector';
+import {
+  ErrorStackBlock,
+  isStructuredErrorWithStack,
+} from './ui/error-stack-block';
 import { Skeleton } from './ui/skeleton';
+
+/**
+ * Event types whose eventData contains an error field with a StructuredError.
+ */
+const ERROR_EVENT_TYPES = new Set([
+  'step_failed',
+  'step_retrying',
+  'run_failed',
+  'workflow_failed',
+]);
 
 const BUTTON_RESET_STYLE: React.CSSProperties = {
   appearance: 'none',
@@ -449,7 +463,36 @@ function deepParseJson(value: unknown): unknown {
   return value;
 }
 
-function PayloadBlock({ data }: { data: unknown }): ReactNode {
+/**
+ * Extracts a structured error with a stack trace from event data, if present.
+ * Returns the error object to render with ErrorStackBlock, or null if not applicable.
+ */
+function extractStructuredError(
+  data: unknown,
+  eventType?: string
+): (Record<string, unknown> & { stack: string }) | null {
+  if (!eventType || !ERROR_EVENT_TYPES.has(eventType)) return null;
+  if (data == null || typeof data !== 'object') return null;
+  const record = data as Record<string, unknown>;
+  // Check the nested `error` field first (the StructuredError)
+  if (isStructuredErrorWithStack(record.error)) return record.error;
+  // Some error formats put the stack at the top level of eventData
+  if (isStructuredErrorWithStack(record)) return record;
+  return null;
+}
+
+function PayloadBlock({
+  data,
+  eventType,
+}: {
+  data: unknown;
+  eventType?: string;
+}): ReactNode {
+  const structuredError = useMemo(
+    () => extractStructuredError(data, eventType),
+    [data, eventType]
+  );
+
   const [copied, setCopied] = useState(false);
   const resetCopiedTimeoutRef = useRef<number | null>(null);
   const cleaned = useMemo(() => deepParseJson(data), [data]);
@@ -486,6 +529,14 @@ function PayloadBlock({ data }: { data: unknown }): ReactNode {
     },
     [formatted]
   );
+
+  if (structuredError) {
+    return (
+      <div className="p-2">
+        <ErrorStackBlock value={structuredError} />
+      </div>
+    );
+  }
 
   return (
     <div className="relative group/payload">
@@ -838,7 +889,7 @@ function EventRow({
 
             {/* Payload */}
             {eventData != null ? (
-              <PayloadBlock data={eventData} />
+              <PayloadBlock data={eventData} eventType={event.eventType} />
             ) : loadError ? (
               <div
                 className="rounded-md border p-3 text-xs"
