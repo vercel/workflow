@@ -33,8 +33,7 @@ const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
 }).extend({
   // Backend returns error as either a JSON string or structured object
   error: z.union([z.string(), StructuredErrorSchema]).optional(),
-  // Storage metrics from the backend - not part of the World interface
-  // but passed through for dashboard consumers (e.g. front)
+  // Not part of the World interface, but passed through for direct consumers and debugging
   blobStorageBytes: z.number().optional(),
   streamStorageBytes: z.number().optional(),
 });
