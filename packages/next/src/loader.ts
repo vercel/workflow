@@ -56,8 +56,8 @@ function resolveLoaderStaticDependencies(): LoaderStaticDependencies {
   );
   const workflowBuildersPath = require.resolve('@workflow/builders');
 
-  // Build file paths directly from already-resolved module entrypoints.
-  // This avoids Turbopack loader-eval resolver edge-cases for ../package.json.
+  // Derive package.json paths from resolved entrypoints to avoid
+  // Turbopack loader-eval failures around ../package.json resolution.
   const swcPluginPackageJsonPath = join(dirname(swcPluginPath), 'package.json');
   const workflowBuildersPackageJsonPath = join(
     dirname(workflowBuildersPath),
