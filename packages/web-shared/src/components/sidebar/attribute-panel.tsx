@@ -3,8 +3,9 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
+import { Copy } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
@@ -21,23 +22,17 @@ function TabButton({
   active,
   onClick,
   children,
-  role,
-  'aria-selected': ariaSelected,
-  tabIndex,
 }: {
   active: boolean;
   onClick: () => void;
   children: ReactNode;
-  role?: string;
-  'aria-selected'?: boolean;
-  tabIndex?: number;
 }) {
   return (
     <button
       type="button"
-      role={role}
-      aria-selected={ariaSelected}
-      tabIndex={tabIndex}
+      role="tab"
+      aria-selected={active}
+      tabIndex={active ? 0 : -1}
       onClick={onClick}
       className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
       style={{
@@ -62,8 +57,7 @@ function TabButton({
 
 /**
  * Shared tabbed container with accessible ARIA roles and keyboard navigation.
- * Used by both ConversationWithTabs and ErrorBodyWithTabs to avoid duplicated
- * border/header styling.
+ * Used by ConversationWithTabs for the conversation/JSON toggle.
  */
 function TabbedContainer<T extends string>({
   tabs,
@@ -115,9 +109,6 @@ function TabbedContainer<T extends string>({
             key={tab.id}
             active={activeTab === tab.id}
             onClick={() => onTabChange(tab.id)}
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            tabIndex={activeTab === tab.id ? 0 : -1}
           >
             {tab.label}
           </TabButton>
@@ -174,55 +165,60 @@ function ConversationWithTabs({
   );
 }
 
-const errorTabs = [
-  { id: 'stack' as const, label: 'Stack' },
-  { id: 'raw' as const, label: 'Raw' },
-];
-
 /**
- * Tabbed view for error bodies that have a `stack` field.
- * Shows the stack trace as readable <pre> text by default,
- * with a "Raw" tab to view the full JSON object.
+ * Renders an error with a `stack` field as readable pre-formatted text,
+ * styled to match the CopyableDataBlock component. The error message is
+ * displayed at the top with a visual separator from the stack trace.
+ * The entire block is copyable via a copy button.
  */
-function ErrorBodyWithTabs({ value }: { value: Record<string, unknown> }) {
-  const [activeTab, setActiveTab] = useState<'stack' | 'raw'>('stack');
+function ErrorStackBlock({ value }: { value: Record<string, unknown> }) {
   const stack = value.stack as string;
   const message = typeof value.message === 'string' ? value.message : undefined;
-
-  // Reset to "Stack" tab when the error value changes (e.g. selecting a
-  // different run/error) so users always see the stack trace first.
-  useEffect(() => {
-    setActiveTab('stack');
-  }, [stack, message]);
+  const copyText = message ? `${message}\n\n${stack}` : stack;
 
   return (
-    <TabbedContainer
-      tabs={errorTabs}
-      activeTab={activeTab}
-      onTabChange={setActiveTab}
-      ariaLabel="Error details view"
+    <div
+      className="relative overflow-x-auto rounded-md border p-3 pt-9"
+      style={{ borderColor: 'var(--ds-gray-300)' }}
     >
-      {activeTab === 'stack' ? (
-        <div className="p-3">
-          {message && (
-            <p
-              className="mb-2 text-sm font-medium"
-              style={{ color: 'var(--ds-red-900)' }}
-            >
-              {message}
-            </p>
-          )}
-          <pre
-            className="text-xs font-mono whitespace-pre-wrap break-words overflow-auto"
-            style={{ color: 'var(--ds-gray-1000)' }}
-          >
-            {stack}
-          </pre>
-        </div>
-      ) : (
-        <div className="p-3">{JsonBlock(value)}</div>
+      <button
+        type="button"
+        aria-label="Copy error"
+        title="Copy"
+        className="!absolute !right-2 !top-2 !flex !h-6 !w-6 !items-center !justify-center !rounded-md !border !bg-[var(--ds-background-100)] !text-[var(--ds-gray-800)] transition-transform transition-colors duration-100 hover:!bg-[var(--ds-gray-alpha-200)] active:!scale-95 active:!bg-[var(--ds-gray-alpha-300)]"
+        style={{ borderColor: 'var(--ds-gray-300)' }}
+        onClick={() => {
+          navigator.clipboard
+            .writeText(copyText)
+            .then(() => {
+              toast.success('Copied to clipboard');
+            })
+            .catch(() => {
+              toast.error('Failed to copy');
+            });
+        }}
+      >
+        <Copy size={12} />
+      </button>
+
+      {message && (
+        <p
+          className="pb-2 mb-2 text-xs font-semibold font-mono"
+          style={{
+            color: 'var(--ds-red-900)',
+            borderBottom: '1px solid var(--ds-gray-300)',
+          }}
+        >
+          {message}
+        </p>
       )}
-    </TabbedContainer>
+      <pre
+        className="text-xs font-mono whitespace-pre-wrap break-words overflow-auto m-0"
+        style={{ color: 'var(--ds-gray-1000)' }}
+      >
+        {stack}
+      </pre>
+    </div>
   );
 }
 
@@ -510,8 +506,8 @@ const attributeToDisplayFn: Record<
   error: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
 
-    // If the error object has a `stack` field, render it with a Stack/Raw tab
-    // switcher so the stack trace is readable as plain text by default.
+    // If the error object has a `stack` field, render it as readable
+    // pre-formatted text. Otherwise fall back to the raw JSON viewer.
     const hasStack =
       value != null &&
       typeof value === 'object' &&
@@ -525,7 +521,7 @@ const attributeToDisplayFn: Record<
           summaryClassName="text-base py-2"
           contentClassName="mt-0"
         >
-          <ErrorBodyWithTabs value={value as Record<string, unknown>} />
+          <ErrorStackBlock value={value as Record<string, unknown>} />
         </DetailCard>
       );
     }
