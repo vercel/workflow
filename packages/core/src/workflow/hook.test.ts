@@ -771,6 +771,48 @@ describe('createCreateHook', () => {
     }
   });
 
+  it('should drain pending promises and trigger suspension when dispose is called while awaiting', async () => {
+    const ops: Promise<any>[] = [];
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    let workflowError: Error | undefined;
+    ctx.onWorkflowError = (err) => {
+      workflowError = err;
+    };
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook();
+
+    // Wait for events to process (hook_created consumed, then null → eventLogEmpty)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Start awaiting — this pushes a resolver to promises[] since payloadsQueue is empty
+    const hookPromise = hook.then((v) => v);
+
+    // Now dispose while the promise is pending — this should drain promises
+    // and trigger suspension (not leave an orphaned promise)
+    hook.dispose();
+
+    // Wait for the async suspension handler
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(workflowError).toBeInstanceOf(WorkflowSuspension);
+
+    // The suspension should include the disposed hook
+    if (WorkflowSuspension.is(workflowError)) {
+      expect(workflowError.hookDisposedCount).toBe(1);
+    }
+  });
+
   it('should suspend when awaiting a disposed hook on first invocation', async () => {
     const ctx = setupWorkflowContext([]);
 

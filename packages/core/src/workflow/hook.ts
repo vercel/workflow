@@ -205,6 +205,19 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         queueItem.disposed = true;
       }
 
+      // Drain any pending promises that are waiting for payloads.
+      // Without this, promises created by `await hook` or the async iterator's
+      // `yield await this` would hang forever since the event consumer will
+      // never deliver another hook_received after disposal.
+      if (promises.length > 0) {
+        promises.length = 0;
+        setTimeout(() => {
+          ctx.onWorkflowError(
+            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+          );
+        }, 0);
+      }
+
       webhookLogger.debug('Hook disposed', { correlationId, token });
     }
 
