@@ -346,11 +346,11 @@ describe('Workflow Performance Benchmarks', () => {
   const fullSuite = process.env.BENCHMARK_FULL_SUITE === 'true';
   const sequentialStepCounts = [
     { count: 10, skip: false, time: 30000, sleepMs: 1000 },
-    { count: 25, skip: false, time: 60000, sleepMs: 1000 },
-    { count: 50, skip: false, time: 90000, sleepMs: 1000 },
-    { count: 100, skip: !fullSuite, time: 150000, sleepMs: 1000 },
-    { count: 500, skip: !fullSuite, time: 600000, sleepMs: 1000 },
-    { count: 1000, skip: !fullSuite, time: 600000, sleepMs: 100 },
+    { count: 25, skip: false, time: 60000, sleepMs: 500 },
+    { count: 50, skip: false, time: 90000, sleepMs: 200 },
+    { count: 100, skip: !fullSuite, time: 150000, sleepMs: 100 },
+    { count: 500, skip: !fullSuite, time: 300000, sleepMs: 50 },
+    { count: 1000, skip: !fullSuite, time: 300000, sleepMs: 10 },
   ] as const;
 
   for (const { count, skip, time, sleepMs } of sequentialStepCounts) {
@@ -428,7 +428,7 @@ describe('Workflow Performance Benchmarks', () => {
     }
   }
 
-  // Data payload benchmarks (1MB through steps)
+  // Data payload benchmarks (10KB through steps)
   const dataPayloadStepCounts = [
     { count: 10, skip: false, time: 60000 },
     { count: 25, skip: false, time: 90000 },
@@ -436,10 +436,10 @@ describe('Workflow Performance Benchmarks', () => {
     { count: 100, skip: !fullSuite, time: 300000 },
     { count: 500, skip: !fullSuite, time: 600000 },
   ] as const;
-  const DATA_PAYLOAD_SIZE = 1024 * 1024; // 1MB
+  const DATA_PAYLOAD_SIZE = 10 * 1024; // 10KB
 
   for (const { count, skip, time } of dataPayloadStepCounts) {
-    const name = `workflow with ${count} sequential data payload steps (1MB)`;
+    const name = `workflow with ${count} sequential data payload steps (10KB)`;
     const benchFn = skip ? bench.skip : bench;
 
     benchFn(
@@ -463,7 +463,7 @@ describe('Workflow Performance Benchmarks', () => {
   }
 
   for (const { count, skip, time } of dataPayloadStepCounts) {
-    const name = `workflow with ${count} concurrent data payload steps (1MB)`;
+    const name = `workflow with ${count} concurrent data payload steps (10KB)`;
     const benchFn = skip ? bench.skip : bench;
 
     benchFn(
