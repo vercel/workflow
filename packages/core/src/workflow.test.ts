@@ -3822,7 +3822,7 @@ describe('runWorkflow', () => {
       }
     });
 
-    it('should not warn when only hook_disposed items remain in queue', async () => {
+    it('should not warn when hooks are properly disposed', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const ops: Promise<any>[] = [];
