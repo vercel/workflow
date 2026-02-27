@@ -1,5 +1,16 @@
 # @workflow/astro
 
+## 4.0.0-beta.36
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- Updated dependencies [[`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/builders@4.0.1-beta.53
+  - @workflow/rollup@4.0.0-beta.19
+  - @workflow/vite@4.0.0-beta.12
+
 ## 4.0.0-beta.35
 
 ### Patch Changes

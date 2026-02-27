@@ -1,5 +1,24 @@
 # workflow
 
+## 4.1.0-beta.62
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- Updated dependencies [[`6f2cbcd`](https://github.com/vercel/workflow/commit/6f2cbcda9df55809f2dab15a05b0b72a78095439), [`02681dc`](https://github.com/vercel/workflow/commit/02681dce4a504ff236c81a1ee976d2b04d1a5774), [`028a828`](https://github.com/vercel/workflow/commit/028a828de113f8b07f9bb70d91f75e97162ab37d), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/core@4.1.0-beta.62
+  - @workflow/cli@4.1.0-beta.62
+  - @workflow/astro@4.0.0-beta.36
+  - @workflow/nest@0.0.0-beta.11
+  - @workflow/next@4.0.1-beta.58
+  - @workflow/nitro@4.0.1-beta.57
+  - @workflow/nuxt@4.0.1-beta.46
+  - @workflow/sveltekit@4.0.0-beta.51
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/rollup@4.0.0-beta.19
+  - @workflow/errors@4.1.0-beta.17
+
 ## 4.1.0-beta.61
 
 ### Patch Changes

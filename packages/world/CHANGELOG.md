@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.1.0-beta.8
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
 ## 4.1.0-beta.7
 
 ### Patch Changes
