@@ -1088,6 +1088,23 @@ async function convertChunksToUIMessages(
   return messages;
 }
 
+// Matches AI SDK's getErrorMessage from @ai-sdk/provider-utils
+function getErrorMessage(error: unknown): string {
+  if (error == null) {
+    return 'unknown error';
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return JSON.stringify(error);
+}
+
 async function executeTool(
   toolCall: LanguageModelV2ToolCall,
   tools: ToolSet,
@@ -1192,7 +1209,7 @@ async function executeTool(
       toolName: toolCall.toolName,
       output: {
         type: 'error-text',
-        value: error instanceof Error ? error.message : String(error),
+        value: getErrorMessage(error),
       },
     };
   }
