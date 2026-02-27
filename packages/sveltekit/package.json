@@ -30,7 +30,7 @@
     "@workflow/rollup": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
-    "exsolve": "^1.0.7",
+    "exsolve": "^1.0.8",
     "fs-extra": "^11.3.2",
     "pathe": "^2.0.3"
   },

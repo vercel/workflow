@@ -35,12 +35,12 @@
     "clean": "nuxi cleanup && rm -rf dist/"
   },
   "dependencies": {
-    "@nuxt/kit": "4.2.0",
+    "@nuxt/kit": "4.3.1",
     "@workflow/nitro": "workspace:*"
   },
   "devDependencies": {
     "@nuxt/module-builder": "1.0.2",
-    "@nuxt/schema": "4.2.0",
+    "@nuxt/schema": "4.3.1",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "nuxt": "4.0.0"

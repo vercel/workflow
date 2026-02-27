@@ -30,12 +30,12 @@
     "@workflow/rollup": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
-    "exsolve": "^1.0.7",
+    "exsolve": "^1.0.8",
     "pathe": "^2.0.3"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "astro": "5.16.0"
+    "astro": "5.18.0"
   }
 }

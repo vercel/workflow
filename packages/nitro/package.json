@@ -32,7 +32,7 @@
     "@workflow/rollup": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
-    "exsolve": "1.0.7",
+    "exsolve": "1.0.8",
     "pathe": "2.0.3"
   },
   "devDependencies": {

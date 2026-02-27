@@ -37,8 +37,8 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "semver": "7.7.3",
-    "watchpack": "2.4.4"
+    "semver": "7.7.4",
+    "watchpack": "2.5.1"
   },
   "devDependencies": {
     "@types/node": "catalog:",

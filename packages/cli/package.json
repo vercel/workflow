@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@oclif/core": "4.8.1",
-    "@oclif/plugin-help": "6.2.31",
+    "@oclif/plugin-help": "6.2.37",
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
@@ -58,16 +58,16 @@
     "chalk": "5.6.2",
     "chokidar": "4.0.3",
     "date-fns": "4.1.0",
-    "dotenv": "^16.4.7",
+    "dotenv": "^17.3.1",
     "easy-table": "1.2.0",
-    "enhanced-resolve": "5.18.2",
+    "enhanced-resolve": "5.19.0",
     "esbuild": "catalog:",
     "find-up": "7.0.0",
     "mixpart": "0.0.4",
     "open": "10.2.0",
     "ora": "8.2.0",
     "terminal-link": "5.0.0",
-    "tinyglobby": "0.2.14",
+    "tinyglobby": "0.2.15",
     "xdg-app-paths": "5.1.0",
     "zod": "catalog:"
   }
