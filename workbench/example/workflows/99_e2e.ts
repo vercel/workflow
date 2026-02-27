@@ -119,7 +119,7 @@ export async function hookWorkflow(token: string, customData: string) {
 
   type Payload = { message: string; customData: string; done?: boolean };
 
-  const hook = createHook<Payload>({
+  using hook = createHook<Payload>({
     token,
     metadata: { customData },
   });
@@ -155,10 +155,11 @@ export async function webhookWorkflow(
   type Payload = { url: string; method: string; body: string };
   const payloads: Payload[] = [];
 
+  // All webhooks must be created upfront so they're all registered
+  // before the test sends HTTP requests to them
   const webhookWithDefaultResponse = createWebhook({ token });
 
   const res = new Response('Hello from static response!', { status: 402 });
-  console.log('res', res);
   const webhookWithStaticResponse = createWebhook({
     token: token2,
     respondWith: res,
@@ -522,18 +523,60 @@ export async function hookCleanupTestWorkflow(
 
   type Payload = { message: string; customData: string };
 
-  const hook = createHook<Payload>({
+  using hook = createHook<Payload>({
     token,
     metadata: { customData },
   });
 
-  // Wait for exactly one payload
   const payload = await hook;
 
   return {
     message: payload.message,
     customData: payload.customData,
     hookCleanupTestData: 'workflow_completed',
+  };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Workflow for testing early hook disposal - allows another workflow to reuse
+ * the token while this workflow is still running.
+ *
+ * The block scope with `using` releases the token before the sleep, so another
+ * workflow can claim the token while this one continues.
+ */
+export async function hookDisposeTestWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  type Payload = { message: string; customData: string };
+
+  let message: string;
+  let customDataResult: string;
+
+  {
+    // Block scope releases the hook token when exited
+    using hook = createHook<Payload>({
+      token,
+      metadata: { customData },
+    });
+
+    const payload = await hook;
+    message = payload.message;
+    customDataResult = payload.customData;
+  }
+
+  // Token is now available for another workflow while we continue
+  await sleep('5s');
+
+  return {
+    message,
+    customData: customDataResult,
+    disposed: true,
+    hookDisposeTestData: 'workflow_completed',
   };
 }
 

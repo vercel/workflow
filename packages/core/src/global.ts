@@ -16,6 +16,8 @@ export interface HookInvocationQueueItem {
   correlationId: string;
   token: string;
   metadata?: Serializable;
+  hasCreatedEvent?: boolean;
+  disposed?: boolean;
 }
 
 export interface WaitInvocationQueueItem {
@@ -42,6 +44,7 @@ export class WorkflowSuspension extends Error {
   stepCount: number;
   hookCount: number;
   waitCount: number;
+  hookDisposedCount: number;
 
   constructor(stepsInput: Map<string, QueueItem>, global: typeof globalThis) {
     // Convert Map to array for iteration and storage
@@ -51,10 +54,13 @@ export class WorkflowSuspension extends Error {
     let stepCount = 0;
     let hookCount = 0;
     let waitCount = 0;
+    let hookDisposedCount = 0;
     for (const item of steps) {
       if (item.type === 'step') stepCount++;
-      else if (item.type === 'hook') hookCount++;
-      else if (item.type === 'wait') waitCount++;
+      else if (item.type === 'hook') {
+        if (item.disposed) hookDisposedCount++;
+        else hookCount++;
+      } else if (item.type === 'wait') waitCount++;
     }
 
     // Build description parts
@@ -68,17 +74,32 @@ export class WorkflowSuspension extends Error {
     if (waitCount > 0) {
       parts.push(`${waitCount} ${pluralize('wait', 'waits', waitCount)}`);
     }
+    if (hookDisposedCount > 0) {
+      parts.push(
+        `${hookDisposedCount} hook ${pluralize('disposal', 'disposals', hookDisposedCount)}`
+      );
+    }
 
     // Determine verb (has/have) and action (run/created/received)
-    const totalCount = stepCount + hookCount + waitCount;
+    const totalCount = stepCount + hookCount + waitCount + hookDisposedCount;
     const hasOrHave = pluralize('has', 'have', totalCount);
+    // Pick action verb: use "processed" when mixed types are present
+    const typeCount =
+      (stepCount > 0 ? 1 : 0) +
+      (hookCount > 0 ? 1 : 0) +
+      (waitCount > 0 ? 1 : 0) +
+      (hookDisposedCount > 0 ? 1 : 0);
     let action: string;
-    if (stepCount > 0) {
+    if (typeCount > 1) {
+      action = 'processed';
+    } else if (stepCount > 0) {
       action = 'run';
     } else if (hookCount > 0) {
       action = 'created';
     } else if (waitCount > 0) {
       action = 'created';
+    } else if (hookDisposedCount > 0) {
+      action = 'processed';
     } else {
       action = 'received';
     }
@@ -94,6 +115,7 @@ export class WorkflowSuspension extends Error {
     this.stepCount = stepCount;
     this.hookCount = hookCount;
     this.waitCount = waitCount;
+    this.hookDisposedCount = hookDisposedCount;
   }
 
   static is(value: unknown): value is WorkflowSuspension {
