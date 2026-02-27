@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.1.0-beta.7
+
+### Patch Changes
+
+- [#1188](https://github.com/vercel/workflow/pull/1188) [`b06e491`](https://github.com/vercel/workflow/commit/b06e491a4769724435afff66724ac9e275fe11df) Thanks [@ctgowrie](https://github.com/ctgowrie)! - New vercel queue client
+
 ## 4.1.0-beta.6
 
 ### Patch Changes

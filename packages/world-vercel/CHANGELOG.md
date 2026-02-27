@@ -1,5 +1,23 @@
 # @workflow/world-vercel
 
+## 4.1.0-beta.35
+
+### Patch Changes
+
+- [#1189](https://github.com/vercel/workflow/pull/1189) [`b224521`](https://github.com/vercel/workflow/commit/b224521cb09c6741423783140c50148b0c98d227) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Move event ref resolution from server-side to client-side to reduce memory pressure
+
+- [`49d1b6d`](https://github.com/vercel/workflow/commit/49d1b6d57ea6b9283eef7158dcd4881caa18091f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Include total blob and stream storage size of a run in the run response
+
+- [#1174](https://github.com/vercel/workflow/pull/1174) [`e1a2f47`](https://github.com/vercel/workflow/commit/e1a2f475aa3258ee9e36e0694f73dbbe72b49fbe) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Handle `{ key: null }` response from the run-key API endpoint, returning `undefined` to signal encryption is disabled for that workflow run
+
+- [#1183](https://github.com/vercel/workflow/pull/1183) [`c614456`](https://github.com/vercel/workflow/commit/c6144564eab0168bbb00350839c04f5f009dcd8e) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Pass `teamId` to the run-key API endpoint for team-scoped encryption key retrieval
+
+- [#1188](https://github.com/vercel/workflow/pull/1188) [`b06e491`](https://github.com/vercel/workflow/commit/b06e491a4769724435afff66724ac9e275fe11df) Thanks [@ctgowrie](https://github.com/ctgowrie)! - New vercel queue client
+
+- Updated dependencies [[`b06e491`](https://github.com/vercel/workflow/commit/b06e491a4769724435afff66724ac9e275fe11df)]:
+  - @workflow/world@4.1.0-beta.7
+  - @workflow/errors@4.1.0-beta.16
+
 ## 4.1.0-beta.34
 
 ### Patch Changes

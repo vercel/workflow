@@ -1,5 +1,21 @@
 # @workflow/core
 
+## 4.1.0-beta.61
+
+### Patch Changes
+
+- [#1135](https://github.com/vercel/workflow/pull/1135) [`f5ea16f`](https://github.com/vercel/workflow/commit/f5ea16fbf5ba046e0e7a6e7ef95d6305abfd1768) Thanks [@btsmithnz](https://github.com/btsmithnz)! - Update `devalue` to v5.6.3 to resolve security alerts
+
+- [#1178](https://github.com/vercel/workflow/pull/1178) [`70223a9`](https://github.com/vercel/workflow/commit/70223a9091494ba1db56784e29e5bc92c78a89e0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Don't enforce client-side generated runId in `start()` for `v1Compat`
+
+- [#1164](https://github.com/vercel/workflow/pull/1164) [`d99ca9c`](https://github.com/vercel/workflow/commit/d99ca9cfed4fafd43853f89f8a4939ed3d240e20) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `FatalError` instance serialization
+
+- Updated dependencies [[`b224521`](https://github.com/vercel/workflow/commit/b224521cb09c6741423783140c50148b0c98d227), [`49d1b6d`](https://github.com/vercel/workflow/commit/49d1b6d57ea6b9283eef7158dcd4881caa18091f), [`e1a2f47`](https://github.com/vercel/workflow/commit/e1a2f475aa3258ee9e36e0694f73dbbe72b49fbe), [`c614456`](https://github.com/vercel/workflow/commit/c6144564eab0168bbb00350839c04f5f009dcd8e), [`b06e491`](https://github.com/vercel/workflow/commit/b06e491a4769724435afff66724ac9e275fe11df)]:
+  - @workflow/world-vercel@4.1.0-beta.35
+  - @workflow/world@4.1.0-beta.7
+  - @workflow/errors@4.1.0-beta.16
+  - @workflow/world-local@4.1.0-beta.35
+
 ## 4.1.0-beta.60
 
 ### Patch Changes

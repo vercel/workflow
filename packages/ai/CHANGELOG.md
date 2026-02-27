@@ -1,5 +1,16 @@
 # @workflow/ai
 
+## 4.0.1-beta.53
+
+### Patch Changes
+
+- [#1023](https://github.com/vercel/workflow/pull/1023) [`c8c98fe`](https://github.com/vercel/workflow/commit/c8c98fe463f4c8622988a2a9ff06a0234cb46a16) Thanks [@rovo89](https://github.com/rovo89)! - Pass optional request metadata through `WorkflowChatTransport`
+
+- [#889](https://github.com/vercel/workflow/pull/889) [`71d09c5`](https://github.com/vercel/workflow/commit/71d09c57f2d6deca847d8f8c19fb73b065e96093) Thanks [@michael-han-dev](https://github.com/michael-han-dev)! - strip OpenAI itemId from providerMetadata to fix Responses API tool call errors
+
+- Updated dependencies []:
+  - workflow@4.1.0-beta.61
+
 ## 4.0.1-beta.52
 
 ### Patch Changes
