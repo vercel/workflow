@@ -547,6 +547,41 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       value instanceof global.BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof global.BigUint64Array && viewToBase64(value),
+    // Class and Instance are intentionally placed before Error so that
+    // custom Error subclasses with WORKFLOW_SERIALIZE take precedence
+    // over the generic Error serialization (devalue uses first-match-wins).
+    Class: (value) => {
+      // Check if this is a class constructor with a classId property
+      // (set by the SWC plugin for classes with static step/workflow methods)
+      if (typeof value !== 'function') return false;
+      const classId = (value as any).classId;
+      if (typeof classId !== 'string') return false;
+      return { classId };
+    },
+    Instance: (value) => {
+      // Check if this is an instance of a class with custom serialization
+      if (value === null || typeof value !== 'object') return false;
+      const cls = value.constructor;
+      if (!cls || typeof cls !== 'function') return false;
+
+      // Check if the class has a static WORKFLOW_SERIALIZE method
+      const serialize = cls[WORKFLOW_SERIALIZE];
+      if (typeof serialize !== 'function') {
+        return false;
+      }
+
+      // Get the classId from the static class property (set by SWC plugin)
+      const classId = cls.classId;
+      if (typeof classId !== 'string') {
+        throw new Error(
+          `Class "${cls.name}" with ${String(WORKFLOW_SERIALIZE)} must have a static "classId" property.`
+        );
+      }
+
+      // Serialize the instance using the custom serializer
+      const data = serialize.call(cls, value);
+      return { classId, data };
+    },
     Date: (value) => {
       if (!(value instanceof global.Date)) return false;
       const valid = !Number.isNaN(value.getDate());
@@ -610,38 +645,6 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
         body: value.body,
         redirected: value.redirected,
       };
-    },
-    Class: (value) => {
-      // Check if this is a class constructor with a classId property
-      // (set by the SWC plugin for classes with static step/workflow methods)
-      if (typeof value !== 'function') return false;
-      const classId = (value as any).classId;
-      if (typeof classId !== 'string') return false;
-      return { classId };
-    },
-    Instance: (value) => {
-      // Check if this is an instance of a class with custom serialization
-      if (value === null || typeof value !== 'object') return false;
-      const cls = value.constructor;
-      if (!cls || typeof cls !== 'function') return false;
-
-      // Check if the class has a static WORKFLOW_SERIALIZE method
-      const serialize = cls[WORKFLOW_SERIALIZE];
-      if (typeof serialize !== 'function') {
-        return false;
-      }
-
-      // Get the classId from the static class property (set by SWC plugin)
-      const classId = cls.classId;
-      if (typeof classId !== 'string') {
-        throw new Error(
-          `Class "${cls.name}" with ${String(WORKFLOW_SERIALIZE)} must have a static "classId" property.`
-        );
-      }
-
-      // Serialize the instance using the custom serializer
-      const data = serialize.call(cls, value);
-      return { classId, data };
     },
     Set: (value) => value instanceof global.Set && Array.from(value),
     StepFunction: (value) => {
