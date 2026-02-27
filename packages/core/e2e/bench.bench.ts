@@ -290,10 +290,12 @@ async function consumeStreamWithMetrics(
   firstByteTimeMs?: number;
   slurpTimeMs?: number;
   totalBytes: number;
+  chunks: Uint8Array[];
 }> {
   let firstByteTimeMs: number | undefined;
   let slurpTimeMs: number | undefined;
   let totalBytes = 0;
+  const chunks: Uint8Array[] = [];
   if (value instanceof ReadableStream) {
     const reader = value.getReader();
     let isFirstChunk = true;
@@ -306,13 +308,14 @@ async function consumeStreamWithMetrics(
         isFirstChunk = false;
       }
       if (done) break;
+      chunks.push(chunk);
       totalBytes += chunk.length;
     }
     if (firstByteTimestamp !== undefined) {
       slurpTimeMs = Date.now() - firstByteTimestamp;
     }
   }
-  return { firstByteTimeMs, slurpTimeMs, totalBytes };
+  return { firstByteTimeMs, slurpTimeMs, totalBytes, chunks };
 }
 
 describe('Workflow Performance Benchmarks', () => {
@@ -492,6 +495,8 @@ describe('Workflow Performance Benchmarks', () => {
       skip: false,
       time: 60000,
       expectedTotalBytes: 1024 * 1024,
+      // Pipeline returns the actual data stream
+      summaryStream: false,
     },
     {
       name: 'stream pipeline with 10 transform steps (1MB)',
@@ -500,6 +505,7 @@ describe('Workflow Performance Benchmarks', () => {
       skip: !fullSuite,
       time: 120000,
       expectedTotalBytes: 1024 * 1024,
+      summaryStream: false,
     },
     {
       name: '10 parallel streams (1MB each)',
@@ -508,6 +514,8 @@ describe('Workflow Performance Benchmarks', () => {
       skip: false,
       time: 60000,
       expectedTotalBytes: 10 * 1024 * 1024,
+      // Parallel/fan-out workflows return a JSON summary stream
+      summaryStream: true,
     },
     {
       name: '50 parallel streams (1MB each)',
@@ -516,6 +524,7 @@ describe('Workflow Performance Benchmarks', () => {
       skip: !fullSuite,
       time: 180000,
       expectedTotalBytes: 50 * 1024 * 1024,
+      summaryStream: true,
     },
     {
       name: 'fan-out fan-in 10 streams (1MB each)',
@@ -524,6 +533,7 @@ describe('Workflow Performance Benchmarks', () => {
       skip: false,
       time: 60000,
       expectedTotalBytes: 10 * 1024 * 1024,
+      summaryStream: true,
     },
     {
       name: 'fan-out fan-in 50 streams (1MB each)',
@@ -532,6 +542,7 @@ describe('Workflow Performance Benchmarks', () => {
       skip: !fullSuite,
       time: 180000,
       expectedTotalBytes: 50 * 1024 * 1024,
+      summaryStream: true,
     },
   ] as const;
 
@@ -542,6 +553,7 @@ describe('Workflow Performance Benchmarks', () => {
     skip,
     time,
     expectedTotalBytes,
+    summaryStream,
   } of streamStressBenchmarks) {
     const benchFn = skip ? bench.skip : bench;
     benchFn(
@@ -550,14 +562,35 @@ describe('Workflow Performance Benchmarks', () => {
         const run = await start(await benchWf(workflow), args);
         const value = await run.returnValue;
         const timings = await getRunTimings(run);
-        const { firstByteTimeMs, slurpTimeMs, totalBytes } =
+        const { firstByteTimeMs, slurpTimeMs, totalBytes, chunks } =
           await consumeStreamWithMetrics(value, timings.startedAt);
 
-        // Correctness: verify no missing chunks
-        if (totalBytes !== expectedTotalBytes) {
-          throw new Error(
-            `Stream correctness failure: expected ${expectedTotalBytes} bytes but got ${totalBytes}`
+        if (summaryStream) {
+          // Parallel/fan-out workflows return a JSON summary stream;
+          // parse it and verify the reported totalBytes
+          const text = new TextDecoder().decode(
+            chunks.length === 1
+              ? chunks[0]
+              : chunks.reduce((acc, c) => {
+                  const merged = new Uint8Array(acc.length + c.length);
+                  merged.set(acc);
+                  merged.set(c, acc.length);
+                  return merged;
+                }, new Uint8Array(0))
           );
+          const summary = JSON.parse(text) as { totalBytes: number };
+          if (summary.totalBytes !== expectedTotalBytes) {
+            throw new Error(
+              `Stream correctness failure: summary reports ${summary.totalBytes} bytes but expected ${expectedTotalBytes}`
+            );
+          }
+        } else {
+          // Pipeline workflows return the actual data stream
+          if (totalBytes !== expectedTotalBytes) {
+            throw new Error(
+              `Stream correctness failure: expected ${expectedTotalBytes} bytes but got ${totalBytes}`
+            );
+          }
         }
 
         stageTiming(name, timings, { firstByteTimeMs, slurpTimeMs });

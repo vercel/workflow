@@ -192,7 +192,7 @@ export async function concurrentDataPayloadWorkflow(
 //////////////////////////////////////////////////////////
 
 // Step: generate a large byte stream with known pattern for verification
-// Chunk i contains bytes where each byte = (chunkIndex + byteOffset) % 256
+// Each byte = (globalByteOffset) % 256, providing a unique pattern across the entire stream
 async function genLargeStream(
   totalBytes: number
 ): Promise<ReadableStream<Uint8Array>> {
@@ -201,16 +201,16 @@ async function genLargeStream(
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       let remaining = totalBytes;
-      let chunkIndex = 0;
+      let totalBytesProcessed = 0;
       while (remaining > 0) {
         const size = Math.min(chunkSize, remaining);
         const chunk = new Uint8Array(size);
         for (let i = 0; i < size; i++) {
-          chunk[i] = (chunkIndex + i) % 256;
+          chunk[i] = (totalBytesProcessed + i) % 256;
         }
         controller.enqueue(chunk);
         remaining -= size;
-        chunkIndex++;
+        totalBytesProcessed += size;
         await new Promise((resolve) => setTimeout(resolve, 1));
       }
       controller.close();
@@ -242,7 +242,6 @@ async function consumeAndVerifyStreams(
   ...streams: ReadableStream<Uint8Array>[]
 ): Promise<ReadableStream<Uint8Array>> {
   'use step';
-  let totalBytes = 0;
   const streamByteCounts: number[] = [];
 
   await Promise.all(
@@ -253,11 +252,12 @@ async function consumeAndVerifyStreams(
         const { done, value } = await reader.read();
         if (done) break;
         streamBytes += value.length;
-        totalBytes += value.length;
       }
       streamByteCounts[idx] = streamBytes;
     })
   );
+
+  const totalBytes = streamByteCounts.reduce((sum, count) => sum + count, 0);
 
   // Verify each stream had the expected number of bytes
   for (let i = 0; i < streamByteCounts.length; i++) {
