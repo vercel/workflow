@@ -1,11 +1,10 @@
 import type { Streamer } from '@workflow/world';
 import { type APIConfig, getHttpConfig, type HttpConfig } from './utils.js';
 
-// Note: The H2 dispatcher from http-client.ts must NOT be used for any
-// streaming calls. undici's experimental HTTP/2 client hangs on both
-// streaming writes (PUT with body) and streaming reads (long-lived GET
-// responses). Standard request/response calls (makeRequest, encryption,
-// refs) work fine with H2.
+// Streaming calls use plain fetch() without the undici dispatcher.
+// The dispatcher's retry logic doesn't apply well to streaming operations
+// (partial writes, long-lived reads), and duplex streams are incompatible
+// with undici's experimental H2 support.
 
 function getStreamUrl(
   name: string,

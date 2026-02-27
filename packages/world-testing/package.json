@@ -16,7 +16,7 @@
     "directory": "packages/world-testing"
   },
   "scripts": {
-    "build": "wf build && tsc",
+    "build": "wf build && node scripts/generate-well-known-dts.mjs && tsc && cp .well-known/workflow/v1/*.js dist/.well-known/workflow/v1/",
     "clean": "tsc --build --clean && rm -rf dist .well-known* .workflow-data",
     "start": "node --watch src/server.mts",
     "test": "vitest"

@@ -121,7 +121,8 @@ export async function fetchRunKey(
         authorization: `Bearer ${token}`,
       },
       dispatcher: getDispatcher(),
-    } as RequestInit
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+    } as any
   );
 
   if (!response.ok) {

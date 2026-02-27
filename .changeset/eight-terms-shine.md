@@ -1,5 +1,6 @@
 ---
 "@workflow/world-vercel": patch
+"@workflow/world-local": patch
 ---
 
-Use `undici` for request re-try and pipelining
+Use undici v7 Agent for HTTP/2 multiplexing and automatic retry

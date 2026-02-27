@@ -5,28 +5,22 @@ let _dispatcher: RetryAgent | undefined;
 /**
  * Returns a shared undici RetryAgent wrapping an Agent.
  *
- * - HTTP/2 multiplexing when the server supports it (via ALPN negotiation)
- * - Connection pooling: up to 128 connections per origin
- * - Retry: Automatic retry on 429/5xx with exponential backoff
+ * - Connection pooling (up to 8 connections per origin)
+ * - Retry: Automatic retry on 429/5xx or network errors with exponential backoff
+ *   - Observes Retry-After header if received and lower than 30s
  *
- * Note: HTTP/1.1 pipelining is disabled (pipelining: 1) because it causes
- * head-of-line blocking when concurrent request flows share a connection,
- * which deadlocks the webhook respondWith mechanism. HTTP/2 multiplexing
- * provides the same throughput benefit without this problem.
- *
- * IMPORTANT: This dispatcher must NOT be used with `duplex: 'half'`
- * streaming requests — undici's H2 client hangs when combined with
- * half-duplex streams. See streamer.ts for the streaming code path.
+ * Note: HTTP/2 is disabled because undici's experimental H2 support hangs
+ * in certain Vercel runtime environments (sveltekit). HTTP/1.1 pipelining
+ * is also disabled (pipelining: 1) because it causes head-of-line blocking
+ * that deadlocks the webhook respondWith mechanism. The primary benefits
+ * from undici here are retry logic and connection pooling.
  */
 export function getDispatcher(): RetryAgent {
   if (!_dispatcher) {
     _dispatcher = new RetryAgent(
       new Agent({
-        allowH2: true,
-        connections: 128,
+        connections: 8,
         keepAliveTimeout: 10_000,
-        // H2 does multiplexing, but if the connection falls through to HTTP/1.1,
-        // we don't use pipelining, as it's been very unstable in our tests.
         pipelining: 1,
       }),
       {

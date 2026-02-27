@@ -280,9 +280,10 @@ export async function makeRequest<T>({
         body,
         headers,
       });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
       const response = await fetch(request, {
         dispatcher: getDispatcher(),
-      } as RequestInit);
+      } as any);
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
