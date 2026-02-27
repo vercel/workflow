@@ -8,6 +8,7 @@ export const LOGGING_CONFIG = {
 
 export const setJsonMode = (value: boolean) => {
   LOGGING_CONFIG.JSON_MODE = Boolean(value);
+  process.env.WORKFLOW_JSON_MODE = value ? '1' : '';
 };
 
 export const setVerboseMode = (value: boolean) => {

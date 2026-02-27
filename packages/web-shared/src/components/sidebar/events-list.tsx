@@ -2,9 +2,19 @@
 
 import type { Event } from '@workflow/world';
 import { useCallback, useMemo, useState } from 'react';
-import { DataInspector } from '../ui/data-inspector';
+import {
+  ErrorStackBlock,
+  isStructuredErrorWithStack,
+} from '../ui/error-stack-block';
+import { Skeleton } from '../ui/skeleton';
 import { localMillisecondTime } from './attribute-panel';
+import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
+
+/**
+ * Event types whose eventData contains an error field with a StructuredError.
+ */
+const ERROR_EVENT_TYPES = new Set(['step_failed', 'step_retrying']);
 
 /**
  * Event types that carry user-serialized data in their eventData field.
@@ -69,6 +79,7 @@ function EventItem({
 
   return (
     <DetailCard
+      summaryClassName="text-base py-2"
       summary={
         <>
           <span
@@ -100,36 +111,35 @@ function EventItem({
         }}
       >
         <div
-          className="flex items-center justify-between px-2.5 py-1.5"
+          className="flex min-h-[32px] items-center justify-between gap-4 px-2.5 py-1.5"
           style={{ borderColor: 'var(--ds-gray-300)' }}
         >
-          <span
-            className="text-[11px] font-medium"
-            style={{ color: 'var(--ds-gray-700)' }}
-          >
+          <span className="text-[14px]" style={{ color: 'var(--ds-gray-700)' }}>
             eventId
           </span>
           <span
-            className="text-[11px] font-mono"
+            className="max-w-[70%] truncate text-right text-[13px] font-mono"
             style={{ color: 'var(--ds-gray-1000)' }}
+            title={event.eventId}
           >
             {event.eventId}
           </span>
         </div>
         {event.correlationId && (
           <div
-            className="flex items-center justify-between px-2.5 py-1.5"
+            className="flex min-h-[32px] items-center justify-between gap-4 px-2.5 py-1.5"
             style={{ borderColor: 'var(--ds-gray-300)' }}
           >
             <span
-              className="text-[11px] font-medium"
+              className="text-[14px]"
               style={{ color: 'var(--ds-gray-700)' }}
             >
               correlationId
             </span>
             <span
-              className="text-[11px] font-mono"
+              className="max-w-[70%] truncate text-right text-[13px] font-mono"
               style={{ color: 'var(--ds-gray-1000)' }}
+              title={event.correlationId}
             >
               {event.correlationId}
             </span>
@@ -140,20 +150,21 @@ function EventItem({
       {/* Loading state */}
       {isLoading && (
         <div
-          className="mt-2 text-xs rounded-md border p-2"
+          className="mt-2 rounded-md border p-3"
           style={{
             borderColor: 'var(--ds-gray-300)',
-            color: 'var(--ds-gray-600)',
           }}
         >
-          Loading event data...
+          <Skeleton className="h-4 w-[35%]" />
+          <Skeleton className="mt-2 h-4 w-[90%]" />
+          <Skeleton className="mt-2 h-4 w-[75%]" />
         </div>
       )}
 
       {/* Error state */}
       {loadError && (
         <div
-          className="mt-2 text-xs rounded-md border p-2"
+          className="mt-2 rounded-md border p-2 text-sm"
           style={{
             borderColor: 'var(--ds-red-300)',
             color: 'var(--ds-red-700)',
@@ -165,15 +176,49 @@ function EventItem({
 
       {/* Event data */}
       {displayData != null && (
-        <div
-          className="mt-2 overflow-x-auto rounded-md border p-3"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
-        >
-          <DataInspector data={displayData} />
+        <div className="mt-2">
+          <EventDataBlock eventType={event.eventType} data={displayData} />
         </div>
       )}
     </DetailCard>
   );
+}
+
+/**
+ * Renders event data, using ErrorStackBlock for error events that contain
+ * a structured error with a stack trace, and CopyableDataBlock otherwise.
+ */
+function EventDataBlock({
+  eventType,
+  data,
+}: {
+  eventType: string;
+  data: unknown;
+}) {
+  // For error events (step_failed, step_retrying), the eventData has the shape
+  // { error: StructuredError, stack?: string, ... }. Check both the top-level
+  // value and the nested `error` field for a stack trace.
+  if (
+    ERROR_EVENT_TYPES.has(eventType) &&
+    data != null &&
+    typeof data === 'object'
+  ) {
+    const record = data as Record<string, unknown>;
+
+    // Check the nested `error` field first (the StructuredError)
+    if (isStructuredErrorWithStack(record.error)) {
+      return <ErrorStackBlock value={record.error} />;
+    }
+
+    // Some error formats put the stack at the top level of eventData
+    if (isStructuredErrorWithStack(record)) {
+      return <ErrorStackBlock value={record} />;
+    }
+  }
+
+  // For non-error events or errors without a stack, fall back to the
+  // generic JSON viewer.
+  return <CopyableDataBlock data={data} />;
 }
 
 export function EventsList({
@@ -208,12 +253,18 @@ export function EventsList({
       >
         Events {!isLoading && `(${sortedEvents.length})`}
       </h3>
-      {isLoading ? <div>Loading events...</div> : null}
+      {isLoading ? (
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-[48px] w-full rounded-lg border" />
+          <Skeleton className="h-[48px] w-full rounded-lg border" />
+          <Skeleton className="h-[48px] w-full rounded-lg border" />
+        </div>
+      ) : null}
       {!isLoading && !error && sortedEvents.length === 0 && (
         <div className="text-sm">No events found</div>
       )}
       {sortedEvents.length > 0 && !error ? (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-4">
           {sortedEvents.map((event) => (
             <EventItem
               key={event.eventId}

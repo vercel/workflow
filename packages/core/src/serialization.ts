@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { DevalueError, parse, stringify, unflatten } from 'devalue';
@@ -553,7 +554,13 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       return valid ? value.toISOString() : '.';
     },
     Error: (value) => {
-      if (!(value instanceof global.Error)) return false;
+      // Use types.isNativeError() instead of `instanceof global.Error`
+      // because errors may originate from a different VM context (e.g.
+      // FatalError from the host context passed into a VM-context workflow).
+      // `instanceof` checks fail across VM boundaries since each context
+      // has its own Error constructor, but isNativeError() uses V8's
+      // internal type tag which works across all contexts.
+      if (!types.isNativeError(value)) return false;
       return {
         name: value.name,
         message: value.message,

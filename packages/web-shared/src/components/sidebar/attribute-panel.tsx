@@ -3,12 +3,19 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import type { ReactNode } from 'react';
-import { useMemo, useState } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
-import { DataInspector, StreamClickContext } from '../ui/data-inspector';
+import { StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
+import {
+  ErrorStackBlock,
+  isStructuredErrorWithStack,
+} from '../ui/error-stack-block';
+import { Skeleton } from '../ui/skeleton';
 import { ConversationView } from './conversation-view';
+import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
 
 /**
@@ -26,6 +33,9 @@ function TabButton({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
+      tabIndex={active ? 0 : -1}
       onClick={onClick}
       className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
       style={{
@@ -49,6 +59,76 @@ function TabButton({
 }
 
 /**
+ * Shared tabbed container with accessible ARIA roles and keyboard navigation.
+ * Used by ConversationWithTabs for the conversation/JSON toggle.
+ */
+function TabbedContainer<T extends string>({
+  tabs,
+  activeTab,
+  onTabChange,
+  ariaLabel,
+  children,
+}: {
+  tabs: { id: T; label: string }[];
+  activeTab: T;
+  onTabChange: (tab: T) => void;
+  ariaLabel: string;
+  children: ReactNode;
+}) {
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+      event.preventDefault();
+      const currentIndex = tabs.findIndex((t) => t.id === activeTab);
+      const nextIndex =
+        event.key === 'ArrowRight'
+          ? (currentIndex + 1) % tabs.length
+          : (currentIndex - 1 + tabs.length) % tabs.length;
+      onTabChange(tabs[nextIndex].id);
+    },
+    [tabs, activeTab, onTabChange]
+  );
+
+  return (
+    <div
+      className="rounded-md border"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'transparent',
+      }}
+    >
+      <div
+        className="flex gap-1 border-b"
+        role="tablist"
+        aria-label={ariaLabel}
+        onKeyDown={handleKeyDown}
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'transparent',
+        }}
+      >
+        {tabs.map((tab) => (
+          <TabButton
+            key={tab.id}
+            active={activeTab === tab.id}
+            onClick={() => onTabChange(tab.id)}
+          >
+            {tab.label}
+          </TabButton>
+        ))}
+      </div>
+
+      <div role="tabpanel">{children}</div>
+    </div>
+  );
+}
+
+const conversationTabs = [
+  { id: 'conversation' as const, label: 'Conversation' },
+  { id: 'json' as const, label: 'Raw JSON' },
+];
+
+/**
  * Tabbed view for conversation and raw JSON
  */
 function ConversationWithTabs({
@@ -64,34 +144,12 @@ function ConversationWithTabs({
 
   return (
     <DetailCard summary={`Input (${conversation.length} messages)`}>
-      <div
-        className="rounded-md border"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'transparent',
-        }}
+      <TabbedContainer
+        tabs={conversationTabs}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        ariaLabel="Conversation view"
       >
-        <div
-          className="flex gap-1 border-b"
-          style={{
-            borderColor: 'var(--ds-gray-300)',
-            backgroundColor: 'transparent',
-          }}
-        >
-          <TabButton
-            active={activeTab === 'conversation'}
-            onClick={() => setActiveTab('conversation')}
-          >
-            Conversation
-          </TabButton>
-          <TabButton
-            active={activeTab === 'json'}
-            onClick={() => setActiveTab('json')}
-          >
-            Raw JSON
-          </TabButton>
-        </div>
-
         {activeTab === 'conversation' ? (
           <ConversationView messages={conversation} />
         ) : (
@@ -105,7 +163,7 @@ function ConversationWithTabs({
               : JsonBlock(args)}
           </div>
         )}
-      </div>
+      </TabbedContainer>
     </DetailCard>
   );
 }
@@ -115,15 +173,16 @@ function ConversationWithTabs({
  * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
  */
 function JsonBlock(value: unknown) {
-  return (
-    <div
-      className="overflow-x-auto rounded-md border p-3"
-      style={{ borderColor: 'var(--ds-gray-300)' }}
-    >
-      <DataInspector data={value} />
-    </div>
-  );
+  return <CopyableDataBlock data={value} />;
 }
+
+const hasDisplayContent = (value: unknown): boolean => {
+  if (value == null) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return true;
+};
 
 type AttributeKey =
   | keyof Step
@@ -272,16 +331,23 @@ const attributeToDisplayFn: Record<
   retryAfter: localMillisecondTime,
   resumeAt: localMillisecondTime,
   // Resolved attributes, won't actually use this function
-  metadata: JsonBlock,
+  metadata: (value: unknown) => {
+    if (!hasDisplayContent(value)) return null;
+    return JsonBlock(value);
+  },
   input: (value: unknown, context?: DisplayContext) => {
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
-      const { args, closureVars } = value as {
+      const { args, closureVars, thisVal } = value as {
         args: unknown[];
         closureVars?: Record<string, unknown>;
+        thisVal?: unknown;
       };
       const argCount = Array.isArray(args) ? args.length : 0;
-      const hasClosureVars = closureVars && Object.keys(closureVars).length > 0;
+      const argLabel = argCount === 1 ? 'argument' : 'arguments';
+      const hasClosureVars = hasDisplayContent(closureVars);
+      const hasThisVal = hasDisplayContent(thisVal);
+      const hasArgs = hasDisplayContent(args);
 
       // Check if this is a doStreamStep - show conversation view with tabs
       if (context?.stepName && isDoStreamStep(context.stepName)) {
@@ -295,17 +361,37 @@ const attributeToDisplayFn: Record<
                   {JsonBlock(closureVars)}
                 </DetailCard>
               )}
+              {hasThisVal && (
+                <DetailCard summary="This Value">
+                  {JsonBlock(thisVal)}
+                </DetailCard>
+              )}
             </>
           );
         }
       }
 
+      // Don't render an empty "Input (0 arguments)" card when no input exists.
+      if (!hasArgs && !hasClosureVars && !hasThisVal) {
+        return (
+          <DetailCard
+            summary="Input (no data)"
+            disabled
+            summaryClassName="text-base py-2"
+          />
+        );
+      }
+
       return (
         <>
-          <DetailCard summary={`Input (${argCount} arguments)`}>
+          <DetailCard
+            summary={`Input (${argCount} ${argLabel})`}
+            summaryClassName="text-base py-2"
+            contentClassName="mt-0"
+          >
             {Array.isArray(args)
               ? args.map((v, i) => (
-                  <div className="mt-2" key={i}>
+                  <div className="mt-2 first:mt-0" key={i}>
                     {JsonBlock(v)}
                   </div>
                 ))
@@ -316,17 +402,34 @@ const attributeToDisplayFn: Record<
               {JsonBlock(closureVars)}
             </DetailCard>
           )}
+          {hasThisVal && (
+            <DetailCard summary="this">{JsonBlock(thisVal)}</DetailCard>
+          )}
         </>
       );
     }
 
     // Fallback: treat as plain array or object
     const argCount = Array.isArray(value) ? value.length : 0;
+    const argLabel = argCount === 1 ? 'argument' : 'arguments';
+    if (!hasDisplayContent(value)) {
+      return (
+        <DetailCard
+          summary="Input (no data)"
+          disabled
+          summaryClassName="text-base py-2"
+        />
+      );
+    }
     return (
-      <DetailCard summary={`Input (${argCount} arguments)`}>
+      <DetailCard
+        summary={`Input (${argCount} ${argLabel})`}
+        summaryClassName="text-base py-2"
+        contentClassName="mt-0"
+      >
         {Array.isArray(value)
           ? value.map((v, i) => (
-              <div className="mt-2" key={i}>
+              <div className="mt-2 first:mt-0" key={i}>
                 {JsonBlock(v)}
               </div>
             ))
@@ -335,72 +438,46 @@ const attributeToDisplayFn: Record<
     );
   },
   output: (value: unknown) => {
-    return <DetailCard summary="Output">{JsonBlock(value)}</DetailCard>;
+    if (!hasDisplayContent(value)) return null;
+    return (
+      <DetailCard
+        summary="Output"
+        summaryClassName="text-base py-2"
+        contentClassName="mt-0"
+      >
+        {JsonBlock(value)}
+      </DetailCard>
+    );
   },
   error: (value: unknown) => {
-    // Handle structured error format
-    if (value && typeof value === 'object' && 'message' in value) {
-      const error = value as {
-        message: string;
-        stack?: string;
-        code?: string;
-      };
+    if (!hasDisplayContent(value)) return null;
 
+    // If the error object has a `stack` field, render it as readable
+    // pre-formatted text. Otherwise fall back to the raw JSON viewer.
+    if (isStructuredErrorWithStack(value)) {
       return (
-        <DetailCard summary="Error">
-          <div className="flex flex-col gap-2">
-            {/* Show code if it exists */}
-            {error.code && (
-              <div>
-                <span
-                  className="text-[11px] font-medium"
-                  style={{ color: 'var(--ds-gray-700)' }}
-                >
-                  Error Code:{' '}
-                </span>
-                <code
-                  className="text-[11px]"
-                  style={{ color: 'var(--ds-gray-1000)' }}
-                >
-                  {error.code}
-                </code>
-              </div>
-            )}
-            {/* Show stack if available, otherwise just the message */}
-            <pre
-              className="text-[11px] overflow-x-auto rounded-md border p-3"
-              style={{
-                borderColor: 'var(--ds-gray-300)',
-                backgroundColor: 'var(--ds-gray-100)',
-                color: 'var(--ds-gray-1000)',
-                whiteSpace: 'pre-wrap',
-              }}
-            >
-              <code>{error.stack || error.message}</code>
-            </pre>
-          </div>
+        <DetailCard
+          summary="Error"
+          summaryClassName="text-base py-2"
+          contentClassName="mt-0"
+        >
+          <ErrorStackBlock value={value} />
         </DetailCard>
       );
     }
 
-    // Fallback for plain string errors
     return (
-      <DetailCard summary="Error">
-        <pre
-          className="text-[11px] overflow-x-auto rounded-md border p-3"
-          style={{
-            borderColor: 'var(--ds-gray-300)',
-            backgroundColor: 'var(--ds-gray-100)',
-            color: 'var(--ds-gray-1000)',
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          <code>{String(value)}</code>
-        </pre>
+      <DetailCard
+        summary="Error"
+        summaryClassName="text-base py-2"
+        contentClassName="mt-0"
+      >
+        {JsonBlock(value)}
       </DetailCard>
     );
   },
   eventData: (value: unknown) => {
+    if (!hasDisplayContent(value)) return null;
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
   },
 };
@@ -439,6 +516,44 @@ export const AttributeBlock = ({
   inline?: boolean;
   context?: DisplayContext;
 }) => {
+  const isExpandableLoadingTarget =
+    attribute === 'input' ||
+    attribute === 'output' ||
+    attribute === 'eventData';
+  if (isLoading && isExpandableLoadingTarget) {
+    const label =
+      attribute === 'eventData'
+        ? 'Event Data'
+        : attribute === 'output'
+          ? 'Output'
+          : 'Input';
+    return (
+      <div
+        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
+      >
+        <span
+          className={`${attribute === 'input' || attribute === 'output' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
+          style={{ color: 'var(--ds-gray-700)' }}
+        >
+          {attribute}
+        </span>
+        <DetailCard
+          summary={label}
+          summaryClassName="text-base py-2"
+          disabled
+        />
+        <div
+          className="overflow-x-auto rounded-md border p-3"
+          style={{ borderColor: 'var(--ds-gray-300)' }}
+        >
+          <Skeleton className="h-4 w-[38%]" />
+          <Skeleton className="mt-2 h-4 w-[88%]" />
+          <Skeleton className="mt-2 h-4 w-[72%]" />
+        </div>
+      </div>
+    );
+  }
+
   const displayFn =
     attributeToDisplayFn[attribute as keyof typeof attributeToDisplayFn];
   if (!displayFn) {
@@ -475,9 +590,12 @@ export const AttributeBlock = ({
           />
         </div>
       )}
-      <div key={attribute} className="flex flex-col gap-0 my-2">
+      <div
+        key={attribute}
+        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'gap-2 my-3.5' : 'gap-0'}`}
+      >
         <span
-          className="text-xs font-medium"
+          className={`${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
           style={{ color: 'var(--ds-gray-700)' }}
         >
           {attribute}
@@ -575,6 +693,16 @@ export const AttributePanel = ({
     }),
     [displayData.stepName]
   );
+  const handleCopyModuleSpecifier = useCallback((value: string) => {
+    navigator.clipboard
+      .writeText(value)
+      .then(() => {
+        toast.success('moduleSpecifier copied');
+      })
+      .catch(() => {
+        toast.error('Failed to copy moduleSpecifier');
+      });
+  }, []);
 
   return (
     <StreamClickContext.Provider value={onStreamClick}>
@@ -582,36 +710,66 @@ export const AttributePanel = ({
         {/* Basic attributes in a vertical layout with border */}
         {visibleBasicAttributes.length > 0 && (
           <div
-            className="flex flex-col divide-y rounded-lg border mb-3 overflow-hidden"
+            className="mb-3 flex flex-col overflow-hidden rounded-lg border"
             style={{
               borderColor: 'var(--ds-gray-300)',
-              backgroundColor: 'var(--ds-gray-100)',
             }}
           >
-            {orderedBasicAttributes.map((attribute) => (
-              <div
-                key={attribute}
-                className="flex items-center justify-between px-3 py-1.5"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                }}
-              >
-                <span
-                  className="text-[11px] font-medium"
-                  style={{ color: 'var(--ds-gray-700)' }}
-                >
-                  {getAttributeDisplayName(attribute)}
-                </span>
-                <span
-                  className="text-[11px] font-mono"
-                  style={{ color: 'var(--ds-gray-1000)' }}
-                >
-                  {attributeToDisplayFn[
-                    attribute as keyof typeof attributeToDisplayFn
-                  ]?.(displayData[attribute as keyof typeof displayData])}
-                </span>
-              </div>
-            ))}
+            {orderedBasicAttributes.map((attribute, index) => {
+              const displayValue = attributeToDisplayFn[
+                attribute as keyof typeof attributeToDisplayFn
+              ]?.(displayData[attribute as keyof typeof displayData]);
+              const isModuleSpecifier = attribute === 'moduleSpecifier';
+              const moduleSpecifierValue =
+                typeof displayValue === 'string'
+                  ? displayValue
+                  : String(displayValue ?? displayData.moduleSpecifier ?? '');
+              const showDivider = index < orderedBasicAttributes.length - 1;
+
+              return (
+                <div key={attribute} className="py-1">
+                  <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                    <span
+                      className="text-[14px] first-letter:uppercase"
+                      style={{ color: 'var(--ds-gray-700)' }}
+                    >
+                      {getAttributeDisplayName(attribute)}
+                    </span>
+                    {isModuleSpecifier ? (
+                      <button
+                        type="button"
+                        className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
+                        style={{
+                          color: 'var(--ds-gray-1000)',
+                          background: 'transparent',
+                          border: 'none',
+                          padding: 0,
+                        }}
+                        title={moduleSpecifierValue}
+                        onClick={() =>
+                          handleCopyModuleSpecifier(moduleSpecifierValue)
+                        }
+                      >
+                        {moduleSpecifierValue}
+                      </button>
+                    ) : (
+                      <span
+                        className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
+                        style={{ color: 'var(--ds-gray-1000)' }}
+                      >
+                        {displayValue}
+                      </span>
+                    )}
+                  </div>
+                  {showDivider ? (
+                    <div
+                      className="mx-2.5 border-b"
+                      style={{ borderColor: 'var(--ds-gray-300)' }}
+                    />
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         )}
         {error ? (

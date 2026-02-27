@@ -160,7 +160,7 @@ export async function start<TArgs extends unknown[], TResult>(
       }
 
       // Verify server accepted our runId
-      if (result.run.runId !== runId) {
+      if (!v1Compat && result.run.runId !== runId) {
         throw new WorkflowRuntimeError(
           `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
         );

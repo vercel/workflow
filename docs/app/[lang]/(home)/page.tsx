@@ -6,6 +6,7 @@ import { Hero } from './components/hero';
 import { Implementation } from './components/implementation';
 import { Intro } from './components/intro/intro';
 import { Observability } from './components/observability';
+import { PreviewBadge } from './components/preview-badge';
 import { RunAnywhere } from './components/run-anywhere';
 import { Templates } from './components/templates';
 import { UseCases } from './components/use-cases-server';
@@ -25,10 +26,20 @@ export const metadata: Metadata = {
   },
 };
 
+const isPreview = process.env.VERCEL_ENV === 'preview';
+const deploymentUrl = process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}`
+  : '';
+
 const Home = () => (
   <div className="[&_h1]:tracking-tighter [&_h2]:tracking-tighter [&_h3]:tracking-tighter [&_h4]:tracking-tighter [&_h5]:tracking-tighter [&_h6]:tracking-tighter">
     <div className="mx-auto w-full max-w-[1080px]">
       <Hero title={title} description={description} />
+      {isPreview && deploymentUrl && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <PreviewBadge deploymentUrl={deploymentUrl} />
+        </div>
+      )}
       <div className="grid divide-y border-y sm:border-x">
         <Intro />
         <Implementation />

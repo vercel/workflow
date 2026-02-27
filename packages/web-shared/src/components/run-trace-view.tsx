@@ -27,6 +27,9 @@ interface RunTraceViewProps {
   onCancelRun?: (runId: string) => Promise<void>;
   onStreamClick?: (streamId: string) => void;
   onSpanSelect?: (info: SpanSelectionInfo) => void;
+  onLoadMoreSpans?: () => void | Promise<void>;
+  hasMoreSpans?: boolean;
+  isLoadingMoreSpans?: boolean;
 }
 
 export function RunTraceView({
@@ -44,6 +47,9 @@ export function RunTraceView({
   onCancelRun,
   onStreamClick,
   onSpanSelect,
+  onLoadMoreSpans,
+  hasMoreSpans,
+  isLoadingMoreSpans,
 }: RunTraceViewProps) {
   if (error && !run) {
     return (
@@ -72,6 +78,9 @@ export function RunTraceView({
         onCancelRun={onCancelRun}
         onStreamClick={onStreamClick}
         onSpanSelect={onSpanSelect}
+        onLoadMoreSpans={onLoadMoreSpans}
+        hasMoreSpans={hasMoreSpans}
+        isLoadingMoreSpans={isLoadingMoreSpans}
       />
     </div>
   );
