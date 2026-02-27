@@ -23,9 +23,11 @@ export function getDispatcher(): RetryAgent {
     _dispatcher = new RetryAgent(
       new Agent({
         allowH2: true,
-        pipelining: 1,
         connections: 128,
         keepAliveTimeout: 10_000,
+        // H2 does multiplexing, but if the connection falls through to HTTP/1.1,
+        // we don't use pipelining, as it's been very unstable in our tests.
+        pipelining: 1,
       }),
       {
         // Observe Retry-After header if received
