@@ -20,6 +20,7 @@ export interface SendMessagesOptions<UI_MESSAGE extends UIMessage> {
 
 export interface ReconnectToStreamOptions {
   chatId: string;
+  abortSignal?: AbortSignal;
 }
 
 type OnChatSendMessage<UI_MESSAGE extends UIMessage> = (
@@ -265,7 +266,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     options: ReconnectToStreamOptions & ChatRequestOptions
   ): Promise<ReadableStream<UIMessageChunk> | null> {
     const it = this.reconnectToStreamIterator(options);
-    return iteratorToStream(it);
+    return iteratorToStream(it, { signal: options.abortSignal });
   }
 
   private async *reconnectToStreamIterator(
@@ -299,6 +300,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
       const res = await this.fetch(url, {
         headers: requestConfig?.headers,
         credentials: requestConfig?.credentials,
+        signal: options.abortSignal,
       });
 
       if (!res.ok || !res.body) {
