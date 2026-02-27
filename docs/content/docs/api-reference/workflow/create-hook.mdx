@@ -19,7 +19,8 @@ import { createHook } from "workflow"
 
 export async function hookWorkflow() {
   "use workflow";
-  const hook = createHook();  // [!code highlight]
+  // `using` automatically disposes the hook when it goes out of scope
+  using hook = createHook();  // [!code highlight]
   const result = await hook; // Suspends the workflow until the hook is resumed
 }
 ```
@@ -68,7 +69,7 @@ The returned `Hook` object also implements `AsyncIterable<T>`, which allows you 
 
 ### Basic Usage
 
-When creating a hook, you can specify a payload type to be used for automatic type safety.
+When creating a hook, you can specify a payload type for automatic type safety:
 
 ```typescript lineNumbers
 import { createHook } from "workflow"
@@ -76,7 +77,7 @@ import { createHook } from "workflow"
 export async function approvalWorkflow() {
   "use workflow";
 
-  const hook = createHook<{ approved: boolean; comment: string }>(); // [!code highlight]
+  using hook = createHook<{ approved: boolean; comment: string }>(); // [!code highlight]
   console.log("Send approval to token:", hook.token);
 
   const result = await hook;
@@ -98,7 +99,7 @@ export async function slackBotWorkflow(channelId: string) {
   "use workflow";
 
   // Token constructed from channel ID
-  const hook = createHook<SlackMessage>({ // [!code highlight]
+  using hook = createHook<SlackMessage>({ // [!code highlight]
     token: `slack_webhook:${channelId}`, // [!code highlight]
   }); // [!code highlight]
 
@@ -121,7 +122,7 @@ import { createHook } from "workflow"
 export async function collectHookWorkflow() {
   "use workflow";
 
-  const hook = createHook<{ message: string; done?: boolean }>();
+  using hook = createHook<{ message: string; done?: boolean }>();
 
   const payloads = [];
   for await (const payload of hook) { // [!code highlight]
@@ -133,6 +134,61 @@ export async function collectHookWorkflow() {
   return payloads;
 }
 ```
+
+### Disposing Hooks Early
+
+You can dispose a hook early to release its token for reuse by another workflow. This is useful for handoff patterns where one workflow needs to transfer a hook token to another workflow while still running.
+
+```typescript lineNumbers
+import { createHook } from "workflow"
+
+export async function handoffWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = createHook<{ message: string; handoff?: boolean }>({
+    token: `channel:${channelId}`
+  });
+
+  for await (const payload of hook) {
+    console.log("Received:", payload.message);
+
+    if (payload.handoff) {
+      hook.dispose(); // [!code highlight] Release the token for another workflow
+      break;
+    }
+  }
+
+  // Continue with other work while another workflow uses the token
+}
+```
+
+After calling `dispose()`, the hook will no longer receive events and its token becomes available for other workflows to use.
+
+### Automatic Disposal with `using`
+
+Hooks implement the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal, allowing automatic disposal with the `using` keyword:
+
+```typescript lineNumbers
+import { createHook } from "workflow"
+
+export async function scopedHookWorkflow(channelId: string) {
+  "use workflow";
+
+  {
+    using hook = createHook<{ message: string }>({ // [!code highlight]
+      token: `channel:${channelId}`
+    });
+
+    const payload = await hook;
+    console.log("Received:", payload.message);
+  } // hook is automatically disposed here // [!code highlight]
+
+  // Token is now available for other workflows to use
+  console.log("Hook disposed, continuing with other work...");
+}
+```
+
+This is equivalent to manually calling `dispose()` but ensures the hook is always cleaned up, even if an error occurs.
 
 ## Related Functions
 

@@ -66,7 +66,7 @@ export async function withCreateHook() {
 
   // Register the hook with the token that is specific
   // to the response ID that we are interested in.
-  const hook = createHook<{ type: string; data: { id: string } }>({
+  using hook = createHook<{ type: string; data: { id: string } }>({
     token: `openai:${respId}`,
   });
   console.log('Registered hook:', hook.token);

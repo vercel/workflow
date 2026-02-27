@@ -1,5 +1,18 @@
 # @workflow/ai
 
+## 4.0.1-beta.54
+
+### Patch Changes
+
+- [#1212](https://github.com/vercel/workflow/pull/1212) [`eea4a02`](https://github.com/vercel/workflow/commit/eea4a02f77a85307545d059c2ced57983303a63f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Convert tool call errors to error-text results, allowing the agent to recover from tool call failures
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- [#1199](https://github.com/vercel/workflow/pull/1199) [`905b94a`](https://github.com/vercel/workflow/commit/905b94ac12bdedbeebc44b941c23e25a5ed02968) Thanks [@gsathya](https://github.com/gsathya)! - Pass AbortSignal option into WorkflowChatTransport reconnect handler, allowing it to prevent reconnection.
+
+- Updated dependencies [[`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - workflow@4.1.0-beta.62
+
 ## 4.0.1-beta.53
 
 ### Patch Changes

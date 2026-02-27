@@ -1,7 +1,7 @@
 import { types } from 'node:util';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
-import { assert, describe, expect, it } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import type { WorkflowSuspension } from './global.js';
 import {
   dehydrateStepReturnValue,
@@ -3716,6 +3716,225 @@ describe('runWorkflow', () => {
         stepName: 'add',
         args: [5, 10],
       });
+    });
+  });
+
+  describe('pending queue warnings', () => {
+    it('should warn when workflow completes with an unawaited step', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRun: WorkflowRun = {
+          runId: 'test-run-123',
+          workflowName: 'workflow',
+          status: 'running',
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_123',
+            noEncryptionKey,
+            ops
+          ),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        // No step events — the unawaited step stays pending in the queue
+        const events: Event[] = [];
+
+        // Workflow calls step but doesn't await it, returns immediately
+        await runWorkflow(
+          `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+          async function workflow() {
+            add(1, 2); // not awaited!
+            return "done";
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events,
+          noEncryptionKey
+        );
+
+        const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
+        expect(
+          warnCalls.some(
+            (msg: string) =>
+              msg.includes('uncommitted operation') &&
+              msg.includes('step "add"')
+          )
+        ).toBe(true);
+        expect(
+          warnCalls.some((msg: string) =>
+            msg.includes('Did you forget to `await`')
+          )
+        ).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('should warn when workflow fails with pending operations', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRun: WorkflowRun = {
+          runId: 'test-run-123',
+          workflowName: 'workflow',
+          status: 'running',
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_123',
+            noEncryptionKey,
+            ops
+          ),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        // No step events — the unawaited step stays pending in the queue
+        const events: Event[] = [];
+
+        // Workflow calls step (not awaited) then throws
+        await expect(
+          runWorkflow(
+            `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+            async function workflow() {
+              add(1, 2); // not awaited
+              throw new Error("workflow error");
+            }${getWorkflowTransformCode('workflow')}`,
+            workflowRun,
+            events,
+            noEncryptionKey
+          )
+        ).rejects.toThrow('workflow error');
+
+        const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
+        expect(
+          warnCalls.some(
+            (msg: string) =>
+              msg.includes('failed') && msg.includes('step "add"')
+          )
+        ).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('should not warn when hooks are properly disposed', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRun: WorkflowRun = {
+          runId: 'test-run-123',
+          workflowName: 'workflow',
+          status: 'running',
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_123',
+            noEncryptionKey,
+            ops
+          ),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        const events: Event[] = [
+          {
+            eventId: 'event-0',
+            runId: workflowRun.runId,
+            eventType: 'hook_created' as const,
+            correlationId: 'hook_01HK153X008RT6YEW43G8QX6JX',
+            eventData: {
+              token: 'test-token',
+            },
+            createdAt: new Date(),
+          },
+          {
+            eventId: 'event-1',
+            runId: workflowRun.runId,
+            eventType: 'hook_received',
+            correlationId: 'hook_01HK153X008RT6YEW43G8QX6JX',
+            eventData: {
+              payload: await dehydrateStepReturnValue(
+                { message: 'hello' },
+                'wrun_123',
+                noEncryptionKey,
+                ops
+              ),
+            },
+            createdAt: new Date(),
+          },
+          {
+            eventId: 'event-2',
+            runId: workflowRun.runId,
+            eventType: 'hook_disposed',
+            correlationId: 'hook_01HK153X008RT6YEW43G8QX6JX',
+            createdAt: new Date(),
+          },
+        ];
+
+        // Workflow creates hook, awaits one payload, hook is disposed
+        // (simulates `using` at function scope)
+        await runWorkflow(
+          `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+          async function workflow() {
+            const hook = createHook();
+            const result = await hook;
+            hook.dispose();
+            return result.message;
+          }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events,
+          noEncryptionKey
+        );
+
+        const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
+        expect(
+          warnCalls.some((msg: string) => msg.includes('uncommitted operation'))
+        ).toBe(false);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('should not warn when queue is empty on completion', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const ops: Promise<any>[] = [];
+        const workflowRun: WorkflowRun = {
+          runId: 'wrun_123',
+          workflowName: 'workflow',
+          status: 'running',
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_123',
+            noEncryptionKey,
+            ops
+          ),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+
+        await runWorkflow(
+          `function workflow() { return "clean"; }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          [],
+          noEncryptionKey
+        );
+
+        const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
+        expect(
+          warnCalls.some((msg: string) => msg.includes('uncommitted operation'))
+        ).toBe(false);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 });

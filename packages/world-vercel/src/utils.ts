@@ -5,6 +5,7 @@ import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
+import { getDispatcher } from './http-client.js';
 import {
   ErrorType,
   getSpanKind,
@@ -279,7 +280,10 @@ export async function makeRequest<T>({
         body,
         headers,
       });
-      const response = await fetch(request);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+      const response = await fetch(request, {
+        dispatcher: getDispatcher(),
+      } as any);
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
@@ -300,6 +304,8 @@ export async function makeRequest<T>({
         }
 
         // Parse Retry-After header for 429 responses (value is in seconds)
+        // Note: RetryAgent handles most 429 retries automatically, but this
+        // catches the case where retries are exhausted.
         let retryAfter: number | undefined;
         if (response.status === 429) {
           const retryAfterHeader = response.headers.get('Retry-After');
@@ -353,7 +359,7 @@ export async function makeRequest<T>({
         const validationResult = schema.safeParse(parseResult.data);
         if (!validationResult.success) {
           throw new WorkflowAPIError(
-            `Schema validation failed for ${request.method} ${endpoint}:\n\n${validationResult.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
+            `Schema validation failed for ${method} ${endpoint}:\n\n${validationResult.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
             { url, cause: validationResult.error }
           );
         }

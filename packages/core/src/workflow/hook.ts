@@ -30,6 +30,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     let eventLogEmpty = false;
 
+    // Track if the event log confirms disposal happened (replay no-op)
+    let hasDisposedEvent = false;
+
     // Track if we have a conflict so we can reject future awaits
     let hasConflict = false;
     let conflictErrorRef: WorkflowRuntimeError | null = null;
@@ -57,10 +60,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.NotConsumed;
       }
 
-      // Check for hook_created event to remove this hook from the queue if it was already created
+      // Check for hook_created event to mark this hook as already created
       if (event.eventType === 'hook_created') {
-        // Remove this hook from the invocations queue (O(1) delete using Map)
-        ctx.invocationsQueue.delete(correlationId);
+        const queueItem = ctx.invocationsQueue.get(correlationId);
+        if (queueItem && queueItem.type === 'hook') {
+          queueItem.hasCreatedEvent = true;
+        }
         return EventConsumerResult.Consumed;
       }
 
@@ -115,8 +120,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_disposed') {
-        // If a hook is explicitly disposed, we're done processing any more
-        // events for it
+        // Terminal state - remove from queue (like step_completed/wait_completed)
+        ctx.invocationsQueue.delete(correlationId);
+        // Mark that the event log confirms disposal happened
+        hasDisposedEvent = true;
+        // We're done processing any more events for this hook
         return EventConsumerResult.Finished;
       }
 
@@ -130,6 +138,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }, 0);
       return EventConsumerResult.Finished;
     });
+
+    // Track if the hook has been disposed
+    let isDisposed = false;
 
     // Helper function to create a new promise that waits for the next hook payload
     function createHookPromise(): Promise<T> {
@@ -176,6 +187,40 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       return resolvers.promise;
     }
 
+    // Helper function to dispose the hook
+    function disposeHook(): void {
+      if (isDisposed) {
+        return; // Already disposed, nothing to do
+      }
+      isDisposed = true;
+
+      // If the event log already contains hook_disposed, this is a replay — no-op
+      if (hasDisposedEvent) {
+        return;
+      }
+
+      // Set disposed flag on the existing queue item
+      const queueItem = ctx.invocationsQueue.get(correlationId);
+      if (queueItem && queueItem.type === 'hook') {
+        queueItem.disposed = true;
+      }
+
+      // Drain any pending promises that are waiting for payloads.
+      // Without this, promises created by `await hook` or the async iterator's
+      // `yield await this` would hang forever since the event consumer will
+      // never deliver another hook_received after disposal.
+      if (promises.length > 0) {
+        promises.length = 0;
+        setTimeout(() => {
+          ctx.onWorkflowError(
+            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+          );
+        }, 0);
+      }
+
+      webhookLogger.debug('Hook disposed', { correlationId, token });
+    }
+
     const hook: Hook<T> = {
       token,
 
@@ -189,11 +234,23 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
       // Support `for await (const payload of hook) { … }` syntax
       async *[Symbol.asyncIterator]() {
-        while (true) {
+        while (!isDisposed) {
           yield await this;
         }
       },
+
+      dispose: disposeHook,
+
+      [Symbol.dispose]: disposeHook,
     };
+
+    // Also register with the VM's Symbol.dispose so `using` works inside
+    // the workflow sandbox (the VM may have a polyfilled Symbol.dispose
+    // that differs from the host's).
+    const vmDispose = ctx.globalThis.Symbol.dispose;
+    if (vmDispose && vmDispose !== Symbol.dispose) {
+      (hook as any)[vmDispose] = disposeHook;
+    }
 
     return hook;
   };

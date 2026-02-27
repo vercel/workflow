@@ -18,7 +18,8 @@ import { createWebhook } from "workflow"
 
 export async function webhookWorkflow() {
   "use workflow";
-  const webhook = createWebhook();  // [!code highlight]
+  // `using` automatically disposes the webhook when it goes out of scope
+  using webhook = createWebhook();  // [!code highlight]
   console.log("Webhook URL:", webhook.url);
 
   const request = await webhook; // Suspends until HTTP request received
@@ -66,7 +67,7 @@ import { createWebhook } from "workflow"
 export async function basicWebhookWorkflow() {
   "use workflow";
 
-  const webhook = createWebhook(); // [!code highlight]
+  using webhook = createWebhook(); // [!code highlight]
   console.log("Send requests to:", webhook.url);
 
   const request = await webhook;
@@ -99,7 +100,7 @@ async function sendResponse(request: RequestWithResponse) { // [!code highlight]
 export async function respondingWebhookWorkflow() {
   "use workflow";
 
-  const webhook = createWebhook();
+  using webhook = createWebhook();
   console.log("Webhook URL:", webhook.url);
 
   const request = await webhook;
@@ -124,7 +125,7 @@ async function processData(data: any) {
 Tokens are used to identify a specific webhook. You can customize the token to be more specific to a use case.
 
 ```typescript lineNumbers
-import { type RequestWithResponse } from "workflow"
+import { createWebhook, type RequestWithResponse } from "workflow"
 
 async function sendAck(request: RequestWithResponse) {
   "use step";
@@ -139,7 +140,7 @@ export async function githubWebhookWorkflow(repoName: string) {
   "use workflow";
 
   // Use a deterministic token based on the repository
-  const webhook = createWebhook({ // [!code highlight]
+  using webhook = createWebhook({ // [!code highlight]
     token: `github_webhook:${repoName}`, // [!code highlight]
   }); // [!code highlight]
 
@@ -189,7 +190,7 @@ async function sendStopResponse(request: RequestWithResponse) {
 export async function slackCommandWorkflow(channelId: string) {
   "use workflow";
 
-  const webhook = createWebhook({
+  using webhook = createWebhook({
     token: `slack_command:${channelId}`,
   });
 
