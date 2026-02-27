@@ -11,7 +11,6 @@ import {
   type PaginatedResponse,
   PaginatedResponseSchema,
   type WorkflowRun,
-  WorkflowRunSchema,
 } from '@workflow/world';
 import z from 'zod';
 import {
@@ -20,11 +19,19 @@ import {
   type RefWithRunId,
   resolveRefDescriptors,
 } from './refs.js';
-import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
+import {
+  cancelWorkflowRunV1,
+  createWorkflowRunV1,
+  WorkflowRunWireBaseSchema,
+} from './runs.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import { trace } from './telemetry.js';
 import type { APIConfig } from './utils.js';
-import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
+import {
+  DEFAULT_RESOLVE_DATA_OPTION,
+  deserializeError,
+  makeRequest,
+} from './utils.js';
 
 // Helper to filter event data based on resolveData setting.
 // Strips both eventData and eventDataRef since the server always returns
@@ -42,10 +49,13 @@ function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
 }
 
 // Schema for EventResult wire format returned by events.create
-// Uses wire format schemas for step to handle field name mapping
+// Uses wire format schemas for step and run to handle field name mapping
+// and accept both resolved and lazy (ref-based) responses from the server.
+// WorkflowRunWireBaseSchema is used instead of WorkflowRunSchema because the
+// server may return error as a string (legacy) or undefined (lazy ref mode).
 const EventResultWireSchema = z.object({
   event: EventSchema,
-  run: WorkflowRunSchema.optional(),
+  run: WorkflowRunWireBaseSchema.optional(),
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
 });
@@ -342,10 +352,15 @@ export async function createWorkflowRunEvent(
     schema: EventResultWireSchema,
   });
 
-  // Transform wire format to interface format
+  // Transform wire format to interface format.
+  // The run entity from the wire may have error as a string (legacy) or
+  // undefined (lazy ref mode), so deserializeError normalizes it into the
+  // StructuredError shape expected by WorkflowRun consumers.
   return {
     event: filterEventData(wireResult.event, resolveData),
-    run: wireResult.run,
+    run: wireResult.run
+      ? deserializeError<WorkflowRun>(wireResult.run)
+      : undefined,
     step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
     hook: wireResult.hook,
   };
