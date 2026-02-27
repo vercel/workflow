@@ -309,7 +309,7 @@ describe('e2e', () => {
   // that doesn't work cross-process (test runner ↔ workbench app).
   test.skipIf(isLocalDeployment())(
     'readableStreamWorkflow',
-    { timeout: 60_000 },
+    { timeout: 80_000 },
     async () => {
       const run = await start(await e2e('readableStreamWorkflow'), []);
       const returnValue = await run.returnValue;

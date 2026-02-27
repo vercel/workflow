@@ -14,6 +14,7 @@ import { webcrypto } from 'node:crypto';
 import { getVercelOidcToken } from '@vercel/oidc';
 import type { WorkflowRun, World } from '@workflow/world';
 import * as z from 'zod';
+import { getDispatcher } from './http-client.js';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
@@ -115,10 +116,12 @@ export async function fetchRunKey(
   const response = await fetch(
     `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
     {
+      method: 'GET',
       headers: {
-        Authorization: `Bearer ${token}`,
+        authorization: `Bearer ${token}`,
       },
-    }
+      dispatcher: getDispatcher(),
+    } as RequestInit
   );
 
   if (!response.ok) {

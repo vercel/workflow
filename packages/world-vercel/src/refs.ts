@@ -1,5 +1,6 @@
 import { WorkflowAPIError } from '@workflow/errors';
 import { decode } from 'cbor-x';
+import { getDispatcher } from './http-client.js';
 import {
   ErrorType,
   getSpanKind,
@@ -105,9 +106,11 @@ export async function resolveRefDescriptor(
         ...PeerService('workflow-server'),
       });
 
-      const response = await fetch(
-        new Request(url, { method: 'GET', headers })
-      );
+      const response = await fetch(url, {
+        method: 'GET',
+        headers,
+        dispatcher: getDispatcher(),
+      } as RequestInit);
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
@@ -115,7 +118,7 @@ export async function resolveRefDescriptor(
 
       if (!response.ok) {
         const error = new WorkflowAPIError(
-          `Failed to resolve ref: HTTP ${response.status} ${response.statusText}`,
+          `Failed to resolve ref: HTTP ${response.status}`,
           { url, status: response.status }
         );
         span?.setAttributes({
@@ -125,7 +128,7 @@ export async function resolveRefDescriptor(
         throw error;
       }
 
-      const contentType = response.headers.get('Content-Type') || '';
+      const contentType = response.headers.get('content-type') || '';
       const buffer = await response.arrayBuffer();
 
       if (contentType.includes('application/octet-stream')) {
