@@ -95,8 +95,8 @@ export default async function WorldsPage() {
               Managed
             </h2>
             <p className="text-sm text-muted-foreground mt-1">
-              Zero config &mdash; high throughput, auto-scaling, globally
-              distributed
+              Production grade &mdash; zero configuration, high throughput,
+              infinitely-scalable, e2e encrypted, and integrated observability
             </p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -113,8 +113,8 @@ export default async function WorldsPage() {
               Self-Hosted
             </h2>
             <p className="text-sm text-muted-foreground mt-1">
-              Production-ready &mdash; manage your own scaling and run inside
-              your own infrastructure
+              Self hosted &mdash; control your data and scaling while running
+              workflows inside your own infrastructure
             </p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
