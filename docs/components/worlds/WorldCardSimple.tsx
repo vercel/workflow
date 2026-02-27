@@ -1,13 +1,12 @@
 'use client';
 
 import {
-  CheckCircle2,
   AlertCircle,
-  XCircle,
-  Clock,
   BadgeCheck,
+  CheckCircle2,
+  Clock,
   HeartHandshake,
-  Timer,
+  XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
 import {
@@ -142,7 +141,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
             </TooltipContent>
           </Tooltip>
           {/* PERF - right */}
-          <Tooltip>
+          {/* <Tooltip>
             <TooltipTrigger asChild>
               <div className="flex items-center gap-1.5 px-4 py-2.5 text-sm">
                 <Timer className="h-3.5 w-3.5 text-purple-500" />
@@ -160,7 +159,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                 second
               </p>
             </TooltipContent>
-          </Tooltip>
+          </Tooltip> */}
         </div>
       </Card>
     </Link>
