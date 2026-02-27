@@ -155,13 +155,17 @@ export interface RefWithRunId {
  *
  * @param refs - Array of ref descriptors with their owning runIds
  * @param config - API configuration
+ * @param concurrency - Max concurrent ref resolution requests. Falls back to REF_RESOLVE_CONCURRENCY.
  * @returns Array of resolved values in the same order as input
  */
 export async function resolveRefDescriptors(
   refs: RefWithRunId[],
-  config?: APIConfig
+  config?: APIConfig,
+  concurrency?: number
 ): Promise<unknown[]> {
   if (refs.length === 0) return [];
+
+  const limit = concurrency ?? REF_RESOLVE_CONCURRENCY;
 
   return trace('world.refs.resolve', async (span) => {
     const inlineCount = refs.filter((r) =>
@@ -173,10 +177,11 @@ export async function resolveRefDescriptors(
       'workflow.refs.total_count': refs.length,
       'workflow.refs.inline_count': inlineCount,
       'workflow.refs.remote_count': remoteCount,
+      'workflow.refs.concurrency_limit': limit,
     });
 
     // Simple case: if under concurrency limit, resolve all at once
-    if (refs.length <= REF_RESOLVE_CONCURRENCY) {
+    if (refs.length <= limit) {
       return Promise.all(
         refs.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
       );
@@ -186,8 +191,8 @@ export async function resolveRefDescriptors(
     // the batch rejects and remaining batches are aborted to avoid
     // cascading failures.
     const results: unknown[] = new Array(refs.length);
-    for (let i = 0; i < refs.length; i += REF_RESOLVE_CONCURRENCY) {
-      const batch = refs.slice(i, i + REF_RESOLVE_CONCURRENCY);
+    for (let i = 0; i < refs.length; i += limit) {
+      const batch = refs.slice(i, i + limit);
       const batchResults = await Promise.all(
         batch.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
       );
