@@ -22,10 +22,7 @@ export interface RequestWithResponse extends Request {
  * Hooks implement the TC39 Explicit Resource Management proposal,
  * allowing them to be used with the `using` keyword for automatic disposal.
  */
-export interface Hook<T = any>
-  extends AsyncIterable<T>,
-    Thenable<T>,
-    Disposable {
+export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
   /**
    * The token used to identify this hook.
    */

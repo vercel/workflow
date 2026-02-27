@@ -83,8 +83,16 @@ export class WorkflowSuspension extends Error {
     // Determine verb (has/have) and action (run/created/received)
     const totalCount = stepCount + hookCount + waitCount + hookDisposedCount;
     const hasOrHave = pluralize('has', 'have', totalCount);
+    // Pick action verb: use "processed" when mixed types are present
+    const typeCount =
+      (stepCount > 0 ? 1 : 0) +
+      (hookCount > 0 ? 1 : 0) +
+      (waitCount > 0 ? 1 : 0) +
+      (hookDisposedCount > 0 ? 1 : 0);
     let action: string;
-    if (stepCount > 0) {
+    if (typeCount > 1) {
+      action = 'processed';
+    } else if (stepCount > 0) {
       action = 'run';
     } else if (hookCount > 0) {
       action = 'created';

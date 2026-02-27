@@ -297,7 +297,9 @@ describe('WorkflowSuspension', () => {
     ];
     const error = new WorkflowSuspension(toQueueMap(items), globalThis);
 
-    expect(error.message).toBe('1 step and 2 hooks have not been run yet');
+    expect(error.message).toBe(
+      '1 step and 2 hooks have not been processed yet'
+    );
     expect(error.stepCount).toBe(1);
     expect(error.hookCount).toBe(2);
   });
@@ -324,7 +326,9 @@ describe('WorkflowSuspension', () => {
     ];
     const error = new WorkflowSuspension(toQueueMap(items), globalThis);
 
-    expect(error.message).toBe('2 steps and 1 hook have not been run yet');
+    expect(error.message).toBe(
+      '2 steps and 1 hook have not been processed yet'
+    );
     expect(error.stepCount).toBe(2);
     expect(error.hookCount).toBe(1);
   });
@@ -345,8 +349,8 @@ describe('WorkflowSuspension', () => {
     ];
     const error = new WorkflowSuspension(toQueueMap(items), globalThis);
 
-    // When there are steps, the action should be "run" not "created"
-    expect(error.message).toBe('1 step and 1 hook have not been run yet');
+    // When there are mixed types, the action should be "processed"
+    expect(error.message).toBe('1 step and 1 hook have not been processed yet');
   });
 
   it('should use "created" action when only webhooks are present', () => {
@@ -432,7 +436,7 @@ describe('WorkflowSuspension', () => {
     expect(error.hookCount).toBe(1);
     expect(error.hookDisposedCount).toBe(1);
     expect(error.message).toBe(
-      '1 hook and 1 hook disposal have not been created yet'
+      '1 hook and 1 hook disposal have not been processed yet'
     );
   });
 });

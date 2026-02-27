@@ -117,7 +117,7 @@ describe('createCreateHook', () => {
     expect(workflowError?.message).toContain('step_completed');
   });
 
-  it('should consume hook_created event and remove from invocations queue', async () => {
+  it('should consume hook_created event and mark hasCreatedEvent on queue item', async () => {
     const ops: Promise<any>[] = [];
     const ctx = setupWorkflowContext([
       {
