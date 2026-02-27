@@ -280,6 +280,41 @@ const teardown = (task: { name: string }, mode: 'warmup' | 'run') => {
   bufferedTimings.delete(task.name);
 };
 
+/**
+ * Consume a ReadableStream and measure TTFB and slurp time.
+ */
+async function consumeStreamWithMetrics(
+  value: unknown,
+  startedAt: string | undefined
+): Promise<{
+  firstByteTimeMs?: number;
+  slurpTimeMs?: number;
+  totalBytes: number;
+}> {
+  let firstByteTimeMs: number | undefined;
+  let slurpTimeMs: number | undefined;
+  let totalBytes = 0;
+  if (value instanceof ReadableStream) {
+    const reader = value.getReader();
+    let isFirstChunk = true;
+    let firstByteTimestamp: number | undefined;
+    while (true) {
+      const { done, value: chunk } = await reader.read();
+      if (isFirstChunk && !done && startedAt) {
+        firstByteTimestamp = Date.now();
+        firstByteTimeMs = firstByteTimestamp - new Date(startedAt).getTime();
+        isFirstChunk = false;
+      }
+      if (done) break;
+      totalBytes += chunk.length;
+    }
+    if (firstByteTimestamp !== undefined) {
+      slurpTimeMs = Date.now() - firstByteTimestamp;
+    }
+  }
+  return { firstByteTimeMs, slurpTimeMs, totalBytes };
+}
+
 describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with no steps',
@@ -304,17 +339,18 @@ describe('Workflow Performance Benchmarks', () => {
   );
 
   // Sequential step benchmarks at various scales
-  // Set BENCHMARK_FULL_SUITE=true to run the long benchmarks (100+, 500+ steps)
+  // Set BENCHMARK_FULL_SUITE=true to run the long benchmarks (100+, 500+, 1000 steps)
   const fullSuite = process.env.BENCHMARK_FULL_SUITE === 'true';
   const sequentialStepCounts = [
-    { count: 10, skip: false, time: 30000 },
-    { count: 25, skip: false, time: 60000 },
-    { count: 50, skip: false, time: 90000 },
-    { count: 100, skip: !fullSuite, time: 150000 },
-    { count: 500, skip: !fullSuite, time: 600000 },
+    { count: 10, skip: false, time: 30000, sleepMs: 1000 },
+    { count: 25, skip: false, time: 60000, sleepMs: 1000 },
+    { count: 50, skip: false, time: 90000, sleepMs: 1000 },
+    { count: 100, skip: !fullSuite, time: 150000, sleepMs: 1000 },
+    { count: 500, skip: !fullSuite, time: 600000, sleepMs: 1000 },
+    { count: 1000, skip: !fullSuite, time: 600000, sleepMs: 100 },
   ] as const;
 
-  for (const { count, skip, time } of sequentialStepCounts) {
+  for (const { count, skip, time, sleepMs } of sequentialStepCounts) {
     const name = `workflow with ${count} sequential steps`;
     const benchFn = skip ? bench.skip : bench;
 
@@ -323,6 +359,7 @@ describe('Workflow Performance Benchmarks', () => {
       async () => {
         const run = await start(await benchWf('sequentialStepsWorkflow'), [
           count,
+          sleepMs,
         ]);
         await run.returnValue;
         const timings = await getRunTimings(run);
@@ -338,30 +375,13 @@ describe('Workflow Performance Benchmarks', () => {
       const run = await start(await benchWf('streamWorkflow'), []);
       const value = await run.returnValue;
       const timings = await getRunTimings(run);
-      // Consume the entire stream and track:
-      // - firstByteTimeMs: time from workflow start to first byte
-      // - slurpTimeMs: time from first byte to stream completion
-      let firstByteTimeMs: number | undefined;
-      let slurpTimeMs: number | undefined;
-      if (value instanceof ReadableStream) {
-        const reader = value.getReader();
-        let isFirstChunk = true;
-        let firstByteTimestamp: number | undefined;
-        while (true) {
-          const { done } = await reader.read();
-          if (isFirstChunk && !done && timings.startedAt) {
-            const startedAt = new Date(timings.startedAt).getTime();
-            firstByteTimestamp = Date.now();
-            firstByteTimeMs = firstByteTimestamp - startedAt;
-            isFirstChunk = false;
-          }
-          if (done) {
-            if (firstByteTimestamp !== undefined) {
-              slurpTimeMs = Date.now() - firstByteTimestamp;
-            }
-            break;
-          }
-        }
+      const { firstByteTimeMs, slurpTimeMs, totalBytes } =
+        await consumeStreamWithMetrics(value, timings.startedAt);
+      // Correctness: stream should produce ~5KB (50 chunks * ~100 bytes)
+      if (totalBytes === 0) {
+        throw new Error(
+          'Stream correctness failure: expected >0 bytes but got 0'
+        );
       }
       stageTiming('workflow with stream', timings, {
         firstByteTimeMs,
@@ -379,7 +399,7 @@ describe('Workflow Performance Benchmarks', () => {
     { count: 50, skip: false, time: 30000 },
     { count: 100, skip: !fullSuite, time: 60000 },
     { count: 500, skip: !fullSuite, time: 120000 },
-    { count: 1000, skip: true, time: 180000 }, // Always skip 1000 - too slow
+    { count: 1000, skip: !fullSuite, time: 180000 },
   ] as const;
 
   const concurrentStepTypes = [
@@ -403,5 +423,146 @@ describe('Workflow Performance Benchmarks', () => {
         { time, iterations: 1, warmupIterations: 0, teardown }
       );
     }
+  }
+
+  // Data payload benchmarks (1MB through steps)
+  const dataPayloadStepCounts = [
+    { count: 10, skip: false, time: 60000 },
+    { count: 25, skip: false, time: 90000 },
+    { count: 50, skip: false, time: 120000 },
+    { count: 100, skip: !fullSuite, time: 300000 },
+    { count: 500, skip: !fullSuite, time: 600000 },
+  ] as const;
+  const DATA_PAYLOAD_SIZE = 1024 * 1024; // 1MB
+
+  for (const { count, skip, time } of dataPayloadStepCounts) {
+    const name = `workflow with ${count} sequential data payload steps (1MB)`;
+    const benchFn = skip ? bench.skip : bench;
+
+    benchFn(
+      name,
+      async () => {
+        const run = await start(
+          await benchWf('sequentialDataPayloadWorkflow'),
+          [count, DATA_PAYLOAD_SIZE]
+        );
+        const returnValue = await run.returnValue;
+        if (returnValue !== DATA_PAYLOAD_SIZE) {
+          throw new Error(
+            `Data payload correctness failure: expected length ${DATA_PAYLOAD_SIZE}, got ${returnValue}`
+          );
+        }
+        const timings = await getRunTimings(run);
+        stageTiming(name, timings);
+      },
+      { time, iterations: 1, warmupIterations: 0, teardown }
+    );
+  }
+
+  for (const { count, skip, time } of dataPayloadStepCounts) {
+    const name = `workflow with ${count} concurrent data payload steps (1MB)`;
+    const benchFn = skip ? bench.skip : bench;
+
+    benchFn(
+      name,
+      async () => {
+        const run = await start(
+          await benchWf('concurrentDataPayloadWorkflow'),
+          [count, DATA_PAYLOAD_SIZE]
+        );
+        const returnValue = await run.returnValue;
+        if (returnValue !== count) {
+          throw new Error(
+            `Data payload correctness failure: expected count ${count}, got ${returnValue}`
+          );
+        }
+        const timings = await getRunTimings(run);
+        stageTiming(name, timings);
+      },
+      { time, iterations: 1, warmupIterations: 0, teardown }
+    );
+  }
+
+  // Stream stress benchmarks
+  const streamStressBenchmarks = [
+    {
+      name: 'stream pipeline with 5 transform steps (1MB)',
+      workflow: 'streamPipelineWorkflow',
+      args: [5, 1024 * 1024],
+      skip: false,
+      time: 60000,
+      expectedTotalBytes: 1024 * 1024,
+    },
+    {
+      name: 'stream pipeline with 10 transform steps (1MB)',
+      workflow: 'streamPipelineWorkflow',
+      args: [10, 1024 * 1024],
+      skip: !fullSuite,
+      time: 120000,
+      expectedTotalBytes: 1024 * 1024,
+    },
+    {
+      name: '10 parallel streams (1MB each)',
+      workflow: 'parallelStreamsWorkflow',
+      args: [10, 1024 * 1024],
+      skip: false,
+      time: 60000,
+      expectedTotalBytes: 10 * 1024 * 1024,
+    },
+    {
+      name: '50 parallel streams (1MB each)',
+      workflow: 'parallelStreamsWorkflow',
+      args: [50, 1024 * 1024],
+      skip: !fullSuite,
+      time: 180000,
+      expectedTotalBytes: 50 * 1024 * 1024,
+    },
+    {
+      name: 'fan-out fan-in 10 streams (1MB each)',
+      workflow: 'fanOutFanInStreamWorkflow',
+      args: [10, 1024 * 1024],
+      skip: false,
+      time: 60000,
+      expectedTotalBytes: 10 * 1024 * 1024,
+    },
+    {
+      name: 'fan-out fan-in 50 streams (1MB each)',
+      workflow: 'fanOutFanInStreamWorkflow',
+      args: [50, 1024 * 1024],
+      skip: !fullSuite,
+      time: 180000,
+      expectedTotalBytes: 50 * 1024 * 1024,
+    },
+  ] as const;
+
+  for (const {
+    name,
+    workflow,
+    args,
+    skip,
+    time,
+    expectedTotalBytes,
+  } of streamStressBenchmarks) {
+    const benchFn = skip ? bench.skip : bench;
+    benchFn(
+      name,
+      async () => {
+        const run = await start(await benchWf(workflow), args);
+        const value = await run.returnValue;
+        const timings = await getRunTimings(run);
+        const { firstByteTimeMs, slurpTimeMs, totalBytes } =
+          await consumeStreamWithMetrics(value, timings.startedAt);
+
+        // Correctness: verify no missing chunks
+        if (totalBytes !== expectedTotalBytes) {
+          throw new Error(
+            `Stream correctness failure: expected ${expectedTotalBytes} bytes but got ${totalBytes}`
+          );
+        }
+
+        stageTiming(name, timings, { firstByteTimeMs, slurpTimeMs });
+      },
+      { time, iterations: 1, warmupIterations: 0, teardown }
+    );
   }
 });

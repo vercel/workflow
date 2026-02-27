@@ -3,6 +3,7 @@ name: Performance Benchmarks
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   workflow_dispatch: # Allow manual triggers
@@ -200,7 +201,7 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ matrix.app }}
           # Run full suite only when manually triggered with full_suite=true
-          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
+          BENCHMARK_FULL_SUITE: ${{ (github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test') }}
         run: |
           cd workbench/${{ matrix.app }}
           pnpm start &
@@ -302,7 +303,7 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ matrix.app }}
           # Run full suite only when manually triggered with full_suite=true
-          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
+          BENCHMARK_FULL_SUITE: ${{ (github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test') }}
         run: |
           cd workbench/${{ matrix.app }}
           pnpm start &
@@ -401,7 +402,7 @@ jobs:
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           # Run full suite only when manually triggered with full_suite=true
-          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
+          BENCHMARK_FULL_SUITE: ${{ (github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test') }}
         run: |
           pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app.name }}-vercel.json
 
@@ -456,7 +457,7 @@ jobs:
       env-vars: ${{ matrix.world.env-vars }}
       setup-command: ${{ matrix.world.setup-command }}
       # Run full suite only when manually triggered with full_suite=true
-      full-suite: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
+      full-suite: ${{ (github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test') }}
     secrets: inherit
 
   # Phase 3: Aggregate all benchmark results and create comparison
