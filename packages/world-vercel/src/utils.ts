@@ -214,6 +214,7 @@ export async function makeRequest<T>({
   config = {},
   schema,
   data,
+  onResponse,
 }: {
   endpoint: string;
   options?: Omit<RequestInit, 'body'>;
@@ -221,6 +222,8 @@ export async function makeRequest<T>({
   schema: z.ZodSchema<T>;
   /** Request body data - will be CBOR encoded */
   data?: unknown;
+  /** Optional callback invoked with the raw Response before body consumption. Use to read response headers. */
+  onResponse?: (response: Response) => void;
 }): Promise<T> {
   const method = options.method || 'GET';
   const { baseUrl, headers } = await getHttpConfig(config);
@@ -320,6 +323,9 @@ export async function makeRequest<T>({
         span?.recordException?.(error);
         throw error;
       }
+
+      // Expose response headers to caller before consuming the body
+      onResponse?.(response);
 
       // Parse the response body (CBOR or JSON) with tracing
       let parseResult: ParseResult;

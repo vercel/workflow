@@ -151,7 +151,8 @@ function collectPendingRefs(events: any[]): PendingRef[] {
  */
 async function hydrateEventRefs(
   events: any[],
-  config?: APIConfig
+  config?: APIConfig,
+  refResolveConcurrency?: number
 ): Promise<any[]> {
   const pending = collectPendingRefs(events);
   if (pending.length === 0) return events;
@@ -174,14 +175,16 @@ async function hydrateEventRefs(
     const deduped = Array.from(uniqueRefs.values());
 
     // Resolve unique descriptors in parallel with bounded concurrency
-    const dedupedResults = await resolveRefDescriptors(deduped, config).catch(
-      (err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
-        );
-      }
-    );
+    const dedupedResults = await resolveRefDescriptors(
+      deduped,
+      config,
+      refResolveConcurrency
+    ).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
+      );
+    });
 
     // Build a map from ref key → resolved value for fast lookup
     const resolvedMap = new Map<string, unknown>();
@@ -257,16 +260,30 @@ export async function getWorkflowRunEvents(
     ? `/v2/events${query}`
     : `/v2/runs/${runId}/events${query}`;
 
+  let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({
     endpoint,
     options: { method: 'GET' },
     config,
     schema: PaginatedResponseSchema(EventWithRefsSchema),
+    onResponse: (res) => {
+      const header = res.headers.get('x-ref-resolve-concurrency');
+      if (header) {
+        const parsed = parseInt(header, 10);
+        if (!Number.isNaN(parsed) && parsed > 0) {
+          refResolveConcurrency = parsed;
+        }
+      }
+    },
   })) as PaginatedResponse<Event>;
 
   if (resolveData === 'all') {
     // Hydrate refs client-side: resolve all ref descriptors in parallel
-    const hydratedEvents = await hydrateEventRefs(response.data, config);
+    const hydratedEvents = await hydrateEventRefs(
+      response.data,
+      config,
+      refResolveConcurrency
+    );
 
     // Re-parse hydrated events through EventSchema to apply type coercions
     // (e.g., z.coerce.date() for resumeAt) that EventWithRefsSchema skips.
