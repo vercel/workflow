@@ -57,9 +57,11 @@ function warnPendingQueueItems(
       case 'step':
         return `step "${item.stepName}"`;
       case 'hook':
-        return `hook (token: "${item.token}")`;
+        return `hook (${item.correlationId})`;
       case 'wait':
         return 'sleep';
+      default:
+        return `unknown (${(item as { type: string }).type})`;
     }
   });
 

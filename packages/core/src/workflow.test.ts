@@ -3740,30 +3740,8 @@ describe('runWorkflow', () => {
           deploymentId: 'test-deployment',
         };
 
-        const events: Event[] = [
-          {
-            eventId: 'event-0',
-            runId: workflowRun.runId,
-            eventType: 'step_started',
-            correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
-            createdAt: new Date(),
-          },
-          {
-            eventId: 'event-1',
-            runId: workflowRun.runId,
-            eventType: 'step_completed',
-            correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
-            eventData: {
-              result: await dehydrateStepReturnValue(
-                42,
-                'wrun_123',
-                noEncryptionKey,
-                ops
-              ),
-            },
-            createdAt: new Date(),
-          },
-        ];
+        // No step events — the unawaited step stays pending in the queue
+        const events: Event[] = [];
 
         // Workflow calls step but doesn't await it, returns immediately
         await runWorkflow(
@@ -3781,7 +3759,8 @@ describe('runWorkflow', () => {
         expect(
           warnCalls.some(
             (msg: string) =>
-              msg.includes('uncommitted operation') && msg.includes('step "add"')
+              msg.includes('uncommitted operation') &&
+              msg.includes('step "add"')
           )
         ).toBe(true);
         expect(
@@ -3814,30 +3793,8 @@ describe('runWorkflow', () => {
           deploymentId: 'test-deployment',
         };
 
-        const events: Event[] = [
-          {
-            eventId: 'event-0',
-            runId: workflowRun.runId,
-            eventType: 'step_started',
-            correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
-            createdAt: new Date(),
-          },
-          {
-            eventId: 'event-1',
-            runId: workflowRun.runId,
-            eventType: 'step_completed',
-            correlationId: 'step_01HK153X008RT6YEW43G8QX6JX',
-            eventData: {
-              result: await dehydrateStepReturnValue(
-                42,
-                'wrun_123',
-                noEncryptionKey,
-                ops
-              ),
-            },
-            createdAt: new Date(),
-          },
-        ];
+        // No step events — the unawaited step stays pending in the queue
+        const events: Event[] = [];
 
         // Workflow calls step (not awaited) then throws
         await expect(
@@ -3937,9 +3894,7 @@ describe('runWorkflow', () => {
 
         const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
         expect(
-          warnCalls.some(
-            (msg: string) => msg.includes('uncommitted operation')
-          )
+          warnCalls.some((msg: string) => msg.includes('uncommitted operation'))
         ).toBe(false);
       } finally {
         warnSpy.mockRestore();
@@ -3975,9 +3930,7 @@ describe('runWorkflow', () => {
 
         const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
         expect(
-          warnCalls.some(
-            (msg: string) => msg.includes('uncommitted operation')
-          )
+          warnCalls.some((msg: string) => msg.includes('uncommitted operation'))
         ).toBe(false);
       } finally {
         warnSpy.mockRestore();
