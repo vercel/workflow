@@ -30,8 +30,10 @@ export function getDispatcher(): RetryAgent {
       {
         // Observe Retry-After header if received
         retryAfter: true,
-        // Observe Retry-After header on 429 / 5xx responses.
-        // Default status codes: 429 / 500 / 502 / 503 / 504.
+        // By default, we observe re-try headers, and also separately
+        // re-try on these status codes: 429 / 500 / 502 / 503 / 504.
+        // TODO: We might want to let 429s pass through, so that we can do
+        // runtime retry-after handling through the queue.
       }
     );
   }
