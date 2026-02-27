@@ -10,7 +10,7 @@
     "esbuild": "catalog:",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.0",
-    "turbo": "^2.5.4",
+    "turbo": "^2.8.11",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

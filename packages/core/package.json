@@ -81,7 +81,7 @@
     "postpack": "rm -rf docs"
   },
   "dependencies": {
-    "@aws-sdk/credential-provider-web-identity": "3.609.0",
+    "@aws-sdk/credential-provider-web-identity": "3.972.13",
     "@jridgewell/trace-mapping": "0.3.31",
     "@standard-schema/spec": "1.0.0",
     "@types/ms": "2.1.0",

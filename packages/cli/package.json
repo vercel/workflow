@@ -40,7 +40,7 @@
     "@workflow/tsconfig": "workspace:*"
   },
   "dependencies": {
-    "@oclif/core": "4.0.0",
+    "@oclif/core": "4.8.1",
     "@oclif/plugin-help": "6.2.31",
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
