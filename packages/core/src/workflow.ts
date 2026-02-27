@@ -44,10 +44,11 @@ function warnPendingQueueItems(
   pendingQueue: Map<string, QueueItem>,
   outcome: 'completed' | 'failed'
 ): void {
-  // Filter out hook_disposed items — these are benign since the backend
-  // auto-disposes all hooks when a run reaches a terminal state
+  // Filter out hooks that are registered and alive (hasCreatedEvent && !disposed)
+  // — these are benign since the backend auto-disposes all hooks when a run
+  // reaches a terminal state
   const items = [...pendingQueue.values()].filter(
-    (item) => item.type !== 'hook_disposed'
+    (item) => !(item.type === 'hook' && item.hasCreatedEvent && !item.disposed)
   );
   if (items.length === 0) return;
 
