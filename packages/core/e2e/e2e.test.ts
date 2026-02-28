@@ -263,6 +263,28 @@ describe('e2e', () => {
     );
   });
 
+  // Test that "use step" / "use workflow" functions inside dot-prefixed
+  // directories like `.well-known/agent/` are discovered and executed correctly.
+  // Only runs on Next.js workbenches where the test file is placed.
+  const isNextApp = process.env.APP_NAME?.includes('nextjs');
+  test.skipIf(!isNextApp)(
+    'wellKnownAgentWorkflow (.well-known/agent)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await getWorkflowMetadata(
+          'app/.well-known/agent/v1/steps.ts',
+          'wellKnownAgentWorkflow'
+        ),
+        [5]
+      );
+
+      const returnValue = await run.returnValue;
+      // wellKnownAgentStep(5) => 5 * 2 = 10, then workflow adds 1 => 11
+      expect(returnValue).toBe(11);
+    }
+  );
+
   const isNext = process.env.APP_NAME?.includes('nextjs');
   const isLocal = deploymentUrl.includes('localhost');
   // only works with framework that transpiles react and

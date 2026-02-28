@@ -183,6 +183,76 @@ function getStepNodes(graph: ManifestWorkflow['graph']): ManifestNode[] {
 }
 
 /**
+ * Tests that steps and workflows inside dot-prefixed directories like
+ * `.well-known/agent/` are correctly discovered and included in the manifest.
+ * This verifies the fix for tinyglobby's `dot: true` option.
+ */
+describe.each(['nextjs-webpack', 'nextjs-turbopack'])(
+  'dot-directory discovery (.well-known/agent)',
+  (project) => {
+    test(
+      `${project}: discovers steps inside .well-known/agent directory`,
+      { timeout: 30_000 },
+      async () => {
+        if (process.env.APP_NAME && project !== process.env.APP_NAME) {
+          return;
+        }
+
+        const manifest = await tryReadManifest(project);
+        if (!manifest) return;
+
+        // Find the step from .well-known/agent/v1/steps.ts
+        const stepFiles = Object.keys(manifest.steps);
+        const wellKnownStepFile = stepFiles.find(
+          (f) =>
+            f.includes('.well-known/agent') || f.includes('well-known/agent')
+        );
+        expect(
+          wellKnownStepFile,
+          `Expected a step file matching ".well-known/agent" in manifest steps. Available: ${stepFiles.join(', ')}`
+        ).toBeDefined();
+
+        const fileSteps = manifest.steps[wellKnownStepFile!];
+        expect(fileSteps.wellKnownAgentStep).toBeDefined();
+        expect(fileSteps.wellKnownAgentStep.stepId).toContain(
+          'wellKnownAgentStep'
+        );
+      }
+    );
+
+    test(
+      `${project}: discovers workflows inside .well-known/agent directory`,
+      { timeout: 30_000 },
+      async () => {
+        if (process.env.APP_NAME && project !== process.env.APP_NAME) {
+          return;
+        }
+
+        const manifest = await tryReadManifest(project);
+        if (!manifest) return;
+
+        // Find the workflow from .well-known/agent/v1/steps.ts
+        const workflowFiles = Object.keys(manifest.workflows);
+        const wellKnownWorkflowFile = workflowFiles.find(
+          (f) =>
+            f.includes('.well-known/agent') || f.includes('well-known/agent')
+        );
+        expect(
+          wellKnownWorkflowFile,
+          `Expected a workflow file matching ".well-known/agent" in manifest workflows. Available: ${workflowFiles.join(', ')}`
+        ).toBeDefined();
+
+        const fileWorkflows = manifest.workflows[wellKnownWorkflowFile!];
+        expect(fileWorkflows.wellKnownAgentWorkflow).toBeDefined();
+        expect(fileWorkflows.wellKnownAgentWorkflow.workflowId).toContain(
+          'wellKnownAgentWorkflow'
+        );
+      }
+    );
+  }
+);
+
+/**
  * Tests for single-statement control flow extraction.
  * These verify that steps inside if/while/for without braces are extracted.
  * Tests are skipped if manifest doesn't exist or workflow isn't found.
