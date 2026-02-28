@@ -105,6 +105,11 @@ export abstract class BaseBuilder {
     });
 
     const result = await glob(patterns, {
+      // Enable dot-file matching so directories like `.well-known/agent/`
+      // are traversed. Without this, tinyglobby skips dot-prefixed directories
+      // by default, causing "use step" / "use workflow" files inside paths
+      // like `app/.well-known/agent/…` to be silently ignored.
+      dot: true,
       ignore: [
         '**/node_modules/**',
         '**/.git/**',
