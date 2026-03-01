@@ -584,8 +584,10 @@ export async function getNextBuilderDeferred() {
         return;
       }
 
+      process.env.WORKFLOW_SOCKET_INFO_PATH = this.getSocketInfoFilePath();
       const config: SocketServerConfig = {
         isDevServer: Boolean(this.config.watch),
+        socketInfoFilePath: this.getSocketInfoFilePath(),
         onFileDiscovered: (
           filePath: string,
           hasWorkflow: boolean,
@@ -654,6 +656,15 @@ export async function getNextBuilderDeferred() {
         this.getDistDir(),
         'cache',
         'workflows.json'
+      );
+    }
+
+    private getSocketInfoFilePath(): string {
+      return join(
+        this.config.workingDir,
+        this.getDistDir(),
+        'cache',
+        'workflow-socket.json'
       );
     }
 
@@ -1438,13 +1449,16 @@ export async function getNextBuilderDeferred() {
           )
         )
       ).sort();
-      const discoveredSerdeFiles = new Set(
-        serdeFiles.map((serdeFile) =>
-          this.normalizeDiscoveredFilePath(serdeFile)
+      const normalizedSerdeSeedFiles = Array.from(
+        new Set(
+          serdeFiles.map((serdeFile) =>
+            this.normalizeDiscoveredFilePath(serdeFile)
+          )
         )
-      );
+      ).sort();
+      const discoveredSerdeFiles = new Set<string>();
       const queuedFiles = Array.from(
-        new Set([...normalizedEntryFiles, ...discoveredSerdeFiles])
+        new Set([...normalizedEntryFiles, ...normalizedSerdeSeedFiles])
       );
       const visitedFiles = new Set<string>();
       const sourceCache = new Map<string, string | null>();
@@ -1482,6 +1496,13 @@ export async function getNextBuilderDeferred() {
         patternCache.set(filePath, patterns);
         return patterns;
       };
+
+      for (const serdeSeedFile of normalizedSerdeSeedFiles) {
+        const seedPatterns = await getPatterns(serdeSeedFile);
+        if (seedPatterns?.hasSerde && !isWorkflowSdkFile(serdeSeedFile)) {
+          discoveredSerdeFiles.add(serdeSeedFile);
+        }
+      }
 
       while (queuedFiles.length > 0) {
         const currentFile = queuedFiles.pop();

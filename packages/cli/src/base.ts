@@ -1,6 +1,14 @@
 import { Command } from '@oclif/core';
 import { getWorld } from '@workflow/core/runtime';
 
+async function flushStream(stream: NodeJS.WriteStream): Promise<void> {
+  if (!stream.writable) return;
+
+  await new Promise<void>((resolve) => {
+    stream.write('', () => resolve());
+  });
+}
+
 export abstract class BaseCommand extends Command {
   static enableJsonFlag = true;
 
@@ -23,6 +31,10 @@ export abstract class BaseCommand extends Command {
     // agents, but third-party libraries (oclif update checker, postgres.js)
     // may leave timers or sockets that prevent the event loop from draining.
     // This is safe because all business logic and cleanup has completed.
+    await Promise.all([
+      flushStream(process.stdout),
+      flushStream(process.stderr),
+    ]);
     process.exit(err ? 1 : 0);
   }
 

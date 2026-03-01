@@ -1,5 +1,5 @@
 import { connect, type Socket } from 'node:net';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
 import { type SocketMessage, serializeMessage } from './socket-server.js';
@@ -30,6 +30,12 @@ let cachedLoaderStaticDependencies: LoaderStaticDependencies | null = null;
 // Cache socket connection to avoid reconnecting on every file.
 let socketClientPromise: Promise<Socket | null> | null = null;
 let socketClient: Socket | null = null;
+let socketClientKey: string | null = null;
+
+type SocketCredentials = {
+  port: number;
+  authToken: string;
+};
 
 function registerFileDependency(
   loaderContext: WorkflowLoaderContext,
@@ -100,6 +106,7 @@ function resetSocketClient(cachedSocket?: Socket): void {
 
   socketClientPromise = null;
   socketClient = null;
+  socketClientKey = null;
 }
 
 async function writeSocketMessage(
@@ -117,14 +124,67 @@ async function writeSocketMessage(
   });
 }
 
-function shouldUseSocketDiscovery(): boolean {
-  return Boolean(
-    process.env.WORKFLOW_SOCKET_PORT && process.env.WORKFLOW_SOCKET_AUTH
+function getSocketInfoFilePath(): string {
+  return (
+    process.env.WORKFLOW_SOCKET_INFO_PATH ??
+    join(process.cwd(), '.next', 'cache', 'workflow-socket.json')
   );
 }
 
+function getSocketCredentialsFromEnv(): SocketCredentials | null {
+  const socketPort = process.env.WORKFLOW_SOCKET_PORT;
+  const authToken = process.env.WORKFLOW_SOCKET_AUTH;
+  if (!socketPort || !authToken) {
+    return null;
+  }
+
+  const port = Number.parseInt(socketPort, 10);
+  if (Number.isNaN(port)) {
+    return null;
+  }
+
+  return { port, authToken };
+}
+
+function getSocketCredentialsFromFile(): SocketCredentials | null {
+  const socketInfoFilePath = getSocketInfoFilePath();
+  if (!existsSync(socketInfoFilePath)) {
+    return null;
+  }
+
+  try {
+    const raw = readFileSync(socketInfoFilePath, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      port?: unknown;
+      authToken?: unknown;
+    };
+    const authToken =
+      typeof parsed.authToken === 'string' ? parsed.authToken : null;
+    const numericPort =
+      typeof parsed.port === 'number'
+        ? parsed.port
+        : Number.parseInt(String(parsed.port), 10);
+
+    if (!authToken || Number.isNaN(numericPort)) {
+      return null;
+    }
+
+    return {
+      port: numericPort,
+      authToken,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getSocketCredentials(): SocketCredentials | null {
+  return getSocketCredentialsFromEnv() ?? getSocketCredentialsFromFile();
+}
+
 async function getSocketClient(): Promise<Socket | null> {
-  if (!shouldUseSocketDiscovery()) {
+  const socketCredentials = getSocketCredentials();
+  if (!socketCredentials) {
     return null;
   }
 
@@ -132,24 +192,22 @@ async function getSocketClient(): Promise<Socket | null> {
     resetSocketClient(socketClient);
   }
 
+  const currentSocketKey = `${socketCredentials.port}:${socketCredentials.authToken}`;
+  if (socketClientKey && socketClientKey !== currentSocketKey) {
+    if (socketClient) {
+      resetSocketClient(socketClient);
+    } else {
+      resetSocketClient();
+    }
+  }
+
   if (!socketClientPromise) {
     socketClientPromise = (async () => {
       try {
-        const socketPort = process.env.WORKFLOW_SOCKET_PORT;
-        if (!socketPort) {
-          throw new Error(
-            'Invariant: no socket port provided for workflow loader'
-          );
-        }
-
-        const port = Number.parseInt(socketPort, 10);
-        if (Number.isNaN(port)) {
-          throw new Error(
-            `Invariant: invalid socket port provided: ${socketPort}`
-          );
-        }
-
-        const socket = connect({ port, host: '127.0.0.1' });
+        const socket = connect({
+          port: socketCredentials.port,
+          host: '127.0.0.1',
+        });
 
         // Wait for connection
         await new Promise<void>((resolve, reject) => {
@@ -185,6 +243,7 @@ async function getSocketClient(): Promise<Socket | null> {
         });
 
         socketClient = socket;
+        socketClientKey = currentSocketKey;
         return socket;
       } catch (error) {
         resetSocketClient();
@@ -202,20 +261,14 @@ async function notifySocketServer(
   hasStep: boolean,
   hasSerde: boolean
 ): Promise<void> {
-  if (!shouldUseSocketDiscovery()) {
+  const socketCredentials = getSocketCredentials();
+  if (!socketCredentials) {
     return;
   }
 
   const socket = await getSocketClient();
   if (!socket) {
     throw new Error('Invariant: missing workflow socket connection');
-  }
-
-  const authToken = process.env.WORKFLOW_SOCKET_AUTH;
-  if (!authToken) {
-    throw new Error(
-      'Invariant: no socket auth token provided for workflow loader'
-    );
   }
 
   const message: SocketMessage = {
@@ -225,7 +278,10 @@ async function notifySocketServer(
     hasStep,
     hasSerde,
   };
-  const serializedMessage = serializeMessage(message, authToken);
+  const serializedMessage = serializeMessage(
+    message,
+    socketCredentials.authToken
+  );
 
   try {
     await writeSocketMessage(socket, serializedMessage);
@@ -417,16 +473,19 @@ export default function workflowLoader(
     // Always notify discovery tracking, even for `false/false`, so files that
     // previously had workflow/step usage are removed from the tracked sets.
     if (!isDeferredStepCopyFile) {
+      // For @workflow SDK packages, do not report serde-only matches for
+      // discovery, otherwise deferred mode can incorrectly treat SDK internals
+      // as app serde entrypoints.
+      const isSdkFile = await checkSdkFile(filename);
       await notifySocketServer(
         filename,
         patterns.hasUseWorkflow,
         patterns.hasUseStep,
-        patterns.hasSerde
+        patterns.hasSerde && !isSdkFile
       );
 
       // For @workflow SDK packages, only transform files with actual directives,
       // not files that just match serde patterns (which are internal SDK implementation files)
-      const isSdkFile = await checkSdkFile(filename);
       if (isSdkFile && !patterns.hasDirective) {
         return { code: normalizedSource, map: sourceMap };
       }
