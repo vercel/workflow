@@ -134,7 +134,8 @@ pnpm test:docs
 
 This type-checks all TypeScript code samples in documentation to ensure they compile correctly. If type checking fails:
 - Fix syntax errors in code samples
-- Add missing imports (the type checker auto-infers common workflow imports)
+- Add missing imports (the type checker auto-infers common workflow imports from known symbol mappings in `packages/docs-typecheck/src/import-inference.ts`)
+- Use `// @setup` comments at the end of lines that should be included for type checking but **not rendered** in the docs. This is useful for providing type context (e.g., `declare function` stubs or variable declarations from a prior snippet) without cluttering the displayed code. Example: `const run = getRun("my-run-id"); // @setup`
 - Use `{/* @skip-typecheck: reason */}` comment before code blocks that intentionally show incomplete or invalid code
 - Use `{/* @expect-error:2304,2307 */}` to mark code samples that intentionally demonstrate errors
 
