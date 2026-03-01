@@ -8,6 +8,7 @@ export interface DevTestConfig {
   generatedWorkflowPath: string;
   apiFilePath: string;
   apiFileImportPath: string;
+  canary?: boolean;
   /** The workflow file to modify for testing HMR. Defaults to '3_streams.ts' */
   testWorkflowFile?: string;
   /** The workflows directory relative to appPath. Defaults to 'workflows' */
@@ -43,9 +44,11 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
-    const supportsDeferredStepCopies = generatedStep.includes(
-      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
-    );
+    const supportsDeferredStepCopies =
+      finalConfig.canary === true &&
+      generatedStep.includes(
+        path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+      );
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const fetchWithTimeout = (pathname: string) => {
