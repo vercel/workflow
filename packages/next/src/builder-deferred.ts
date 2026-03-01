@@ -1348,18 +1348,22 @@ export async function getNextBuilderDeferred() {
       return null;
     }
 
-    private async collectTransitiveStepFiles(
-      stepFiles: string[]
-    ): Promise<string[]> {
-      const normalizedStepFiles = Array.from(
+    private async collectTransitiveStepFiles({
+      stepFiles,
+      seedFiles = [],
+    }: {
+      stepFiles: string[];
+      seedFiles?: string[];
+    }): Promise<string[]> {
+      const normalizedSeedFiles = Array.from(
         new Set(
-          stepFiles.map((stepFile) =>
+          [...stepFiles, ...seedFiles].map((stepFile) =>
             this.normalizeDiscoveredFilePath(stepFile)
           )
         )
       ).sort();
-      const discoveredStepFiles = new Set(normalizedStepFiles);
-      const queuedFiles = [...normalizedStepFiles];
+      const discoveredStepFiles = new Set<string>();
+      const queuedFiles = [...normalizedSeedFiles];
       const visitedFiles = new Set<string>();
       const sourceCache = new Map<string, string | null>();
       const patternCache = new Map<
@@ -1407,6 +1411,11 @@ export async function getNextBuilderDeferred() {
         const currentSource = await getSource(currentFile);
         if (currentSource === null) {
           continue;
+        }
+
+        const currentPatterns = await getPatterns(currentFile);
+        if (currentPatterns?.hasUseStep) {
+          discoveredStepFiles.add(currentFile);
         }
 
         const relativeImportSpecifiers =
@@ -1715,10 +1724,13 @@ export async function getNextBuilderDeferred() {
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
       await mkdir(stepsRouteDir, { recursive: true });
       const discovered = discoveredEntries;
-      const stepFiles = await this.collectTransitiveStepFiles(
-        [...discovered.discoveredSteps].sort()
-      );
       const workflowFiles = [...discovered.discoveredWorkflows].sort();
+      const stepFiles = await this.collectTransitiveStepFiles({
+        stepFiles: [...discovered.discoveredSteps].sort(),
+        // Workflow transforms can inline step IDs and remove runtime imports,
+        // so seed transitive traversal with workflow files too.
+        seedFiles: workflowFiles,
+      });
       const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
       const stepFileSet = new Set(stepFiles);
       const serdeOnlyFiles = serdeFiles.filter(

@@ -43,6 +43,9 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
+    const supportsDeferredStepCopies = generatedStep.includes(
+      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+    );
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const fetchWithTimeout = (pathname: string) => {
@@ -199,6 +202,89 @@ ${apiFileContent}`
               'utf8'
             );
             expect(workflowContent).toContain('newWorkflowFile');
+            break;
+          } catch (_) {
+            await new Promise((res) => setTimeout(res, 1_000));
+          }
+        }
+      }
+    );
+
+    test.skipIf(!supportsDeferredStepCopies)(
+      'should include steps discovered from workflow imports',
+      { timeout: 30_000 },
+      async () => {
+        const workflowFile = path.join(
+          appPath,
+          workflowsDir,
+          'discovered-via-workflow.ts'
+        );
+        const stepFile = path.join(
+          appPath,
+          workflowsDir,
+          'discovered-via-workflow-step.ts'
+        );
+
+        await fs.writeFile(
+          workflowFile,
+          `'use workflow';
+import { discoveredViaWorkflowStep } from './discovered-via-workflow-step';
+
+export async function discoveredViaWorkflow() {
+  await discoveredViaWorkflowStep();
+  return 'ok';
+}
+`
+        );
+        await fs.writeFile(
+          stepFile,
+          `'use step';
+
+export async function discoveredViaWorkflowStep() {
+  return 'ok';
+}
+`
+        );
+        restoreFiles.push({ path: workflowFile, content: '' });
+        restoreFiles.push({ path: stepFile, content: '' });
+
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/discovered-via-workflow';
+${apiFileContent}`
+        );
+
+        const copiedStepDir = path.join(
+          path.dirname(generatedStep),
+          '__workflow_step_files__'
+        );
+
+        while (true) {
+          try {
+            await fetchWithTimeout('/api/chat');
+            const copiedStepFileNames = await fs.readdir(copiedStepDir);
+            const copiedStepContents = await Promise.all(
+              copiedStepFileNames.map(async (copiedStepFileName) => {
+                const copiedStepFilePath = path.join(
+                  copiedStepDir,
+                  copiedStepFileName
+                );
+                const copiedStepStats = await fs.stat(copiedStepFilePath);
+                if (!copiedStepStats.isFile()) {
+                  return '';
+                }
+                return await fs.readFile(copiedStepFilePath, 'utf8');
+              })
+            );
+            expect(
+              copiedStepContents.some((content) =>
+                content.includes('discoveredViaWorkflowStep')
+              )
+            ).toBe(true);
             break;
           } catch (_) {
             await new Promise((res) => setTimeout(res, 1_000));
