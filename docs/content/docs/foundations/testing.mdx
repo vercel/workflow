@@ -17,8 +17,8 @@ Testing is a critical part of building reliable workflows. Because workflows and
 
 This guide covers two approaches:
 
-1. **Unit testing** — Test workflows and steps as plain functions, without the workflow runtime
-2. **Integration testing** — Test against a real workflow setup using the Vite plugin, which is essential for features like [hooks](/docs/foundations/hooks), webhooks, and [`sleep()`](/docs/api-reference/workflow/sleep)
+1. **Unit testing** — Test workflows and steps as plain functions, without the workflow runtime.
+2. **Integration testing** — Test against a real workflow setup using the Vite plugin, which is required for features like [hooks](/docs/foundations/hooks), webhooks, and [`sleep()`](/docs/api-reference/workflow/sleep).
 
 ## Unit Testing Workflows and Steps
 
@@ -86,7 +86,7 @@ describe("handleUserSignup workflow", () => {
 });
 ```
 
-This approach is great for verifying business logic in isolation. Since directives are no-ops outside the workflow runtime, `sleep()` calls resolve immediately and steps execute synchronously in sequence.
+This approach is ideal for verifying business logic in isolation. Since directives are no-ops outside the workflow runtime, `sleep()` calls resolve immediately and steps execute synchronously in sequence.
 
 <Callout type="info">
 Unit tests are fast and don't require any infrastructure. Use them for validating the core logic of your steps and the orchestration flow of your workflows.
@@ -132,7 +132,7 @@ Add a script to your `package.json`:
 
 ### Testing Hooks and Waits
 
-The real power of integration testing comes when testing workflow-only features. Hooks and waits can be **resumed programmatically** using the [`workflow/api`](/docs/api-reference/workflow-api) functions, making it easy to simulate external events in your tests.
+The real power of integration testing comes when testing workflow-only features. Hooks and waits can be **resumed programmatically** using the [`workflow/api`](/docs/api-reference/workflow-api) functions, making it straightforward to simulate external events in your tests.
 
 For example, given a workflow that waits for approval via a hook:
 
@@ -186,7 +186,7 @@ describe("approvalWorkflow", () => {
       reviewer: "alice",
     });
 
-    const result = await run.result;
+    const result = await run.returnValue;
     expect(result).toEqual({
       status: "published",
       reviewer: "alice",
@@ -201,7 +201,7 @@ describe("approvalWorkflow", () => {
       reviewer: "bob",
     });
 
-    const result = await run.result;
+    const result = await run.returnValue;
     expect(result).toEqual({
       status: "rejected",
       reviewer: "bob",
@@ -211,7 +211,7 @@ describe("approvalWorkflow", () => {
 ```
 
 <Callout type="info">
-[`start()`](/docs/api-reference/workflow-api/start) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) are the key API functions for integration testing. Use `start()` to trigger workflows and `resumeHook()` to simulate external events. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
+[`start()`](/docs/api-reference/workflow-api/start) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) are the key API functions for integration testing. Use `start()` to trigger a workflow and `resumeHook()` to simulate external events that resume paused hooks. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
 </Callout>
 
 ## Best Practices
