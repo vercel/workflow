@@ -11,6 +11,7 @@ related:
   - /docs/api-reference/workflow-api/start
   - /docs/api-reference/workflow-api/resume-hook
   - /docs/api-reference/workflow-api/get-run
+  - /docs/observability
 ---
 
 Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow DevKit also provides a [Vite plugin](/docs/getting-started/vite) that integrates with [Vitest](https://vitest.dev), enabling full integration tests against a real workflow runtime.
@@ -96,7 +97,7 @@ For workflows that rely on runtime features like [hooks](/docs/foundations/hooks
 
 ### Vitest Configuration
 
-Create a separate Vitest config for integration tests that includes the `workflow()` plugin:
+Create a separate Vitest config for integration tests that includes the `workflow()` plugin and a `globalSetup` script:
 
 ```typescript title="vitest.integration.config.ts" lineNumbers
 import { defineConfig } from "vitest/config";
@@ -107,12 +108,92 @@ export default defineConfig({
   test: {
     include: ["**/*.integration.test.ts"],
     testTimeout: 60_000, // Workflows may take longer than default timeout
+    globalSetup: "./vitest.integration.setup.ts", // [!code highlight]
   },
 });
 ```
 
 <Callout type="info">
 Use a separate Vitest configuration and a distinct file naming convention (e.g. `*.integration.test.ts`) to keep unit tests and integration tests separate. Unit tests run with a standard Vitest config without the workflow plugin, while integration tests use the config above.
+</Callout>
+
+### Global Setup Script
+
+Integration tests need a running server to execute workflow steps. The `globalSetup` script starts a [Nitro](https://v3.nitro.build) server as a sidecar process before tests run, and tears it down afterwards:
+
+```typescript title="vitest.integration.setup.ts" lineNumbers
+import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+import type { ChildProcess } from "node:child_process";
+
+let server: ChildProcess | null = null;
+const PORT = "4000";
+
+export async function setup() { // [!code highlight]
+  console.log("Starting server for workflow execution...");
+
+  server = spawn("npx", ["nitro", "dev", "--port", PORT], {
+    stdio: "pipe",
+    detached: false,
+    env: process.env,
+  });
+
+  // Wait for the server to be ready
+  const ready = await new Promise<boolean>((resolve) => {
+    const timeout = setTimeout(() => resolve(false), 15_000);
+
+    server?.stdout?.on("data", (data) => {
+      const output = data.toString();
+      console.log("[server]", output);
+      if (output.includes("listening") || output.includes("ready")) {
+        clearTimeout(timeout);
+        resolve(true);
+      }
+    });
+
+    server?.stderr?.on("data", (data) => {
+      console.error("[server]", data.toString());
+    });
+
+    server?.on("error", (error) => {
+      console.error("Failed to start server:", error);
+      clearTimeout(timeout);
+      resolve(false);
+    });
+  });
+
+  if (!ready) {
+    throw new Error("Server failed to start within 15 seconds");
+  }
+
+  await delay(2_000); // Allow full initialization
+
+  // Point the workflow runtime at the local server
+  process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${PORT}`; // [!code highlight]
+  process.env.WORKFLOW_LOCAL_DATA_DIR = "./.workflow-data"; // [!code highlight]
+
+  console.log("Server ready for workflow execution");
+}
+
+export async function teardown() { // [!code highlight]
+  if (server) {
+    console.log("Stopping server...");
+    server.kill("SIGTERM");
+    await delay(1_000);
+    if (!server.killed) {
+      server.kill("SIGKILL");
+    }
+  }
+}
+```
+
+The setup script sets two environment variables that the workflow runtime reads:
+
+- `WORKFLOW_LOCAL_BASE_URL` tells the runtime where to send step execution requests
+- `WORKFLOW_LOCAL_DATA_DIR` tells the runtime where to persist workflow state locally
+
+<Callout type="info">
+You can use any server framework that supports the workflow runtime. The example above uses [Nitro](https://v3.nitro.build), but you could also use a [Next.js](https://nextjs.org), [Hono](https://hono.dev), or any other supported server.
 </Callout>
 
 ### Running Integration Tests
@@ -212,6 +293,34 @@ describe("approvalWorkflow", () => {
 [`start()`](/docs/api-reference/workflow-api/start) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) are the key API functions for integration testing. Use `start()` to trigger a workflow and `resumeHook()` to simulate external events that resume paused hooks. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
 </Callout>
 
+## Debugging Test Runs
+
+When integration tests fail, the [Workflow DevKit CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state to `WORKFLOW_LOCAL_DATA_DIR`, you can use the same observability tools you would use in development.
+
+Launch the Web UI to visually explore your test workflow runs:
+
+```bash
+npx workflow web
+```
+
+Or use the CLI to inspect runs in the terminal:
+
+```bash
+# List recent workflow runs
+npx workflow inspect runs
+
+# Inspect a specific run
+npx workflow inspect runs <run-id>
+```
+
+The Web UI shows each step, its inputs and outputs, retry attempts, hook state, and timing. This is especially useful for diagnosing issues with hooks that were not resumed, steps that failed unexpectedly, or workflows that timed out.
+
+![Workflow DevKit Web UI](/o11y-ui.png)
+
+<Callout type="info">
+See the [Observability](/docs/observability) docs for the full set of CLI commands and Web UI features.
+</Callout>
+
 ## Best Practices
 
 ### Separate Unit and Integration Tests
@@ -240,6 +349,7 @@ Integration tests are the right place to verify that your workflows handle error
 - [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook) - Resume hooks with data
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status
 - [Vite Integration](/docs/getting-started/vite) - Set up the Vite plugin
+- [Observability](/docs/observability) - Inspect and debug workflow runs with the CLI and Web UI
 
 ---
 
