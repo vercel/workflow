@@ -8,6 +8,8 @@ export {
   runStep,
   type StartOptions,
   start,
+  type StopSleepOptions,
+  type StopSleepResult,
   type WorkflowReadableStreamOptions,
   type WorkflowRun,
 } from '@workflow/core/runtime';
