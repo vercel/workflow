@@ -1,10 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
 } from '@workflow/errors';
-import fs from 'fs';
-import path from 'path';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
@@ -354,6 +354,12 @@ describe('e2e', () => {
     const run = await start(await e2e('promiseAnyWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue).toBe('B');
+  });
+
+  test('importedStepOnlyWorkflow', { timeout: 60_000 }, async () => {
+    const run = await start(await e2e('importedStepOnlyWorkflow'), []);
+    const returnValue = await run.returnValue;
+    expect(returnValue).toBe('imported-step-only-ok');
   });
 
   // ReadableStream return values use the world's streaming infrastructure which
