@@ -254,6 +254,7 @@ You can write an integration test that starts the workflow, resumes the hook, an
 
 ```typescript title="workflows/approval.integration.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
+import { setTimeout as delay } from "node:timers/promises";
 import { start, getRun, resumeHook } from "workflow/api"; // [!code highlight]
 import { approvalWorkflow } from "./approval";
 
@@ -266,6 +267,9 @@ describe("approvalWorkflow", () => {
       approved: true, // [!code highlight]
       reviewer: "alice", // [!code highlight]
     }); // [!code highlight]
+
+    // Wait for the workflow to replay and reach the sleep() call
+    await delay(5_000); // [!code highlight]
 
     // Skip the 24-hour sleep so the test completes immediately
     await getRun(run.runId).wakeUp(); // [!code highlight]

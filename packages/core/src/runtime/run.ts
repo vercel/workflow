@@ -73,7 +73,7 @@ export class Run<TResult> {
    *
    * @param options - Optional settings to target specific sleep calls by correlation ID.
    *   If not provided, all pending sleep calls will be interrupted.
-   * @returns The number of sleep calls that were interrupted.
+   * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
    */
   async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
     return wakeUpRun(this.world, this.runId, options);

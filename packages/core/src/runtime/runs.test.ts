@@ -1,12 +1,13 @@
 import { WorkflowAPIError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock version module to avoid missing generated file
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
 import { wakeUpRun } from './runs.js';
 import { Run } from './run.js';
+import { setWorld } from './world.js';
 
 function createMockWorld(
   overrides: {
@@ -97,6 +98,10 @@ describe('wakeUpRun', () => {
 });
 
 describe('Run.wakeUp', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
   it('should delegate to wakeUpRun with default options', async () => {
     const events: Event[] = [
       {
@@ -110,9 +115,6 @@ describe('Run.wakeUp', () => {
     ];
 
     const world = createMockWorld({ events });
-
-    // Mock getWorld to return our mock
-    const { setWorld } = await import('./world.js');
     setWorld(world);
 
     const run = new Run('wrun_123');
@@ -151,8 +153,6 @@ describe('Run.wakeUp', () => {
     ];
 
     const world = createMockWorld({ events });
-
-    const { setWorld } = await import('./world.js');
     setWorld(world);
 
     const run = new Run('wrun_123');
@@ -173,8 +173,6 @@ describe('Run.wakeUp', () => {
 
   it('should return stoppedCount of 0 when no pending waits', async () => {
     const world = createMockWorld({ events: [] });
-
-    const { setWorld } = await import('./world.js');
     setWorld(world);
 
     const run = new Run('wrun_123');
