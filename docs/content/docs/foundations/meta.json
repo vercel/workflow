@@ -8,8 +8,7 @@
     "hooks",
     "streaming",
     "serialization",
-    "idempotency",
-    "testing"
+    "idempotency"
   ],
   "defaultOpen": true
 }

@@ -26,7 +26,7 @@ Without the workflow compiler, the `"use step"` directive is a no-op. Your step 
 
 ### Example Steps
 
-Given a workflow with exported steps like this:
+Given a workflow file with step functions like this:
 
 ```typescript title="workflows/user-signup.ts" lineNumbers
 import { sleep } from "workflow";
@@ -44,32 +44,32 @@ export async function handleUserSignup(email: string) {
 }
 
 export async function createUser(email: string) {
-  "use step";
+  "use step"; // [!code highlight]
   return { id: crypto.randomUUID(), email };
 }
 
 export async function sendWelcomeEmail(user: { id: string; email: string }) {
-  "use step";
+  "use step"; // [!code highlight]
   // Send email logic
 }
 
 export async function sendOnboardingEmail(user: { id: string; email: string }) {
-  "use step";
+  "use step"; // [!code highlight]
   // Send email logic
 }
 ```
 
 ### Writing Unit Tests for Steps
 
-You can test step functions directly with Vitest. No special configuration or workflow plugin needed:
+You can import and test step functions directly with Vitest. No special configuration or workflow plugin is needed:
 
 ```typescript title="workflows/user-signup.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
-import { createUser, sendWelcomeEmail } from "./user-signup";
+import { createUser, sendWelcomeEmail } from "./user-signup"; // [!code highlight]
 
 describe("createUser step", () => {
   it("should create a user with the given email", async () => {
-    const user = await createUser("test@example.com"); // [!code highlight]
+    const user = await createUser("test@example.com");
 
     expect(user.email).toBe("test@example.com");
     expect(user.id).toBeDefined();
@@ -79,7 +79,7 @@ describe("createUser step", () => {
 describe("sendWelcomeEmail step", () => {
   it("should send a welcome email without throwing", async () => {
     const user = { id: "user-1", email: "test@example.com" };
-    await expect(sendWelcomeEmail(user)).resolves.not.toThrow(); // [!code highlight]
+    await expect(sendWelcomeEmail(user)).resolves.not.toThrow();
   });
 });
 ```
@@ -87,7 +87,7 @@ describe("sendWelcomeEmail step", () => {
 This approach is ideal for verifying the business logic inside individual steps in isolation.
 
 <Callout type="info">
-Unit testing works well for steps, and for simple workflows that only contain steps. However, workflows that use runtime features like [`sleep()`](/docs/api-reference/workflow/sleep), [hooks](/docs/foundations/hooks), or [webhooks](/docs/foundations/hooks#understanding-webhooks) cannot be unit tested directly because those APIs require the workflow runtime. Use [integration testing](#integration-testing-with-the-vite-plugin) for testing entire workflows, especially those that use workflow-only features.
+Unit testing works well for individual steps. A simple workflow that only calls steps can also be unit tested this way, since `"use workflow"` is similarly a no-op without the compiler. However, any workflow that uses runtime features like [`sleep()`](/docs/api-reference/workflow/sleep), [hooks](/docs/foundations/hooks), or [webhooks](/docs/foundations/hooks#understanding-webhooks) cannot be unit tested directly because those APIs require the workflow runtime. Use [integration testing](#integration-testing-with-the-vite-plugin) for testing entire workflows, especially those that depend on workflow-only features.
 </Callout>
 
 ## Integration Testing with the Vite Plugin
