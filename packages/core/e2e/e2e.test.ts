@@ -79,34 +79,6 @@ const manifestRetryTimeoutMs = Number(
   process.env.WORKFLOW_E2E_MANIFEST_RETRY_MS ?? '10000'
 );
 const manifestRetryIntervalMs = 250;
-const LOCAL_MANIFEST_PATHS: Record<string, string> = {
-  'nextjs-webpack': 'app/.well-known/workflow/v1/manifest.json',
-  'nextjs-turbopack': 'app/.well-known/workflow/v1/manifest.json',
-  nitro: 'node_modules/.nitro/workflow/manifest.json',
-  vite: 'node_modules/.nitro/workflow/manifest.json',
-  sveltekit: 'src/routes/.well-known/workflow/v1/manifest.json',
-  nuxt: 'node_modules/.nitro/workflow/manifest.json',
-  hono: 'node_modules/.nitro/workflow/manifest.json',
-  express: 'node_modules/.nitro/workflow/manifest.json',
-  fastify: 'node_modules/.nitro/workflow/manifest.json',
-  nest: '.nestjs/workflow/manifest.json',
-  astro: 'src/pages/.well-known/workflow/v1/manifest.json',
-};
-
-function getLocalManifestPath(): string | null {
-  if (!isLocalDeployment()) {
-    return null;
-  }
-  const appName = process.env.APP_NAME;
-  if (!appName) {
-    return null;
-  }
-  const relativePath = LOCAL_MANIFEST_PATHS[appName];
-  if (!relativePath) {
-    return null;
-  }
-  return path.join(getWorkbenchAppPath(), relativePath);
-}
 
 /**
  * Fetches the workflow manifest from the deployment URL.
@@ -122,23 +94,6 @@ async function fetchManifestWithOptions(options?: {
 }): Promise<WorkflowManifest> {
   const forceRefresh = options?.forceRefresh ?? false;
   if (cachedManifest && !forceRefresh) return cachedManifest;
-
-  const localManifestPath = getLocalManifestPath();
-  if (localManifestPath) {
-    try {
-      const manifestContent = fs.readFileSync(localManifestPath, 'utf8');
-      cachedManifest = JSON.parse(manifestContent) as WorkflowManifest;
-      return cachedManifest;
-    } catch (error) {
-      const readError = error as NodeJS.ErrnoException;
-      if (readError.code !== 'ENOENT') {
-        console.warn(
-          `Failed to read local manifest at ${localManifestPath}; falling back to HTTP manifest fetch.`,
-          readError
-        );
-      }
-    }
-  }
 
   const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
   const res = await fetch(url, {
@@ -401,11 +356,15 @@ describe('e2e', () => {
     expect(returnValue).toBe('B');
   });
 
-  test('importedStepOnlyWorkflow', { timeout: 60_000 }, async () => {
-    const run = await start(await e2e('importedStepOnlyWorkflow'), []);
-    const returnValue = await run.returnValue;
-    expect(returnValue).toBe('imported-step-only-ok');
-  });
+  test.skipIf(!isNext)(
+    'importedStepOnlyWorkflow',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importedStepOnlyWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe('imported-step-only-ok');
+    }
+  );
 
   // ReadableStream return values use the world's streaming infrastructure which
   // requires in-process access. The local world's streamer uses an in-process EventEmitter
