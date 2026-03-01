@@ -345,28 +345,34 @@ jobs:
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
 
-      - name: Stage workbench with tarballs
-        id: stage-workbench
+      - name: Prepare workbench path
+        id: prepare-workbench
         run: |
-          STAGE_LOG="$(mktemp)"
-          node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
-          STAGED_WORKBENCH_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
-          if [ -z "$STAGED_WORKBENCH_PATH" ]; then
-            echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
-            exit 1
+          if [[ "${{ matrix.app.name }}" == "nextjs-turbopack" || "${{ matrix.app.name }}" == "nextjs-webpack" ]]; then
+            STAGE_LOG="$(mktemp)"
+            node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
+            WORKBENCH_APP_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
+            if [ -z "$WORKBENCH_APP_PATH" ]; then
+              echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
+              exit 1
+            fi
+          else
+            ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
+            WORKBENCH_APP_PATH="$GITHUB_WORKSPACE/workbench/${{ matrix.app.name }}"
           fi
-          echo "workbench_app_path=$STAGED_WORKBENCH_PATH" >> "$GITHUB_OUTPUT"
+
+          echo "workbench_app_path=$WORKBENCH_APP_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E Tests
         run: |
-          cd "${{ steps.stage-workbench.outputs.workbench_app_path }}" && pnpm dev &
+          cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm dev &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
-          WORKBENCH_APP_PATH: ${{ steps.stage-workbench.outputs.workbench_app_path }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
 
@@ -423,33 +429,39 @@ jobs:
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
 
-      - name: Stage workbench with tarballs
-        id: stage-workbench
+      - name: Prepare workbench path
+        id: prepare-workbench
         run: |
-          STAGE_LOG="$(mktemp)"
-          node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
-          STAGED_WORKBENCH_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
-          if [ -z "$STAGED_WORKBENCH_PATH" ]; then
-            echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
-            exit 1
+          if [[ "${{ matrix.app.name }}" == "nextjs-turbopack" || "${{ matrix.app.name }}" == "nextjs-webpack" ]]; then
+            STAGE_LOG="$(mktemp)"
+            node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
+            WORKBENCH_APP_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
+            if [ -z "$WORKBENCH_APP_PATH" ]; then
+              echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
+              exit 1
+            fi
+          else
+            ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
+            WORKBENCH_APP_PATH="$GITHUB_WORKSPACE/workbench/${{ matrix.app.name }}"
           fi
-          echo "workbench_app_path=$STAGED_WORKBENCH_PATH" >> "$GITHUB_OUTPUT"
+
+          echo "workbench_app_path=$WORKBENCH_APP_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts
         env:
           APP_NAME: ${{ matrix.app.name }}
-          WORKBENCH_APP_PATH: ${{ steps.stage-workbench.outputs.workbench_app_path }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
 
       - name: Run E2E Tests
         run: |
-          cd "${{ steps.stage-workbench.outputs.workbench_app_path }}" && pnpm start &
+          cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
-          WORKBENCH_APP_PATH: ${{ steps.stage-workbench.outputs.workbench_app_path }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
 
       - name: Generate E2E summary
@@ -525,33 +537,39 @@ jobs:
       - name: Setup PostgreSQL Database
         run: ./packages/world-postgres/bin/setup.js
 
-      - name: Stage workbench with tarballs
-        id: stage-workbench
+      - name: Prepare workbench path
+        id: prepare-workbench
         run: |
-          STAGE_LOG="$(mktemp)"
-          node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
-          STAGED_WORKBENCH_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
-          if [ -z "$STAGED_WORKBENCH_PATH" ]; then
-            echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
-            exit 1
+          if [[ "${{ matrix.app.name }}" == "nextjs-turbopack" || "${{ matrix.app.name }}" == "nextjs-webpack" ]]; then
+            STAGE_LOG="$(mktemp)"
+            node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
+            WORKBENCH_APP_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
+            if [ -z "$WORKBENCH_APP_PATH" ]; then
+              echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
+              exit 1
+            fi
+          else
+            ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
+            WORKBENCH_APP_PATH="$GITHUB_WORKSPACE/workbench/${{ matrix.app.name }}"
           fi
-          echo "workbench_app_path=$STAGED_WORKBENCH_PATH" >> "$GITHUB_OUTPUT"
+
+          echo "workbench_app_path=$WORKBENCH_APP_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts
         env:
           APP_NAME: ${{ matrix.app.name }}
-          WORKBENCH_APP_PATH: ${{ steps.stage-workbench.outputs.workbench_app_path }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
 
       - name: Run E2E Tests
         run: |
-          cd "${{ steps.stage-workbench.outputs.workbench_app_path }}" && pnpm start &
+          cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
-          WORKBENCH_APP_PATH: ${{ steps.stage-workbench.outputs.workbench_app_path }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
 
       - name: Generate E2E summary
