@@ -1,7 +1,7 @@
 ---
 title: Testing
 description: Test workflows and steps in isolation or against a real workflow runtime using Vitest and the Vite plugin.
-type: guide
+type: conceptual
 summary: Learn how to unit test and integration test your workflows using Vitest.
 prerequisites:
   - /docs/foundations/workflows-and-steps
@@ -17,12 +17,12 @@ Testing is a critical part of building reliable workflows. Because workflows and
 
 This guide covers two approaches:
 
-1. **Unit testing** — Test workflows and steps as plain functions, without the workflow runtime.
-2. **Integration testing** — Test against a real workflow setup using the Vite plugin, which is required for features like [hooks](/docs/foundations/hooks), webhooks, and [`sleep()`](/docs/api-reference/workflow/sleep).
+1. **Unit testing** - Test workflows and steps as plain functions, without the workflow runtime.
+2. **Integration testing** - Test against a real workflow setup using the Vite plugin, which is required for features like [hooks](/docs/foundations/hooks), webhooks, and [`sleep()`](/docs/api-reference/workflow/sleep).
 
 ## Unit Testing Workflows and Steps
 
-Without the workflow compiler, the `"use workflow"` and `"use step"` directives are simply ignored — they're no-ops. This means your workflow and step functions run as regular JavaScript functions, making them straightforward to unit test.
+Without the workflow compiler, the `"use workflow"` and `"use step"` directives are no-ops. Your workflow and step functions run as regular JavaScript functions, making them straightforward to unit test.
 
 ### Example Workflow
 
@@ -61,7 +61,7 @@ async function sendOnboardingEmail(user: { id: string; email: string }) {
 
 ### Writing Unit Tests
 
-You can test these functions directly with Vitest — no special configuration needed:
+You can test these functions directly with Vitest. No special configuration needed:
 
 ```typescript title="workflows/user-signup.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
@@ -69,7 +69,7 @@ import { handleUserSignup, createUser } from "./user-signup";
 
 describe("createUser step", () => {
   it("should create a user with the given email", async () => {
-    const user = await createUser("test@example.com");
+    const user = await createUser("test@example.com"); // [!code highlight]
 
     expect(user.email).toBe("test@example.com");
     expect(user.id).toBeDefined();
@@ -78,7 +78,7 @@ describe("createUser step", () => {
 
 describe("handleUserSignup workflow", () => {
   it("should return the onboarded status", async () => {
-    const result = await handleUserSignup("test@example.com");
+    const result = await handleUserSignup("test@example.com"); // [!code highlight]
 
     expect(result.status).toBe("onboarded");
     expect(result.userId).toBeDefined();
@@ -102,10 +102,10 @@ Create a separate Vitest config for integration tests that includes the `workflo
 
 ```typescript title="vitest.integration.config.ts" lineNumbers
 import { defineConfig } from "vitest/config";
-import { workflow } from "workflow/vite";
+import { workflow } from "workflow/vite"; // [!code highlight]
 
 export default defineConfig({
-  plugins: [workflow()],
+  plugins: [workflow()], // [!code highlight]
   test: {
     include: ["**/*.integration.test.ts"],
     testTimeout: 60_000, // Workflows may take longer than default timeout
@@ -114,7 +114,7 @@ export default defineConfig({
 ```
 
 <Callout type="info">
-We recommend using a separate Vitest configuration and a distinct file naming convention (e.g. `*.integration.test.ts`) to keep unit tests and integration tests separate. Unit tests can run with a standard Vitest config (without the workflow plugin), while integration tests use the config above.
+Use a separate Vitest configuration and a distinct file naming convention (e.g. `*.integration.test.ts`) to keep unit tests and integration tests separate. Unit tests run with a standard Vitest config without the workflow plugin, while integration tests use the config above.
 </Callout>
 
 ### Running Integration Tests
@@ -132,9 +132,9 @@ Add a script to your `package.json`:
 
 ### Testing Hooks and Waits
 
-The real power of integration testing comes when testing workflow-only features. Hooks and waits can be **resumed programmatically** using the [`workflow/api`](/docs/api-reference/workflow-api) functions, making it straightforward to simulate external events in your tests.
+The real power of integration testing comes when testing workflow-only features. Hooks and waits can be resumed programmatically using the [`workflow/api`](/docs/api-reference/workflow-api) functions, making it straightforward to simulate external events in your tests.
 
-For example, given a workflow that waits for approval via a hook:
+Given a workflow that waits for approval via a hook:
 
 ```typescript title="workflows/approval.ts" lineNumbers
 import { createHook } from "workflow";
@@ -144,11 +144,11 @@ export async function approvalWorkflow(documentId: string) {
 
   const prepared = await prepareDocument(documentId);
 
-  using hook = createHook<{ approved: boolean; reviewer: string }>({
-    token: `approval:${documentId}`,
-  });
+  using hook = createHook<{ approved: boolean; reviewer: string }>({ // [!code highlight]
+    token: `approval:${documentId}`, // [!code highlight]
+  }); // [!code highlight]
 
-  const decision = await hook;
+  const decision = await hook; // [!code highlight]
 
   if (decision.approved) {
     await publishDocument(prepared);
@@ -173,18 +173,18 @@ You can write an integration test that starts the workflow, resumes the hook pro
 
 ```typescript title="workflows/approval.integration.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
-import { start, resumeHook } from "workflow/api";
+import { start, resumeHook } from "workflow/api"; // [!code highlight]
 import { approvalWorkflow } from "./approval";
 
 describe("approvalWorkflow", () => {
   it("should publish when approved", async () => {
-    const run = await start(approvalWorkflow, ["doc-123"]);
+    const run = await start(approvalWorkflow, ["doc-123"]); // [!code highlight]
 
     // Resume the hook programmatically, simulating an external approval
-    await resumeHook("approval:doc-123", {
-      approved: true,
-      reviewer: "alice",
-    });
+    await resumeHook("approval:doc-123", { // [!code highlight]
+      approved: true, // [!code highlight]
+      reviewer: "alice", // [!code highlight]
+    }); // [!code highlight]
 
     const result = await run.returnValue;
     expect(result).toEqual({
@@ -220,8 +220,8 @@ describe("approvalWorkflow", () => {
 
 Keep two test configurations:
 
-- **Unit tests** — Standard Vitest config, no workflow plugin. Fast, no infrastructure required.
-- **Integration tests** — Vitest config with `workflow()` plugin. Tests the full workflow lifecycle including hooks, sleeps, and retries.
+- **Unit tests** - Standard Vitest config, no workflow plugin. Fast, no infrastructure required.
+- **Integration tests** - Vitest config with `workflow()` plugin. Tests the full workflow lifecycle including hooks, sleeps, and retries.
 
 ### Use Custom Hook Tokens for Deterministic Testing
 
@@ -233,18 +233,18 @@ Workflows may take longer to execute than typical unit tests, especially when th
 
 ### Test Error and Retry Scenarios
 
-Integration tests are the right place to verify that your workflows handle errors correctly — including retryable errors, fatal errors, and timeout scenarios.
+Integration tests are the right place to verify that your workflows handle errors correctly, including retryable errors, fatal errors, and timeout scenarios.
 
 ## Further Reading
 
-- [Hooks & Webhooks](/docs/foundations/hooks) — Learn about pausing and resuming workflows with external data
-- [`start()` API Reference](/docs/api-reference/workflow-api/start) — Start workflows programmatically
-- [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook) — Resume hooks with data
-- [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) — Check workflow run status
-- [Vite Integration](/docs/getting-started/vite) — Set up the Vite plugin
+- [Hooks & Webhooks](/docs/foundations/hooks) - Pausing and resuming workflows with external data
+- [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows programmatically
+- [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook) - Resume hooks with data
+- [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status
+- [Vite Integration](/docs/getting-started/vite) - Set up the Vite plugin
 
 ---
 
-<Callout>
+<Callout type="info">
 This guide was inspired by the testing approach described in Mux's article [*Launching durable AI workflows for video with @mux/ai*](https://www.mux.com/blog/launching-durable-ai-workflows-for-video-with-mux-ai#testing), which demonstrates how Mux uses the `workflow/vite` plugin with Vitest to integration test their durable AI video workflows built on Workflow DevKit.
 </Callout>
