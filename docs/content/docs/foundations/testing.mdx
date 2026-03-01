@@ -1,8 +1,8 @@
 ---
 title: Testing
-description: Test workflows and steps in isolation or against a real workflow runtime using Vitest and the Vite plugin.
+description: Unit test individual steps and integration test entire workflows using Vitest and the Vite plugin.
 type: conceptual
-summary: Learn how to unit test and integration test your workflows using Vitest.
+summary: Learn how to unit test steps and integration test workflows using Vitest.
 prerequisites:
   - /docs/foundations/workflows-and-steps
   - /docs/getting-started/vite
@@ -13,20 +13,20 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
-Testing is a critical part of building reliable workflows. Because workflows and steps are just functions annotated with directives, they can be tested like any other JavaScript function. Workflow DevKit also provides a [Vite plugin](/docs/getting-started/vite) that integrates with [Vitest](https://vitest.dev), enabling full integration tests against a real workflow runtime.
+Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow DevKit also provides a [Vite plugin](/docs/getting-started/vite) that integrates with [Vitest](https://vitest.dev), enabling full integration tests against a real workflow runtime.
 
 This guide covers two approaches:
 
-1. **Unit testing** - Test workflows and steps as plain functions, without the workflow runtime.
-2. **Integration testing** - Test against a real workflow setup using the Vite plugin, which is required for features like [hooks](/docs/foundations/hooks), webhooks, and [`sleep()`](/docs/api-reference/workflow/sleep).
+1. **Unit testing** - Test individual steps as plain functions, without the workflow runtime.
+2. **Integration testing** - Test entire workflows against a real workflow setup using the Vite plugin. Required for workflows that use [hooks](/docs/foundations/hooks), webhooks, [`sleep()`](/docs/api-reference/workflow/sleep), or retries.
 
-## Unit Testing Workflows and Steps
+## Unit Testing Steps
 
-Without the workflow compiler, the `"use workflow"` and `"use step"` directives are no-ops. Your workflow and step functions run as regular JavaScript functions, making them straightforward to unit test.
+Without the workflow compiler, the `"use step"` directive is a no-op. Your step functions run as regular JavaScript functions, making them straightforward to unit test with no special configuration.
 
-### Example Workflow
+### Example Steps
 
-Given a workflow like this:
+Given a workflow with exported steps like this:
 
 ```typescript title="workflows/user-signup.ts" lineNumbers
 import { sleep } from "workflow";
@@ -37,7 +37,7 @@ export async function handleUserSignup(email: string) {
   const user = await createUser(email);
   await sendWelcomeEmail(user);
 
-  await sleep("5s");
+  await sleep("5d");
   await sendOnboardingEmail(user);
 
   return { userId: user.id, status: "onboarded" };
@@ -48,24 +48,24 @@ export async function createUser(email: string) {
   return { id: crypto.randomUUID(), email };
 }
 
-async function sendWelcomeEmail(user: { id: string; email: string }) {
+export async function sendWelcomeEmail(user: { id: string; email: string }) {
   "use step";
   // Send email logic
 }
 
-async function sendOnboardingEmail(user: { id: string; email: string }) {
+export async function sendOnboardingEmail(user: { id: string; email: string }) {
   "use step";
   // Send email logic
 }
 ```
 
-### Writing Unit Tests
+### Writing Unit Tests for Steps
 
-You can test these functions directly with Vitest. No special configuration needed:
+You can test step functions directly with Vitest. No special configuration or workflow plugin needed:
 
 ```typescript title="workflows/user-signup.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
-import { handleUserSignup, createUser } from "./user-signup";
+import { createUser, sendWelcomeEmail } from "./user-signup";
 
 describe("createUser step", () => {
   it("should create a user with the given email", async () => {
@@ -76,20 +76,18 @@ describe("createUser step", () => {
   });
 });
 
-describe("handleUserSignup workflow", () => {
-  it("should return the onboarded status", async () => {
-    const result = await handleUserSignup("test@example.com"); // [!code highlight]
-
-    expect(result.status).toBe("onboarded");
-    expect(result.userId).toBeDefined();
+describe("sendWelcomeEmail step", () => {
+  it("should send a welcome email without throwing", async () => {
+    const user = { id: "user-1", email: "test@example.com" };
+    await expect(sendWelcomeEmail(user)).resolves.not.toThrow(); // [!code highlight]
   });
 });
 ```
 
-This approach is ideal for verifying business logic in isolation. Since directives are no-ops outside the workflow runtime, `sleep()` calls resolve immediately and steps execute synchronously in sequence.
+This approach is ideal for verifying the business logic inside individual steps in isolation.
 
 <Callout type="info">
-Unit tests are fast and don't require any infrastructure. Use them for validating the core logic of your steps and the orchestration flow of your workflows.
+Unit testing works well for steps, and for simple workflows that only contain steps. However, workflows that use runtime features like [`sleep()`](/docs/api-reference/workflow/sleep), [hooks](/docs/foundations/hooks), or [webhooks](/docs/foundations/hooks#understanding-webhooks) cannot be unit tested directly because those APIs require the workflow runtime. Use [integration testing](#integration-testing-with-the-vite-plugin) for testing entire workflows, especially those that use workflow-only features.
 </Callout>
 
 ## Integration Testing with the Vite Plugin
