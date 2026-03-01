@@ -9,6 +9,7 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 const workbenchRoot = path.join(repoRoot, 'workbench');
 const workbenchScriptsRoot = path.join(workbenchRoot, 'scripts');
+const repoLibRoot = path.join(repoRoot, 'lib');
 const packagesRoot = path.join(repoRoot, 'packages');
 const workspaceYamlPath = path.join(repoRoot, 'pnpm-workspace.yaml');
 
@@ -167,6 +168,23 @@ function copyWorkbenchScripts(destinationRoot) {
   return true;
 }
 
+function copyRepoLib(destinationRoot) {
+  if (!fs.existsSync(repoLibRoot)) {
+    return false;
+  }
+
+  const destinationLibDir = path.join(destinationRoot, 'lib');
+  fs.cpSync(repoLibRoot, destinationLibDir, {
+    recursive: true,
+    dereference: true,
+    filter: (sourcePath) => {
+      const baseName = path.basename(sourcePath);
+      return !excludedPaths.has(baseName);
+    },
+  });
+  return true;
+}
+
 function rewriteDependencySpecs(
   packageJsonPath,
   tarballPathByPackageName,
@@ -230,6 +248,32 @@ function rewriteDependencySpecs(
   return { replacedWithTarballs, replacedCatalogEntries };
 }
 
+function applyTarballOverrides(packageJsonPath, tarballPathByPackageName) {
+  const packageJson = readJson(packageJsonPath);
+  const pnpmConfig =
+    packageJson.pnpm && typeof packageJson.pnpm === 'object'
+      ? packageJson.pnpm
+      : {};
+  const overrides =
+    pnpmConfig.overrides && typeof pnpmConfig.overrides === 'object'
+      ? pnpmConfig.overrides
+      : {};
+
+  let overridesApplied = 0;
+  for (const [packageName, tarballPath] of tarballPathByPackageName.entries()) {
+    overrides[packageName] = `file:${tarballPath}`;
+    overridesApplied += 1;
+  }
+
+  packageJson.pnpm = {
+    ...pnpmConfig,
+    overrides,
+  };
+
+  writeJson(packageJsonPath, packageJson);
+  return overridesApplied;
+}
+
 function main() {
   const args = process.argv.slice(2).filter((arg) => arg !== '--');
   const [workbenchArg] = args;
@@ -244,17 +288,26 @@ function main() {
   const tmpRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), `workflow-${workbenchName}-`)
   );
-  const stagedWorkbenchDir = path.join(tmpRoot, workbenchName);
+  const stagedWorkbenchRoot = path.join(tmpRoot, 'workbench');
+  const stagedWorkbenchDir = path.join(stagedWorkbenchRoot, workbenchName);
   const tarballDir = path.join(tmpRoot, 'tarballs');
+  fs.mkdirSync(stagedWorkbenchRoot, { recursive: true });
   fs.mkdirSync(tarballDir, { recursive: true });
 
   console.log(
     `Staging ${path.relative(repoRoot, sourceWorkbenchDir)} at ${stagedWorkbenchDir}`
   );
   copyWorkbenchWithResolvedSymlinks(sourceWorkbenchDir, stagedWorkbenchDir);
-  const copiedScripts = copyWorkbenchScripts(tmpRoot);
+  const copiedScripts = copyWorkbenchScripts(stagedWorkbenchRoot);
   if (copiedScripts) {
-    console.log(`Copied workbench scripts to ${path.join(tmpRoot, 'scripts')}`);
+    console.log(
+      `Copied workbench scripts to ${path.join(stagedWorkbenchRoot, 'scripts')}`
+    );
+  }
+
+  const copiedLib = copyRepoLib(tmpRoot);
+  if (copiedLib) {
+    console.log(`Copied repo lib to ${path.join(tmpRoot, 'lib')}`);
   }
 
   console.log(`Packing monorepo packages to ${tarballDir}`);
@@ -298,9 +351,16 @@ function main() {
       tarballPathByPackageName,
       catalog
     );
+  const overridesApplied = applyTarballOverrides(
+    stagedPackageJsonPath,
+    tarballPathByPackageName
+  );
 
   console.log(
     `Rewrote ${replacedWithTarballs.length} monorepo dependencies to tarballs and ${replacedCatalogEntries.length} catalog dependencies to versions`
+  );
+  console.log(
+    `Applied ${overridesApplied} pnpm tarball overrides for transitive monorepo packages`
   );
 
   console.log(`Installing dependencies in ${stagedWorkbenchDir}`);
