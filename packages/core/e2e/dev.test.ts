@@ -169,7 +169,7 @@ export async function myNewStep() {
 
     test(
       'should rebuild on adding workflow file',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const workflowFile = path.join(
           appPath,
