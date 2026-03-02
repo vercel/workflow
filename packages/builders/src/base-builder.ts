@@ -101,10 +101,15 @@ export abstract class BaseBuilder {
       '**/node_modules/**',
       '**/.git/**',
       '**/.next/**',
+      '**/.nuxt/**',
       '**/.vercel/**',
       '**/.workflow-data/**',
       '**/.well-known/workflow/**',
       '**/.svelte-kit/**',
+      '**/.turbo/**',
+      '**/.cache/**',
+      '**/.yarn/**',
+      '**/.pnpm-store/**',
     ];
 
     // Use relative patterns with `cwd` per directory so that `dot: true`

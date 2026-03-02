@@ -97,10 +97,15 @@ describe('getInputFiles', () => {
     const srcDir = join(testRoot, 'src');
     writeFile(srcDir, '.git/hooks/pre-commit.ts');
     writeFile(srcDir, '.next/server/page.ts');
+    writeFile(srcDir, '.nuxt/workflow/steps.mjs');
     writeFile(srcDir, '.vercel/output/step.ts');
     writeFile(srcDir, '.svelte-kit/output/step.ts');
     writeFile(srcDir, '.workflow-data/state.ts');
     writeFile(srcDir, '.well-known/workflow/route.ts');
+    writeFile(srcDir, '.turbo/cache/build.ts');
+    writeFile(srcDir, '.cache/babel/plugin.js');
+    writeFile(srcDir, '.yarn/releases/yarn.cjs');
+    writeFile(srcDir, '.pnpm-store/v3/files.ts');
     writeFile(srcDir, 'node_modules/pkg/index.ts');
     // This one should still be found
     writeFile(srcDir, '.custom/step.ts', "'use step';");
@@ -115,6 +120,9 @@ describe('getInputFiles', () => {
       normalize(join(srcDir, '.next/server/page.ts'))
     );
     expect(files).not.toContain(
+      normalize(join(srcDir, '.nuxt/workflow/steps.mjs'))
+    );
+    expect(files).not.toContain(
       normalize(join(srcDir, '.vercel/output/step.ts'))
     );
     expect(files).not.toContain(
@@ -125,6 +133,18 @@ describe('getInputFiles', () => {
     );
     expect(files).not.toContain(
       normalize(join(srcDir, '.well-known/workflow/route.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.turbo/cache/build.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.cache/babel/plugin.js'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.yarn/releases/yarn.cjs'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.pnpm-store/v3/files.ts'))
     );
     expect(files).not.toContain(
       normalize(join(srcDir, 'node_modules/pkg/index.ts'))
