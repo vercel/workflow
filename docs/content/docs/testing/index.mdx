@@ -187,28 +187,27 @@ async function publishDocument(doc: { id: string; content: string }) {
 }
 ```
 
-You can write an integration test that starts the workflow, resumes the hook, and uses [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to skip the sleep — so your tests don't have to wait for the full duration:
+You can write an integration test that starts the workflow, waits for the hook and sleep to be reached, then resumes them programmatically:
 
 ```typescript title="workflows/approval.integration.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
-import { setTimeout as delay } from "node:timers/promises";
 import { start, getRun, resumeHook } from "workflow/api"; // [!code highlight]
+import { waitForHook, waitForSleep } from "workflow/vitest"; // [!code highlight]
 import { approvalWorkflow } from "./approval";
 
 describe("approvalWorkflow", () => {
   it("should publish when approved", async () => {
     const run = await start(approvalWorkflow, ["doc-123"]); // [!code highlight]
 
-    // Resume the hook programmatically, simulating an external approval
+    // Wait for the hook to be created, then resume it
+    await waitForHook(run, { token: "approval:doc-123" }); // [!code highlight]
     await resumeHook("approval:doc-123", { // [!code highlight]
       approved: true, // [!code highlight]
       reviewer: "alice", // [!code highlight]
     }); // [!code highlight]
 
-    // Wait for the workflow to replay and reach the sleep() call
-    await delay(5_000); // [!code highlight]
-
-    // Skip the 24-hour sleep so the test completes immediately
+    // Wait for the sleep to be reached, then skip it
+    await waitForSleep(run); // [!code highlight]
     await getRun(run.runId).wakeUp(); // [!code highlight]
 
     const result = await run.returnValue;
@@ -221,6 +220,7 @@ describe("approvalWorkflow", () => {
   it("should reject when not approved", async () => {
     const run = await start(approvalWorkflow, ["doc-456"]);
 
+    await waitForHook(run, { token: "approval:doc-456" });
     await resumeHook("approval:doc-456", {
       approved: false,
       reviewer: "bob",
@@ -237,7 +237,68 @@ describe("approvalWorkflow", () => {
 ```
 
 <Callout type="info">
-[`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run) are the key API functions for integration testing. Use `start()` to trigger a workflow, `resumeHook()` to simulate external events, and `wakeUp()` to skip `sleep()` calls so tests run instantly. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
+[`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run) are the key API functions for integration testing. Use `start()` to trigger a workflow, `resumeHook()` to simulate external events, and `wakeUp()` to skip `sleep()` calls so tests run instantly. `waitForSleep()` and `waitForHook()` from `workflow/vitest` let you wait for the workflow to reach a specific point before resuming. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
+</Callout>
+
+### Testing Webhooks
+
+Webhooks are hooks that receive HTTP `Request` objects. In tests, resume them using `resumeHook()` with a `Request` payload — no HTTP server needed:
+
+```typescript title="workflows/ingest.ts" lineNumbers
+import { createWebhook } from "workflow";
+
+export async function ingestWorkflow(endpointId: string) {
+  "use workflow";
+
+  using webhook = createWebhook({ // [!code highlight]
+    token: `webhook:${endpointId}`, // [!code highlight]
+  }); // [!code highlight]
+
+  const request = await webhook; // [!code highlight]
+  const body = await request.text();
+  const data = await parsePayload(body);
+
+  return { endpointId, received: data };
+}
+
+async function parsePayload(body: string) {
+  "use step";
+  return JSON.parse(body);
+}
+```
+
+```typescript title="workflows/ingest.integration.test.ts" lineNumbers
+import { describe, it, expect } from "vitest";
+import { start, resumeHook } from "workflow/api"; // [!code highlight]
+import { waitForHook } from "workflow/vitest"; // [!code highlight]
+import { ingestWorkflow } from "./ingest";
+
+describe("ingestWorkflow", () => {
+  it("should process webhook data", async () => {
+    const run = await start(ingestWorkflow, ["ep-1"]);
+
+    await waitForHook(run, { token: "webhook:ep-1" }); // [!code highlight]
+
+    // Resume the webhook with a Request object
+    await resumeHook( // [!code highlight]
+      "webhook:ep-1", // [!code highlight]
+      new Request("https://example.com/webhook", { // [!code highlight]
+        method: "POST", // [!code highlight]
+        body: JSON.stringify({ event: "order.created", orderId: "123" }), // [!code highlight]
+      }) // [!code highlight]
+    ); // [!code highlight]
+
+    const result = await run.returnValue;
+    expect(result).toEqual({
+      endpointId: "ep-1",
+      received: { event: "order.created", orderId: "123" },
+    });
+  });
+});
+```
+
+<Callout type="info">
+Use `resumeHook()` (not `resumeWebhook()`) when testing webhooks with the Vitest plugin. `resumeWebhook()` handles HTTP-specific concerns like response routing that aren't relevant for in-process testing. Since a webhook is fundamentally a hook with a `Request` payload, `resumeHook()` works directly.
 </Callout>
 
 ### Manual Setup
@@ -342,6 +403,7 @@ Integration tests are the right place to verify that your workflows handle error
 - [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows programmatically
 - [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook) - Resume hooks with data
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status and wake up sleeping runs
+- [`waitForSleep()` and `waitForHook()`](/docs/api-reference/vitest) - Test helpers for polling workflow state
 - [Vite Integration](/docs/getting-started/vite) - Set up the Vite plugin
 - [Observability](/docs/observability) - Inspect and debug workflow runs with the CLI and Web UI
 - [Server-based testing](/docs/testing/server-based) - Integration testing with a running server

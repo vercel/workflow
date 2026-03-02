@@ -964,6 +964,9 @@ importers:
       '@workflow/rollup':
         specifier: workspace:*
         version: link:../rollup
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../world
       '@workflow/world-local':
         specifier: workspace:*
         version: link:../world-local

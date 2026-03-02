@@ -2,8 +2,10 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
+import type { Run } from '@workflow/core/runtime';
 import { setWorld } from '@workflow/core/runtime';
 import { workflowTransformPlugin } from '@workflow/rollup';
+import type { Event, Hook } from '@workflow/world';
 import { createLocalWorld, type LocalWorld } from '@workflow/world-local';
 import type { Plugin } from 'vite';
 
@@ -150,4 +152,135 @@ export async function teardownWorkflowTests(): Promise<void> {
   setWorld(undefined);
   await world?.close?.();
   world = undefined;
+}
+
+export interface WaitOptions {
+  /** Maximum time to wait in milliseconds. Defaults to 30000. */
+  timeout?: number;
+  /** Polling interval in milliseconds. Defaults to 100. */
+  pollInterval?: number;
+}
+
+function getWorldOrThrow(): LocalWorld {
+  if (!world) {
+    throw new Error(
+      'Workflow test world is not initialized. Call setupWorkflowTests() first.'
+    );
+  }
+  return world;
+}
+
+async function fetchAllEvents(w: LocalWorld, runId: string): Promise<Event[]> {
+  const allEvents: Event[] = [];
+  let cursor: string | null = null;
+  do {
+    const result = await w.events.list({
+      runId,
+      pagination: { limit: 1000, ...(cursor ? { cursor } : {}) },
+      resolveData: 'none',
+    });
+    allEvents.push(...result.data);
+    cursor = result.hasMore ? result.cursor : null;
+  } while (cursor);
+  return allEvents;
+}
+
+/**
+ * Wait until the workflow has a pending `sleep()` call.
+ *
+ * Polls the event log for a `wait_created` event without a corresponding
+ * `wait_completed` event. Once a pending sleep is detected, you can call
+ * `run.wakeUp()` to skip the sleep and resume the workflow immediately.
+ *
+ * @example
+ * ```ts
+ * const run = await start(myWorkflow, []);
+ * await waitForSleep(run);
+ * await run.wakeUp();
+ * const result = await run.returnValue;
+ * ```
+ */
+export async function waitForSleep(
+  run: Run<any>,
+  options?: WaitOptions
+): Promise<void> {
+  const w = getWorldOrThrow();
+  const timeout = options?.timeout ?? 30_000;
+  const pollInterval = options?.pollInterval ?? 100;
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    const events = await fetchAllEvents(w, run.runId);
+
+    const waitCompletedIds = new Set(
+      events
+        .filter((e) => e.eventType === 'wait_completed')
+        .map((e) => e.correlationId)
+    );
+
+    const hasPendingSleep = events.some(
+      (e) =>
+        e.eventType === 'wait_created' && !waitCompletedIds.has(e.correlationId)
+    );
+
+    if (hasPendingSleep) return;
+
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+  }
+
+  throw new Error(
+    `waitForSleep timed out after ${timeout}ms: no pending sleep found for run ${run.runId}`
+  );
+}
+
+/**
+ * Wait until the workflow has created a hook that hasn't been received yet.
+ *
+ * Polls the hook list and event log for a hook matching the optional `token`
+ * filter that hasn't had a `hook_received` event. Returns the matching hook,
+ * which you can then resume with `resumeHook(hook.token, data)`.
+ *
+ * @example
+ * ```ts
+ * const run = await start(myWorkflow, ["doc-1"]);
+ * const hook = await waitForHook(run);
+ * await resumeHook(hook.token, { approved: true });
+ * const result = await run.returnValue;
+ * ```
+ */
+export async function waitForHook(
+  run: Run<any>,
+  options?: WaitOptions & { token?: string }
+): Promise<Hook> {
+  const w = getWorldOrThrow();
+  const timeout = options?.timeout ?? 30_000;
+  const pollInterval = options?.pollInterval ?? 100;
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    const [hooks, events] = await Promise.all([
+      w.hooks.list({ runId: run.runId }).then((r) => r.data),
+      fetchAllEvents(w, run.runId),
+    ]);
+
+    const receivedCorrelationIds = new Set(
+      events
+        .filter((e) => e.eventType === 'hook_received')
+        .map((e) => e.correlationId)
+    );
+
+    const pendingHook = hooks.find(
+      (h) =>
+        !receivedCorrelationIds.has(h.hookId) &&
+        (!options?.token || h.token === options.token)
+    );
+
+    if (pendingHook) return pendingHook;
+
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+  }
+
+  throw new Error(
+    `waitForHook timed out after ${timeout}ms: no pending hook found for run ${run.runId}${options?.token ? ` with token "${options.token}"` : ''}`
+  );
 }

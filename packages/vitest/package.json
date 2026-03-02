@@ -32,6 +32,7 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/rollup": "workspace:*",
+    "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*"
   },
   "devDependencies": {
