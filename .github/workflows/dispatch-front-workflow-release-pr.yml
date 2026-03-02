@@ -1,0 +1,84 @@
+name: Dispatch Front Workflow Release PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: dispatch-front-workflow-release-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-front-sync:
+    name: Dispatch Front Sync
+    if: >
+      startsWith(github.event.pull_request.head.ref, 'changeset-release/') &&
+      github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Read workflow version
+        id: version
+        run: |
+          VERSION=$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('packages/workflow/package.json','utf8')); process.stdout.write(p.version)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for docs deployment
+        id: waitForDocsDeployment
+        uses: ./.github/actions/wait-for-vercel-project
+        with:
+          team-id: "team_nLlpyC6REAqxydlFKbrMDlud"
+          project-id: "prj_aLMkVj1S4Alk08AThC76nXgwbLEB"
+          vercel-token: ${{ secrets.VERCEL_DOCS_TOKEN }}
+          timeout: 1200
+          check-interval: 15
+          environment: preview
+
+      - name: Dispatch front workflow (sync)
+        uses: actions/github-script@v7
+        env:
+          MODE: sync
+          FRONT_REPO: vercel/front
+          FRONT_WORKFLOW_ID: workflow-sync-workflow-release-pr.yml
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_PR_URL: ${{ github.event.pull_request.html_url }}
+          WORKFLOW_VERSION: ${{ steps.version.outputs.version }}
+          DOCS_DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
+        with:
+          github-token: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          script: |
+            const trigger = require('./scripts/trigger-front-release-workflow-dispatch.cjs');
+            await trigger({ github, context });
+
+  dispatch-front-close:
+    name: Dispatch Front Close
+    if: >
+      startsWith(github.event.pull_request.head.ref, 'changeset-release/') &&
+      github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Dispatch front workflow (close)
+        uses: actions/github-script@v7
+        env:
+          MODE: close
+          FRONT_REPO: vercel/front
+          FRONT_WORKFLOW_ID: workflow-sync-workflow-release-pr.yml
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_PR_URL: ${{ github.event.pull_request.html_url }}
+          WORKFLOW_VERSION: ""
+          DOCS_DEPLOYMENT_URL: ""
+        with:
+          github-token: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          script: |
+            const trigger = require('./scripts/trigger-front-release-workflow-dispatch.cjs');
+            await trigger({ github, context });
