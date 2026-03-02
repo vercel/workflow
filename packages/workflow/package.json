@@ -47,6 +47,7 @@
     "./sveltekit": "./dist/sveltekit.js",
     "./astro": "./dist/astro.js",
     "./vite": "./dist/vite.js",
+    "./vitest": "./dist/vitest.js",
     "./nest": "./dist/nest.js",
     "./runtime": "./dist/runtime.js"
   },
@@ -71,7 +72,8 @@
     "@workflow/nitro": "workspace:*",
     "@workflow/nuxt": "workspace:*",
     "@workflow/sveltekit": "workspace:*",
-    "@workflow/rollup": "workspace:*"
+    "@workflow/rollup": "workspace:*",
+    "@workflow/vitest": "workspace:*"
   },
   "devDependencies": {
     "@types/ms": "2.1.0",

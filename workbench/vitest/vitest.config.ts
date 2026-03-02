@@ -1,4 +1,4 @@
-import { workflow } from 'workflow/vite';
+import { workflow } from 'workflow/vitest';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -6,9 +6,5 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     testTimeout: 30000,
-    globalSetup: './vitest.setup.ts',
-    env: {
-      WORKFLOW_LOCAL_BASE_URL: 'http://localhost:3000',
-    },
   },
 });

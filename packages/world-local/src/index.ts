@@ -2,7 +2,7 @@ import type { World } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
 import { initDataDir } from './init.js';
-import { createQueue } from './queue.js';
+import { createQueue, type DirectHandler } from './queue.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -16,6 +16,16 @@ export {
   parseVersion,
 } from './init.js';
 
+export type { DirectHandler } from './queue.js';
+
+export type LocalWorld = World & {
+  /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
+  registerHandler(
+    prefix: '__wkf_step_' | '__wkf_workflow_',
+    handler: DirectHandler
+  ): void;
+};
+
 /**
  * Creates a local world instance that combines queue, storage, and streamer functionalities.
  *
@@ -26,7 +36,7 @@ export {
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
  * @throws {DataDirVersionError} If the data directory version is incompatible
  */
-export function createLocalWorld(args?: Partial<Config>): World {
+export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const definedArgs = args
     ? Object.fromEntries(
         Object.entries(args).filter(([, value]) => value !== undefined)
